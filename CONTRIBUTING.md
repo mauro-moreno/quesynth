@@ -63,6 +63,18 @@ parameter table too, or CI will fail on a stale one:
 odin run tools/uiparams
 ```
 
+If you touched `src/patch/sy1.odin`, the panel carries a second reader of that
+format in `ui/sy1.js` -- it has to, because the browser build keeps its engine
+in an AudioWorklet and cannot ask it to parse a dropped file. Check the two
+still agree, over a whole bank rather than a sample:
+
+```
+node tools/sy1check/check.js <dir of .sy1> <dir of .json from patchconv>
+```
+
+CI cannot run it, because the banks it needs are not in the repository. That
+makes it your job rather than the machine's.
+
 ## Layering
 
 `docs/architecture.md` has the rules; the short version is that they are load

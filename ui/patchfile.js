@@ -145,6 +145,64 @@
     }
   }
 
+  // What a file is, decided by looking at it.
+  //
+  // Sniffed rather than taken from the extension, for the reason
+  // patch.detect_format gives on the engine side: a path can lie, and the three
+  // formats begin with bytes that cannot be confused -- a zip with "PK\3\4",
+  // JSON with a brace, and a Synth1 patch with its own name.
+  function sniff(bytes) {
+    var i = 0;
+    while (i < bytes.length && (bytes[i] === 32 || bytes[i] === 9 || bytes[i] === 13 || bytes[i] === 10)) i++;
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B) return "zip";
+    if (i < bytes.length && bytes[i] === 0x7B) return "json";
+    return "sy1";
+  }
+
+  function defaults() {
+    return params().map(function (p) { return p.def; });
+  }
+
+  function textOf(bytes) {
+    var out = "";
+    for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return out;
+  }
+
+  // A whole file, in whichever of the three formats it is.
+  //
+  // A zip becomes a bank, because that is what one is: the patch banks people
+  // share are archives of `.sy1` files, and loading one patch out of forty
+  // would be answering a question nobody asked.
+  async function loadBytes(bytes, filename) {
+    var api = window.SynthPatch;
+    if (!api) return "";
+
+    switch (sniff(bytes)) {
+      case "zip":
+        if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
+        var found = await window.SynthSy1.readZip(bytes);
+        if (!found.length) throw new Error("no .sy1 patches in the archive");
+        var base = defaults();
+        var patches = found.map(function (entry) {
+          var p = window.SynthSy1.parse(entry.bytes, base);
+          return { n: p.name || entry.name, v: p.values };
+        });
+        var label = String(filename || "Bank").replace(/\.zip$/i, "");
+        api.setBank(label, patches);
+        return patches.length + " patches";
+
+      case "sy1":
+        if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
+        var one = window.SynthSy1.parse(bytes, defaults());
+        api.apply(one.values, one.name || String(filename || "Patch").replace(/\.sy1$/i, ""));
+        return one.name || "patch";
+
+      default:
+        return loadText(textOf(bytes));
+    }
+  }
+
   function loadText(text) {
     var api = window.SynthPatch;
     if (!api) return;
@@ -175,7 +233,7 @@
     if (!input) {
       input = document.createElement("input");
       input.type = "file";
-      input.accept = ".json,application/json";
+      input.accept = ".json,.sy1,.zip,application/json,application/zip";
       input.style.display = "none";
       document.body.appendChild(input);
     }
@@ -184,15 +242,15 @@
       var file = input.files && input.files[0];
       if (!file) return;
       var reader = new FileReader();
+      // Read as bytes, not as text: a zip is binary, and decoding it as text
+      // first would corrupt it before anything got the chance to look.
       reader.onload = function () {
-        try {
-          onDone(null, loadText(String(reader.result)));
-        } catch (err) {
-          onDone(err);
-        }
+        loadBytes(new Uint8Array(reader.result), file.name)
+          .then(function (what) { onDone(null, what); })
+          .catch(function (err) { onDone(err); });
       };
       reader.onerror = function () { onDone(new Error("could not read the file")); };
-      reader.readAsText(file);
+      reader.readAsArrayBuffer(file);
     };
     input.click();
   }
@@ -219,7 +277,7 @@
 
     var items = [
       ["Save patch", function () { savePatch(); flash("SAVED"); }],
-      ["Load patch or bank…", function () {
+      ["Load patch, bank or .zip…", function () {
         pickFile(function (err, what) {
           flash(err ? "FAILED" : "LOADED");
           if (err) console.error("patch file:", err.message);
@@ -269,6 +327,8 @@
       }, null, 2) + "\n";
     },
     load: loadText,
+    loadBytes: loadBytes,
+    sniff: sniff,
   };
 
   document.addEventListener("DOMContentLoaded", function () {
