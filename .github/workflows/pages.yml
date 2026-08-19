@@ -64,7 +64,14 @@ jobs:
           odin run tools/uiparams -out:build/uiparams
           git diff --exit-code -- ui/params.js
 
+      # `enablement` turns Pages on through the API rather than requiring
+      # someone to have clicked Settings -> Pages -> Source: GitHub Actions
+      # first. Without it a fresh clone of this repository builds everything
+      # correctly and then fails here, which reads like a broken workflow
+      # rather than an unconfigured repository.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       # Nothing is bundled or transformed -- the panel ships exactly as it is
       # developed. It is only gathered, because a host is the panel plus its own
