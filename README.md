@@ -137,6 +137,27 @@ redistribute: the plugin binary, its factory patch banks, and the third-party
 banks used for testing are all ignored. `tools/s1probe` and `tools/uibank` read
 them from your own Synth1 installation.
 
+## Contributing
+
+Welcome, and [`CONTRIBUTING.md`](CONTRIBUTING.md) is worth reading first: this
+project is checked by measurement rather than by argument, so a change to
+anything audible needs a null-test number behind it. That file also records the
+one mistake this project has made twice, which is worth knowing before you write
+a test here.
+
+## License
+
+[MIT](LICENSE), covering the work in this repository: the engine, the hosts, the
+interface, the tooling, and the measurements in `docs/`.
+
+It does not and cannot cover anything of Synth1's. One file here is not mine to
+relicense: `docs/synth1-readme-eng.txt` is Synth1's own manual, kept because it
+is the primary source for the reference's documented behaviour. It carries
+"Copyright © 2010 by Daichi. All rights reserved." and describes the software as
+freeware and freely distributable, while asking that anyone who copies or
+features it get in touch — a request this project has not yet acted on. Synth1's
+plugin binary and its patch banks are not in this repository at all.
+
 ## Credits
 
 Synth1 is by **Daichi Kanenaga**. This project measures it, matches it, and is
