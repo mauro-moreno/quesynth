@@ -21,8 +21,32 @@
   var button = null;
   var list = null;
 
+  var restingLabel = "MIDI";
+  var flashTimer = null;
+
   function label(text) {
-    if (button) button.textContent = text;
+    restingLabel = text;
+    if (flashTimer === null && button) button.textContent = text;
+  }
+
+  // Show the velocity of the note just played, then go back to the device name.
+  //
+  // This is a diagnostic, and it earns its place: "velocity does nothing" has
+  // two completely different causes and no way to tell them apart by ear. The
+  // engine may be ignoring it, or the keyboard may be sending the same number
+  // every time -- controllers commonly have a fixed-velocity curve, and it is
+  // not always obvious which one is selected. One is a bug here; the other is a
+  // setting on the keyboard, and no amount of work in this repository fixes it.
+  //
+  // Watching this while playing soft and hard answers it in a second.
+  function flashVelocity(v) {
+    if (!button) return;
+    button.textContent = "v" + v;
+    if (flashTimer !== null) clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () {
+      flashTimer = null;
+      button.textContent = restingLabel;
+    }, 600);
   }
 
   // Route one incoming message. Only the three that matter here; anything else,
@@ -40,6 +64,7 @@
         // only ever send it that way.
         if (d[2] > 0) {
           bridge.note(true, d[1], d[2]);
+          flashVelocity(d[2]);
           if (window.SynthKeys) window.SynthKeys.down(d[1]);
         } else {
           bridge.note(false, d[1], 0);
