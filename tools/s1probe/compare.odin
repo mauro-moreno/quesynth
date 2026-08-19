@@ -20,6 +20,8 @@
 //     --self          control run: compare the reference against itself
 //     --no-floor      skip the second reference render
 //     --verbose       full per-patch detail instead of one line each
+//     --isolate       render each patch in a child process, so a patch that
+//                     crashes the reference costs one row and not the run
 //
 // The interesting output is the summary. Per-patch numbers say which patch is
 // wrong; the aggregates say *what* is wrong, because a mapping error that is
@@ -50,6 +52,11 @@ import cpatch "../../src/patch"
 // may still assume it is handed exactly that many frames, so departing from it
 // is not free; `--block` exists to test that assumption rather than trust it.
 COMPARE_BLOCK_DEFAULT :: BLOCK
+
+// The note every comparison plays unless told otherwise. Named so isolate.odin
+// can tell "the default" from "explicitly asked for 60" when rebuilding a
+// child command line.
+COMPARE_NOTE_DEFAULT :: u8(60)
 
 COMPARE_HOLD_SECONDS :: 1.5
 COMPARE_TAIL_SECONDS :: 1.0
@@ -127,23 +134,30 @@ close_reference :: proc(p: ^Plugin) {
 	unload(p)
 }
 
-// Some patches kill the reference binary outright.
+// The reference's arpeggiator segfaults, and it takes this process with it.
 //
-// 095.sy1 ("Cosmos") segfaults inside Synth1 during the very first render, in a
-// fresh process, with one instantiation and no prior patch loaded. It is not a
-// resource limit: the patch reproduces on its own, its neighbours render fine
-// immediately after it in the same process, and `verify` reads every one of its
-// parameters back correctly, so the state chunk it is given is accepted. It is
-// the render that dies.
+// Five of the 128 factory patches die inside Synth1 during `processReplacing`:
+// 095 Cosmos, 098 Behind the mask, 100 Sequence, 101 Sequence2 and 106 Rhythm.
+// Every one of them has the arpeggiator switched on, and the arpeggiator is
+// the cause rather than a correlation -- switching it off in 100 makes that
+// patch render, and switching it on in 001, which has never crashed, makes 001
+// crash. It dies about a sixteenth note into the render, which at 120 BPM is
+// exactly where the first arpeggiator step falls.
 //
-// This was initially misread as a cumulative instantiation limit, because two
-// separate full-bank runs stopped after exactly 94 patches. They stopped there
-// because 095 is the 95th patch, not because of any count.
+// Three host-side explanations were tried and none of them is it: the MIDI
+// event list outliving the dispatch (fixed anyway in main.odin, because the
+// contract says so), a frozen transport, and announcing kVstTransportChanged.
+// Bracketing `processReplacing` with prints puts the fault inside the call, in
+// a twenty-year-old binary this project cannot patch.
 //
-// A segfault inside a loaded DLL takes the process with it, so the defence is
-// not to catch it but to lose nothing when it happens: rows are written to the
-// CSV as each patch completes, and `--skip` and `--offset` let a run step over
-// a patch that is known to be fatal.
+// This was first misread as a cumulative instantiation limit, because two
+// full-bank runs stopped after exactly 94 patches. They stopped there because
+// 095 is the 95th patch, not because of any count. It was then misread as one
+// bad patch, because 095 is the only one an interrupted run ever reached.
+//
+// So the defence is `--isolate`, which renders each patch in a child process
+// and costs one row instead of the rest of the run. `--skip` and `--offset`
+// still work and still require somebody to have found the bad patches first.
 g_instantiations: int
 
 // Push a parsed patch into the reference through its own state chunk, and
@@ -862,6 +876,13 @@ Compare_Options :: struct {
 	// Comma-separated patch file names to leave out, for patches the reference
 	// binary cannot render without crashing.
 	skip:     string,
+	// Render each patch in a child process, so a patch that crashes the
+	// reference costs one row instead of the rest of the run. See isolate.odin.
+	isolate:  bool,
+	// Set by isolate.odin on the children it spawns. Suppresses the preamble,
+	// the table header and the summary, so a child contributes exactly its own
+	// row and the parent owns everything around it.
+	child:    bool,
 	// Frames per process() call. 0 uses the size the plugin was told at load.
 	block:    int,
 	// Control mode: render the reference twice instead of comparing against our
@@ -873,6 +894,11 @@ Compare_Options :: struct {
 }
 
 cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
+	// A child announces nothing about loading the library: the parent already
+	// did, and one line per patch across a bank is pages of it.
+	if opt.child {
+		g_quiet_load = true
+	}
 	set_compare_timing(opt.block > 0 ? opt.block : COMPARE_BLOCK_DEFAULT)
 
 	// One load up front, purely to read the factory state chunk that every patch
@@ -951,29 +977,87 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 	if opt.wav_dir != "" {
 		_ = os.make_directory(opt.wav_dir)
 	}
-	if opt.csv != "" && !csv_begin(opt.csv, opt.offset > 0) {
+	// A child always appends: the parent wrote the header before it spawned
+	// anything, and a child that truncated would leave the file holding only
+	// whichever patch happened to finish last.
+	if opt.csv != "" && !csv_begin(opt.csv, opt.offset > 0 || opt.child) {
 		fmt.eprintfln("compare: cannot write %v", opt.csv)
 		os.exit(1)
 	}
 
-	fmt.printfln("comparing %v patch(es) against %v", len(paths), dll)
-	fmt.printfln("note %v, velocity %v, %.1f s held + %.1f s tail at %v Hz",
-		opt.note, COMPARE_VELOCITY_MIDI,
-		f64(g_hold_frames) / f64(SAMPLE_RATE),
-		f64(g_total_frames - g_hold_frames) / f64(SAMPLE_RATE),
-		SAMPLE_RATE)
-	fmt.printfln("reference reports %v samples of initial delay", initial_delay)
-	if opt.self {
-		fmt.println()
-		fmt.println("CONTROL RUN: both sides are the reference plugin. Everything printed")
-		fmt.println("below is the harness's own noise floor, not an engine defect.")
-	}
-	fmt.println()
+	// Each patch in its own process. The children print their own rows, so the
+	// output reads as one run; the parent only notices which of them died.
+	if opt.isolate {
+		exe, exe_ok := self_path()
+		if !exe_ok {
+			fmt.eprintln("compare: cannot find this executable to isolate with")
+			os.exit(1)
+		}
+		defer delete(exe)
 
-	if !opt.verbose {
-		fmt.printfln("%-16v %8v %8v %8v %8v  %-13v %-13v",
-			"patch", "spec dB", "env dB", "lvl dB", "null dB", "centroid Hz", "release ms")
-		fmt.println(strings.repeat("-", 88, context.temp_allocator))
+		fmt.printfln("comparing %v patch(es) against %v, one process each", len(paths), dll)
+		fmt.println()
+		if !opt.verbose {
+			fmt.printfln("%-16v %8v %8v %8v %8v  %-13v %-13v",
+				"patch", "spec dB", "env dB", "lvl dB", "null dB", "centroid Hz", "release ms")
+			fmt.println(strings.repeat("-", 88, context.temp_allocator))
+		}
+		crashed: [dynamic]string
+		defer delete(crashed)
+
+		for path in paths {
+			name := path
+			if idx := strings.last_index_any(path, "/\\"); idx >= 0 {
+				name = path[idx + 1:]
+			}
+			if skip_patch(opt.skip, name) {
+				fmt.printfln("%-16v skipped", name)
+				continue
+			}
+			code, spawned := run_isolated(exe, dll, path, opt)
+			if !spawned {
+				fmt.eprintfln("%-16v could not start a child process", name)
+				continue
+			}
+			if code != 0 {
+				fmt.printfln("%-16v %v", name, exit_reason(code))
+				append(&crashed, name)
+			}
+		}
+
+		if len(crashed) > 0 {
+			fmt.printfln("\n%v patch(es) killed the reference:", len(crashed))
+			for name in crashed {
+				fmt.printfln("  %v", name)
+			}
+			fmt.println("The run completed anyway; see the note above g_instantiations.")
+		}
+		return
+	}
+
+	// A child renders one patch and prints one row. Everything around the rows
+	// -- the preamble, the header, the summary at the end -- belongs to whoever
+	// spawned it, or the output would repeat once per patch.
+	if !opt.child {
+		fmt.printfln("comparing %v patch(es) against %v", len(paths), dll)
+		fmt.printfln("note %v, velocity %v, %.1f s held + %.1f s tail at %v Hz",
+			opt.note, COMPARE_VELOCITY_MIDI,
+			f64(g_hold_frames) / f64(SAMPLE_RATE),
+			f64(g_total_frames - g_hold_frames) / f64(SAMPLE_RATE),
+			SAMPLE_RATE)
+		fmt.printfln("reference reports %v samples of initial delay", initial_delay)
+		if opt.self {
+			fmt.println()
+			fmt.println("CONTROL RUN: both sides are the reference plugin. Everything printed")
+			fmt.println("below is the harness's own noise floor, not an engine defect.")
+		}
+		fmt.println()
+
+		if !opt.verbose {
+			fmt.printfln("%-16v %8v %8v %8v %8v  %-13v %-13v",
+				"patch", "spec dB", "env dB", "lvl dB", "null dB", "centroid Hz", "release ms")
+			fmt.println(strings.repeat("-", 88, context.temp_allocator))
+		}
 	}
 
 	rows: [dynamic]Row
@@ -1127,6 +1211,9 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 	if opt.wav_dir != "" {
 		fmt.printfln("wrote per-patch WAVs to %v", opt.wav_dir)
 	}
+	if opt.child {
+		return
+	}
 	if len(rows) < total_available - opt.offset {
 		fmt.printfln("note: %v of %v patches in range were skipped",
 			(total_available - opt.offset) - len(rows), total_available - opt.offset)
@@ -1155,7 +1242,7 @@ ordered_remove_range :: proc(a: ^[dynamic]string, from, count: int) {
 // Parse the compare-specific options out of the argument tail, returning the
 // target path and the options.
 parse_compare_args :: proc(args: []string) -> (target: string, opt: Compare_Options, ok: bool) {
-	opt.note = 60
+	opt.note = COMPARE_NOTE_DEFAULT
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -1182,6 +1269,12 @@ parse_compare_args :: proc(args: []string) -> (target: string, opt: Compare_Opti
 			i += 1
 		case "--self":
 			opt.self = true
+			i += 1
+		case "--child":
+			opt.child = true
+			i += 1
+		case "--isolate":
+			opt.isolate = true
 			i += 1
 		case "--no-floor":
 			opt.no_floor = true

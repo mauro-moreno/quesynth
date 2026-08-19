@@ -435,17 +435,35 @@ cmd_verify :: proc(dll, dir: string) {
 // ---------------------------------------------------------------- render
 
 
+// The event a `send_midi` call describes, and the list that points at it.
+//
+// Deliberately not locals. `effProcessEvents` hands the plugin a pointer into
+// this memory and the plugin is entitled to read it until the matching
+// `processReplacing` returns -- which is *after* the call that delivered it.
+// Built on the stack, as this was, the frame is gone before the plugin ever
+// renders a sample, and what happens next depends entirely on whether the
+// plugin copied the event out during the dispatch.
+//
+// Synth1 copies a plain note out during the dispatch, so nothing here has ever
+// depended on the lifetime and no measurement changes because of this. It is
+// fixed because the contract says so, not because a bug was traced to it: the
+// arpeggiator crash that prompted the search survives this fix, and lives
+// inside the reference binary rather than here. See compare.odin.
+//
+// One event at a time is enough: nothing here sends a chord.
+g_midi_event: VstMidiEvent
+g_midi_events: VstEvents
+
 send_midi :: proc(p: ^Plugin, status, d1, d2: u8, delta: i32) {
-	ev := VstMidiEvent {
+	g_midi_event = VstMidiEvent {
 		type         = 1,
 		byte_size    = size_of(VstMidiEvent),
 		delta_frames = delta,
 		midi_data    = {status, d1, d2, 0},
 	}
-	evs: VstEvents
-	evs.num_events = 1
-	evs.events[0] = &ev
-	p.eff.dispatcher(p.eff, i32(Op.ProcessEvents), 0, 0, &evs, 0)
+	g_midi_events.num_events = 1
+	g_midi_events.events[0] = &g_midi_event
+	p.eff.dispatcher(p.eff, i32(Op.ProcessEvents), 0, 0, &g_midi_events, 0)
 }
 
 render :: proc(p: ^Plugin, note: u8, hold_sec, tail_sec: f32) -> []f32 {
