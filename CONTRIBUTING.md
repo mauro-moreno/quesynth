@@ -49,10 +49,10 @@ layout — or it may only be checking that your code agrees with itself.
 odin test tests/dsp
 odin test tests/clap
 odin test tests/patch
-odin build hosts/standalone -out:build/quesynth.exe
-odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
-odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
-odin build hosts/wasm -target:js_wasm32 -out:hosts/wasm/synth.wasm
+odin build hosts/standalone -o:speed -out:build/quesynth.exe
+odin build hosts/clap -build-mode:dll -o:speed -out:build/quesynth.clap
+odin build hosts/vst3 -build-mode:dll -o:speed -out:build/quesynth.vst3
+odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
 ```
 

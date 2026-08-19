@@ -593,6 +593,17 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 
 	eq_params, eq_coefficients, fx_params, delay_params, chorus_params := effect_params(e)
 
+	// Smoothed parameters are applied to a working copy so the bound patch
+	// values stay the target rather than being overwritten by their own
+	// smoothed output.
+	//
+	// The copy is made once per block rather than once per sample. It is 416
+	// bytes, and copying it 48000 times a second was costing more than a whole
+	// voice: `e.params` cannot change during a block -- only the host can
+	// change it, and it does so between blocks -- so the only fields that need
+	// rewriting per sample are the three smoothed ones below.
+	params := e.params
+
 	for i in 0 ..< n {
 		// The free-running LFOs advance once per sample for the whole engine,
 		// so every non-key-synced voice reads the same value.
@@ -601,10 +612,6 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
 		}
 
-		// Smoothed parameters are applied to a working copy so the bound patch
-		// values stay the target rather than being overwritten by their own
-		// smoothed output.
-		params := e.params
 		params.filter_cutoff_hz = smoother_process(&e.cutoff_smooth, e.params.filter_cutoff_hz)
 		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
 		params.pan = smoother_process(&e.pan_smooth, e.params.pan)

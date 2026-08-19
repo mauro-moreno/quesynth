@@ -5,7 +5,7 @@ it. A host in exactly the sense `hosts/vst3` is one: it owns an engine and speak
 the protocol in `ui/bridge.js`.
 
 ```
-odin build hosts/wasm -target:js_wasm32 -out:hosts/wasm/synth.wasm
+odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/serve.js                                  # then open :8177
 ```
 

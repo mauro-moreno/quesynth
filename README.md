@@ -92,8 +92,8 @@ the engine itself has no operating system in it.
 
 ```
 odin test tests/dsp                                                  # the DSP suite
-odin build hosts/standalone -out:build/quesynth.exe                  # desktop
-odin build hosts/clap -build-mode:dll -out:build/quesynth.clap       # CLAP
+odin build hosts/standalone -o:speed -out:build/quesynth.exe         # desktop
+odin build hosts/clap -build-mode:dll -o:speed -out:build/quesynth.clap
 pwsh tools/install-vst3.ps1 -Destination "C:\Program Files\Common Files\VST3"
 ```
 
@@ -106,7 +106,7 @@ and the host draws its own generic parameter panel.
 For the browser build:
 
 ```
-odin build hosts/wasm -target:js_wasm32 -out:hosts/wasm/synth.wasm
+odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/serve.js                                    # then open :8177
 ```
 

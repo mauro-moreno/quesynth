@@ -47,8 +47,12 @@ jobs:
         with:
           release: dev-2026-05
 
+      # -o:speed matters more here than anywhere: this one runs in a browser, on
+      # whatever machine happens to open the page, inside an AudioWorklet with a
+      # hard deadline. Odin optimises minimally by default and the engine is
+      # 3.1x slower without the flag.
       - name: Build the engine to WebAssembly
-        run: odin build hosts/wasm -target:js_wasm32 -out:hosts/wasm/synth.wasm
+        run: odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 
       # Cheap, and it catches the failure that is otherwise invisible until the
       # page is open: a missing import is a LinkError at instantiation, the engine

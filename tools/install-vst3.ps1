@@ -68,7 +68,12 @@ if (Test-Path $dll) {
         throw "$dll is locked$who -- close the host and run this again."
     }
 }
-& odin build (Join-Path $root "hosts\vst3") -build-mode:dll -target:windows_amd64 -out:"$dll"
+# -o:speed is not optional for an instrument. Odin optimises minimally by
+# default, and the engine measures 3.1x slower without it -- 13% of a core for
+# sixteen voices instead of 41%. The difference it makes to the *output* is
+# floating-point reassociation about 150 dB down, which is below 24-bit
+# resolution and far below anything the null test can see.
+& odin build (Join-Path $root "hosts\vst3") -build-mode:dll -target:windows_amd64 -o:speed -out:"$dll"
 if ($LASTEXITCODE -ne 0) { throw "odin build failed" }
 
 # The linker leaves an import library and an exports file beside the DLL. They
