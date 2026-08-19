@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["hosts/wasm/serve.js", "8177"],
       "port": 8177
+    },
+    {
+      "name": "jesus-maria",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "serve", "-l", "5178", "C:/Users/lamag/Code/jesus-maria"],
+      "port": 5178
     }
   ]
 }

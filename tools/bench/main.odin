@@ -212,17 +212,23 @@ main :: proc() {
 		base := default_patch()
 		print_result(measure("none", base, 1, left, right))
 
-		// Parameter numbers from src/patch: 54 delay on, 60 chorus on,
-		// 74 equaliser on, 78 effect type.
+		// The enables, taken from ui/layout.js rather than guessed. An earlier
+		// version of this benchmark used 54, 60 and 74 -- which are the chorus
+		// *rate*, the equaliser *tone* and portamento -- and duly reported that
+		// switching the effects on cost nothing, because it had not switched
+		// anything on.
 		Section :: struct {
 			name:  string,
 			index: int,
 			value: int,
 		}
 		for spec in ([?]Section{
-			{"delay", 54, 1},
-			{"chorus", 60, 1},
-			{"equaliser", 74, 1},
+			{"delay", 65, 1},
+			{"chorus", 66, 1},
+			{"effect unit", 77, 1},
+			{"LFO 1", 57, 1},
+			{"LFO 2", 58, 1},
+			{"mod envelope", 10, 1},
 		}) {
 			overrides := make(map[int]int)
 			defer delete(overrides)

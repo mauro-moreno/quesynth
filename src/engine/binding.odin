@@ -325,11 +325,24 @@ delay_spread_ms :: proc(display: string) -> (left, right: f32) {
 // with `PARAMETERS[i].default` before reading the file, so a `ver=105` patch
 // that omits later parameters needs no special handling here.
 //
-// Still out of scope: the extra effect unit (77..81), the equaliser (60..63) and
-// the arpeggiator (31..34, 59) are read by the parser and deliberately ignored.
+// Still out of scope: the **arpeggiator** (31..34, 59) is read by the parser,
+// shown in the interface, and never bound to anything here. Nothing in
+// `Engine_Params` corresponds to it, so a patch with it switched on holds the
+// chord the reference would be stepping through. Eight of the 128 factory
+// patches use it -- Sequence, Sequence2, Sequence 3, Sequence 4, Rhythm,
+// Machine Gun, Cosmos and Behind the mask -- and none of them can null against
+// the reference until it exists.
+//
+// It also needs something no other section here needs: musical time. A step
+// length is a division of the beat, so the arpeggiator has to read tempo and
+// transport from the host, and every one of hosts/* would have to supply it.
+//
 // The delay (35..37, 65, 82, 83, 98) and the chorus (52..56, 64, 66) used to be
 // on that list; the null test made the case for them, at 19.8 dB of envelope
-// error on patches that use them against 7.9 dB on patches that do not.
+// error on patches that use them against 7.9 dB on patches that do not. The
+// equaliser (60..63) and the extra effect unit (77..81) have since been
+// implemented too, and this comment claimed otherwise for longer than it was
+// true.
 bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	e: Engine_Params
 
