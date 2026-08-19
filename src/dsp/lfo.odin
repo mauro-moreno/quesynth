@@ -4,7 +4,7 @@ import "core:math"
 
 // Low frequency oscillators.
 //
-// The waveform set is the reference's, verbatim: docs/synth1-readme-eng.txt
+// The waveform set is the reference's, verbatim: Synth1's English manual
 // lists "saw, triangle, sine, square, random(sample & hold) or random
 // (smoothed)" for both LFOs, and the measured state table for parameters 42 and
 // 47 has exactly six states.

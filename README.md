@@ -133,9 +133,9 @@ has the rules.
 ## What is not included
 
 Synth1's own files are not in this repository and are not this project's to
-redistribute: the plugin binary, its factory patch banks, and the third-party
-banks used for testing are all ignored. `tools/s1probe` and `tools/uibank` read
-them from your own Synth1 installation.
+redistribute: the plugin binary, its factory patch banks, its manual, and the
+third-party banks used for testing are all ignored. `tools/s1probe` and
+`tools/uibank` read them from your own Synth1 installation.
 
 ## Contributing
 
@@ -150,13 +150,11 @@ a test here.
 [MIT](LICENSE), covering the work in this repository: the engine, the hosts, the
 interface, the tooling, and the measurements in `docs/`.
 
-It does not and cannot cover anything of Synth1's. One file here is not mine to
-relicense: `docs/synth1-readme-eng.txt` is Synth1's own manual, kept because it
-is the primary source for the reference's documented behaviour. It carries
-"Copyright © 2010 by Daichi. All rights reserved." and describes the software as
-freeware and freely distributable, while asking that anyone who copies or
-features it get in touch — a request this project has not yet acted on. Synth1's
-plugin binary and its patch banks are not in this repository at all.
+Nothing of Synth1's is included, so nothing here is relicensed that is not mine
+to relicense: not the plugin binary, not the factory patch banks, not the
+manual. What this repository records about the reference is measurement and
+notes — facts about how it behaves, gathered by `tools/s1probe` — rather than
+any part of the thing itself.
 
 ## Credits
 

@@ -5,7 +5,7 @@ import "core:math"
 // Oscillators.
 //
 // The waveform set is the union of what the two Synth1 oscillators offer.
-// docs/synth1-readme-eng.txt describes generator 1 as "sine, triangle, saw or
+// Synth1's English manual describes generator 1 as "sine, triangle, saw or
 // pulse" and generator 2 as "triangle, saw, pulse or noise", so neither
 // oscillator reaches all five; the binding layer is what restricts each one to
 // its own four. Keeping one enum here means the sub oscillator, which has its

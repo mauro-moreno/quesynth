@@ -40,6 +40,11 @@ patches/
 zipbank.zip
 zipbank/
 
+# Synth1's own manual. Read as the primary source for the reference's documented
+# behaviour -- docs/reference-notes.md says where to get it -- but it carries its
+# author's copyright and is no more ours to ship than the binary it documents.
+docs/synth1-readme-eng.txt
+
 # The WebAssembly engine is a build artifact; CI builds it for the page.
 hosts/wasm/synth.wasm
 

@@ -2,7 +2,7 @@
 
 Primary-source notes from Daichi Kanenaga's site, <https://daichilab.sakura.ne.jp/>,
 recorded here because several of them settle questions this project had been
-guessing at, and because a couple contradict the English readme in `docs/`.
+guessing at, and because a couple contradict the English manual.
 
 Sources:
 
@@ -10,8 +10,9 @@ Sources:
   write-up of Synth1's internal structure, with code.
 - `softsynth/synmanu/readme.html` — the Japanese manual for v1.13 (2014-07-10),
   the same version as the binary under `ext/synth1/`.
-- `softsynth/synmanu/readmeeng.html` — the English manual, already vendored as
-  `docs/synth1-readme-eng.txt`.
+- `softsynth/synmanu/readmeeng.html` — the English manual. Not vendored here:
+  it is the author's, not this project's. Read it at the address above, or from
+  the copy that ships with Synth1 itself.
 - `vstisample/` — a VSTi synth template with source, `MySynthSrc.zip`.
 
 Where the Japanese and English manuals disagree, both are noted rather than one
