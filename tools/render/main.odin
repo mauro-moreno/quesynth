@@ -3,6 +3,7 @@ package render
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 
 import "../../src/engine"
@@ -31,9 +32,26 @@ VELOCITY :: f32(1.0)
 
 main :: proc() {
 	args := os.args
-	if len(args) != 3 {
-		fmt.eprintfln("usage: %s <patch.sy1> <output.wav>", len(args) > 0 ? args[0] : "render")
+	if len(args) != 3 && len(args) != 4 {
+		fmt.eprintfln(
+			"usage: %s <patch.sy1> <output.wav> [midi note]",
+			len(args) > 0 ? args[0] : "render",
+		)
 		os.exit(2)
+	}
+
+	// Which note to play. Middle C unless asked otherwise, because a patch that
+	// behaves at middle C can still misbehave two octaves up: the filter's
+	// keyboard tracking moves the cutoff with the note, and what a patch does at
+	// the top of the keyboard is not visible from one note in the middle.
+	note := MIDDLE_C
+	if len(args) == 4 {
+		parsed_note, ok := strconv.parse_int(args[3])
+		if !ok || parsed_note < 0 || parsed_note > 127 {
+			fmt.eprintfln("error: %v is not a MIDI note", args[3])
+			os.exit(2)
+		}
+		note = parsed_note
 	}
 
 	patch_path := args[1]
@@ -73,10 +91,10 @@ main :: proc() {
 	right := make([]f32, total_frames)
 	defer delete(right)
 
-	engine.engine_note_on(&eng, MIDDLE_C, VELOCITY)
+	engine.engine_note_on(&eng, note, VELOCITY)
 	engine.engine_process(&eng, left[:hold_frames], right[:hold_frames])
 
-	engine.engine_note_off(&eng, MIDDLE_C)
+	engine.engine_note_off(&eng, note)
 	engine.engine_process(&eng, left[hold_frames:], right[hold_frames:])
 
 	peak: f32 = 0
