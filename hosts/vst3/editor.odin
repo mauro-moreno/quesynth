@@ -381,6 +381,45 @@ editor_on_message :: proc(user: rawptr, text: string) {
 			handler.vtbl.perform_edit(p.handler, u32(index), normalized_of(int(index), i32(stored)))
 		}
 
+	case "state":
+		// A whole patch at once: stepping the bank, or loading a file.
+		//
+		// This case was missing, and the symptom was oddly specific -- the panel
+		// showed the new patch and the sound did not change. The panel repaints
+		// its own controls locally and only then tells the host, so everything
+		// visible worked while nothing audible did. The browser build was fine
+		// throughout, because its host.js has always handled `state`, which is
+		// exactly the kind of difference that hides in a protocol one host
+		// implements more of than another.
+		list, has_list := object["values"]
+		if !has_list {
+			return
+		}
+		array, is_array := list.(json.Array)
+		if !is_array {
+			return
+		}
+		count := min(len(array), PARAM_COUNT)
+		for i in 0 ..< count {
+			stored, ok := json_value_int(array[i])
+			if !ok {
+				continue
+			}
+			p.values[i] = i32(stored)
+		}
+		// One flag for the whole patch. Rebinding ninety-nine times on the way
+		// to one sound is what `params_dirty` exists to avoid.
+		p.params_dirty = true
+
+		// Every parameter reported, or the host keeps the old automation values
+		// and writes them back over this the moment the transport moves.
+		if p.handler != nil {
+			handler := (^vst3.IComponentHandler)(p.handler)
+			for i in 0 ..< count {
+				handler.vtbl.perform_edit(p.handler, u32(i), normalized_of(i, p.values[i]))
+			}
+		}
+
 	case "edit":
 		index, has_index := json_int(object, "index")
 		begin, has_begin := json_bool(object, "begin")
@@ -494,6 +533,21 @@ json_string :: proc(object: json.Object, key: string) -> (string, bool) {
 	}
 	text, is_string := value.(json.String)
 	return string(text), is_string
+}
+
+// A number out of a bare JSON value.
+//
+// The helpers below are keyed by name, which is what every message here needs
+// except one: the `state` message carries an array, and its elements have no
+// keys to look up.
+json_value_int :: proc(value: json.Value) -> (int, bool) {
+	#partial switch v in value {
+	case json.Integer:
+		return int(v), true
+	case json.Float:
+		return int(v), true
+	}
+	return 0, false
 }
 
 json_float :: proc(object: json.Object, key: string) -> (f64, bool) {

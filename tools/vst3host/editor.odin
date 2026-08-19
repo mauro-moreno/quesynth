@@ -167,7 +167,35 @@ check_editor :: proc(controller: ^^vst3.IEditController_Vtbl, cobj: rawptr, seco
 	}
 	fmt.println("editor   : attached to a window")
 
+	// What the parameters are before the panel has had a chance to say
+	// anything. The panel loads the first patch of its bank as soon as it is
+	// running, so if the editor can reach the engine at all, these move.
+	//
+	// Worth checking rather than assuming: the plugin handled every message the
+	// panel sends *except* the one that carries a whole patch, so stepping the
+	// bank or loading a file repainted the controls and changed no sound. The
+	// panel does its own repaint locally, so everything visible worked while
+	// nothing audible did, and only a reading taken on this side shows it.
+	before: [4]f64
+	watched := [4]u32{0, 25, 19, 14} // oscillator 1 shape, amp attack, cutoff, filter type
+	for id, i in watched {
+		before[i] = controller^.get_param_normalized(cobj, id)
+	}
+
 	pump(seconds)
+
+	moved := 0
+	for id, i in watched {
+		if controller^.get_param_normalized(cobj, id) != before[i] {
+			moved += 1
+		}
+	}
+	if moved > 0 {
+		fmt.printfln("editor   : %v of %v watched parameters moved -- the panel reached the engine", moved, len(watched))
+	} else {
+		fmt.println("editor   : no parameter moved; the panel is not reaching the engine")
+		fmt.println("           (expected if this build ships no bank for it to load)")
+	}
 
 	child_count = 0
 	first_child_parent = hwnd
