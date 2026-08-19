@@ -455,14 +455,35 @@ g_midi_event: VstMidiEvent
 g_midi_events: VstEvents
 
 send_midi :: proc(p: ^Plugin, status, d1, d2: u8, delta: i32) {
-	g_midi_event = VstMidiEvent {
-		type         = 1,
-		byte_size    = size_of(VstMidiEvent),
-		delta_frames = delta,
-		midi_data    = {status, d1, d2, 0},
+	one := [1]u8{d1}
+	send_midi_notes(p, status, one[:], d2, delta)
+}
+
+// Several notes in one event list, which is the only way to hold a chord.
+//
+// Dispatching `effProcessEvents` once per note looked equivalent and is not:
+// Synth1 keeps the most recent list rather than accumulating them, so three
+// separate note-ons before a single `processReplacing` leave one note held and
+// the other two silently dropped. The arpeggiator probe found this by
+// arpeggiating a three-note chord and getting the same pitch on every step --
+// the last note sent.
+//
+// The event array is sized by VstEvents, which this host declares with room for
+// sixteen; anything beyond that is dropped here rather than overrunning it.
+g_midi_chord: [16]VstMidiEvent
+
+send_midi_notes :: proc(p: ^Plugin, status: u8, notes: []u8, velocity: u8, delta: i32) {
+	count := min(len(notes), len(g_midi_chord))
+	for i in 0 ..< count {
+		g_midi_chord[i] = VstMidiEvent {
+			type         = 1,
+			byte_size    = size_of(VstMidiEvent),
+			delta_frames = delta,
+			midi_data    = {status, notes[i], velocity, 0},
+		}
+		g_midi_events.events[i] = &g_midi_chord[i]
 	}
-	g_midi_events.num_events = 1
-	g_midi_events.events[0] = &g_midi_event
+	g_midi_events.num_events = i32(count)
 	p.eff.dispatcher(p.eff, i32(Op.ProcessEvents), 0, 0, &g_midi_events, 0)
 }
 
@@ -609,7 +630,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" {
+	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" {
 		if len(rest) >= 2 && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -1423,6 +1444,54 @@ main :: proc() {
 			}
 		}
 		cmd_lfodepth(dll, dparam, dspec, u8(clamp(dnote, 0, 127)), drate, ddump)
+	case "arpprobe":
+		{
+			base := ARP_DEFAULT_BASE
+			atype, arange, abeat, agate := 0, 0, 11, 64
+			seconds := 4.0
+			sweep := false
+			notes: [dynamic]u8
+			append(&notes, 60, 64, 67)
+			defer delete(notes)
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--base":
+					if i + 1 >= len(rest) {usage()}
+					base = rest[i + 1]; i += 2
+				case "--type":
+					if !parse_probe_int(rest, i + 1, &atype) {usage()}
+					i += 2
+				case "--range":
+					if !parse_probe_int(rest, i + 1, &arange) {usage()}
+					i += 2
+				case "--gate":
+					if !parse_probe_int(rest, i + 1, &agate) {usage()}
+					i += 2
+				case "--beat":
+					if i + 1 >= len(rest) {usage()}
+					if rest[i + 1] == "all" {
+						sweep = true
+					} else if !parse_probe_int(rest, i + 1, &abeat) {usage()}
+					i += 2
+				case "--seconds":
+					if i + 1 >= len(rest) {usage()}
+					seconds, _ = strconv.parse_f64(rest[i + 1]); i += 2
+				case "--notes":
+					if i + 1 >= len(rest) {usage()}
+					clear(&notes)
+					for field in strings.split(rest[i + 1], ",", context.temp_allocator) {
+						if n, n_ok := strconv.parse_int(strings.trim_space(field)); n_ok {
+							append(&notes, u8(clamp(n, 0, 127)))
+						}
+					}
+					i += 2
+				case:
+					usage()
+				}
+			}
+			cmd_arpprobe(dll, base, atype, arange, abeat, agate, notes[:], seconds, sweep)
+		}
 	case "lforate":
 		rparam := 43
 		rspec := "0,16,32,48,64,80,96,112,127"

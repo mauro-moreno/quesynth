@@ -495,6 +495,19 @@ Engine_Params :: struct {
 	// Parameter 74.
 	portamento_auto:    bool,
 	play_mode:          Play_Mode,
+
+	// -- arpeggiator ---------------------------------------------------
+	//
+	// Measured with `s1probe arpprobe`; see src/engine/arpeggiator.odin for
+	// what each of these came out as and how.
+	arp_on:             bool,
+	arp_pattern:        Arp_Pattern,
+	// 1..4. Whole copies of the chord stacked above it.
+	arp_octaves:        int,
+	// One step, in beats. The engine turns it into frames with the tempo.
+	arp_step_beats:     f32,
+	// How much of a step the note sounds for, on 0..1.
+	arp_gate:           f32,
 	// Parameter 40, in semitones.
 	pitch_bend_range:   f32,
 	// The two MIDI controller assignments. See `Midi_Control`.

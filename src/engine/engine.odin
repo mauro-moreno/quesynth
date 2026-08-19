@@ -85,6 +85,10 @@ Engine :: struct {
 	// voice gate state: mono and legato mode may release a voice while its key is
 	// still down, and repeated note-on must not double-count that key.
 	held_notes:  int,
+
+	// The arpeggiator step clock and what it currently has sounding. Idle,
+	// and costing one branch a sample, when parameter 59 is off.
+	arp:         Arpeggiator,
 	held_keys:   [128]bool,
 }
 
@@ -101,6 +105,7 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	e.last_note = 60.0
 	e.held_notes = 0
 	e.held_keys = {}
+	arp_reset(&e.arp)
 
 	count := clamp_int(params.polyphony, 1, MAX_POLYPHONY)
 	e.voices = make([]Voice, count)
@@ -424,6 +429,16 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		return
 	}
 
+	// With the arpeggiator running, a key press is a key press and not a note:
+	// it joins the set the pattern is built from, and the pattern decides when
+	// anything sounds. Starting a voice here as well would leave the key
+	// droning under its own arpeggio.
+	if e.params.arp_on {
+		engine_mark_key_down(e, note)
+		e.arp.velocity = velocity
+		return
+	}
+
 	// Mono and legato collapse the pool to a single sounding voice. Legato
 	// additionally keeps the envelopes running when a note arrives while another
 	// key is still held, which is the difference between the two modes.
@@ -484,8 +499,54 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 	engine_mark_key_down(e, note)
 }
 
+// Sound a note without touching the held-key set.
+//
+// The arpeggiator needs exactly this and nothing else: the keys it plays from
+// are already down, and marking its own steps as held would feed the sequence
+// back into itself -- every step would add a key, the chord would grow without
+// bound, and the pattern would never repeat.
+//
+// It is `engine_note_on` with the key bookkeeping and the mono/legato collapse
+// removed. Those belong to a player pressing a key; an arpeggiator step is a
+// note, and the pool allocates for it the same way it would for any other.
+engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
+	if len(e.voices) == 0 {
+		return
+	}
+	v := engine_allocate_voice(e, note)
+	if v == nil {
+		return
+	}
+
+	e.age += 1
+	v.age = e.age
+	seed := u32(e.age * 2654435761) ~ u32(note * 40503) ~ 0x9E3779B9
+
+	voice_note_on(
+		v,
+		&e.params,
+		note,
+		velocity,
+		e.sample_rate,
+		seed,
+		e.last_note,
+		false,
+		&e.global_lfo,
+	)
+	e.last_note = f32(note)
+}
+
 engine_note_off :: proc(e: ^Engine, note: int) {
 	engine_mark_key_up(e, note)
+
+	// The arpeggiator owns what is sounding, so releasing a key only removes it
+	// from the set the pattern is built from. Silencing the matching voice here
+	// too would cut a step short whenever it happened to be playing the octave
+	// copy of a key that was just let go.
+	if e.params.arp_on {
+		return
+	}
+
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
 		if v.active && v.gate && v.note == note {
@@ -502,6 +563,7 @@ engine_all_notes_off :: proc(e: ^Engine) {
 	}
 	e.held_notes = 0
 	e.held_keys = {}
+	arp_reset(&e.arp)
 }
 
 engine_active_voice_count :: proc(e: ^Engine) -> int {
@@ -615,6 +677,13 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		params.filter_cutoff_hz = smoother_process(&e.cutoff_smooth, e.params.filter_cutoff_hz)
 		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
 		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
+
+		// Per sample, and only when it is switched on. A step boundary rounded
+		// to the block would land a 1/24-beat step up to a whole step late at
+		// 512 frames, which is heard as swing the patch does not have.
+		if params.arp_on {
+			arp_process(e, &params)
+		}
 
 		sum_l: f32 = 0
 		sum_r: f32 = 0

@@ -381,6 +381,17 @@ processor_process :: proc "c" (this: rawptr, data: ^vst3.Process_Data) -> vst3.R
 	// Parameter changes first, so a value and a note in the same block are
 	// applied in that order -- which is what a host means by sending both.
 	apply_parameter_changes(p, data.input_parameter_changes)
+	// The transport, before anything reads it. The arpeggiator divides the beat,
+	// so a host that plays at 90 BPM has to be able to say so; without this the
+	// engine would step at its own 120 default and drift against the project on
+	// every patch that arpeggiates.
+	if data.process_context != nil {
+		context_ := (^vst3.Process_Context)(data.process_context)
+		if context_.state & vst3.PROCESS_CONTEXT_TEMPO_VALID != 0 && context_.tempo > 0 {
+			engine.engine_set_tempo(&p.eng, f32(context_.tempo))
+		}
+	}
+
 	// Notes played on the editor keyboard, which arrived on the interface
 	// thread and have been waiting for this one. See ui_events.odin.
 	drain_ui_events(p)

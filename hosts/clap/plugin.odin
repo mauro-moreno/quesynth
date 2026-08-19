@@ -379,6 +379,16 @@ plugin_process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> cla
 	sync_staged(s)
 	notify_params(s, process.out_events)
 
+	// The transport, before anything reads it. The arpeggiator divides the beat,
+	// so a project at 90 BPM has to be able to say so or the engine steps at its
+	// own default and drifts against everything else.
+	if process.transport != nil {
+		t := process.transport
+		if t.flags & clap.TRANSPORT_HAS_TEMPO != 0 && t.tempo > 0 {
+			engine.engine_set_tempo(&s.eng, f32(t.tempo))
+		}
+	}
+
 	frames := int(process.frames_count)
 
 	// This plugin advertises exactly one stereo 32-bit output port. A host that

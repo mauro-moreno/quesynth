@@ -3791,3 +3791,105 @@ as measurements, though the bank numbers quoted in them predate this fix. The
 open question about brastring's filter skirt growing over a held note should be
 re-measured before any more work goes into it: parameter 21 was reading with
 the wrong sign on that patch the entire time.
+
+## The arpeggiator, measured and implemented
+
+It was the last section that was parsed, shown in the interface and bound to
+nothing. A patch with it switched on held the chord the reference was stepping
+through, and eight of the 128 factory patches switch it on.
+
+**Method.** `s1probe arpprobe` holds a chord, renders the reference, and finds
+the attacks in the amplitude envelope. Three things come out of the same
+render: the step period from the spacing of the onsets, the pattern from the
+pitch measured inside each step, and the gate from how much of each step has
+sound in it.
+
+Two things had to be got right before any of it read correctly.
+
+The first was the onset detector. Looking for a frame twice as loud as the one
+before it is the obvious test and is useless: a sustaining tone ripples at its
+own period, every ripple clears it, and the probe reported the same 0.046-beat
+period for all nineteen divisions -- which was its own refractory limit measured
+back to itself. A gated step is a loud stretch followed by a quiet gap, so what
+marks it is the envelope crossing *up* through a high threshold having first
+fallen below a low one. Two thresholds, so ripple around one level cannot
+retrigger it.
+
+The second was the host. `effProcessEvents` dispatched once per note looked
+equivalent to one dispatch carrying three, and is not: Synth1 keeps the most
+recent list rather than accumulating them, so a three-note chord left one note
+held and dropped the other two. The pattern was invisible until this was fixed
+because every step played the same pitch -- the last note sent.
+
+**Step period.** Parameter 33's nineteen displays are a notation that turns out
+to be plain arithmetic. `(N)` is a 1/N note and so 4/N beats, `(a)+(b)` is the
+sum, and `(N) /3` is that value divided by three:
+
+| display | measured beats | arithmetic |
+|---|---|---|
+| `(1)` | 4.0000 | 4 |
+| `(2)+(4)+(8)` | 3.5000 | 2 + 1 + 0.5 |
+| `(2)` | 2.0000 | 2 |
+| `(1) /3` | 1.3320 | 4/3 |
+| `(4)` | 1.0000 | 1 |
+| `(8)+(16)` | 0.7480 | 0.75 |
+| `(8)` | 0.5000 | 0.5 |
+| `(16)` | 0.2480 | 0.25 |
+| `(32)` | 0.1240 | 0.125 |
+| `(32) /3` | 0.0400 | 1/24 |
+
+All nineteen were measured and all nineteen fit, within the 2 ms frame
+resolution. The `/3` reading is worth stating because it is **not** the usual
+triplet convention: a musician writing "quarter triplet" means two thirds of a
+quarter, while the reference means one third of it. `(1) /3` came out at 1.332
+beats where two thirds of a whole note would have been 2.667.
+
+The fastest six needed a percussive amplitude envelope on the base patch before
+the steps could be told apart at all, because at 1/24 of a beat the reference's
+own release smears one step into the next.
+
+**Pattern.** Parameter 31 is display-keyed and stores 1..4. Holding 60, 64, 67:
+
+| stored | measured sequence |
+|---|---|
+| 1 up and down | 60 64 67 64, repeating |
+| 2 up | 60 64 67, repeating |
+| 3 down | 67 64 60, repeating |
+| 4 random | 67 64 64 60 67 67 60 67 ... |
+
+Up and down is 2n-2 steps, not 2n: neither the top nor the bottom repeats on
+the turn.
+
+**Octave range.** Parameter 32 stores 0..3 for one to four octaves, and each
+extra octave is a whole copy of the chord transposed up twelve. Range 1 measured
+60 64 67 72 76 79; range 3 ran to 103. The position runs through the chord
+first and the octave second.
+
+**Gate.** Parameter 34 is linear in the stored value, with no curve on it: the
+fraction of the step that sounds is the stored value over 127. Measured 0.13 at
+16, 0.51 at 64, 0.76 at 96 and 1.00 at 127. A stored 0 is a note of no length
+and therefore silence.
+
+**Result.** Against the bank, with 116 of 119 measurable patches untouched
+because their arpeggiator is off:
+
+| patch | before | after |
+|---|---|---|
+| 110 Sequence 3 | 21.36 dB | **7.81 dB** |
+| 111 Sequence 4 | 6.36 dB | 6.06 dB |
+| 126 Machine Gun | 8.50 dB | 8.64 dB |
+
+Bank mean 7.57 dB to 7.45 dB. 110 was the third-worst patch in the bank and is
+now near its mean.
+
+126 is the one that got worse, and only marginally on the spectrum -- but its
+envelope error went from 8.58 dB to 17.83 dB, which is a real regression on that
+metric and is not explained yet. It is the fastest of the three, at `(8) /3` and
+a gate of 16, so the suspicion is the voice allocated per step against a release
+that outlasts the step. Recorded rather than tidied away.
+
+**Still not measured.** Whether the reference's arpeggiator re-triggers one
+voice or allocates a new one per step; what it does when a key is added or
+removed mid-pattern; and whether the step clock is free-running or locked to the
+host's bar line. This engine allocates per step, rebuilds the sequence from the
+held keys on every step, and free-runs from the first key press.

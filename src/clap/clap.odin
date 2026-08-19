@@ -121,10 +121,11 @@ TRANSPORT_IS_WITHIN_PRE_ROLL :: u32(1 << 7)
 
 // clap_event_transport_t.
 //
-// Bound because `Process` carries a pointer to it and a pointer field cannot be
-// typed without the type. This plugin does not consume transport information:
-// it has no host-tempo-dependent behaviour it is required to expose, and the
-// engine's own tempo defaults to 120 BPM.
+// Read for its tempo. The arpeggiator divides the beat, and the delay and both
+// LFOs can be tempo synced, so a host playing at 90 BPM has to be able to say
+// so; without it the engine steps at its own 120 default and drifts against the
+// project. `flags` says whether the tempo field means anything, and a host is
+// entitled to leave it as garbage when it does not.
 Event_Transport :: struct {
 	header:             Event_Header,
 	flags:              u32,

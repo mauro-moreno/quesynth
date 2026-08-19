@@ -580,3 +580,53 @@ IComponentHandler_Vtbl :: struct {
 	end_edit:          proc "c" (this: rawptr, id: u32) -> Result,
 	restart_component: proc "c" (this: rawptr, flags: i32) -> Result,
 }
+
+// -- ProcessContext ----------------------------------------------------------
+//
+// Where the host says the transport is. The arpeggiator is the one part of this
+// instrument that needs it: a step is a division of the beat, so without a
+// tempo it would run at whatever default the engine was built with while the
+// project played at something else.
+//
+// `state` is a bitfield and the tempo is only meaningful when kTempoValid is
+// set in it. A host is entitled to leave the field as garbage otherwise, so it
+// is checked rather than assumed.
+
+PROCESS_CONTEXT_PLAYING :: u32(1 << 1)
+PROCESS_CONTEXT_TEMPO_VALID :: u32(1 << 10)
+
+Chord :: struct {
+	key_note:   u8,
+	root_note:  u8,
+	chord_mask: i16,
+}
+
+Frame_Rate :: struct {
+	frames_per_second: u32,
+	flags:             u32,
+}
+
+Process_Context :: struct {
+	state:                   u32,
+	sample_rate:             f64,
+	project_time_samples:    i64,
+	system_time:             i64,
+	continuous_time_samples: i64,
+	project_time_music:      f64,
+	bar_position_music:      f64,
+	cycle_start_music:       f64,
+	cycle_end_music:         f64,
+	tempo:                   f64,
+	time_sig_numerator:      i32,
+	time_sig_denominator:    i32,
+	chord:                   Chord,
+	smpte_offset_subframes:  i32,
+	frame_rate:              Frame_Rate,
+	samples_to_next_clock:   i32,
+}
+
+// The layout is checked rather than trusted, for the reason the Event asserts
+// below it exist: a field in the wrong place here reads the bar position as a
+// tempo and the arpeggiator runs at a nonsense rate.
+#assert(offset_of(Process_Context, tempo) == 72)
+#assert(offset_of(Process_Context, chord) == 88)
