@@ -364,3 +364,149 @@ test_fxb_layouts :: proc(t: ^testing.T) {
 	_, short_program_err := patch.parse_fxb(program[:100])
 	testing.expect_value(t, short_program_err, patch.Fxb_Error.Truncated)
 }
+
+// -- the JSON patch and bank format ------------------------------------------
+
+// A patch survives being written and read back with every parameter intact.
+//
+// This is the property the format exists for, and it is checked over all
+// ninety-nine parameters rather than a sample: the failure mode of a name-keyed
+// format is one name that does not round-trip, and a spot check is exactly what
+// would miss it.
+@(test)
+json_patch_round_trips :: proc(t: ^testing.T) {
+	original: patch.Patch
+	original.name = "Round Trip"
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		// Values that are neither the default nor all the same, so a writer
+		// that emitted a constant, or the default table, would fail here.
+		original.values[i] = (i * 7 + 3) % 128
+		original.present[i] = true
+	}
+
+	text := patch.write_patch_json(original)
+	defer delete(text)
+
+	restored, err := patch.parse_patch_json(transmute([]u8)text)
+	defer patch.destroy_patch(restored)
+	testing.expect_value(t, err, patch.Json_Error.None)
+	testing.expect_value(t, restored.name, "Round Trip")
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		if restored.values[i] != original.values[i] {
+			testing.expectf(
+				t,
+				false,
+				"parameter %v (%v): wrote %v, read %v",
+				i,
+				patch.PARAMETERS[i].name,
+				original.values[i],
+				restored.values[i],
+			)
+			return
+		}
+	}
+}
+
+// Every parameter name is unique, which is what makes a name-keyed object a
+// safe encoding at all. If two ever collided, one would silently overwrite the
+// other on write and the round trip above would start failing in a way that
+// looked like a reader bug.
+@(test)
+json_parameter_names_are_unique :: proc(t: ^testing.T) {
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		for j in i + 1 ..< patch.PARAMETER_COUNT {
+			if patch.PARAMETERS[i].name == patch.PARAMETERS[j].name {
+				testing.expectf(t, false, "parameters %v and %v share the name %q", i, j, patch.PARAMETERS[i].name)
+				return
+			}
+		}
+		testing.expect_value(t, patch.parameter_index(patch.PARAMETERS[i].name), i)
+	}
+}
+
+// A name this build does not know is refused rather than ignored. Silently
+// dropping it would load something that is not the patch in the file.
+@(test)
+json_rejects_unknown_parameter :: proc(t: ^testing.T) {
+	text: string = `{"format":"quesynth.patch","version":1,"name":"x","parameters":{"not a real parameter":1}}`
+	bad, err := patch.parse_patch_json(transmute([]u8)text)
+	defer patch.destroy_patch(bad)
+	testing.expect_value(t, err, patch.Json_Error.Unknown_Parameter)
+}
+
+// A missing parameter takes its default, which is what lets a file written by
+// version 1 still load after a parameter is added.
+@(test)
+json_missing_parameter_takes_default :: proc(t: ^testing.T) {
+	text: string = `{"format":"quesynth.patch","version":1,"name":"x","parameters":{"osc1 shape":3}}`
+	p, err := patch.parse_patch_json(transmute([]u8)text)
+	defer patch.destroy_patch(p)
+	testing.expect_value(t, err, patch.Json_Error.None)
+	testing.expect_value(t, p.values[0], 3)
+	testing.expect_value(t, p.values[1], patch.PARAMETERS[1].default)
+	testing.expect(t, p.present[0], "a named parameter should be marked present")
+	testing.expect(t, !p.present[1], "an omitted parameter should not be marked present")
+}
+
+// The header is checked, so a bank cannot be loaded as a patch and a future
+// version cannot be read as if it were this one.
+@(test)
+json_checks_the_header :: proc(t: ^testing.T) {
+	bank_text: string = `{"format":"quesynth.bank","version":1}`
+	_, wrong := patch.parse_patch_json(transmute([]u8)bank_text)
+	testing.expect_value(t, wrong, patch.Json_Error.Wrong_Format)
+
+	future_text: string = `{"format":"quesynth.patch","version":99}`
+	_, future := patch.parse_patch_json(transmute([]u8)future_text)
+	testing.expect_value(t, future, patch.Json_Error.Unsupported_Version)
+
+	broken_text: string = `not json at all`
+	_, broken := patch.parse_patch_json(transmute([]u8)broken_text)
+	testing.expect_value(t, broken, patch.Json_Error.Invalid_Json)
+}
+
+// A bank carries its patches in order and each one keeps its own values.
+@(test)
+json_bank_round_trips :: proc(t: ^testing.T) {
+	patches := make([]patch.Patch, 3)
+	defer delete(patches)
+	names := [?]string{"First", "Second", "Third"}
+	for i in 0 ..< 3 {
+		patches[i].name = names[i]
+		for j in 0 ..< patch.PARAMETER_COUNT {
+			patches[i].values[j] = (i * 31 + j) % 128
+			patches[i].present[j] = true
+		}
+	}
+
+	text := patch.write_bank_json("Test Bank", patches)
+	defer delete(text)
+
+	bank, err := patch.parse_bank_json(transmute([]u8)text)
+	defer patch.destroy_bank(bank)
+	testing.expect_value(t, err, patch.Json_Error.None)
+	testing.expect_value(t, bank.name, "Test Bank")
+	testing.expect_value(t, len(bank.patches), 3)
+	for i in 0 ..< len(bank.patches) {
+		testing.expect_value(t, bank.patches[i].name, names[i])
+		for j in 0 ..< patch.PARAMETER_COUNT {
+			testing.expect_value(t, bank.patches[i].values[j], patches[i].values[j])
+		}
+	}
+}
+
+// A whole number written as a float is accepted, because a file produced by a
+// language whose numbers are all doubles will say 64.0; a fraction is not,
+// because there is no state between two stored integers.
+@(test)
+json_number_forms :: proc(t: ^testing.T) {
+	whole_text: string = `{"format":"quesynth.patch","version":1,"parameters":{"osc1 shape":2.0}}`
+	whole, whole_err := patch.parse_patch_json(transmute([]u8)whole_text)
+	defer patch.destroy_patch(whole)
+	testing.expect_value(t, whole_err, patch.Json_Error.None)
+	testing.expect_value(t, whole.values[0], 2)
+
+	fraction_text: string = `{"format":"quesynth.patch","version":1,"parameters":{"osc1 shape":2.5}}`
+	_, fraction_err := patch.parse_patch_json(transmute([]u8)fraction_text)
+	testing.expect_value(t, fraction_err, patch.Json_Error.Bad_Value)
+}
