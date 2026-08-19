@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The viewport line is what makes the phone build usable rather than a shrunken
+     desktop page. `viewport-fit=cover` keeps the black ground under the notch. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Quesynth</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- The only chrome. There is no header and no footer: in a plugin window every
+     row given to a title is a row taken from the controls, and the section strip
+     has to be on screen anyway. -->
+<nav id="nav" aria-label="Sections">
+  <div class="brand">Quesynth</div>
+  <div class="nav-inner"></div>
+  <button type="button" id="midi-toggle" class="keys-toggle">MIDI</button>
+  <button type="button" id="keys-toggle" class="keys-toggle" aria-expanded="false"
+          aria-controls="keyboard">Keys</button>
+</nav>
+
+<main id="panels"></main>
+
+<!-- Which patch is loaded, and out of which bank. Fixed at the foot of the window
+     and always there: it is what the instrument *is* at this moment, not one of
+     the things it can be set to, so it does not belong in a section that scrolls
+     away. The keyboard pushes it up rather than covering it. -->
+<div id="bank" class="bank">
+  <button type="button" class="bank-step" data-step="-1" aria-label="Previous patch">‹</button>
+  <div class="bank-read">
+    <span class="bank-patch" id="bank-patch">000:Init</span>
+    <span class="bank-name" id="bank-name">00:soundbank00</span>
+  </div>
+  <button type="button" class="bank-step" data-step="1" aria-label="Next patch">›</button>
+  <div class="bank-vol">
+    <label for="master-vol">Vol</label>
+    <input type="range" id="master-vol" min="0" max="100" value="80"
+           aria-label="Master volume">
+    <span class="bank-vol-read" id="master-vol-read">80</span>
+  </div>
+</div>
+
+<!-- Deployed from the strip above and fixed to the foot of the window, so the
+     panels are enclosed between the two rather than running underneath it. -->
+<section id="keyboard" class="keyboard" hidden aria-label="Keyboard">
+  <!-- The octave buttons sit at the two ends rather than beside each other in the
+       middle, so on a phone held in two hands they fall under the thumbs. -->
+  <div class="keys-bar">
+    <button type="button" class="oct" data-step="-1" aria-label="Down an octave">−</button>
+    <span class="oct-label" id="oct-label"></span>
+    <button type="button" class="oct" data-step="1" aria-label="Up an octave">+</button>
+  </div>
+  <div class="keys-row">
+    <div class="wheels" id="wheels"></div>
+    <div class="keys-scroll" id="keys-scroll">
+      <div class="keys" id="keys"></div>
+    </div>
+  </div>
+</section>
+
+<!-- Order matters: the generated table and the layout are plain data and must be
+     defined before the code that reads them. No modules and no bundler, so the
+     page opens straight off the filesystem in a web view with no server.
+
+     `host.js` is whatever is hosting this panel, and it is optional. A host that
+     is native — the VST3 plugin, the desktop shell — has no page-side glue to
+     load and simply does not ship the file; the browser build supplies one that
+     runs the engine in WebAssembly. It loads first so that `bridge.js` finds it
+     already registered, and its absence is not an error, which is why nothing
+     above this line names a host. -->
+<script src="host.js" onerror="void 0"></script>
+<script src="params.js"></script>
+<script src="bank.js" onerror="void 0"></script>
+<script src="layout.js"></script>
+<script src="bridge.js"></script>
+<script src="app.js"></script>
+<script src="midi.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+# Build the WebAssembly engine and publish the interface to GitHub Pages.
+#
+# What this deploys is not a demo or a mock-up: `hosts/wasm` compiles the same
+# `src/engine` the plugin and the desktop build run, so the page is the real
+# instrument. That is the point of having it -- the interface can be exercised on
+# any machine with a browser, including the phone it is designed for, without
+# anybody installing a plugin host.
+#
+# `hosts/wasm/synth.wasm` is a build artifact and is not committed, so it is
+# produced here. The published site is an assembly of two directories -- the
+# panel in ui/ and this host's own glue in hosts/wasm -- which is the same shape
+# every other host takes: see tools/install-vst3.ps1, which copies ui/ into a
+# bundle beside the plugin binary.
+name: pages
+
+on:
+  push:
+    branches: [main, master]
+  # So a broken build can be republished without an empty commit.
+  workflow_dispatch:
+
+# Pages needs these; the default token is read-only.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and let a running one finish rather than cancelling
+# it half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2025-01
+
+      - name: Build the engine to WebAssembly
+        run: odin build hosts/wasm -target:js_wasm32 -out:hosts/wasm/synth.wasm
+
+      # Cheap, and it catches the failure that is otherwise invisible until the
+      # page is open: a missing import is a LinkError at instantiation, the engine
+      # never starts, and the panel goes on working perfectly.
+      - name: Check the worklet supplies every import
+        run: node hosts/wasm/check-imports.js
+
+      # The interface ships the parameter table as generated source, so a stale
+      # one would publish values that no longer match the engine.
+      - name: Check the parameter table is current
+        run: |
+          odin run tools/uiparams -out:build/uiparams
+          git diff --exit-code -- ui/params.js
+
+      - uses: actions/configure-pages@v5
+
+      # Nothing is bundled or transformed -- the panel ships exactly as it is
+      # developed. It is only gathered, because a host is the panel plus its own
+      # glue and neither directory is a site on its own.
+      - name: Assemble the site
+        run: |
+          mkdir -p build/site
+          cp ui/*.html ui/*.css ui/*.js build/site/
+          cp hosts/wasm/host.js hosts/wasm/worklet.js hosts/wasm/synth.wasm build/site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

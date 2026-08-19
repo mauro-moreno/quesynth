@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ui",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["hosts/wasm/serve.js", "8177"],
+      "port": 8177
+    }
+  ]
+}

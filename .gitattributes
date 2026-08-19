@@ -1,0 +1,21 @@
+# Line endings, decided here rather than by whatever each machine has
+# core.autocrlf set to. Without this the repository's contents depend on who
+# committed them: CI runs on Linux, development happens on Windows, and the same
+# file arrives with different bytes from each.
+#
+# LF in the repository for everything text. Odin, JavaScript, CSS and Markdown
+# are all indifferent to which they get on disk.
+* text=auto eol=lf
+
+# PowerShell is the exception. Some versions choke on LF in a script with a
+# here-string, and tools/install-vst3.ps1 has one.
+*.ps1 text eol=crlf
+
+# Never touched. A byte changed in any of these is a corrupt file, not a
+# reformatted one -- and .sy1 patches are a binary format that merely looks
+# textual in places.
+*.dll binary
+*.wasm binary
+*.wav binary
+*.sy1 binary
+*.fxb binary

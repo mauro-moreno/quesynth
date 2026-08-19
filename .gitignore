@@ -1,0 +1,49 @@
+build/
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.wav
+ext/synth1/
+# The CLAP headers are a separate upstream checkout (its own git repository),
+# read as the reference for src/clap. Nothing in the build consumes them: the
+# bindings are pure Odin, so the headers are not vendored here.
+ext/clap/
+Synth1V113beta3.zip
+# Workflow scratch, not part of the project.
+.atomic/
+
+# Runtime state of the editor tooling. `.claude/launch.json` is deliberately not
+# ignored -- it is the shared dev-server definition and belongs to the project.
+.claude/*.lock
+ext/vst3_c_api/
+
+# The WebView2 header is 2.5 MB of generated COM declarations, read as the
+# reference for src/webview2 the same way ext/clap and ext/vst3_c_api are read
+# for their bindings -- and ignored for the same reason: nothing in the build
+# consumes it, the bindings are pure Odin. ext/webview2/README.md says which
+# package to fetch it from.
+#
+# WebView2Loader.dll beside it is deliberately *not* ignored. That one is a real
+# runtime dependency: tools/install-vst3.ps1 copies it into the bundle, and a
+# fresh checkout could not build a working editor without it.
+ext/webview2/include/
+
+# Synth1's own factory banks, shipped with the reference and copied here to be
+# measured against. They are not this project's work and not ours to
+# redistribute, so they stay on disk and out of the history -- the null test and
+# tools/uibank read them from the working tree and neither needs them committed.
+patches/
+
+# Third-party Synth1 patch banks, by their own authors. Downloaded to test
+# against, and no more ours to redistribute than the factory banks above.
+zipbank.zip
+zipbank/
+
+# The WebAssembly engine is a build artifact; CI builds it for the page.
+hosts/wasm/synth.wasm
+
+# Generated from Synth1's own factory banks, which are not this project to
+# redistribute. index.html loads it with an onerror guard so a checkout without
+# it still runs, with an empty patch browser.
+ui/bank.js

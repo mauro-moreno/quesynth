@@ -1,0 +1,1119 @@
+/* Black ground, silver controls, no ornament.
+ *
+ * Three targets share this sheet and each pulls it a different way: a plugin
+ * window a host may size to anything, a resizable desktop window, and a phone held
+ * in one hand. So there is no fixed pixel layout anywhere in here -- panels flow
+ * into however many columns fit, and the one hard rule is that a control never
+ * gets smaller than a finger.
+ *
+ * The palette is deliberately tiny. Everything is a grey; the only colour in the
+ * interface is the faint blue cast on an active control, which is what makes it
+ * readable at a glance against a panel of forty knobs.
+ */
+
+:root {
+  /* Stated in the sheet as well as in the meta tag in index.html, because this
+   * is what decides the colour of the parts of the window the sheet cannot
+   * reach -- the scrollbars above all. A pale scrollbar down the edge of a
+   * black panel does not read as a scrollbar; it reads as a border. */
+  color-scheme: dark;
+
+  --bg: #08080a;
+  --panel: #0e0e11;
+  --panel-edge: #1c1c21;
+  --ink: #e8e8ec;
+  --ink-dim: #8a8a93;
+  --ink-faint: #55555e;
+
+  /* The silver a knob is made of: a lit top edge falling to a dark underside. */
+  --metal-lit: #dcdce2;
+  --metal: #9a9aa4;
+  --metal-dark: #4a4a52;
+  --track: #24242a;
+  --accent: #cfd6e6;
+
+  --gap: 14px;
+  /* Height of the sticky navigation strip. Referenced by the scroll offset and
+   * by the script that decides which section is current, so the three cannot
+   * drift apart. */
+  --nav-h: 37px;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  /* A knob drag must not scroll the page underneath it on a touch screen. */
+  overscroll-behavior: none;
+}
+
+html {
+  /* No scroll snapping. It was tried and taken out: sections vary from four
+   * controls to seventeen, so a snap point is as often in the middle of what is
+   * being read as at the top of it, and the strip navigates well enough without
+   * the scroll being taken over.
+   *
+   * Land below the sticky navigation rather than underneath it. This is the
+   * *only* place that offset is applied. Setting `scroll-margin-top` on the
+   * sections as well looks equivalent and is not: the two add, and a jump then
+   * lands the section a full bar-height too low, which is enough to leave the
+   * navigation marking the section above the one you asked for. */
+  scroll-padding-top: var(--nav-h);
+  scroll-behavior: smooth;
+}
+
+/* Anyone who has asked for less motion gets the jump without the travel. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
+body { padding: var(--gap); }
+
+/* -------------------------------------------------------------- navigation */
+
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin: 0 calc(var(--gap) * -1) var(--gap);
+  padding: 0 var(--gap);
+  background: rgba(8, 8, 10, 0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--panel-edge);
+}
+
+/* The whole of the branding, and the whole of the chrome with it: the name and
+ * nothing else.
+ *
+ * It used to carry the loaded patch and the engine's sample rate too. The patch
+ * is already in the bank bar at the foot, and a sample rate is a developer's
+ * diagnostic that had taken up residence in the one piece of chrome on screen at
+ * all times. Losing both also loses a strip whose width changed as patches were
+ * stepped through. */
+.brand {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.nav-inner {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* The strip scrolls sideways on a narrow window; it must not drag the page
+   * with it, and it must not show a scrollbar over a 34px tall bar. */
+  overscroll-behavior-x: contain;
+}
+
+.nav-inner::-webkit-scrollbar { display: none; }
+
+.nav-inner button {
+  flex: 0 0 auto;
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 11px 10px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.nav-inner button:hover { color: var(--ink-dim); }
+
+.nav-inner button[aria-current="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--metal);
+}
+
+/* ------------------------------------------------------------------ panels */
+
+/* One section per row. A wide window then reads as a stack of labelled rows of
+ * controls rather than as columns the eye has to track up and down, and it is
+ * what makes snapping to a section mean anything. */
+main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  padding: 14px 14px 16px;
+}
+
+.panel > h2 {
+  margin: 0 0 14px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+/* ------------------------------------------------------------------ groups */
+
+/* Controls that act on the same thing, boxed together and separated by a rule.
+ * Without this a section is one undifferentiated run of knobs and the reader has
+ * to know already that three of the seventeen belong to the sub oscillator. */
+.groups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 18px 0;
+}
+
+/* Every group is ruled off, the first one included. Leaving the first without a
+ * rule made the set look unfinished on the left rather than deliberately open. */
+.group {
+  padding: 0 18px;
+  border-left: 1px solid var(--panel-edge);
+}
+
+.group-label {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 12px;
+}
+
+/* Packed left at a fixed width rather than stretched to fill.
+ *
+ * A row is as wide as the window, and a section with four controls in it should
+ * not spread those four across fourteen columns' worth of space just because a
+ * section with seventeen would fill them. */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 20px 14px;
+}
+
+.controls > .control { width: 92px; }
+.controls > .control.wide { width: 120px; }
+
+/* A dropdown needs room its label does not. The option names are spelled out --
+ * "Low Pass 24 dB/oct", "Both Oscillator Pitches" -- and a knob's width truncates
+ * them to the point of being unreadable, which defeats having written them out.
+ * Sized to the longest of them, which is the LFO destination's. */
+.controls > .control.has-options { width: 152px; }
+
+/* A list and a stepper are sized by what is in them: the filter's five responses
+ * need room for "Low Pass 24 dB/oct" and the arpeggiator's four need room for
+ * "1 Octave", and holding both to one width would waste the difference on every
+ * short one. */
+.controls > .control.has-radio,
+.controls > .control.has-stepper { width: auto; min-width: 88px; }
+
+/* Their options are left-aligned, so the label above them should be too --
+ * centring a heading over a left-hand column reads as a mistake. */
+.controls > .control.has-radio .label { text-align: left; align-self: flex-start; }
+
+/* ----------------------------------------------------------------- control */
+
+.control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+/* Always one line.
+ *
+ * Every control sits under a group heading that supplies the context, so the
+ * label can be short without being abbreviated -- "Fine Tune" under "Oscillator
+ * 2" says as much as "Oscillator 2 Fine Tune" did over three ragged lines. The
+ * ellipsis is a backstop for a label that still does not fit; the full name is
+ * always in the information popover and in the hover title, so nothing that gets
+ * clipped here is lost. */
+.control .label {
+  font-size: 10px;
+  line-height: 1.25;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.control .value {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  text-align: center;
+  line-height: 1.2;
+  /* Readings are upper case with the rest of the interface; the unit inside them
+   * opts back out below, because "kHz" and "ms" are not words to be styled. */
+  text-transform: uppercase;
+}
+
+/* Every unit, wherever it came from -- the reference's own display string or the
+ * generated table's suffix -- is grey and keeps its own capitalisation.
+ *
+ * Deliberately well under the reading it belongs to. The number is what is being
+ * read; "msec" and "cent" only say what it is measured in, and at the same
+ * weight they compete with it. Set here rather than per breakpoint because the
+ * relationship holds at every width. */
+.control .value .unit {
+  color: var(--ink-faint);
+  font-size: 8px;
+  margin-left: 3px;
+  text-transform: none;
+}
+
+/* ------------------------------------------------------------------- radio */
+
+.radio {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  align-items: stretch;
+}
+
+.radio button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 0;
+  appearance: none;
+  background: none;
+  border: 0;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.radio button:hover { color: var(--ink-dim); }
+.radio button[aria-checked="true"] { color: var(--ink); }
+
+/* The lit mark. Dark and ringed when off, silver and softly haloed when on, which
+ * is readable from across a room without being the only bright thing in the
+ * panel. */
+.radio .dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid #3a3a42;
+  background: #0c0c0f;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.radio button[aria-checked="true"] .dot {
+  background: var(--metal-lit);
+  border-color: var(--metal-lit);
+  box-shadow: 0 0 7px rgba(220, 220, 226, 0.4);
+}
+
+.radio button:focus-visible { outline: 1px solid #3a4150; outline-offset: 2px; }
+
+/* ----------------------------------------------------------------- stepper */
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stepper button {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  border: 1px solid var(--panel-edge);
+  background: #131317;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.stepper button:hover:not(:disabled) { color: var(--ink); border-color: #3a4150; }
+.stepper button:disabled { opacity: 0.3; cursor: default; }
+
+.stepper .num {
+  min-width: 38px;
+  text-align: center;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- disabled */
+
+/* A control switched off by its section's enable, or by an effect type that does
+ * not read it. Dimmed rather than hidden: what a section contains should not
+ * change shape when it is switched off, or finding the switch again means
+ * remembering where the panel used to be. */
+.control.off {
+  opacity: 0.28;
+  transition: opacity 140ms ease;
+}
+
+.control.off .knob,
+.control.off .toggle,
+.control.off .radio,
+.control.off .stepper,
+.control.off .options { pointer-events: none; }
+
+/* The mark stays readable and clickable: what a control does is worth knowing
+ * whether or not it is currently doing it. */
+.control.off .info { opacity: 0.9; pointer-events: auto; }
+.control.off .label,
+.control.off .value { pointer-events: none; }
+
+/* -------------------------------------------------------------------- info */
+
+.control .info {
+  position: absolute;
+  top: -3px;
+  right: -1px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--panel-edge);
+  background: none;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 9px;
+  font-style: italic;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.control:hover .info, .control .info:focus-visible { opacity: 1; color: var(--ink-dim); }
+
+/* On a touch screen there is no hover to reveal it, so it stays visible. */
+@media (hover: none) {
+  .control .info { opacity: 0.8; }
+}
+
+.popover {
+  position: fixed;
+  z-index: 40;
+  width: 260px;
+  max-width: calc(100vw - 16px);
+  background: #16161b;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  padding: 12px 13px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  display: none;
+}
+
+.popover.open { display: block; }
+
+.popover-title {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 7px;
+}
+
+.popover p {
+  margin: 0 0 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-dim);
+}
+
+.popover-meta {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* -------------------------------------------------------------------- knob */
+
+.knob {
+  width: 58px;
+  height: 58px;
+  touch-action: none;          /* the drag is ours, not the scroller's */
+  cursor: ns-resize;
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.knob .track { stroke: var(--track); }
+.knob .arc { stroke: var(--accent); transition: stroke 120ms ease; }
+.knob .pointer { stroke: var(--metal-lit); }
+.knob:focus { outline: none; }
+.knob:focus-visible .arc, .knob.active .arc { stroke: #ffffff; }
+
+/* ------------------------------------------------------------------ toggle */
+
+.toggle {
+  width: 52px;
+  height: 26px;
+  border-radius: 13px;
+  border: 1px solid var(--panel-edge);
+  background: #131317;
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  touch-action: manipulation;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--metal-lit), var(--metal-dark));
+  transition: transform 130ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+
+.toggle[aria-checked="true"] { background: #2a2f3a; border-color: #3a4150; }
+.toggle[aria-checked="true"]::after { transform: translateX(26px); }
+
+/* ----------------------------------------------------------------- options */
+
+.options {
+  width: 100%;
+  background: #131317;
+  color: var(--ink);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 10px;
+  font-family: inherit;
+  /* Upper case with everything else. A native dropdown draws its own list, so
+   * this reaches the closed control; the options carry it themselves below. */
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  /* 16px on a phone, or iOS zooms the whole page when the select is tapped. */
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.options:focus { outline: 1px solid #3a4150; }
+
+/* The open list is drawn by the platform and inherits almost nothing, so the
+ * casing has to be set on the options as well as on the control. */
+.options option {
+  text-transform: uppercase;
+  background: #16161b;
+  color: var(--ink);
+}
+
+/* -------------------------------------------------------------------- bank */
+
+/* Fixed at the foot, and moved up by exactly the keyboard's height when the
+ * keyboard is out. The offset is a variable rather than a second fixed number so
+ * the two cannot disagree: the script measures the keyboard once and writes it
+ * here. */
+.bank {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--keys-h, 0px);
+  z-index: 15;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 0 10px;
+  background: rgba(8, 8, 10, 0.96);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--panel-edge);
+  transition: bottom 140ms ease;
+}
+
+/* Only when the keyboard is away; with it out, the keyboard owns the inset. */
+body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+.bank-read {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 14px;
+  padding: 9px 0;
+}
+
+.bank-patch {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bank-name {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.bank-step {
+  flex: 0 0 auto;
+  appearance: none;
+  background: none;
+  border: 0;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.bank-step:hover { color: var(--ink); }
+
+.bank-read.pickable { cursor: pointer; }
+.bank-read.pickable:hover .bank-patch { color: #ffffff; }
+
+/* The patch list and the MIDI input list. Same object, two anchors: one opens
+ * upward off the bar at the foot, the other downward off the strip at the top. */
+.bank-list,
+.midi-list {
+  position: fixed;
+  z-index: 40;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  min-width: 220px;
+  background: #16161b;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  display: none;
+}
+
+.bank-list.open,
+.midi-list.open { display: block; }
+
+.bank-list button,
+.midi-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bank-list button:hover,
+.midi-list button:hover { color: var(--ink); background: #1e1e25; }
+
+.bank-list button[aria-current="true"],
+.midi-list button[aria-current="true"] { color: var(--ink); background: #262b35; }
+
+.midi-none {
+  padding: 8px 9px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- keyboard */
+
+.keys-toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 6px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.keys-toggle:hover { color: var(--ink-dim); }
+
+.keys-toggle[aria-expanded="true"] {
+  color: var(--ink);
+  border-color: #3a4150;
+  background: #1b1f27;
+}
+
+.keyboard {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: rgba(8, 8, 10, 0.96);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--panel-edge);
+  /* Clear of the home indicator on a phone held upright. */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.keyboard[hidden] { display: none; }
+
+/* The octave controls at the two ends, not huddled in the middle: on a phone held
+ * in two hands that is where the thumbs already are. */
+.keys-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 10px 4px;
+}
+
+.keys-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 0 0 6px 10px;
+}
+
+.oct {
+  appearance: none;
+  width: 26px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-edge);
+  background: #131317;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.oct:hover:not(:disabled) { color: var(--ink); border-color: #3a4150; }
+.oct:disabled { opacity: 0.3; cursor: default; }
+
+.oct-label {
+  min-width: 92px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The strip scrolls, but only under the octave buttons and a trackpad -- a drag
+ * that starts on a key plays it, because that is what dragging across a keyboard
+ * means. Reaching another octave by swiping would make a glissando impossible,
+ * so the two gestures are not allowed to compete. */
+.keys-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+
+.keys-scroll::-webkit-scrollbar { display: none; }
+
+.keys {
+  position: relative;
+  height: 104px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.key {
+  position: absolute;
+  top: 0;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Not an ivory keyboard.
+ *
+ * A real piano's colours are the one place this interface would have gone loud:
+ * a bank of white keys under a black panel is the brightest thing on the screen
+ * and pulls the eye away from the controls. So the keys are the panel's own greys
+ * -- the naturals a raised surface, the accidentals nearly the background -- and
+ * what lights up is the key being *played*, in the same silver the lit options and
+ * the knob pointers use. The instrument reads as one object, and the only bright
+ * thing on it is the note sounding. */
+/* Flat fills and one border each. No gradients, no bevels, no drop shadows: a key
+ * is a rectangle, its border says where it ends, and the only state it has is
+ * whether it is sounding. */
+.key.natural {
+  height: 100%;
+  background: #1b1b21;
+  border: 1px solid #2c2c34;
+  border-radius: 0 0 3px 3px;
+}
+
+.key.accidental {
+  height: 60%;
+  z-index: 2;
+  background: #0b0b0e;
+  border: 1px solid #26262d;
+  border-radius: 0 0 3px 3px;
+}
+
+.key.natural.down,
+.key.accidental.down {
+  background: var(--metal-lit);
+  border-color: var(--metal-lit);
+}
+
+/* Middle C, so a hand knows where it is without counting from the end. */
+.key.natural.anchor::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: #6a6a74;
+}
+
+.key.natural.anchor.down::after { background: #33333c; }
+
+/* ------------------------------------------------------------------ wheels */
+
+.wheels {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.wheel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.wheel-track {
+  position: relative;
+  width: 26px;
+  flex: 1 1 auto;
+  border-radius: 13px;
+  background: #0b0b0e;
+  border: 1px solid var(--panel-edge);
+  touch-action: none;
+  cursor: ns-resize;
+  overflow: hidden;
+}
+
+/* The centre detent, drawn rather than felt: a bend wheel that springs back needs
+ * somewhere visible to spring back to. */
+.wheel:first-child .wheel-track::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1px;
+  background: #2e2e36;
+}
+
+/* Positioned from one custom property so the script never has to know which way
+ * the wheel is lying. `--t` runs 0 to 1 from the bottom, or from the left once the
+ * phone layout turns the track on its side. */
+.wheel-thumb {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 20px;
+  bottom: calc(2px + var(--t, 0.5) * (100% - 24px));
+  border-radius: 10px;
+  background: var(--metal);
+  pointer-events: none;
+}
+
+.wheel-label {
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------------------ phones */
+
+@media (max-width: 560px) {
+  :root { --gap: 10px; }
+  body { padding: 10px 8px 24px; }
+
+  /* No snapping on a phone. Sections are far taller than the screen here, so a
+   * snap has nothing useful to land on and only takes the scroll away from the
+   * thumb. The navigation strip stays, because thirteen sections is a long way
+   * to flick past. */
+  html { scroll-snap-type: none; }
+
+  /* Groups stack instead of sitting side by side, with the rule moved from their
+   * left edge to their top -- at 375px there is no room for two of them abreast
+   * and a left rule on a full-width block reads as an indent rather than a
+   * division.
+   *
+   * The rule needs air on both sides. Padding alone only pushes the heading down
+   * from it and leaves the previous group's controls sitting on the line. */
+  .groups { display: block; }
+  .group {
+    margin-top: 18px;
+    padding: 16px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--panel-edge);
+  }
+
+  /* Back to a filling grid: at 375px the fixed-width row leaves a ragged margin
+   * where stretching to the full width does not. */
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(98px, 1fr));
+    gap: 18px 8px;
+  }
+  /* Every fixed width from the desktop row layout is released here, the dropdown
+   * one included -- a 150px control does not fit a 375px grid cell and pushes the
+   * column out from under its own label. */
+  .controls > .control,
+  .controls > .control.wide,
+  .controls > .control.has-options,
+  .controls > .control.has-radio,
+  .controls > .control.has-stepper { width: auto; min-width: 0; }
+
+  /* A list of spelled-out options does not fit a 98px column, so it takes two
+   * like the dropdowns do. */
+  .controls > .control.has-radio { grid-column: span 2; }
+
+  /* A dropdown takes two columns instead of one: enough for the longest option
+   * name this instrument has ("Low Pass 24 dB/oct") without giving each one a
+   * whole row of its own, which would make a section of four dropdowns four
+   * screens long. */
+  .controls > .control.has-options { grid-column: span 2; }
+  .knob { width: 66px; height: 66px; }
+  /* Smaller text, but the same generous box: the padding is what makes this a
+   * comfortable tap target, not the type size, so shrinking the glyphs costs
+   * nothing in reachability.
+   *
+   * The 16px this replaces was there for one reason -- iOS zooms the page when a
+   * form control under 16px is focused, and the viewport line deliberately does
+   * not set `maximum-scale`, because forbidding zoom to win this argument would
+   * take pinch-to-zoom away from everything else on the page. So on iOS tapping
+   * a dropdown may now zoom in and need a pinch back out; that is the price of
+   * the smaller type, and it is paid only on iOS and only on dropdowns. */
+  .options { font-size: 12px; padding: 9px 8px; }
+  .toggle { width: 58px; height: 30px; }
+  .toggle::after { width: 24px; height: 24px; }
+  .toggle[aria-checked="true"]::after { transform: translateX(28px); }
+
+  /* Big enough to play, since on a phone this is the whole instrument and not an
+   * accessory to a mouse. The octave buttons are how another register is reached
+   * here, because a swipe across the keys has to stay a glissando. */
+  .keys { height: 172px; }
+  .oct { width: 52px; height: 36px; font-size: 17px; }
+  .keys-bar { padding: 6px 10px 5px; }
+
+  /* The wheels lie down and move above the keys.
+   *
+   * Standing beside them they cost about eighty pixels of a three-hundred-and
+   * -seventy-five pixel screen, which is a whole octave of reach; lying across
+   * the top they cost a row barely taller than the label they already needed.
+   * Both gestures still work, because the track reads its own orientation from
+   * its shape rather than being told which way it is pointing. */
+  .keys-row {
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 8px 6px;
+  }
+
+  .wheels { width: 100%; gap: 12px; }
+
+  /* Reversed, so the label leads its own track. In source order the track comes
+   * first, which laid out as a row put "Pitch" between the two wheels where it
+   * reads as the label of the one after it. */
+  .wheel {
+    flex: 1 1 0;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .wheel-track {
+    width: auto;
+    height: 22px;
+    flex: 1 1 auto;
+    border-radius: 11px;
+    cursor: ew-resize;
+  }
+
+  .wheel-thumb {
+    left: calc(2px + var(--t, 0.5) * (100% - 24px));
+    right: auto;
+    top: 2px;
+    bottom: auto;
+    width: 20px;
+    height: calc(100% - 4px);
+  }
+
+  /* The detent turns with the track. */
+  .wheel:first-child .wheel-track::before {
+    left: 50%;
+    right: auto;
+    top: 4px;
+    bottom: 4px;
+    width: 1px;
+    height: auto;
+  }
+
+  .wheel-label { font-size: 8px; }
+  .keys-scroll { width: 100%; }
+  .brand { font-size: 11px; letter-spacing: 0.14em; }
+}
+
+/* Master volume, in the bank bar.
+ *
+ * Not a patch parameter: the reference's own "vol" knob sits beside the patch
+ * name rather than in the panel, and nothing in the .sy1 format carries it, so
+ * it is deliberately outside the engine. It leaves as its own message and each
+ * host scales its own output, which leaves every measured parameter mapping
+ * untouched -- a master volume that fed the engine would show up in the null
+ * test as a level error on every patch at once. */
+.bank-vol {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.bank-vol label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.bank-vol-read {
+  font-size: 11px;
+  color: var(--ink-faint);
+  min-width: 2.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.bank-vol input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 84px;
+  height: 18px;
+  background: none;
+  cursor: pointer;
+}
+
+.bank-vol input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--panel-edge);
+  border-radius: 1px;
+}
+
+.bank-vol input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--panel-edge);
+  border-radius: 1px;
+}
+
+.bank-vol input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: linear-gradient(#c9c9d1, #7e7e88);
+  border: 0;
+}
+
+.bank-vol input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: linear-gradient(#c9c9d1, #7e7e88);
+  border: 0;
+}
+
+.bank-vol input[type="range"]:focus-visible { outline: 1px solid var(--ink-faint); }
+
+/* On a phone the bar is tight; the readout is the first thing to go. */
+@media (max-width: 560px) {
+  .bank-vol label,
+  .bank-vol-read { display: none; }
+  .bank-vol input[type="range"] { width: 60px; }
+}
+
+/* A key lit by an incoming MIDI note, as distinct from one held by a pointer.
+ * Same treatment, because to the player they are the same event. */
