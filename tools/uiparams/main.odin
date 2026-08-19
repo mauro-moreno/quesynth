@@ -296,8 +296,11 @@ main :: proc() {
 	}
 	strings.write_string(&b, "];\n")
 
-	if os.write_entire_file(OUT_PATH, transmute([]u8)strings.to_string(b)) != nil {
-		fmt.eprintfln("uiparams: could not write %v", OUT_PATH)
+	// The error itself, not just that there was one. This runs in CI, where the
+	// difference between "no such directory" and "permission denied" is the
+	// difference between reading the log and guessing.
+	if err := os.write_entire_file(OUT_PATH, transmute([]u8)strings.to_string(b)); err != nil {
+		fmt.eprintfln("uiparams: could not write %v: %v", OUT_PATH, err)
 		os.exit(1)
 	}
 	fmt.printfln("wrote %v (%v parameters)", OUT_PATH, patch.PARAMETER_COUNT)

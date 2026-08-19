@@ -37,10 +37,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to the version this is developed against. Odin is pre-1.0 and
+      # `core:` changes under it: `os.write_entire_file` returned a bool in
+      # dev-2025-01 and returns an Error now, so a CI pin left behind fails to
+      # compile code that builds fine locally. When this moves, move it to
+      # whatever `odin version` reports on the machine doing the work.
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2025-01
+          release: dev-2026-05
 
       - name: Build the engine to WebAssembly
         run: odin build hosts/wasm -target:js_wasm32 -out:hosts/wasm/synth.wasm
@@ -55,6 +60,7 @@ jobs:
       # one would publish values that no longer match the engine.
       - name: Check the parameter table is current
         run: |
+          mkdir -p build
           odin run tools/uiparams -out:build/uiparams
           git diff --exit-code -- ui/params.js
 
