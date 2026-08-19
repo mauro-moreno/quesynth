@@ -53,11 +53,15 @@ docs/synth1-readme-eng.txt
 # The WebAssembly engine is a build artifact; CI builds it for the page.
 hosts/wasm/synth.wasm
 
-# ui/bank.js used to be ignored, because it was generated from Synth1's own
-# factory banks and those are not this project's to redistribute. It is now
-# generated from patches/quesynth/factory.json, which is this project's own
-# bank, so it is committed and the published page carries it.
+# The bank the interface reads is generated, not written.
 #
-# Regenerating it against somebody else's patches is still possible and still
-# means the result should not be committed:
-#     odin run tools/uibank -- <their directory> "Their Bank"
+# `patches/quesynth/factory.json` is the source and is committed; this is a
+# transcription of it into the form the panel can load with no fetch and no
+# parser. Committing both would be committing the same bank twice, and the copy
+# would be the one that goes stale.
+#
+# Everything that ships the panel generates it first -- the Pages workflow, the
+# release workflow and tools/install-vst3.ps1 all run tools/uibank -- so a
+# checkout without this file is not missing anything it cannot rebuild:
+#     odin run tools/uibank
+ui/bank.js

@@ -1,0 +1,128 @@
+# Build the plugins and attach them to a release.
+#
+# One job per format, because they do not share a runner or a build command and
+# a matrix over things that differ in every step is a matrix in name only.
+# Today that is VST3 on Windows. CLAP slots in beside it whenever it is wanted
+# -- it builds from hosts/clap with the same Odin invocation and is a single
+# file rather than a bundle. AudioUnit needs two things that do not exist yet: a
+# macOS runner, and hosts/au.
+#
+# Assets are named `Quesynth-<version>-<format>-<platform>.zip` so a release
+# page with three of them reads unambiguously, and so adding the second and
+# third changes nothing about the first.
+name: release
+
+on:
+  release:
+    types: [published]
+  # So the build can be exercised without cutting a release. On this path the
+  # bundle is uploaded as a workflow artifact and nothing is attached anywhere.
+  workflow_dispatch:
+
+# Needed to attach an asset to the release. Read-only would build the plugin and
+# then fail at the last step, which is the least useful place to find out.
+permissions:
+  contents: write
+
+jobs:
+  vst3-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same version the engine is developed against; see the note in
+      # pages.yml on why this pin follows the development machine.
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      # The suites run before the build, not after. A release that ships a
+      # plugin whose DSP tests fail is worse than a release that does not
+      # happen.
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/clap
+          odin test tests/patch
+
+      # The same script a developer runs. tools/install-vst3.ps1 is local
+      # convenience that calls this and then copies the result into a VST3
+      # folder; what is published here is that bundle, zipped. An artifact laid
+      # out only by CI is one nobody has ever actually run.
+      - name: Build the bundle
+        shell: pwsh
+        run: pwsh tools/build-vst3.ps1 -Output build/stage
+
+      - name: Check the bundle is complete
+        shell: pwsh
+        run: |
+          $ui = "build/stage/Quesynth.vst3/Contents/Resources/ui"
+          $bin = "build/stage/Quesynth.vst3/Contents/x86_64-win"
+          $required = @(
+            "$bin/Quesynth.vst3", "$bin/WebView2Loader.dll",
+            "$ui/index.html", "$ui/app.js", "$ui/params.js", "$ui/bank.js",
+            "$ui/patchfile.js", "$ui/sy1.js", "$ui/style.css"
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "the bundle is missing: $($missing -join ', ')" }
+          # bank.js existing is not the same as bank.js having anything in it,
+          # and the panel asks for it behind an onerror guard -- so an empty one
+          # would ship silently as a plugin with no sounds.
+          $count = ([regex]::Matches((Get-Content "$ui/bank.js" -Raw), 'n:"')).Count
+          if ($count -lt 1) { throw "the generated patch bank is empty" }
+          Write-Host "bundle complete, $count patches in the bank"
+
+      # What to do with the thing once it is downloaded. Obvious to anyone who
+      # has installed a plugin before and a dead end for everyone else, and the
+      # WebView2 note saves the one support question this plugin can generate.
+      - name: Write the install note
+        shell: pwsh
+        run: |
+          @"
+          Quesynth -- VST3 for Windows (64-bit)
+
+          To install, copy the folder
+
+              Quesynth.vst3
+
+          into your VST3 directory, which is normally
+
+              C:\Program Files\Common Files\VST3
+
+          then rescan plugins in your DAW. Quesynth appears as an instrument.
+
+          The whole folder is the plugin: the interface lives inside it under
+          Contents\Resources\ui, so copying only the .vst3 file out of it gives
+          you an instrument that plays and shows the host's generic controls
+          instead of its own panel.
+
+          The editor needs the Microsoft Edge WebView2 runtime, which is already
+          present on current Windows. Without it the plugin still loads and
+          plays; only the panel is missing.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          "@ | Out-File -FilePath build/stage/INSTALL.txt -Encoding utf8
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $asset = "Quesynth-$version-vst3-win64.zip"
+          Compress-Archive -Path build/stage/Quesynth.vst3, build/stage/INSTALL.txt -DestinationPath $asset
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Kept either way, so a workflow_dispatch run produces something to
+      # download and a release run still has the file if the upload is retried.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vst3-win64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$env:ASSET" --clobber

@@ -176,25 +176,33 @@ check_editor :: proc(controller: ^^vst3.IEditController_Vtbl, cobj: rawptr, seco
 	// bank or loading a file repainted the controls and changed no sound. The
 	// panel does its own repaint locally, so everything visible worked while
 	// nothing audible did, and only a reading taken on this side shows it.
-	before: [4]f64
-	watched := [4]u32{0, 25, 19, 14} // oscillator 1 shape, amp attack, cutoff, filter type
-	for id, i in watched {
-		before[i] = controller^.get_param_normalized(cobj, id)
+	// Every parameter, not a chosen few.
+	//
+	// This watched four hand-picked ones and reported a clean pass, then a
+	// false failure the moment the bundled bank changed: the new bank's first
+	// patch differs from the defaults in eight parameters out of ninety-nine
+	// and none of them were among the four. A test whose answer depends on
+	// which patch happens to be first is not testing what it claims to.
+	count := int(controller^.get_parameter_count(cobj))
+	before := make([]f64, count)
+	defer delete(before)
+	for i in 0 ..< count {
+		before[i] = controller^.get_param_normalized(cobj, u32(i))
 	}
 
 	pump(seconds)
 
 	moved := 0
-	for id, i in watched {
-		if controller^.get_param_normalized(cobj, id) != before[i] {
+	for i in 0 ..< count {
+		if controller^.get_param_normalized(cobj, u32(i)) != before[i] {
 			moved += 1
 		}
 	}
 	if moved > 0 {
-		fmt.printfln("editor   : %v of %v watched parameters moved -- the panel reached the engine", moved, len(watched))
+		fmt.printfln("editor   : %v of %v parameters moved -- the panel reached the engine", moved, count)
 	} else {
 		fmt.println("editor   : no parameter moved; the panel is not reaching the engine")
-		fmt.println("           (expected if this build ships no bank for it to load)")
+		fmt.println("           (expected only if this build ships no bank to load)")
 	}
 
 	child_count = 0

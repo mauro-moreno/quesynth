@@ -73,6 +73,14 @@ jobs:
       # first. Without it a fresh clone of this repository builds everything
       # correctly and then fails here, which reads like a broken workflow
       # rather than an unconfigured repository.
+      # The bank the panel reads is generated from patches/quesynth/factory.json
+      # rather than committed, so the page has no patches at all without this.
+      # Its absence is silent by design -- index.html asks for it behind an
+      # onerror guard -- which is exactly why it is a build step and not
+      # somebody's habit.
+      - name: Generate the patch bank
+        run: odin run tools/uibank -out:build/uibank
+
       - uses: actions/configure-pages@v5
         with:
           enablement: true
