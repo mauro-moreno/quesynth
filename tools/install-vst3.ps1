@@ -92,15 +92,15 @@ Copy-Item (Join-Path $root "ext\webview2\x64\WebView2Loader.dll") $binDir -Force
 # would be shipping a second engine that must never start.
 $panel = @(
     "index.html", "style.css",
-    "app.js", "bridge.js", "layout.js", "midi.js", "params.js"
+    "app.js", "bridge.js", "layout.js", "midi.js", "params.js", "patchfile.js"
 )
 foreach ($file in $panel) {
     Copy-Item (Join-Path $root "ui\$file") $uiDir -Force
 }
 
-# The patch bank, if this checkout has one built. It is optional by design --
-# index.html loads it with an onerror guard -- because it is generated from
-# Synth1's own factory banks and is not part of this repository.
+# The patch bank, if this checkout has one built. Optional by design: index.html
+# loads it with an onerror guard, so a checkout that has not generated one still
+# runs, with an empty patch browser.
 $bank = Join-Path $root "ui\bank.js"
 if (Test-Path $bank) {
     Copy-Item $bank $uiDir -Force

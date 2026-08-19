@@ -43,11 +43,12 @@ run_selftest :: proc(patch_path, output_path: string) -> int {
 	}
 	defer delete(data)
 
-	parsed, parse_err := patch.parse_sy1(data)
-	if parse_err != .None {
-		fmt.eprintfln("error: cannot parse %s: %v", patch_path, parse_err)
+	parsed, owned, parse_ok := patch.parse_patch_any(data)
+	if !parse_ok {
+		fmt.eprintfln("error: cannot parse %s", patch_path)
 		return 1
 	}
+	if owned {defer patch.destroy_patch(parsed)}
 
 	eng: engine.Engine
 	engine.engine_load_patch(&eng, parsed, f32(SELFTEST_SAMPLE_RATE))

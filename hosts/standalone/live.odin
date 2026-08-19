@@ -156,12 +156,13 @@ live_load_patch :: proc(patch_path: string) -> (parsed: patch.Patch, name: strin
 	}
 	defer delete(data)
 
-	parse_err: patch.Sy1_Error
-	parsed, parse_err = patch.parse_sy1(data)
-	if parse_err != .None {
-		fmt.eprintfln("error: cannot parse %s: %v", patch_path, parse_err)
+	owned, parse_ok: bool
+	parsed, owned, parse_ok = patch.parse_patch_any(data)
+	if !parse_ok {
+		fmt.eprintfln("error: cannot parse %s", patch_path)
 		return {}, "", false
 	}
+	if owned {defer patch.destroy_patch(parsed)}
 	// Only `values` is read from here on -- `bind_patch` never looks at the
 	// name or the colour -- so copying the name is enough to make the struct
 	// safe to keep after `data` goes away.

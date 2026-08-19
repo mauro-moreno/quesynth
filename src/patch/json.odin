@@ -347,3 +347,68 @@ destroy_bank :: proc(bank: Bank, allocator := context.allocator) {
 		delete(bank.name, allocator)
 	}
 }
+
+// -- reading either format ---------------------------------------------------
+
+// Which format a buffer holds, decided by looking at it rather than at a file
+// name.
+//
+// Sniffed and not passed in, because the caller usually has a path and a path
+// can lie: a patch saved from the interface and renamed to `.sy1` is still
+// JSON, and refusing it on the strength of four characters would be a worse
+// answer than reading it. The two formats cannot be confused -- `.sy1` begins
+// with the literal word "Synth1" and JSON with a brace -- so the check is
+// exact rather than a heuristic.
+//
+// This package still touches no filesystem. Everything here takes bytes, which
+// is what lets src/patch compile for the WebAssembly and mobile targets where
+// there is no `core:os` worth having.
+Patch_Format :: enum {
+	Unknown,
+	Sy1,
+	Json,
+}
+
+detect_format :: proc(data: []byte) -> Patch_Format {
+	i := 0
+	for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\r' || data[i] == '\n') {
+		i += 1
+	}
+	if i >= len(data) {
+		return .Unknown
+	}
+	if data[i] == '{' {
+		return .Json
+	}
+	rest := data[i:]
+	if len(rest) >= 6 && string(rest[:6]) == "Synth1" {
+		return .Sy1
+	}
+	return .Unknown
+}
+
+// Read a patch in whichever format it is in.
+//
+// `owned` says whether the name has to be freed: the JSON reader clones it and
+// the `.sy1` reader borrows it out of `data`. Returned rather than hidden
+// because getting it wrong is either a leak or a double free, and which one
+// depends on a format the caller did not choose.
+parse_patch_any :: proc(
+	data: []byte,
+	allocator := context.allocator,
+) -> (
+	p: Patch,
+	owned: bool,
+	ok: bool,
+) {
+	switch detect_format(data) {
+	case .Json:
+		parsed, err := parse_patch_json(data, allocator)
+		return parsed, true, err == .None
+	case .Sy1:
+		parsed, err := parse_sy1(data)
+		return parsed, false, err == .None
+	case .Unknown:
+	}
+	return {}, false, false
+}

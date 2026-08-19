@@ -1223,6 +1223,8 @@
   // would put a second idea of "what is loaded" in the panel, and the whole state
   // model here rests on there being one.
   var bank = window.SYNTH1_BANK || null;
+  // What is loaded right now, whether it came from the bank or from a file.
+  var currentName = "";
   var bankIndex = -1;
 
   function buildBank() {
@@ -1283,6 +1285,7 @@
       dependents[d].forEach(function (fn) { fn(); });
     }
 
+    currentName = p.n;
     bridge.send({ type: "state", values: p.v });
     showPatch({ name: p.n, index: bankIndex, bank: bank.label });
   }
@@ -1328,6 +1331,66 @@
     // Bring the current patch into view rather than always opening at the top.
     if (kids[bankIndex]) kids[bankIndex].scrollIntoView({ block: "center" });
   }
+
+  // What patchfile.js needs, and nothing more.
+  //
+  // The panel owns `values`, the control repaint and the bank; reading or
+  // writing a file needs all three and none of the rest. Exposed the same way
+  // the keyboard and the wheels are, so the file handling can live in its own
+  // script instead of growing this one -- and so nothing outside can reach in
+  // and change a parameter without the controls being repainted to match.
+  window.SynthPatch = {
+    // The current parameter set, as stored integers in parameter order.
+    values: function () {
+      var out = [];
+      for (var i = 0; i < PARAMS.length; i++) {
+        out.push(values[PARAMS[i].i] !== undefined ? values[PARAMS[i].i] : PARAMS[i].def);
+      }
+      return out;
+    },
+
+    // The name of what is actually loaded, which is not always the bank's.
+    //
+    // Reading it off `bank.patches[bankIndex]` was wrong and testing found it:
+    // loading a patch *file* leaves the bank index where it was, so a save
+    // straight afterwards wrote the loaded patch's parameters under the
+    // neighbouring bank entry's name. `currentName` is set by both paths.
+    name: function () {
+      return currentName || "Patch";
+    },
+
+    // Apply a whole patch. Goes through the same path a bank patch does, so a
+    // loaded file cannot end up shown differently from one that was stepped to.
+    apply: function (list, name) {
+      for (var i = 0; i < list.length; i++) {
+        if (byIndex[i] !== undefined) values[i] = list[i];
+      }
+      for (var k in controls) controls[k]();
+      for (var d in dependents) {
+        dependents[d].forEach(function (fn) { fn(); });
+      }
+      currentName = name || "Patch";
+      bridge.send({ type: "state", values: list });
+      showPatch({ name: currentName, index: null, bank: bank ? bank.label : "" });
+    },
+
+    // The bank as it stands, and a way to replace it. Replacing rebuilds the
+    // list popover, which is cached after its first open.
+    bank: function () {
+      return bank;
+    },
+
+    setBank: function (label, patches) {
+      bank = { label: label, patches: patches };
+      bankIndex = 0;
+      var list = document.getElementById("bank-list");
+      if (list) {
+        list.textContent = "";
+        list.classList.remove("open");
+      }
+      loadPatch(0);
+    },
+  };
 
   function showPatch(msg) {
     var p = document.getElementById("bank-patch");

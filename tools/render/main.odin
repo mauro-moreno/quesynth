@@ -46,11 +46,14 @@ main :: proc() {
 	}
 	defer delete(data)
 
-	parsed, parse_err := patch.parse_sy1(data)
-	if parse_err != .None {
-		fmt.eprintfln("error: cannot parse %s: %v", patch_path, parse_err)
+	// Either format: a patch saved from the interface is JSON, and this reads
+	// whichever one it was handed. See patch.detect_format.
+	parsed, owned, parse_ok := patch.parse_patch_any(data)
+	if !parse_ok {
+		fmt.eprintfln("error: cannot parse %s", patch_path)
 		os.exit(1)
 	}
+	if owned {defer patch.destroy_patch(parsed)}
 
 	eng: engine.Engine
 	engine.engine_load_patch(&eng, parsed, f32(SAMPLE_RATE))

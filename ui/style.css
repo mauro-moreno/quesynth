@@ -617,6 +617,27 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 .bank-step:hover { color: var(--ink); }
 
+/* The file button, beside the step arrows. Lettered rather than an icon, for
+ * the reason the MIDI and Keys buttons are: this panel has no icon set and one
+ * glyph nobody recognises is worse than four characters everybody reads. */
+.bank-file {
+  flex: 0 0 auto;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 4px 8px;
+  margin-left: 10px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.bank-file:hover { color: var(--ink); border-color: var(--metal-dark); }
+
 .bank-read.pickable { cursor: pointer; }
 .bank-read.pickable:hover .bank-patch { color: #ffffff; }
 
