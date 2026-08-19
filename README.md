@@ -40,7 +40,8 @@ Use it to read, to measure, to take apart. Do not put it on a deadline.
 
 ## What works
 
-An instrument that loads Synth1 patches and plays them, in four hosts:
+An instrument that loads Synth1 patches and plays them, in four hosts, with a
+factory bank of its own:
 
 | host | |
 |---|---|
@@ -62,10 +63,10 @@ resonance; here those read as hertz, milliseconds, Q and octaves, taken from the
 measurements in [`docs/null-test.md`](docs/null-test.md). Where the reference
 already shows a real unit, its own display string is used unchanged.
 
-> The live demo runs the real engine, but ships **no patches**. The factory banks
-> belong to Synth1 and are not redistributed here, so the browser build starts on
-> the init patch. Point a local build at your own Synth1 installation to hear the
-> banks.
+> The live demo runs the real engine and ships this project's own factory bank —
+> sixteen patches written for it, in `patches/quesynth/factory.json`. Synth1's
+> banks are not redistributed here; point `tools/uibank` at your own Synth1
+> installation to load those instead.
 
 ## How it is checked
 
@@ -120,6 +121,7 @@ src/clap/         C ABI bindings: CLAP
 src/vst3/         C ABI bindings: VST3
 src/webview2/     C ABI bindings: Edge WebView2
 ui/               the panel — one interface, naming no host
+patches/quesynth/ the factory bank, sixteen patches in this project's JSON
 hosts/            CLAP, VST3, standalone, WebAssembly
 tools/            s1probe and the measurement tooling the tables came from
 docs/             measured ground truth and design notes

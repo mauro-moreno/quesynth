@@ -33,7 +33,12 @@ ext/webview2/include/
 # measured against. They are not this project's work and not ours to
 # redistribute, so they stay on disk and out of the history -- the null test and
 # tools/uibank read them from the working tree and neither needs them committed.
-patches/
+# Written as `patches/*` with an exception rather than `patches/`, because git
+# does not descend into an ignored directory, so a negation under a directory
+# ignored as a whole would never be reached. patches/quesynth is this project's
+# own bank and is committed; the rest is Synth1's.
+patches/*
+!patches/quesynth/
 
 # Third-party Synth1 patch banks, by their own authors. Downloaded to test
 # against, and no more ours to redistribute than the factory banks above.
@@ -48,7 +53,11 @@ docs/synth1-readme-eng.txt
 # The WebAssembly engine is a build artifact; CI builds it for the page.
 hosts/wasm/synth.wasm
 
-# Generated from Synth1's own factory banks, which are not this project to
-# redistribute. index.html loads it with an onerror guard so a checkout without
-# it still runs, with an empty patch browser.
-ui/bank.js
+# ui/bank.js used to be ignored, because it was generated from Synth1's own
+# factory banks and those are not this project's to redistribute. It is now
+# generated from patches/quesynth/factory.json, which is this project's own
+# bank, so it is committed and the published page carries it.
+#
+# Regenerating it against somebody else's patches is still possible and still
+# means the result should not be committed:
+#     odin run tools/uibank -- <their directory> "Their Bank"
