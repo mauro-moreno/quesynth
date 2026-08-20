@@ -1258,7 +1258,16 @@
     return { label: (b && b.label) || "Bank", patches: slots };
   }
 
-  var bank = normalizeBank(window.SYNTH1_BANK);
+  // Every bank that is open, not just the one being played.
+  //
+  // Loading a file used to replace the bank outright, so the list down the side
+  // of the browser only ever had one row in it and there was nothing to
+  // navigate between. Holding them means a file can be *added* -- and means
+  // switching away from a bank and back does not lose what was saved into it,
+  // because each one keeps its own slots.
+  var banks = [normalizeBank(window.SYNTH1_BANK)];
+  var currentBank = 0;
+  var bank = banks[0];
   // Whether anything was compiled into the page at all. An empty bank of a
   // hundred and twenty-eight Inits is still a bank you can save into, but the
   // strip must not claim a patch is loaded before one is.
@@ -1430,8 +1439,15 @@
       return bank;
     },
 
+    // Add a bank and switch to it. Replaces one already open under the same
+    // name -- opening the same file twice should not give two identical rows.
     setBank: function (label, patches) {
-      bank = normalizeBank({ label: label, patches: patches });
+      var made = normalizeBank({ label: label, patches: patches });
+      var at = -1;
+      for (var i = 0; i < banks.length; i++) if (banks[i].label === made.label) at = i;
+      if (at >= 0) { banks[at] = made; currentBank = at; }
+      else { banks.push(made); currentBank = banks.length - 1; }
+      bank = made;
       bankSupplied = true;
       bankIndex = 0;
       var list = document.getElementById("bank-list");
@@ -1443,9 +1459,60 @@
     },
   };
 
+  function emptyBank(label) {
+    return normalizeBank({ label: label, patches: [] });
+  }
+
   // The bank as slots: what the browser and the file menu both work through.
   window.SynthBank = {
     SLOTS: BANK_SLOTS,
+
+    // Every open bank, for the list down the side.
+    list: function () {
+      return banks.map(function (b, i) {
+        var used = 0;
+        for (var j = 0; j < b.patches.length; j++) if (b.patches[j]) used++;
+        return { label: b.label, used: used, current: i === currentBank };
+      });
+    },
+
+    current: function () { return currentBank; },
+
+    // Switch to another open bank. `quiet` leaves the sound alone, which is
+    // what looking for somewhere to save wants: choosing a destination must not
+    // overwrite the thing being saved.
+    select: function (i, quiet) {
+      if (i < 0 || i >= banks.length || i === currentBank) return;
+      currentBank = i;
+      bank = banks[i];
+      var name = document.getElementById("bank-name");
+      if (name) name.textContent = bank.label;
+      if (quiet) {
+        // No slot number. The sound in the engine did not come from this bank,
+        // so claiming a slot in it would be a lie -- and a specific one: it
+        // would read "060:Lead Copy" over a bank whose slot 60 is empty.
+        // Nothing is loaded here on purpose; see the write mode in browser.js.
+        bankIndex = -1;
+        showPatch({ name: currentName, index: null, bank: bank.label });
+      } else {
+        loadPatch(0);
+      }
+    },
+
+    // A new empty bank: 128 slots with nothing in them, which is a perfectly
+    // good bank to start writing sounds into.
+    create: function (label) {
+      var wanted = String(label || "New Bank");
+      // Names are how the list is read, so two banks called the same thing
+      // would be two rows nobody can tell apart.
+      var name = wanted, n = 2;
+      while (banks.some(function (b) { return b.label === name; })) {
+        name = wanted + " " + n++;
+      }
+      banks.push(emptyBank(name));
+      window.SynthBank.select(banks.length - 1, true);
+      return banks.length - 1;
+    },
 
     label: function () { return bank.label; },
     setLabel: function (text) {

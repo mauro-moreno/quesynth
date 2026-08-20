@@ -1,36 +1,37 @@
-// The bank browser: which banks there are, and what is in the one you are in.
+// The bank browser: which banks are open, and what is in the one you are in.
 //
 // Laid out the way the reference's List/Info window is, because that layout is
-// not arbitrary -- sources down the left, slots across the right in numbered
-// columns. A player who knows the sound is "somewhere in the forties" finds it
-// by running down the numbers, which a single alphabetical column does not
-// allow and a name-only popover does not either.
+// not arbitrary -- banks down the left, slots down the right in numbered
+// columns, filling downward. A player who knows the sound is "somewhere in the
+// forties" finds it by running down the numbers, which a single alphabetical
+// column does not allow and a name-only popover does not either.
 //
-// The slots are the point. All hundred and twenty-eight are listed, the empty
-// ones included and visibly empty, because an empty slot is a place to put
-// something and hiding it would leave no way to arrive at one.
+// All hundred and twenty-eight slots are listed, the empty ones included and
+// visibly empty, because an empty slot is a place to put something and hiding
+// it would leave no way to arrive at one.
+//
+// Two modes, and the difference between them is the whole reason there are two.
+//
+//   load    picking a sound to play. A click loads it.
+//   write   picking somewhere to put the sound you already have. A click
+//           chooses a destination and loads nothing.
+//
+// Write cannot share the load behaviour. The sound being written is the one
+// currently in the engine, so a browser that loaded on click would overwrite it
+// the moment you went looking for somewhere to put it: you would arrive at the
+// slot having already lost what you came to save. That is not a detail of the
+// interface, it is why hardware has a Write button rather than a Save item in a
+// menu.
 
 (function () {
   "use strict";
 
   function api() { return window.SynthBank; }
+  function files() { return window.SynthPatchFile; }
 
-  // Sources down the left. The bank compiled into the page is always there;
-  // anything loaded from a file joins it for as long as the page is open.
-  var sources = [];
-
-  function registerSource(entry) {
-    // Same label twice replaces, so loading the same file again does not stack
-    // up identical rows.
-    var at = -1;
-    for (var i = 0; i < sources.length; i++) if (sources[i].label === entry.label) at = i;
-    if (at >= 0) sources[at] = entry; else sources.push(entry);
-  }
-
-  function used(slots) {
-    var n = 0;
-    for (var i = 0; i < slots.length; i++) if (slots[i]) n++;
-    return n;
+  function pad3(n) {
+    var s = String(n);
+    return s.length >= 3 ? s : ("000" + s).slice(-3);
   }
 
   // How many columns fit, and therefore how many rows deep each one runs.
@@ -48,10 +49,9 @@
       grid.style.gridTemplateRows = "repeat(" + rows + ", auto)";
     };
     apply();
-    // Again on the next frame. The first call happens while the dialog is
-    // still being assembled, when the grid has no width yet and the answer is
-    // therefore one column -- which then visibly snaps to two. The observer
-    // below would correct it either way; this stops it being seen.
+    // Again on the next frame. The first call happens while the dialog is still
+    // being assembled, when the grid has no width yet and the answer is
+    // therefore one column -- which then visibly snaps to two.
     requestAnimationFrame(apply);
     if (window.ResizeObserver) {
       if (grid._ro) grid._ro.disconnect();
@@ -60,71 +60,109 @@
     }
   }
 
-  function pad3(n) {
-    var s = String(n);
-    return s.length >= 3 ? s : ("000" + s).slice(-3);
+  function button(className, text) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = className;
+    if (text != null) b.textContent = text;
+    return b;
   }
 
-  // ------------------------------------------------------------------ render
+  // ---------------------------------------------------------------- the body
 
-  function build() {
+  function build(mode) {
+    var writing = mode === "write";
+    // In write mode this is the destination, and it starts where you already
+    // are, so writing back to the same slot takes no navigation at all. It can
+    // be -1 -- after switching banks nothing in this one is loaded -- and the
+    // top of the bank is the sensible place to start from then.
+    var target = Math.max(0, api().index());
+    var field = null, where = null;
+
+    // Move the destination, and everything that shows it, together.
+    function setTarget(i) {
+      target = i;
+      if (where) where.textContent = "Slot " + pad3(i);
+      if (field) {
+        // The name of the sound being written, not of the one being replaced.
+        //
+        // The other way round is a trap: pick a slot holding "Strings", write
+        // an organ into it without reading the field, and the bank now has an
+        // organ called Strings. Re-saving a patch over itself still offers its
+        // own name, because in that case they are the same name.
+        field.value = window.SynthPatch.name() || "Untitled";
+      }
+    }
+
     var wrap = document.createElement("div");
     wrap.className = "browser";
 
+    var panes = document.createElement("div");
+    panes.className = "browser-panes";
     var left = document.createElement("div");
     left.className = "browser-sources";
     var right = document.createElement("div");
     right.className = "browser-slots";
-
-    var panes = document.createElement("div");
-    panes.className = "browser-panes";
     panes.appendChild(left);
     panes.appendChild(right);
     wrap.appendChild(panes);
 
     function paintSources() {
       left.textContent = "";
-      var heading = document.createElement("div");
-      heading.className = "browser-heading";
-      heading.textContent = "Banks";
-      left.appendChild(heading);
 
-      var current = api().label();
-      sources.forEach(function (src) {
-        var b = document.createElement("button");
-        b.type = "button";
-        b.className = "browser-source" + (src.label === current ? " on" : "");
+      var head = document.createElement("div");
+      head.className = "browser-heading";
+      var label = document.createElement("span");
+      label.textContent = "Banks";
+      head.appendChild(label);
+
+      var actions = document.createElement("span");
+      actions.className = "browser-heading-actions";
+
+      // Somewhere to write to that is not the factory bank.
+      var make = button("browser-mini", "New");
+      make.title = "A new empty bank";
+      make.addEventListener("click", function () {
+        api().create("New Bank");
+        if (writing) setTarget(0);
+        paintSources();
+        paintSlots();
+      });
+
+      // A bank from a file, joining the list rather than replacing it.
+      var add = button("browser-mini", "Add");
+      add.title = "Open a bank or patch file";
+      add.addEventListener("click", function () {
+        if (files() && files().pick) {
+          files().pick(function () { paintSources(); paintSlots(); });
+        }
+      });
+
+      actions.appendChild(make);
+      actions.appendChild(add);
+      head.appendChild(actions);
+      left.appendChild(head);
+
+      api().list().forEach(function (b, i) {
+        var row = button("browser-source" + (b.current ? " on" : ""));
         var name = document.createElement("span");
         name.className = "browser-source-name";
-        name.textContent = src.label;
+        name.textContent = b.label;
         var count = document.createElement("span");
         count.className = "browser-source-count";
-        count.textContent = src.count != null ? "(" + src.count + ")" : "";
-        b.appendChild(name);
-        b.appendChild(count);
-        b.addEventListener("click", function () {
-          if (src.label === api().label()) return;
-          src.select();
+        count.textContent = b.used;
+        row.appendChild(name);
+        row.appendChild(count);
+        row.addEventListener("click", function () {
+          // Quietly when writing: choosing which bank to save into must not
+          // load anything, or the sound being saved is the one it replaces.
+          api().select(i, writing);
+          if (writing) setTarget(0);
           paintSources();
           paintSlots();
         });
-        left.appendChild(b);
+        left.appendChild(row);
       });
-
-      var load = document.createElement("button");
-      load.type = "button";
-      load.className = "browser-open";
-      load.textContent = "Open a file…";
-      load.addEventListener("click", function () {
-        if (window.SynthPatchFile && window.SynthPatchFile.pick) {
-          window.SynthPatchFile.pick(function () {
-            syncCurrent();
-            paintSources();
-            paintSlots();
-          });
-        }
-      });
-      left.appendChild(load);
     }
 
     function paintSlots() {
@@ -138,7 +176,7 @@
       var count = document.createElement("span");
       count.className = "browser-bank-count";
       var slots = api().slots();
-      count.textContent = used(slots) + " of " + slots.length + " used";
+      count.textContent = slots.filter(Boolean).length + " of " + slots.length + " used";
       head.appendChild(title);
       head.appendChild(count);
       right.appendChild(head);
@@ -148,10 +186,10 @@
       var here = api().index();
 
       slots.forEach(function (slot, i) {
-        var b = document.createElement("button");
-        b.type = "button";
-        b.className = "browser-slot" + (slot ? "" : " empty") + (i === here ? " on" : "");
-        if (i === here) b.setAttribute("aria-current", "true");
+        var marked = writing ? i === target : i === here;
+        var b = button("browser-slot" + (slot ? "" : " empty") +
+                       (marked ? (writing ? " target" : " on") : ""));
+        if (marked) b.setAttribute("aria-current", "true");
 
         var num = document.createElement("span");
         num.className = "browser-slot-num";
@@ -163,109 +201,98 @@
 
         b.appendChild(num);
         b.appendChild(name);
+
         b.addEventListener("click", function () {
-          api().load(i);
-          paintSlots();
+          if (writing) {
+            setTarget(i);
+            paintSlots();
+          } else {
+            api().load(i);
+            paintSlots();
+          }
         });
-        // Double-click loads and closes, which is what picking a sound to play
-        // usually means.
-        b.addEventListener("dblclick", function () {
-          api().load(i);
-          window.SynthModal.close();
-        });
+        if (!writing) {
+          b.addEventListener("dblclick", function () {
+            api().load(i);
+            window.SynthModal.close();
+          });
+        }
         grid.appendChild(b);
       });
 
       right.appendChild(grid);
       layoutGrid(grid, slots.length);
 
-      // Keep the slot you are on in view when the browser is opened on a patch
-      // somewhere down in the nineties.
-      var on = grid.querySelector(".browser-slot.on");
+      var on = grid.querySelector(".browser-slot.on, .browser-slot.target");
       if (on) setTimeout(function () { on.scrollIntoView({ block: "center" }); }, 0);
     }
 
-    // The bank the panel is actually on may have arrived from a file since the
-    // browser was last open; make sure it is one of the rows.
-    function syncCurrent() {
-      registerSource({
-        label: api().label(),
-        count: used(api().slots()),
-        select: function () { /* already current */ },
+    // The write row: present the whole time in write mode, because it is the
+    // point of the dialog rather than something hidden behind a button.
+    if (writing) {
+      var row = document.createElement("form");
+      row.className = "browser-save";
+      where = document.createElement("span");
+      where.className = "browser-save-slot";
+      where.textContent = "Slot " + pad3(target);
+      field = document.createElement("input");
+      field.type = "text";
+      field.className = "browser-save-name";
+      field.setAttribute("aria-label", "Patch name");
+      var at = api().slots()[target];
+      field.value = at ? at.name : (window.SynthPatch.name() || "Untitled");
+      var go = document.createElement("button");
+      go.type = "submit";
+      go.className = "modal-action primary";
+      go.textContent = "Write";
+      row.appendChild(where);
+      row.appendChild(field);
+      row.appendChild(go);
+      row.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var name = field.value.trim();
+        if (!name) { field.focus(); return; }
+        api().store(target, name);
+        window.SynthModal.close();
       });
+      wrap.appendChild(row);
     }
 
-    syncCurrent();
     paintSources();
     paintSlots();
 
-    wrap.refresh = function () { syncCurrent(); paintSources(); paintSlots(); };
+    wrap.refresh = function () { paintSources(); paintSlots(); };
+    wrap.focusField = function () { if (field) { field.focus(); field.select(); } };
     return wrap;
   }
 
-  function open() {
+  // -------------------------------------------------------------------- open
+
+  function open(mode) {
     if (!api()) return;
-    var body = build();
+    var writing = mode === "write";
+    var body = build(mode);
 
-    // The save row: a name and a slot, shown only when asked for.
-    //
-    // Not window.prompt. A plugin's web view is entitled to refuse it, and the
-    // panel would then have a button that silently does nothing in the one
-    // build where the sound most needs keeping.
-    var save = document.createElement("form");
-    save.className = "browser-save";
-    save.hidden = true;
-    var field = document.createElement("input");
-    field.type = "text";
-    field.className = "browser-save-name";
-    field.setAttribute("aria-label", "Patch name");
-    var where = document.createElement("span");
-    where.className = "browser-save-slot";
-    var confirm = document.createElement("button");
-    confirm.type = "submit";
-    confirm.className = "modal-action primary";
-    confirm.textContent = "Save";
-    var cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.className = "modal-action";
-    cancel.textContent = "Cancel";
-    save.appendChild(where);
-    save.appendChild(field);
-    save.appendChild(confirm);
-    save.appendChild(cancel);
-    body.appendChild(save);
+    var actions = writing
+      ? [{ label: "Cancel", onClick: function (close) { close(); } }]
+      : [
+          {
+            label: "Save patch…",
+            onClick: function () { if (files() && files().savePatch) files().savePatch(); },
+          },
+          {
+            label: "Save bank…",
+            onClick: function () { if (files() && files().saveBank) files().saveBank(); },
+          },
+          { label: "Done", primary: true, onClick: function (close) { close(); } },
+        ];
 
-    function hideSave() { save.hidden = true; }
-    cancel.addEventListener("click", hideSave);
-    save.addEventListener("submit", function (e) {
-      e.preventDefault();
-      var name = field.value.trim();
-      if (!name) { field.focus(); return; }
-      api().store(currentTarget, name);
-      hideSave();
-      body.refresh();
-    });
-
-    var currentTarget = 0;
-    function askSave() {
-      currentTarget = api().index();
-      var slot = api().slots()[currentTarget];
-      where.textContent = "Slot " + pad3(currentTarget);
-      field.value = slot ? slot.name : (window.SynthPatch.name() || "Untitled");
-      save.hidden = false;
-      field.focus();
-      field.select();
-    }
-
-    window.SynthModal.show("Patches", body, [
-      { label: "Save into this slot…", onClick: askSave },
-      { label: "Done", primary: true, onClick: function (close) { close(); } },
-    ]);
+    window.SynthModal.show(writing ? "Write" : "Patches", body, actions);
+    if (writing) body.focusField();
   }
 
   window.SynthBrowser = {
-    open: open,
-    // So the file menu can add what it loads to the list down the left.
-    registerSource: registerSource,
+    open: function () { open("load"); },
+    write: function () { open("write"); },
   };
 })();

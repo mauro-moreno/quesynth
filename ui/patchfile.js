@@ -263,59 +263,6 @@
     input.click();
   }
 
-  // -- the menu --------------------------------------------------------------
-
-  var menu = null;
-
-  function flash(text) {
-    var button = document.getElementById("file-toggle");
-    if (!button) return;
-    var resting = "FILE";
-    button.textContent = text;
-    setTimeout(function () { button.textContent = resting; }, 1600);
-  }
-
-  function buildMenu() {
-    menu = document.createElement("div");
-    menu.id = "file-menu";
-    menu.className = "bank-list";
-    document.body.appendChild(menu);
-    document.addEventListener("click", function () { menu.classList.remove("open"); });
-    menu.addEventListener("click", function (e) { e.stopPropagation(); });
-
-    var items = [
-      ["Save patch", function () { savePatch(); flash("SAVED"); }],
-      ["Load patch, bank or .zip…", function () {
-        pickFile(function (err, what) {
-          flash(err ? "FAILED" : "LOADED");
-          if (err) console.error("patch file:", err.message);
-        });
-      }],
-      ["Save bank", function () { saveBank(); flash("SAVED"); }],
-    ];
-
-    items.forEach(function (item) {
-      var b = document.createElement("button");
-      b.type = "button";
-      b.textContent = item[0];
-      b.addEventListener("click", function () {
-        menu.classList.remove("open");
-        item[1]();
-      });
-      menu.appendChild(b);
-    });
-  }
-
-  function openMenu(anchor) {
-    if (!menu) buildMenu();
-    menu.classList.add("open");
-    var r = anchor.getBoundingClientRect();
-    var w = menu.offsetWidth;
-    menu.style.left = Math.round(Math.max(8,
-      Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8))) + "px";
-    menu.style.bottom = Math.round(window.innerHeight - r.top + 8) + "px";
-  }
-
   // The reading and writing, without the file handling around it.
   //
   // Exposed because the claim this module makes -- that what it writes is the
@@ -338,6 +285,8 @@
       var doc = bankDoc();
       return doc ? JSON.stringify(doc, null, 2) + "\n" : "";
     },
+    savePatch: savePatch,
+    saveBank: saveBank,
     load: loadText,
     loadBytes: loadBytes,
     sniff: sniff,
@@ -347,15 +296,11 @@
   };
 
   document.addEventListener("DOMContentLoaded", function () {
-    var button = document.getElementById("file-toggle");
-    if (!button) return;
+    var button = document.getElementById("write-toggle");
+    if (!button || !window.SynthBrowser) return;
     button.addEventListener("click", function (e) {
       e.stopPropagation();
-      if (menu && menu.classList.contains("open")) {
-        menu.classList.remove("open");
-      } else {
-        openMenu(button);
-      }
+      window.SynthBrowser.write();
     });
   });
 })();
