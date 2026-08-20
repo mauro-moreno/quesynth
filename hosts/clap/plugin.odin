@@ -6,6 +6,7 @@ import "base:runtime"
 import "../../src/clap"
 import "../../src/engine"
 import "../../src/patch"
+import "../panel"
 
 // Layer 2: the CLAP adapter.
 //
@@ -80,6 +81,22 @@ Synth :: struct {
 	// synthesiser with one bank does.
 	bank_msb:     int,
 	bank_lsb:     int,
+
+	// The interface, and what it sends.
+	//
+	// A note played on the panel's keyboard arrives on the interface thread,
+	// and allocating a voice there while process() is rendering is a race
+	// over the whole voice pool -- so notes take the long way round through
+	// the queue and are drained at the top of a block. Parameters do not need
+	// it: one integer written and one flag set.
+	editor:       panel.Panel,
+	panel_ready:  bool,
+	ui_queue:     panel.Ui_Queue,
+
+	// The panel's own master fader, which is not a patch parameter: the
+	// reference keeps its volume knob outside the patch and nothing in the
+	// .sy1 format carries it.
+	volume:       f32,
 }
 
 synth_of :: proc "contextless" (plugin: ^clap.Plugin) -> ^Synth {
@@ -408,6 +425,11 @@ plugin_activate :: proc "c" (
 	// is the one call in the plugin that allocates on purpose.
 	sync_staged(s)
 	s.sample_rate = f32(sample_rate)
+	// Unity unless a panel has moved it. Zero would be silence, and the
+	// field starts zeroed like the rest of the struct.
+	if s.volume <= 0 {
+		s.volume = 1
+	}
 	for i in 0 ..< PARAM_COUNT {
 		s.mirror.values[i] = int(s.values[i])
 		s.mirror.present[i] = true
@@ -462,6 +484,11 @@ plugin_process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> cla
 	}
 
 	sync_staged(s)
+
+	// Anything played on the panel's keyboard since the last block. Here
+	// rather than where it was pressed: allocating a voice on the interface
+	// thread while this one is rendering is a race over the whole pool.
+	panel.drain_events(&s.ui_queue, &s.eng)
 
 	// The transport, before anything reads it. The arpeggiator divides the beat,
 	// so a project at 90 BPM has to be able to say so or the engine steps at its
@@ -532,6 +559,18 @@ plugin_process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> cla
 			block_end = frames
 		}
 		engine.engine_process(&s.eng, left[frame:block_end], right[frame:block_end])
+
+		// The panel's master fader, over what was just rendered. Not a patch
+		// parameter -- the reference keeps its volume knob outside the patch
+		// and nothing in the .sy1 format carries it -- and skipped entirely
+		// while it sits at unity, which is where it is unless a panel has
+		// been opened and moved.
+		if s.volume > 0 && s.volume < 1 {
+			for i in frame ..< block_end {
+				left[i] *= s.volume
+				right[i] *= s.volume
+			}
+		}
 		frame = block_end
 	}
 
@@ -576,6 +615,8 @@ plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 		return &PARAMS
 	case clap.EXT_STATE:
 		return &STATE
+	case clap.EXT_GUI:
+		return &GUI
 	case clap.EXT_PRESET_LOAD, clap.EXT_PRESET_LOAD_COMPAT:
 		return &PRESET_LOAD
 	}

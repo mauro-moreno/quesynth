@@ -5,6 +5,7 @@ import "base:runtime"
 import "../../src/engine"
 import "../../src/patch"
 import "../../src/vst3"
+import "../panel"
 
 // Layer 2: the VST3 adapter.
 //
@@ -84,7 +85,7 @@ Plugin :: struct {
 	volume_smooth:   engine.Smoother,
 
 	// Notes and wheels from the editor, waiting for the audio thread.
-	ui_queue:        UI_Queue,
+	ui_queue:        panel.Ui_Queue,
 
 	ctx:             runtime.Context,
 }
@@ -426,7 +427,7 @@ processor_process :: proc "c" (this: rawptr, data: ^vst3.Process_Data) -> vst3.R
 
 	// Notes played on the editor keyboard, which arrived on the interface
 	// thread and have been waiting for this one. See ui_events.odin.
-	drain_ui_events(p)
+	panel.drain_events(&p.ui_queue, &p.eng)
 	if p.params_dirty {
 		apply_params(p)
 	}

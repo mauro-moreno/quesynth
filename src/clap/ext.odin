@@ -179,3 +179,51 @@ Plugin_Preset_Load :: struct {
 		load_key: cstring,
 	) -> bool,
 }
+
+// -- gui ---------------------------------------------------------------------
+//
+// clap.gui, from ext/clap/include/clap/ext/gui.h.
+//
+// The host owns a window and the plugin puts its interface inside it, which is
+// the same arrangement VST3 has under a different set of names: `set_parent`
+// here is `attached` there, `set_size` is `on_size`, and `create`/`destroy`
+// bracket the pair. What goes *in* the window is the same panel either way; see
+// hosts/panel.
+EXT_GUI :: "clap.gui"
+
+WINDOW_API_WIN32 :: "win32"
+
+// clap_window_t. The union is one pointer wide whichever member is used, so a
+// rawptr stands for all of them; on Windows it is the HWND.
+Window :: struct {
+	api:    cstring,
+	handle: rawptr,
+}
+
+// clap_gui_resize_hints_t
+Gui_Resize_Hints :: struct {
+	can_resize_horizontally: bool,
+	can_resize_vertically:   bool,
+	preserve_aspect_ratio:   bool,
+	aspect_ratio_width:      u32,
+	aspect_ratio_height:     u32,
+}
+
+// clap_plugin_gui_t
+Plugin_Gui :: struct {
+	is_api_supported:  proc "c" (plugin: ^Plugin, api: cstring, is_floating: bool) -> bool,
+	get_preferred_api: proc "c" (plugin: ^Plugin, api: ^cstring, is_floating: ^bool) -> bool,
+	create:            proc "c" (plugin: ^Plugin, api: cstring, is_floating: bool) -> bool,
+	destroy:           proc "c" (plugin: ^Plugin),
+	set_scale:         proc "c" (plugin: ^Plugin, scale: f64) -> bool,
+	get_size:          proc "c" (plugin: ^Plugin, width: ^u32, height: ^u32) -> bool,
+	can_resize:        proc "c" (plugin: ^Plugin) -> bool,
+	get_resize_hints:  proc "c" (plugin: ^Plugin, hints: ^Gui_Resize_Hints) -> bool,
+	adjust_size:       proc "c" (plugin: ^Plugin, width: ^u32, height: ^u32) -> bool,
+	set_size:          proc "c" (plugin: ^Plugin, width: u32, height: u32) -> bool,
+	set_parent:        proc "c" (plugin: ^Plugin, window: ^Window) -> bool,
+	set_transient:     proc "c" (plugin: ^Plugin, window: ^Window) -> bool,
+	suggest_title:     proc "c" (plugin: ^Plugin, title: cstring),
+	show:              proc "c" (plugin: ^Plugin) -> bool,
+	hide:              proc "c" (plugin: ^Plugin) -> bool,
+}

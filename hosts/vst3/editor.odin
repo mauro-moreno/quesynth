@@ -2,15 +2,9 @@
 package synth_vst3
 
 import "base:runtime"
-import "core:encoding/json"
-import "core:os"
-import "core:path/filepath"
-import "core:strings"
-import win "core:sys/windows"
 
-import "../../src/engine"
 import "../../src/vst3"
-import "../../src/webview2"
+import "../panel"
 
 // The editor: the interface in ui/ hosted in an Edge WebView2 control.
 //
@@ -20,33 +14,16 @@ import "../../src/webview2"
 // it is in and talk to it in one vocabulary. Everything here is the other end
 // of that conversation.
 //
+// What is left in this file is IPlugView and nothing else. Starting the web
+// view, finding the panel on disk and speaking the protocol all moved to
+// hosts/panel when the CLAP build wanted the same interface -- and the reason
+// they moved rather than being copied is written at the top of that file.
+//
 // The wire format is documented at the top of ui/bridge.js and is deliberately
-// in *stored .sy1 integers* rather than normalised floats. This file is the
-// only place in the plugin that converts between the two, and it converts at
-// the VST3 edge, where the parameter's state count is known.
-
-// The size the window opens at. The panel is responsive and will lay itself out
-// at whatever the host allows, so this is a starting point rather than a
-// constraint -- but it should be big enough that no section starts out
-// scrolled.
-EDITOR_WIDTH :: i32(1180)
-EDITOR_HEIGHT :: i32(720)
-
-// The folder in ui/ is mapped to this name so the page loads over https with a
-// real origin. A `.invalid` domain can never resolve on the public internet,
-// which is the point: nothing here should ever reach the network.
-CONTENT_HOST :: "synth.invalid"
-START_URL :: "https://synth.invalid/index.html"
-
-foreign import kernel32 "system:Kernel32.lib"
-
-@(default_calling_convention = "system")
-foreign kernel32 {
-	GetModuleHandleExW :: proc(dwFlags: win.DWORD, lpModuleName: win.wstring, phModule: ^win.HMODULE) -> win.BOOL ---
-}
-
-GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS :: win.DWORD(0x00000004)
-GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT :: win.DWORD(0x00000002)
+// in *stored .sy1 integers* rather than normalised floats. This file is still
+// the only place in the plugin that converts between the two, because that
+// conversion belongs at the VST3 edge, where the parameter's state count is
+// known.
 
 Editor :: struct {
 	// First, and for the same reason as in plugin.odin: an interface pointer is
@@ -57,11 +34,7 @@ Editor :: struct {
 
 	plugin:    ^Plugin,
 	frame:     ^vst3.IPlugFrame,
-	view:      webview2.View,
-
-	width:     i32,
-	height:    i32,
-	open:      bool,
+	panel:     panel.Panel,
 
 	ctx:       runtime.Context,
 }
@@ -70,52 +43,129 @@ from_view :: proc "contextless" (this: rawptr) -> ^Editor {
 	return (^Editor)(this)
 }
 
-// -- where the plugin lives --------------------------------------------------
+// -- what the panel asks of this host ----------------------------------------
 
-// The directory holding this DLL.
-//
-// Found from the address of a procedure in this module rather than from the
-// process, because the process is the DAW and its directory is not ours. This
-// is what makes the bundle relocatable: nothing is looked up by absolute path
-// or by an environment variable a host may not have set.
-//
-// The result borrows from the temporary allocator and must not be freed.
-// `filepath.dir` does not allocate -- it returns a slice of the path handed to
-// it -- so deleting the result would free a pointer into the temp arena
-// through the heap allocator, which is a crash and not a leak.
-module_dir :: proc() -> (string, bool) {
-	module: win.HMODULE
-	flags := GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
-	if !GetModuleHandleExW(flags, win.wstring(rawptr(module_dir)), &module) {
-		return "", false
+editor_read_values :: proc(user: rawptr, out: []i32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
 	}
-
-	buffer: [win.MAX_PATH_WIDE]u16
-	length := win.GetModuleFileNameW(module, &buffer[0], win.MAX_PATH_WIDE)
-	if length == 0 || int(length) >= len(buffer) {
-		return "", false
+	for i in 0 ..< min(len(out), PARAM_COUNT) {
+		out[i] = ed.plugin.values[i]
 	}
-
-	path, err := win.wstring_to_utf8(win.wstring(&buffer[0]), int(length), context.temp_allocator)
-	if err != nil {
-		return "", false
-	}
-	return filepath.dir(path), true
 }
 
-// WebView2 needs somewhere writable of its own. Under the user's local app data
-// rather than beside the plugin: a bundle in Program Files is not writable, and
-// a browser profile is per-user anyway.
-user_data_dir :: proc(allocator := context.allocator) -> string {
-	local := os.get_env("LOCALAPPDATA", allocator)
-	if local == "" {
-		return strings.clone(".", allocator)
+editor_set_param :: proc(user: rawptr, index: int, stored: i32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
 	}
-	joined, err := filepath.join({local, "Quesynth", "WebView2"}, allocator)
-	if err != nil {
-		return strings.clone(".", allocator)
+	p := ed.plugin
+	p.values[index] = stored
+	// Marked rather than applied: `process` rebinds on the audio thread when it
+	// next runs, so the engine is never rebuilt underneath a render.
+	p.params_dirty = true
+	// And told to the host, or the move exists only inside the web view -- no
+	// automation recorded, and a session saved without it.
+	if p.handler != nil {
+		handler := (^vst3.IComponentHandler)(p.handler)
+		handler.vtbl.perform_edit(p.handler, u32(index), normalized_of(index, stored))
 	}
-	return joined
+}
+
+editor_set_state :: proc(user: rawptr, values: []i32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	p := ed.plugin
+	count := min(len(values), PARAM_COUNT)
+	for i in 0 ..< count {
+		p.values[i] = values[i]
+	}
+	// One flag for the whole patch. Rebinding ninety-nine times on the way to
+	// one sound is what `params_dirty` exists to avoid.
+	p.params_dirty = true
+
+	// Every parameter reported, or the host keeps the old automation values and
+	// writes them back over this the moment the transport moves.
+	if p.handler != nil {
+		handler := (^vst3.IComponentHandler)(p.handler)
+		for i in 0 ..< count {
+			handler.vtbl.perform_edit(p.handler, u32(i), normalized_of(i, p.values[i]))
+		}
+	}
+}
+
+editor_edit :: proc(user: rawptr, index: int, begin: bool) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil || ed.plugin.handler == nil {
+		return
+	}
+	p := ed.plugin
+	handler := (^vst3.IComponentHandler)(p.handler)
+	if begin {
+		handler.vtbl.begin_edit(p.handler, u32(index))
+	} else {
+		handler.vtbl.end_edit(p.handler, u32(index))
+	}
+}
+
+editor_note :: proc(user: rawptr, on: bool, note: int, velocity: f32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	if on {
+		panel.push_event(&ed.plugin.ui_queue, panel.Ui_Event{kind = .Note_On, a = i32(note), b = velocity})
+	} else {
+		panel.push_event(&ed.plugin.ui_queue, panel.Ui_Event{kind = .Note_Off, a = i32(note)})
+	}
+}
+
+editor_bend :: proc(user: rawptr, amount: f32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	panel.push_event(&ed.plugin.ui_queue, panel.Ui_Event{kind = .Bend, b = amount})
+}
+
+editor_control :: proc(user: rawptr, cc: int, value: f32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	panel.push_event(&ed.plugin.ui_queue, panel.Ui_Event{kind = .Control, a = i32(cc), b = value})
+}
+
+editor_volume :: proc(user: rawptr, amount: f32) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	// One float written for another to read, and the audio thread smooths
+	// whatever it finds. No queue: unlike a note, a stale value here is simply
+	// the previous gain for one more block.
+	ed.plugin.volume = amount
+}
+
+// The whole parameter set, after a state load: the panel is showing the patch
+// from before it and has no way to know otherwise.
+editor_send_state :: proc(ed: ^Editor) {
+	if ed == nil {
+		return
+	}
+	panel.send_state(&ed.panel)
+}
+
+// One parameter that changed somewhere else -- an automation lane, or the
+// host's own generic panel -- so the web view follows instead of going stale.
+editor_send_param :: proc(ed: ^Editor, index: int, stored: i32) {
+	if ed == nil {
+		return
+	}
+	panel.send_param(&ed.panel, index, stored)
 }
 
 // -- IPlugView ---------------------------------------------------------------
@@ -150,11 +200,8 @@ view_release :: proc "c" (this: rawptr) -> u32 {
 	if ed.plugin != nil && ed.plugin.editor == ed {
 		ed.plugin.editor = nil
 	}
-	if ed.open {
-		webview2.destroy(&ed.view)
-		ed.open = false
-	}
-	delete(ed.view.content_dir)
+	panel.stop(&ed.panel)
+	delete(ed.panel.view.content_dir)
 	free(ed)
 	return 0
 }
@@ -176,36 +223,22 @@ view_attached :: proc "c" (this: rawptr, parent: rawptr, type: cstring) -> vst3.
 	if parent == nil || type == nil || string(type) != vst3.PLATFORM_TYPE_HWND {
 		return vst3.INVALID_ARGUMENT
 	}
-	if ed.open {
+	if ed.panel.open {
 		return vst3.RESULT_FALSE
 	}
-
-	ed.view.parent = win.HWND(parent)
-	ed.view.bounds = win.RECT{0, 0, ed.width, ed.height}
-	ed.view.host_name = CONTENT_HOST
-	ed.view.start_url = START_URL
-	ed.view.on_message = editor_on_message
-	ed.view.user = rawptr(ed)
-
-	data_dir := user_data_dir(context.temp_allocator)
-	if !webview2.create(&ed.view, data_dir) {
+	if !panel.start(&ed.panel, parent) {
 		// No runtime, or the loader refused. The host keeps the window; it just
 		// stays empty. Said plainly rather than pretended away: returning OK
 		// here would claim an editor that is not there.
 		return vst3.RESULT_FALSE
 	}
-	ed.open = true
 	return vst3.RESULT_OK
 }
 
 view_removed :: proc "c" (this: rawptr) -> vst3.Result {
 	ed := from_view(this)
 	context = ed.ctx
-	if ed.open {
-		webview2.destroy(&ed.view)
-		ed.open = false
-	}
-	ed.view.parent = nil
+	panel.stop(&ed.panel)
 	return vst3.RESULT_OK
 }
 
@@ -226,7 +259,7 @@ view_get_size :: proc "c" (this: rawptr, size: ^vst3.View_Rect) -> vst3.Result {
 		return vst3.INVALID_ARGUMENT
 	}
 	ed := from_view(this)
-	size^ = vst3.View_Rect{0, 0, ed.width, ed.height}
+	size^ = vst3.View_Rect{0, 0, ed.panel.width, ed.panel.height}
 	return vst3.RESULT_OK
 }
 
@@ -239,9 +272,7 @@ view_on_size :: proc "c" (this: rawptr, new_size: ^vst3.View_Rect) -> vst3.Resul
 
 	// A ViewRect is edges, not a size. Subtracting is the whole conversion, and
 	// treating right/bottom as width/height puts the control off the window.
-	ed.width = new_size.right - new_size.left
-	ed.height = new_size.bottom - new_size.top
-	webview2.set_bounds(&ed.view, win.RECT{0, 0, ed.width, ed.height})
+	panel.resize(&ed.panel, new_size.right - new_size.left, new_size.bottom - new_size.top)
 	return vst3.RESULT_OK
 }
 
@@ -296,27 +327,10 @@ VIEW_VTBL := vst3.IPlugView_Vtbl {
 // -- creating the editor -----------------------------------------------------
 
 make_editor :: proc(p: ^Plugin) -> ^Editor {
-	// Borrowed from the temp allocator; see module_dir. Not freed here.
-	dir, ok := module_dir()
+	// The panel sits one level up in Resources, which is the layout
+	// tools/build-vst3.ps1 assembles.
+	content, ok := panel.find_content({"../Resources/ui"})
 	if !ok {
-		return nil
-	}
-
-	// The loader sits beside the binary and the panel one level up in
-	// Resources, which is the layout tools/install-vst3.ps1 assembles. Loading the DLL
-	// before anything is allocated means a machine without WebView2 costs
-	// nothing and simply has no editor.
-	loader, loader_err := filepath.join({dir, "WebView2Loader.dll"}, context.temp_allocator)
-	if loader_err != nil || !webview2.load(loader) {
-		return nil
-	}
-
-	content, content_err := filepath.join({dir, "..", "Resources", "ui"})
-	if content_err != nil {
-		return nil
-	}
-	if !os.exists(content) {
-		delete(content)
 		return nil
 	}
 
@@ -328,255 +342,23 @@ make_editor :: proc(p: ^Plugin) -> ^Editor {
 	ed.vtbl = &VIEW_VTBL
 	ed.ref_count = 1
 	ed.plugin = p
-	ed.width = EDITOR_WIDTH
-	ed.height = EDITOR_HEIGHT
 	ed.ctx = p.ctx
-	ed.view.content_dir = content
+
+	ed.panel.width = panel.WIDTH
+	ed.panel.height = panel.HEIGHT
+	ed.panel.ctx = p.ctx
+	ed.panel.view.content_dir = content
+	ed.panel.host = panel.Host {
+		user        = rawptr(ed),
+		param_count = PARAM_COUNT,
+		read_values = editor_read_values,
+		set_param   = editor_set_param,
+		set_state   = editor_set_state,
+		edit        = editor_edit,
+		note        = editor_note,
+		bend        = editor_bend,
+		control     = editor_control,
+		volume      = editor_volume,
+	}
 	return ed
-}
-
-// -- messages from the panel -------------------------------------------------
-
-// Everything the interface sends arrives here as one JSON object. The types are
-// the ones listed at the top of ui/bridge.js.
-editor_on_message :: proc(user: rawptr, text: string) {
-	ed := (^Editor)(user)
-	if ed == nil || ed.plugin == nil {
-		return
-	}
-	p := ed.plugin
-
-	value, err := json.parse_string(text, allocator = context.temp_allocator)
-	if err != nil {
-		return
-	}
-	object, is_object := value.(json.Object)
-	if !is_object {
-		return
-	}
-
-	kind, has_kind := json_string(object, "type")
-	if !has_kind {
-		return
-	}
-
-	switch kind {
-	case "sync":
-		editor_send_state(ed)
-
-	case "set":
-		index, has_index := json_int(object, "index")
-		stored, has_value := json_int(object, "value")
-		if !has_index || !has_value || index < 0 || int(index) >= PARAM_COUNT {
-			return
-		}
-		p.values[index] = i32(stored)
-		// Marked rather than applied: `process` rebinds on the audio thread when
-		// it next runs, so the engine is never rebuilt underneath a render.
-		p.params_dirty = true
-		// And told to the host, or the move exists only inside the web view --
-		// no automation recorded, and a session saved without it.
-		if p.handler != nil {
-			handler := (^vst3.IComponentHandler)(p.handler)
-			handler.vtbl.perform_edit(p.handler, u32(index), normalized_of(int(index), i32(stored)))
-		}
-
-	case "state":
-		// A whole patch at once: stepping the bank, or loading a file.
-		//
-		// This case was missing, and the symptom was oddly specific -- the panel
-		// showed the new patch and the sound did not change. The panel repaints
-		// its own controls locally and only then tells the host, so everything
-		// visible worked while nothing audible did. The browser build was fine
-		// throughout, because its host.js has always handled `state`, which is
-		// exactly the kind of difference that hides in a protocol one host
-		// implements more of than another.
-		list, has_list := object["values"]
-		if !has_list {
-			return
-		}
-		array, is_array := list.(json.Array)
-		if !is_array {
-			return
-		}
-		count := min(len(array), PARAM_COUNT)
-		for i in 0 ..< count {
-			stored, ok := json_value_int(array[i])
-			if !ok {
-				continue
-			}
-			p.values[i] = i32(stored)
-		}
-		// One flag for the whole patch. Rebinding ninety-nine times on the way
-		// to one sound is what `params_dirty` exists to avoid.
-		p.params_dirty = true
-
-		// Every parameter reported, or the host keeps the old automation values
-		// and writes them back over this the moment the transport moves.
-		if p.handler != nil {
-			handler := (^vst3.IComponentHandler)(p.handler)
-			for i in 0 ..< count {
-				handler.vtbl.perform_edit(p.handler, u32(i), normalized_of(i, p.values[i]))
-			}
-		}
-
-	case "edit":
-		index, has_index := json_int(object, "index")
-		begin, has_begin := json_bool(object, "begin")
-		if !has_index || !has_begin || index < 0 || int(index) >= PARAM_COUNT {
-			return
-		}
-		if p.handler != nil {
-			handler := (^vst3.IComponentHandler)(p.handler)
-			if begin {
-				handler.vtbl.begin_edit(p.handler, u32(index))
-			} else {
-				handler.vtbl.end_edit(p.handler, u32(index))
-			}
-		}
-
-	case "note":
-		note, has_note := json_int(object, "note")
-		on, has_on := json_bool(object, "on")
-		if !has_note || !has_on {
-			return
-		}
-		velocity, has_velocity := json_int(object, "velocity")
-		if !has_velocity {
-			velocity = 100
-		}
-		if on {
-			push_ui_event(p, UI_Event{kind = .Note_On, a = i32(note), b = f32(velocity) / 127.0})
-		} else {
-			push_ui_event(p, UI_Event{kind = .Note_Off, a = i32(note)})
-		}
-
-	case "wheel":
-		which, has_which := json_string(object, "which")
-		amount, has_amount := json_float(object, "value")
-		if !has_which || !has_amount {
-			return
-		}
-		if which == "pitch" {
-			push_ui_event(p, UI_Event{kind = .Bend, b = f32(amount)})
-		} else {
-			// Controller 1, which is what parameters 86 and 88 name by default.
-			push_ui_event(p, UI_Event{kind = .Control, a = 1, b = f32(amount * 127.0)})
-		}
-
-	case "volume":
-		amount, has_amount := json_float(object, "value")
-		if !has_amount {
-			return
-		}
-		// One float written for another to read, and the audio thread smooths
-		// whatever it finds. No queue: unlike a note, a stale value here is
-		// simply the previous gain for one more block.
-		p.volume = f32(clamp(amount, 0, 1))
-
-	case "cc":
-		cc, has_cc := json_int(object, "cc")
-		amount, has_amount := json_int(object, "value")
-		if !has_cc || !has_amount {
-			return
-		}
-		push_ui_event(p, UI_Event{kind = .Control, a = i32(cc), b = f32(amount)})
-	}
-}
-
-// -- messages to the panel ---------------------------------------------------
-
-// The whole parameter set in one message, which is what the panel asks for when
-// it loads. One message rather than ninety-nine because the panel rebuilds its
-// controls from it in a single pass.
-editor_send_state :: proc(ed: ^Editor) {
-	if ed == nil || ed.plugin == nil {
-		return
-	}
-	builder := strings.builder_make(context.temp_allocator)
-	strings.write_string(&builder, `{"type":"state","values":[`)
-	for i in 0 ..< PARAM_COUNT {
-		if i > 0 {
-			strings.write_byte(&builder, ',')
-		}
-		strings.write_int(&builder, int(ed.plugin.values[i]))
-	}
-	strings.write_string(&builder, `]}`)
-	webview2.post(&ed.view, strings.to_string(builder))
-}
-
-// One parameter that changed somewhere else -- an automation lane, or the
-// host's own generic panel -- so the web view follows instead of going stale.
-editor_send_param :: proc(ed: ^Editor, index: int, stored: i32) {
-	if ed == nil || !ed.view.ready {
-		return
-	}
-	builder := strings.builder_make(context.temp_allocator)
-	strings.write_string(&builder, `{"type":"param","index":`)
-	strings.write_int(&builder, index)
-	strings.write_string(&builder, `,"value":`)
-	strings.write_int(&builder, int(stored))
-	strings.write_byte(&builder, '}')
-	webview2.post(&ed.view, strings.to_string(builder))
-}
-
-// -- reading JSON ------------------------------------------------------------
-//
-// Small readers rather than a struct and a reflection pass: the messages have
-// five shapes between them, and a missing field has to be distinguishable from
-// a field that is present and zero.
-
-json_string :: proc(object: json.Object, key: string) -> (string, bool) {
-	value, found := object[key]
-	if !found {
-		return "", false
-	}
-	text, is_string := value.(json.String)
-	return string(text), is_string
-}
-
-// A number out of a bare JSON value.
-//
-// The helpers below are keyed by name, which is what every message here needs
-// except one: the `state` message carries an array, and its elements have no
-// keys to look up.
-json_value_int :: proc(value: json.Value) -> (int, bool) {
-	#partial switch v in value {
-	case json.Integer:
-		return int(v), true
-	case json.Float:
-		return int(v), true
-	}
-	return 0, false
-}
-
-json_float :: proc(object: json.Object, key: string) -> (f64, bool) {
-	value, found := object[key]
-	if !found {
-		return 0, false
-	}
-	#partial switch v in value {
-	case json.Float:
-		return f64(v), true
-	case json.Integer:
-		return f64(v), true
-	}
-	return 0, false
-}
-
-json_int :: proc(object: json.Object, key: string) -> (i64, bool) {
-	amount, ok := json_float(object, key)
-	if !ok {
-		return 0, false
-	}
-	return i64(amount), true
-}
-
-json_bool :: proc(object: json.Object, key: string) -> (bool, bool) {
-	value, found := object[key]
-	if !found {
-		return false, false
-	}
-	flag, is_bool := value.(json.Boolean)
-	return bool(flag), is_bool
 }
