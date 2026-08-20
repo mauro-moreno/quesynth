@@ -3,6 +3,7 @@ package claphost
 
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 import win "core:sys/windows"
@@ -61,7 +62,15 @@ main :: proc() {
 		os.exit(2)
 	}
 	path := args[1]
+	// How long to wait for the web view. It is a browser starting up, and on a
+	// machine already running several of them it is not quick; the usage line
+	// offered this and the code ignored it.
 	seconds := 6.0
+	if len(args) >= 3 {
+		if given, ok := strconv.parse_f64(args[2]); ok && given > 0 {
+			seconds = given
+		}
+	}
 
 	wide := win.utf8_to_wstring(path)
 	module := win.LoadLibraryW(wide)
@@ -169,7 +178,14 @@ main :: proc() {
 
 	// WebView2 is COM and wants a single-threaded apartment with a message
 	// pump. A real host has done this long before it loads a plugin.
-	win.CoInitializeEx(nil, win.COINIT.APARTMENTTHREADED)
+	// WebView2 delivers its callbacks on this thread's message loop, which
+	// only happens in a single-threaded apartment. Reported when it is
+	// refused: RPC_E_CHANGED_MODE means something has already put this thread
+	// into the multi-threaded apartment, and then nothing below ever arrives.
+	co := win.CoInitializeEx(nil, win.COINIT.APARTMENTTHREADED)
+	if co != win.S_OK && co != win.S_FALSE {
+		fmt.printfln("com      : CoInitializeEx refused, 0x%X", u32(co))
+	}
 
 	instance := win.HINSTANCE(win.GetModuleHandleW(nil))
 	class_name := win.utf8_to_wstring(WINDOW_CLASS)

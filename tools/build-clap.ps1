@@ -27,7 +27,10 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $name = "Quesynth"
 
-$stage = Join-Path $root $Output
+# Relative to the repository, or used as given when it is already absolute.
+# tools/install-clap.ps1 passes a full path, and blindly prepending the root
+# joined the repository root onto a path that already had one.
+$stage = if ([System.IO.Path]::IsPathRooted($Output)) { $Output } else { Join-Path $root $Output }
 $uiDir = Join-Path $stage "$name-ui"
 
 New-Item -ItemType Directory -Force -Path $stage, $uiDir | Out-Null
