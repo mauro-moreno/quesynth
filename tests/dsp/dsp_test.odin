@@ -538,6 +538,40 @@ test_filter_type_binding :: proc(t: ^testing.T) {
 	}
 }
 
+// Parameter 82 has three distinct states. It used to be reduced to a boolean,
+// which made state 2 silently fall back to normal stereo even though the
+// reference names and renders it as ping-pong.
+@(test)
+test_delay_type_binding_preserves_all_three_modes :: proc(t: ^testing.T) {
+	want := []dsp.Delay_Mode{.Stereo, .Cross, .Ping_Pong}
+	for mode, stored in want {
+		p := default_patch()
+		p.values[82] = stored
+		bound := engine.bind_patch(p)
+		testing.expectf(
+			t,
+			bound.delay_mode == mode,
+			"delay type %v bound to %v, wanted %v",
+			stored,
+			bound.delay_mode,
+			mode,
+		)
+	}
+}
+
+@(test)
+test_delay_feedback_binding_reaches_measured_unity :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[36] = 100
+	testing.expectf(
+		t,
+		abs(engine.bind_patch(p).delay_feedback - 100.0 / 127.0) < 0.000001,
+		"stored 100 did not bind to its measured repeat ratio",
+	)
+	p.values[36] = 127
+	testing.expect_value(t, engine.bind_patch(p).delay_feedback, 1.0)
+}
+
 // Signed displays carry real units and must survive the trip. The three checked
 // here are the ones whose display text needs a sign, a suffix or a separator to
 // be parsed at all.
@@ -1087,6 +1121,56 @@ test_delay_line_returns_what_went_in :: proc(t: ^testing.T) {
 	// A tap longer than the line is clamped, not wrapped: a wrapped read would
 	// return a plausible echo at the wrong time.
 	testing.expect(t, dsp.delay_line_read(&line, 100000) == dsp.delay_line_read(&line, f32(len(buffer) - 2)))
+}
+
+// The modes differ in where the input enters and where feedback returns. Two
+// samples is long enough to make each repeat's channel explicit without an
+// engine render or a tolerance-sensitive spectral comparison.
+@(test)
+test_delay_modes_route_repeats_independently :: proc(t: ^testing.T) {
+	render := proc(mode: dsp.Delay_Mode, left_in, right_in: f32) -> ([9]f32, [9]f32) {
+		left_buffer: [32]f32
+		right_buffer: [32]f32
+		d: dsp.Delay
+		dsp.delay_init(&d, left_buffer[:], right_buffer[:])
+		p := dsp.Delay_Params {
+			left_samples  = 2,
+			right_samples = 2,
+			feedback      = 0.5,
+			dry_wet       = 1,
+			mode          = mode,
+		}
+		left, right: [9]f32
+		for i in 0 ..< len(left) {
+			in_l := i == 0 ? left_in : 0
+			in_r := i == 0 ? right_in : 0
+			left[i], right[i] = dsp.delay_process(&d, in_l, in_r, &p, SR)
+		}
+		return left, right
+	}
+
+	// Normal stereo never moves a left-only impulse to the right.
+	left, right := render(.Stereo, 1, 0)
+	testing.expect_value(t, left[2], 1.0)
+	testing.expect_value(t, left[4], 0.5)
+	testing.expect_value(t, right[2], 0.0)
+	testing.expect_value(t, right[4], 0.0)
+
+	// Cross feedback preserves the first echo's side, then alternates.
+	left, right = render(.Cross, 1, 0)
+	testing.expect_value(t, left[2], 1.0)
+	testing.expect_value(t, right[4], 0.5)
+	testing.expect_value(t, left[6], 0.25)
+
+	// Ping-pong sums both inputs into the left line and alternates from there.
+	left, right = render(.Ping_Pong, 0.25, 0.75)
+	testing.expect_value(t, left[2], 1.0)
+	testing.expect_value(t, right[2], 0.0)
+	// Feedback is applied once per round trip, so the right echo matches the
+	// first left echo and the next pair is down by the feedback amount.
+	testing.expect_value(t, right[4], 1.0)
+	testing.expect_value(t, left[6], 0.5)
+	testing.expect_value(t, right[8], 0.5)
 }
 
 // A delay with the mix up has to still be sounding after the note has gone, and

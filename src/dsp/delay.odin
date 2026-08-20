@@ -10,8 +10,15 @@ package dsp
 // layer parses those, so the numbers below arrive already in beats, milliseconds
 // and fractions.
 //
-// What is still chosen is named at its use site: the feedback curve, the tone
-// control's corner frequencies, and the meaning of the three delay types.
+// What is still chosen is named at its use site: the feedback curve and the
+// tone control's corner frequencies. The three delay types were measured with
+// a short transient against the reference.
+
+Delay_Mode :: enum u8 {
+	Stereo,
+	Cross,
+	Ping_Pong,
+}
 
 Delay_Params :: struct {
 	// Delay time per channel, in samples. The binding computes these from the
@@ -24,9 +31,7 @@ Delay_Params :: struct {
 	dry_wet:       f32,
 	// -1..1. Negative darkens the repeats, positive thins them; zero is flat.
 	tone:          f32,
-	// When set, each channel feeds the other's line instead of its own, which is
-	// what turns a pair of echoes into a ping-pong.
-	cross:         bool,
+	mode:          Delay_Mode,
 }
 
 Delay :: struct {
@@ -75,7 +80,7 @@ delay_process :: proc "contextless" (
 	// Nothing to do, but the lines still have to run: a patch that turns the
 	// delay up mid-note should not hear whatever was left in the buffer from
 	// before.
-	feedback := clamp32(p.feedback, 0.0, 0.98)
+	feedback := clamp32(p.feedback, 0.0, 1.0)
 
 	delayed_left := delay_line_read(&d.line[0], p.left_samples)
 	delayed_right := delay_line_read(&d.line[1], p.right_samples)
@@ -83,11 +88,20 @@ delay_process :: proc "contextless" (
 	shaped_left := tone_process(&d.tone[0], delayed_left, p.tone, sample_rate)
 	shaped_right := tone_process(&d.tone[1], delayed_right, p.tone, sample_rate)
 
-	// What goes back into each line.
-	if p.cross {
+	// Normal stereo keeps two independent echoes. Cross preserves the stereo
+	// input but swaps the feedback paths. Ping-pong folds the input to mono into
+	// the left line only, then uses the same cross feedback: the first repeat is
+	// left, the second right, and they alternate from there. The reference uses
+	// the sum rather than the average and applies feedback once per complete
+	// left-right round trip: each pair of echoes has the same level.
+	switch p.mode {
+	case .Cross:
 		delay_line_write(&d.line[0], left_in + shaped_right * feedback)
 		delay_line_write(&d.line[1], right_in + shaped_left * feedback)
-	} else {
+	case .Ping_Pong:
+		delay_line_write(&d.line[0], left_in + right_in + shaped_right * feedback)
+		delay_line_write(&d.line[1], shaped_left)
+	case .Stereo:
 		delay_line_write(&d.line[0], left_in + shaped_left * feedback)
 		delay_line_write(&d.line[1], right_in + shaped_right * feedback)
 	}

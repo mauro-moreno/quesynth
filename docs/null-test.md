@@ -3893,3 +3893,44 @@ voice or allocates a new one per step; what it does when a key is added or
 removed mid-pattern; and whether the step clock is free-running or locked to the
 host's bar line. This engine allocates per step, rebuilds the sequence from the
 held keys on every step, and free-runs from the first key press.
+
+## Ping-pong delay, measured and implemented
+
+Parameter 82 had three measured states but the engine stored only a boolean.
+State 1 selected cross feedback and state 2 therefore fell through to normal
+stereo, despite the reference's changelog naming it ping-pong.
+
+**Method.** A fully wet, centred sine transient used an eighth-note delay at
+120 BPM (250 ms), feedback 100 and no chorus or extra effect. Reference and
+engine WAVs were measured in 80 ms windows around the first six repeats. The
+old engine put every repeat in both channels. The reference sequence was left,
+right, left, right, left, right.
+
+The level law is also visible in that one render. Reference repeat ratios were
+1.0000, 0.7874, 1.0000, 0.7874 and 1.0000. Stored 100 is exactly 100/127, and
+the equal adjacent pairs mean feedback is applied once per complete
+left-right round trip rather than once per hop. A second render at stored 127
+held each pair at unity. The input to the first left repeat is the sum of the
+two channels, not their average; hard-panning the probe halved its first repeat
+relative to the centred render.
+
+**Result.** Parameter 82 now binds to explicit stereo, cross and ping-pong
+modes. Ping-pong sums the input into the left line, passes that repeat to the
+right line at unity, and applies feedback on the return to the left. The
+feedback control now reaches the reference's measured unity instead of the old
+chosen 0.95 ceiling.
+
+After the change, the engine matched all six channel positions and the five
+repeat ratios above to four decimal places. On the controlled probe, stereo
+side/mid moved from 0.000 against the reference's 1.000 to 1.000 against 1.000,
+and null depth moved from -2.43 to -2.94 dB. The shallow absolute null is from
+the already-known source level and envelope differences in this deliberately
+minimal patch; the routing and decay signature are independent of that gain.
+
+A musical Solo Lead patch using state 2 improved from 19.30 to 14.99 dB mean
+spectral error. The whole 128-patch Synth1 bank was also rerun in isolation
+(123 rendered; five known reference crashes). Although its old file version
+stores no parameter 82 values, it exercises the feedback correction: spectral
+mean improved 7.45 to 7.44 dB and median 6.90 to 6.87 dB. Null median stayed
+-2.25 dB, level bias stayed +0.06 dB, and no engine render was silent or
+non-finite.

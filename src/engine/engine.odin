@@ -639,7 +639,7 @@ effect_params :: proc(
 	delay.feedback = p.delay_feedback
 	delay.dry_wet = p.delay_dry_wet
 	delay.tone = p.delay_tone
-	delay.cross = p.delay_cross
+	delay.mode = p.delay_mode
 
 	chorus.stages = p.chorus_stages
 	chorus.delay_samples = to_samples(p.chorus_delay_ms, e.sample_rate, len(e.chorus_left))

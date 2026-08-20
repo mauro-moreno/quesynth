@@ -463,8 +463,8 @@ Engine_Params :: struct {
 	delay_dry_wet:      f32,
 	// Parameter 98, signed on -1..1.
 	delay_tone:         f32,
-	// Parameter 82. The middle state feeds each channel from the other.
-	delay_cross:        bool,
+	// Parameter 82: normal stereo, cross feedback, or ping-pong.
+	delay_mode:         dsp.Delay_Mode,
 
 	// -- chorus --------------------------------------------------------------
 	chorus_on:          bool,

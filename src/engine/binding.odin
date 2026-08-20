@@ -836,10 +836,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		}
 	}
 	e.delay_left_ms, e.delay_right_ms = delay_spread_ms(resolved_display(83, p.values[83]))
-	// Parameter 36 is a bare 0..127. Mapped to 0..0.95 of the echo returning:
-	// unity would self-oscillate and the top of a feedback knob is conventionally
-	// just short of that.
-	e.delay_feedback = 0.95 * unit_position(36, p.values[36])
+	// Parameter 36 is a bare 0..127 and feeds that fraction of each echo back.
+	// A transient at stored 100 decays by 100/127 per repeat, while stored 127
+	// holds at unity, so there is no conventional just-below-one scale here.
+	e.delay_feedback = unit_position(36, p.values[36])
 	// Parameter 37 displays a percentage, so it is read, not mapped.
 	e.delay_dry_wet = dsp.clamp32(display_number(37, p.values[37], 0) / 100.0, 0, 1)
 	// Parameter 98 is a bare 0..127 with the centre flat, per the manual's
@@ -848,8 +848,16 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// Parameter 82's three states are named in the changelog rather than the
 	// manual: v1.07 alpha lists them as "ノーマルステレオ(ST)、クロスフィードバック(X)、
 	// ピンポン(PP)", so in order they are normal stereo, cross feedback and
-	// ping-pong. State 1 is therefore the cross-fed one.
-	e.delay_cross = resolved_position(82, p.values[82]) == 1
+	// ping-pong. A reference transient confirms that state 2 starts in the left
+	// channel and alternates sides on every repeat.
+	switch resolved_position(82, p.values[82]) {
+	case 1:
+		e.delay_mode = .Cross
+	case 2:
+		e.delay_mode = .Ping_Pong
+	case:
+		e.delay_mode = .Stereo
+	}
 
 	// -- chorus --------------------------------------------------------------
 	e.chorus_on = resolved_position(66, p.values[66]) != 0
