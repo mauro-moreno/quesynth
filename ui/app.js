@@ -1495,12 +1495,37 @@
     SLOTS: BANK_SLOTS,
 
     // Every open bank, for the list down the side.
+    //
+    // A bank can be listed without being open. The published Synth1 collection
+    // is a zip of a hundred and seventy-five zips, and decompressing all of
+    // them to draw a list would be reading eleven megabytes and building
+    // twenty thousand patches to show a hundred and seventy-five names. So a
+    // lazy one is a row with a loader behind it, and `used` is null until
+    // somebody opens it.
     list: function () {
       return banks.map(function (b, i) {
-        var used = 0;
-        for (var j = 0; j < b.patches.length; j++) if (b.patches[j]) used++;
-        return { label: b.label, used: used, current: i === currentBank };
+        var used = null;
+        if (!b.load || b.loaded) {
+          used = 0;
+          for (var j = 0; j < b.patches.length; j++) if (b.patches[j]) used++;
+        }
+        return {
+          label: b.label,
+          used: used,
+          loading: !!b.loading,
+          current: i === currentBank,
+        };
       });
+    },
+
+    // A bank that exists but has not been read yet. `load` is called at most
+    // once, the first time it is selected, and resolves to its patches.
+    addLazy: function (label, load) {
+      var made = emptyBank(label);
+      made.load = load;
+      made.loaded = false;
+      banks.push(made);
+      return banks.length - 1;
     },
 
     current: function () { return currentBank; },
@@ -1508,8 +1533,32 @@
     // Switch to another open bank. `quiet` leaves the sound alone, which is
     // what looking for somewhere to save wants: choosing a destination must not
     // overwrite the thing being saved.
-    select: function (i, quiet) {
-      if (i < 0 || i >= banks.length || i === currentBank) return;
+    select: function (i, quiet, done) {
+      if (i < 0 || i >= banks.length) return;
+      var target = banks[i];
+
+      // Not read yet: read it, then arrive. Selecting the same bank twice
+      // while the first read is still going does nothing, rather than starting
+      // a second one.
+      if (target.load && !target.loaded) {
+        if (target.loading) return;
+        target.loading = true;
+        target.load().then(function (patches) {
+          target.loading = false;
+          target.loaded = true;
+          var filled = normalizeBank({ label: target.label, patches: patches });
+          target.patches = filled.patches;
+          window.SynthBank.select(i, quiet, done);
+        }, function (err) {
+          target.loading = false;
+          // Left unloaded rather than emptied, so it can be tried again.
+          if (done) done(err);
+        });
+        if (done) done(null, "loading");
+        return;
+      }
+
+      if (i === currentBank) { if (done) done(null); return; }
       currentBank = i;
       bank = banks[i];
       var name = document.getElementById("bank-name");
@@ -1524,6 +1573,7 @@
       } else {
         loadPatch(0);
       }
+      if (done) done(null);
     },
 
     // A new empty bank: 128 slots with nothing in them, which is a perfectly

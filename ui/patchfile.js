@@ -186,15 +186,48 @@
       case "zip":
         if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
         var found = await window.SynthSy1.readZip(bytes);
-        if (!found.length) throw new Error("no .sy1 patches in the archive");
-        var base = defaults();
-        var patches = found.map(function (entry) {
-          var p = window.SynthSy1.parse(entry.bytes, base);
-          return { n: p.name || entry.name, v: p.values };
+
+        // Patches straight inside: one bank, read now.
+        if (found.length) {
+          var base = defaults();
+          var patches = found.map(function (entry) {
+            var p = window.SynthSy1.parse(entry.bytes, base);
+            return { n: p.name || entry.name, v: p.values };
+          });
+          var label = String(filename || "Bank").replace(/\.zip$/i, "");
+          api.setBank(label, patches);
+          return patches.length + " patches";
+        }
+
+        // No patches, but archives inside: a zip of banks, which is how the
+        // published collection comes -- one file holding a hundred and
+        // seventy-five of them.
+        //
+        // Listed rather than read. Opening all of them would be eleven
+        // megabytes of inflating and twenty thousand patches built to show a
+        // hundred and seventy-five names, and only one is ever wanted at a
+        // time. Each row keeps the bytes of its own archive and opens it when
+        // it is picked.
+        var inner = await window.SynthSy1.readZippedBanks(bytes);
+        if (!inner.length) throw new Error("no .sy1 patches in the archive");
+
+        var slots = window.SynthBank;
+        if (!slots || !slots.addLazy) throw new Error("this build cannot hold several banks");
+
+        inner.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+        inner.forEach(function (entry) {
+          slots.addLazy(entry.name, function () {
+            return window.SynthSy1.readZip(entry.bytes).then(function (list) {
+              if (!list.length) throw new Error("no .sy1 patches in " + entry.name);
+              var d = defaults();
+              return list.map(function (one) {
+                var parsed = window.SynthSy1.parse(one.bytes, d);
+                return { n: parsed.name || one.name, v: parsed.values };
+              });
+            });
+          });
         });
-        var label = String(filename || "Bank").replace(/\.zip$/i, "");
-        api.setBank(label, patches);
-        return patches.length + " patches";
+        return inner.length + " banks";
 
       case "sy1":
         if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");

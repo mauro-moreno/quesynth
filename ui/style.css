@@ -1497,3 +1497,8 @@ body.modal-open { overflow: hidden; }
   outline: 1px solid #6b5334;
 }
 .browser-slot.target .browser-slot-num { color: #c39a5e; }
+
+/* A bank that is listed but not read yet -- one row of a zip of banks. Dimmer,
+ * because its name is all that is known about it until it is opened. */
+.browser-source.unopened .browser-source-name { color: var(--ink-faint); }
+.browser-source.unopened:hover .browser-source-name { color: var(--ink-dim); }

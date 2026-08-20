@@ -157,22 +157,34 @@
       left.appendChild(head);
 
       api().list().forEach(function (b, i) {
-        var row = button("browser-source" + (b.current ? " on" : ""));
+        var row = button("browser-source" + (b.current ? " on" : "") +
+                         (b.used === null && !b.loading ? " unopened" : ""));
         var name = document.createElement("span");
         name.className = "browser-source-name";
         name.textContent = b.label;
         var count = document.createElement("span");
         count.className = "browser-source-count";
-        count.textContent = b.used;
+        // A bank out of a zip of banks has not been read yet, so there is no
+        // honest number to show until it has been.
+        count.textContent = b.loading ? "…" : (b.used === null ? "" : b.used);
         row.appendChild(name);
         row.appendChild(count);
         row.addEventListener("click", function () {
           // Quietly when writing: choosing which bank to save into must not
           // load anything, or the sound being saved is the one it replaces.
-          api().select(i, writing);
-          if (writing) setTarget(0);
-          paintSources();
-          paintSlots();
+          api().select(i, writing, function (err, state) {
+            if (err) {
+              count.textContent = "!";
+              row.title = err.message;
+              return;
+            }
+            // "loading" comes back straight away for a bank that has to be
+            // read first; the real answer arrives on the second call.
+            if (state === "loading") { paintSources(); return; }
+            if (writing) setTarget(0);
+            paintSources();
+            paintSlots();
+          });
         });
         left.appendChild(row);
       });

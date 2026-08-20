@@ -189,7 +189,12 @@
 
   // Every `.sy1` in an archive, as { name, bytes }, in the order the directory
   // lists them.
-  async function readZip(bytes) {
+  // Every entry whose name matches, decompressed.
+  //
+  // Split out of readZip because a Synth1 bank arrives as a zip of .sy1 files
+  // *and* as a zip of those zips -- the published collection is 175 of them --
+  // so the same walk has to be able to look for something other than patches.
+  async function readEntries(bytes, pattern) {
     var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     var end = findCentralDirectory(view);
     if (!end) throw new Error("not a zip file");
@@ -207,7 +212,7 @@
       var name = toText(bytes.subarray(at + 46, at + 46 + nameLen));
       at += 46 + nameLen + extraLen + commentLen;
 
-      if (!/\.sy1$/i.test(name)) continue;
+      if (!pattern.test(name)) continue;
 
       // The local header repeats the name and extra fields at its own lengths,
       // which are not always the ones in the directory. Read them from there.
@@ -226,16 +231,30 @@
         continue; // a method nothing here supports; skip rather than fail
       }
 
-      // Just the file name, so a bank does not show directory paths.
-      var short = name.replace(/^.*[\\/]/, "").replace(/\.sy1$/i, "");
-      out.push({ name: short, bytes: content });
+      // The bare name as well as the full one: a patch list wants "Brastring"
+      // and a bank list wants to know which folder inside the archive it came
+      // from.
+      var short = name.replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "");
+      out.push({ name: short, path: name, bytes: content });
     }
     return out;
+  }
+
+  function readZip(bytes) {
+    return readEntries(bytes, /\.sy1$/i);
+  }
+
+  // The inner archives of a zip of zips, left compressed: there may be
+  // a hundred and seventy-five of them and only one is ever wanted at a time,
+  // so they are handed back as bytes for somebody else to open later.
+  function readZippedBanks(bytes) {
+    return readEntries(bytes, /\.zip$/i);
   }
 
   window.SynthSy1 = {
     parse: parse,
     readZip: readZip,
+    readZippedBanks: readZippedBanks,
     BIPOLAR_VERSION: BIPOLAR_VERSION,
   };
 })();
