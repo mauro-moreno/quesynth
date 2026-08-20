@@ -131,15 +131,28 @@
 
       // A bank from a file, joining the list rather than replacing it.
       var add = button("browser-mini", "Add");
-      add.title = "Open a bank or patch file";
+      add.title = "Open a .json bank, a .zip of patches, or one .sy1 patch";
       add.addEventListener("click", function () {
         if (files() && files().pick) {
           files().pick(function () { paintSources(); paintSlots(); });
         }
       });
 
+      // And the third shape a bank comes in: a folder of .sy1 files, which is
+      // how the reference keeps its own. Its own button rather than something
+      // the file picker guesses at, because a folder and a file are chosen in
+      // different dialogs and the browser has to be told which to open.
+      var folder = button("browser-mini", "Folder");
+      folder.title = "Open a folder of .sy1 patches";
+      folder.addEventListener("click", function () {
+        if (files() && files().pickFolder) {
+          files().pickFolder(function () { paintSources(); paintSlots(); });
+        }
+      });
+
       actions.appendChild(make);
       actions.appendChild(add);
+      actions.appendChild(folder);
       head.appendChild(actions);
       left.appendChild(head);
 

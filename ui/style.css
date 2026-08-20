@@ -1450,16 +1450,27 @@ body.modal-open { overflow: hidden; }
 
 /* New and Add, beside the "Banks" heading. Small, because they are the two
  * least frequent things in the dialog and the list is the point. */
+/* The label on one line and the three actions on the next.
+ * Side by side they did not fit: the pane is 190px, and BANKS plus New, Add
+ * and Folder overflowed it and put a horizontal scrollbar under a list that
+ * scrolls vertically. */
 .browser-heading {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 
 .browser-heading-actions {
   display: flex;
   gap: 4px;
+}
+
+.browser-heading-actions .browser-mini {
+  flex: 1 1 0;
+  text-align: center;
+  padding-left: 2px;
+  padding-right: 2px;
 }
 
 .browser-mini {

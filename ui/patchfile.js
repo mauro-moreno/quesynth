@@ -237,6 +237,96 @@
   // menu never makes it.
   var input = null;
 
+  // A bank as a folder of .sy1 files, which is the third shape one comes in.
+  //
+  // The reference keeps its own banks this way -- a directory per bank with a
+  // patch per file -- so a bank on somebody's disk is as likely to be a folder
+  // as a .zip of the same thing. Reading one is the same work as reading the
+  // archive, minus the unzipping.
+  //
+  // Order is the file names, compared so that "10" sorts after "9" rather than
+  // between "1" and "2". Sorting them as plain strings is what puts a bank's
+  // hundredth patch third, and the numbering in these names is the whole point
+  // of them.
+  var collator = window.Intl && window.Intl.Collator
+    ? new window.Intl.Collator(undefined, { numeric: true, sensitivity: "base" })
+    : null;
+
+  function byName(a, b) {
+    if (collator) return collator.compare(a.name, b.name);
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  }
+
+  function readOne(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(new Uint8Array(reader.result)); };
+      reader.onerror = function () { reject(new Error("could not read " + file.name)); };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  async function loadFolder(fileList) {
+    var api = window.SynthPatch;
+    if (!api) return "";
+    if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
+
+    var all = [].slice.call(fileList);
+    var found = all.filter(function (f) { return /\.sy1$/i.test(f.name); });
+    if (!found.length) throw new Error("no .sy1 patches in that folder");
+
+    // The folder's own name, off the relative path the browser gives with each
+    // file. Falls back to the first path segment, then to something generic.
+    var label = "Bank";
+    var path = found[0].webkitRelativePath || "";
+    var parts = path.split("/");
+    if (parts.length > 1) label = parts[parts.length - 2] || parts[0] || label;
+
+    found.sort(byName);
+
+    // A bank holds 128, so a folder with more than that in it fills the bank
+    // and says how many were left out rather than silently dropping them.
+    var over = Math.max(0, found.length - 128);
+    if (over) found = found.slice(0, 128);
+
+    var base = defaults();
+    var patches = [];
+    for (var i = 0; i < found.length; i++) {
+      var bytes = await readOne(found[i]);
+      var one = window.SynthSy1.parse(bytes, base);
+      patches.push({ n: one.name || found[i].name.replace(/\.sy1$/i, ""), v: one.values });
+    }
+
+    api.setBank(label, patches);
+    return patches.length + " patches" + (over ? " (" + over + " left out)" : "");
+  }
+
+  // One hidden directory input, beside the file one. `webkitdirectory` is the
+  // only way a page can be handed a folder, and despite the name every current
+  // browser implements it.
+  var folderInput = null;
+
+  function pickFolder(onDone) {
+    if (!folderInput) {
+      folderInput = document.createElement("input");
+      folderInput.type = "file";
+      folderInput.webkitdirectory = true;
+      folderInput.setAttribute("webkitdirectory", "");
+      folderInput.setAttribute("directory", "");
+      folderInput.multiple = true;
+      folderInput.style.display = "none";
+      document.body.appendChild(folderInput);
+    }
+    folderInput.value = "";
+    folderInput.onchange = function () {
+      if (!folderInput.files || !folderInput.files.length) return;
+      loadFolder(folderInput.files)
+        .then(function (what) { onDone(null, what); })
+        .catch(function (err) { onDone(err); });
+    };
+    folderInput.click();
+  }
+
   function pickFile(onDone) {
     if (!input) {
       input = document.createElement("input");
@@ -290,9 +380,10 @@
     load: loadText,
     loadBytes: loadBytes,
     sniff: sniff,
-    // Exposed so the bank browser can offer the same thing without owning a
-    // second file input, and so both paths end up in one place.
+    // Exposed so the bank browser can offer these without owning its own file
+    // inputs, and so every way in ends up in one place.
     pick: pickFile,
+    pickFolder: pickFolder,
   };
 
   document.addEventListener("DOMContentLoaded", function () {
