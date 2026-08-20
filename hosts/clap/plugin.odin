@@ -69,6 +69,17 @@ Synth :: struct {
 	// The host's picture of the parameters is stale: tell it on the next
 	// process() or flush().
 	notify_host: bool,
+
+	// Bank Select arrives as two controllers and does nothing on its own; the
+	// next Program Change is what acts on it. Held here because it is a
+	// running state of the input rather than of any one message.
+	//
+	// Only bank 0 exists so far -- the factory bank is compiled in and there
+	// is no way yet to put a second one beside it -- so a selection of
+	// anything else is remembered and then ignored, which is what a
+	// synthesiser with one bank does.
+	bank_msb:     int,
+	bank_lsb:     int,
 }
 
 synth_of :: proc "contextless" (plugin: ^clap.Plugin) -> ^Synth {
@@ -179,6 +190,43 @@ set_param :: proc "contextless" (s: ^Synth, id: clap.Id, value: f64) {
 	}
 }
 
+// A Program Change: load the patch in that slot.
+//
+// On the audio thread, because that is where the event arrives, so it takes
+// the same route a parameter event does -- writing s.values and marking the
+// block dirty -- rather than the main thread's stage_values, which is not
+// safe to call from here.
+//
+// The host is told afterwards. Loading a patch changes ninety-nine values
+// behind its back, and a host that is not told goes on displaying, saving
+// and automating the ones from before: that is params.h scenario I, and the
+// same reason a state load sets this flag.
+program_change :: proc "contextless" (s: ^Synth, program: int) {
+	bank := s.bank_msb * 128 + s.bank_lsb
+	// One bank for now. A program change against a bank that does not exist
+	// is ignored rather than folded onto bank 0: silently playing the wrong
+	// sound is worse than playing none.
+	if bank != 0 {return}
+
+	values, ok := patch.factory_patch(program)
+	if !ok {return}
+
+	changed := false
+	for i in 0 ..< PARAM_COUNT {
+		// The bank keeps stored integers as ints; this host keeps them as
+		// i32, which is what the host's own parameter values are.
+		wanted := i32(values[i])
+		if s.values[i] != wanted {
+			s.values[i] = wanted
+			changed = true
+		}
+	}
+	if changed {
+		s.params_dirty = true
+		s.notify_host = true
+	}
+}
+
 // Tell the host every current parameter value. Used after a state or preset
 // load, which changes values behind the host's back.
 notify_params :: proc "contextless" (s: ^Synth, out: ^clap.Output_Events) {
@@ -214,7 +262,15 @@ notify_params :: proc "contextless" (s: ^Synth, out: ^clap.Output_Events) {
 
 MIDI_NOTE_OFF :: 0x80
 MIDI_NOTE_ON :: 0x90
+MIDI_CONTROL_CHANGE :: 0xB0
+MIDI_PROGRAM_CHANGE :: 0xC0
 MIDI_PITCH_BEND :: 0xE0
+
+// Bank Select, from the MIDI specification: two controllers that set a
+// pending bank and do nothing else. The Program Change that follows is what
+// acts on it, and the bank is MSB * 128 + LSB.
+MIDI_BANK_SELECT_MSB :: 0
+MIDI_BANK_SELECT_LSB :: 32
 
 // The 14-bit MIDI bend range is 0..16383 with 8192 at rest. Both halves are
 // divided by 8192 so the centre is exactly zero; the top of the range therefore
@@ -272,6 +328,27 @@ handle_event :: proc(s: ^Synth, header: ^clap.Event_Header) {
 			}
 		case MIDI_NOTE_OFF:
 			engine.engine_note_off(&s.eng, int(event.data[1]))
+		case MIDI_CONTROL_CHANGE:
+			controller := int(event.data[1])
+			value := int(event.data[2])
+
+			// Bank Select is held rather than acted on; see the program
+			// change below.
+			if controller == MIDI_BANK_SELECT_MSB {
+				s.bank_msb = value
+			} else if controller == MIDI_BANK_SELECT_LSB {
+				s.bank_lsb = value
+			} else {
+				// Everything else goes to the engine, whose parameters 86 to
+				// 89 route two controllers of the patch's choosing. Nothing is
+				// swallowed here: which controllers matter is the patch's
+				// decision and not this file's.
+				engine.engine_control_change(&s.eng, controller, value)
+			}
+
+		case MIDI_PROGRAM_CHANGE:
+			program_change(s, int(event.data[1]))
+
 		case MIDI_PITCH_BEND:
 			raw := int(event.data[1]) | (int(event.data[2]) << 7)
 			engine.engine_set_pitch_bend(&s.eng, f32((f64(raw) - MIDI_BEND_CENTRE) / MIDI_BEND_CENTRE))
@@ -284,10 +361,18 @@ handle_event :: proc(s: ^Synth, header: ^clap.Event_Header) {
 // The host's extensions are resolved here rather than in the factory: CLAP only
 // promises that clap_host.get_extension() answers from init() onwards.
 plugin_init :: proc "c" (plugin: ^clap.Plugin) -> bool {
+	context = runtime.default_context()
 	s := synth_of(plugin)
 	if s == nil {
 		return false
 	}
+
+	// The factory bank, so a Program Change has something to select. Here
+	// rather than in the factory because init() is [main-thread] and may
+	// allocate, and because it only actually parses once per process however
+	// many instances a host makes.
+	patch.factory_prepare()
+
 	if s.host != nil && s.host.get_extension != nil {
 		s.host_params = (^clap.Host_Params)(s.host.get_extension(s.host, clap.EXT_PARAMS))
 	}
@@ -377,7 +462,6 @@ plugin_process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> cla
 	}
 
 	sync_staged(s)
-	notify_params(s, process.out_events)
 
 	// The transport, before anything reads it. The arpeggiator divides the beat,
 	// so a project at 90 BPM has to be able to say so or the engine steps at its
@@ -461,6 +545,17 @@ plugin_process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> cla
 		apply_params(s)
 		s.params_dirty = false
 	}
+
+	// After the events, not before them.
+	//
+	// It used to run at the top of the block, which told the host about a
+	// state load staged by the main thread and missed anything that happened
+	// during the block itself -- a Program Change arrives in this event list
+	// and moves ninety-nine values, and the host did not hear about it until
+	// the next call. Running here covers both: the flag is still set when a
+	// main thread staged the load, and it is now also set by anything the
+	// events did.
+	notify_params(s, process.out_events)
 
 	return clap.PROCESS_CONTINUE
 }

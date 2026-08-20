@@ -580,6 +580,169 @@ test_pitch_bend_reaches_the_engine :: proc(t: ^testing.T) {
 	testing.expect_value(t, s.eng.pitch_bend, f32(0))
 }
 
+// A controller reaches the engine, where the patch's own two assignments
+// decide what it does. Controller 1 is the modulation wheel by default, which
+// is what parameters 86 and 88 name.
+@(test)
+test_midi_cc_reaches_the_engine :: proc(t: ^testing.T) {
+	plugin := make_plugin(t)
+	if plugin == nil {return}
+	defer plugin.destroy(plugin)
+
+	testing.expect(t, plugin.activate(plugin, 48000, 1, BLOCK), "activate failed")
+	defer plugin.deactivate(plugin)
+	plugin.start_processing(plugin)
+	defer plugin.stop_processing(plugin)
+
+	render: Render
+	render_init(&render)
+	input: Input_Queue
+	input_init(&input)
+	output: Output_Queue
+	output_init(&output)
+
+	s := synth.synth_of(plugin)
+	testing.expect(t, s != nil, "no plugin state")
+
+	wheel_up := midi_event(0, 0xB0, 1, 127)
+	input_push(&input, &wheel_up)
+	run_block(plugin, &render, &input, &output)
+	testing.expect(t, s.eng.ctrl_value[0] > 0.99, "controller 1 did not reach the engine")
+
+	wheel_down := midi_event(0, 0xB0, 1, 0)
+	input_push(&input, &wheel_down)
+	run_block(plugin, &render, &input, &output)
+	testing.expect_value(t, s.eng.ctrl_value[0], f32(0))
+}
+
+// A Program Change selects a patch by number out of the bank compiled into
+// the plugin. This is the whole reason a bank is a hundred and twenty-eight
+// slots, and the reason the bank is embedded: a host can send a program
+// change to a plugin whose editor has never been opened.
+@(test)
+test_program_change_loads_a_patch :: proc(t: ^testing.T) {
+	plugin := make_plugin(t)
+	if plugin == nil {return}
+	defer plugin.destroy(plugin)
+
+	testing.expect(t, plugin.activate(plugin, 48000, 1, BLOCK), "activate failed")
+	defer plugin.deactivate(plugin)
+	plugin.start_processing(plugin)
+	defer plugin.stop_processing(plugin)
+
+	render: Render
+	render_init(&render)
+	input: Input_Queue
+	input_init(&input)
+	output: Output_Queue
+	output_init(&output)
+
+	s := synth.synth_of(plugin)
+	testing.expect(t, s != nil, "no plugin state")
+
+	// Slot 6 of the factory bank. Read through the same accessor the plugin
+	// uses, so this compares the plugin against the bank rather than against
+	// a second copy of it.
+	wanted, ok := patch.factory_patch(6)
+	testing.expect(t, ok, "the embedded factory bank has nothing in slot 6")
+	if !ok {return}
+
+	change := midi_event(0, 0xC0, 6, 0)
+	input_push(&input, &change)
+	run_block(plugin, &render, &input, &output)
+
+	same := true
+	for i in 0 ..< synth.PARAM_COUNT {
+		if s.values[i] != i32(wanted[i]) {same = false}
+	}
+	testing.expect(t, same, "program change did not load the patch in that slot")
+
+	// And the host has to be told, or it goes on displaying and saving the
+	// values from before the change.
+	testing.expect(t, output.count > 0, "the host was not told the parameters moved")
+}
+
+// An empty slot is still a slot. Program 120 selects nothing rather than
+// selecting the nearest sound, because a number has to mean the same thing
+// every time it is sent.
+@(test)
+test_program_change_on_an_empty_slot_does_nothing :: proc(t: ^testing.T) {
+	plugin := make_plugin(t)
+	if plugin == nil {return}
+	defer plugin.destroy(plugin)
+
+	testing.expect(t, plugin.activate(plugin, 48000, 1, BLOCK), "activate failed")
+	defer plugin.deactivate(plugin)
+	plugin.start_processing(plugin)
+	defer plugin.stop_processing(plugin)
+
+	render: Render
+	render_init(&render)
+	input: Input_Queue
+	input_init(&input)
+	output: Output_Queue
+	output_init(&output)
+
+	s := synth.synth_of(plugin)
+	testing.expect(t, s != nil, "no plugin state")
+
+	before := s.values
+	_, filled := patch.factory_patch(120)
+	testing.expect(t, !filled, "slot 120 was expected to be empty")
+
+	change := midi_event(0, 0xC0, 120, 0)
+	input_push(&input, &change)
+	run_block(plugin, &render, &input, &output)
+
+	testing.expect(t, before == s.values, "an empty slot changed the sound")
+}
+
+// Bank Select does nothing on its own: the specification says the pair of
+// controllers sets a pending bank and the Program Change that follows acts on
+// it. And a bank that does not exist is ignored rather than folded onto the
+// one that does.
+@(test)
+test_bank_select_waits_for_a_program_change :: proc(t: ^testing.T) {
+	plugin := make_plugin(t)
+	if plugin == nil {return}
+	defer plugin.destroy(plugin)
+
+	testing.expect(t, plugin.activate(plugin, 48000, 1, BLOCK), "activate failed")
+	defer plugin.deactivate(plugin)
+	plugin.start_processing(plugin)
+	defer plugin.stop_processing(plugin)
+
+	render: Render
+	render_init(&render)
+	input: Input_Queue
+	input_init(&input)
+	output: Output_Queue
+	output_init(&output)
+
+	s := synth.synth_of(plugin)
+	testing.expect(t, s != nil, "no plugin state")
+
+	before := s.values
+	msb := midi_event(0, 0xB0, 0, 0)
+	lsb := midi_event(0, 0xB0, 32, 1)
+	input_push(&input, &msb)
+	input_push(&input, &lsb)
+	run_block(plugin, &render, &input, &output)
+	testing.expect(t, before == s.values, "bank select alone changed the sound")
+
+	// Bank 1 does not exist, so this program change is refused.
+	change := midi_event(0, 0xC0, 6, 0)
+	input_push(&input, &change)
+	run_block(plugin, &render, &input, &output)
+	testing.expect(t, before == s.values, "a program change into a bank that does not exist was obeyed")
+
+	// Back to bank 0, and the same program change is obeyed.
+	back := midi_event(0, 0xB0, 32, 0)
+	input_push(&input, &back)
+	input_push(&input, &change)
+	run_block(plugin, &render, &input, &output)
+	testing.expect(t, before != s.values, "a program change into bank 0 was refused")
+}
 // The plugin advertises the MIDI dialect, so raw MIDI notes have to work too,
 // including the note-on-with-velocity-0 spelling of a note off.
 @(test)

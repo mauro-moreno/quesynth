@@ -85,10 +85,18 @@ BUS_MAIN :: i32(0)
 BUS_FLAG_DEFAULT_ACTIVE :: u32(1)
 
 // ParameterInfo flags.
+//
+// Two of these were a bit out. kIsWrapAround was missing, so kIsList had
+// taken its bit and kIsHidden had taken kIsList's -- a plugin declaring a
+// list would have got a wrap-around instead, and one asking to be hidden
+// would have declared itself a list. Nothing had used either yet, which is
+// the only reason it had not shown up. Read off
+// ext/vst3_c_api/vst3_c_api.h rather than remembered.
 PARAM_CAN_AUTOMATE :: i32(1 << 0)
 PARAM_IS_READ_ONLY :: i32(1 << 1)
-PARAM_IS_LIST :: i32(1 << 2)
-PARAM_IS_HIDDEN :: i32(1 << 3)
+PARAM_IS_WRAP_AROUND :: i32(1 << 2)
+PARAM_IS_LIST :: i32(1 << 3)
+PARAM_IS_HIDDEN :: i32(1 << 4)
 PARAM_IS_PROGRAM_CHANGE :: i32(1 << 15)
 PARAM_IS_BYPASS :: i32(1 << 16)
 
@@ -566,6 +574,33 @@ tuid_equal :: proc "contextless" (a: ^TUID, b: TUID) -> bool {
 // hundred samples of it that actually crossed the wire.
 
 IID_COMPONENT_HANDLER :: proc "contextless" () -> TUID {return uid(0x93A0BEA3, 0x0BD045DB, 0x8E890B0C, 0xC1E46AC6)}
+
+// How a host is told which parameter a MIDI controller moves.
+//
+// VST3 does not deliver controller messages to a plugin at all: there is no
+// event type for them. Instead the host asks, once, which parameter each
+// controller belongs to, and from then on a controller arrives as an ordinary
+// parameter change -- automatable, drawable, and saved with the project. That
+// is why this interface exists and why a VST3 that does not implement it
+// simply never hears a controller.
+//
+// The identifier is copied from ext/vst3_c_api/vst3_c_api.h rather than
+// remembered: a wrong one is not an error, it is a host that quietly never
+// finds the interface.
+IID_MIDI_MAPPING :: proc "contextless" () -> TUID {return uid(0xDF0FF9F7, 0x49B74669, 0xB63AB732, 0x7ADBF5E5)}
+
+IMidi_Mapping_Vtbl :: struct {
+	query_interface:                 proc "c" (this: rawptr, iid: ^TUID, obj: ^rawptr) -> Result,
+	add_ref:                         proc "c" (this: rawptr) -> u32,
+	release:                         proc "c" (this: rawptr) -> u32,
+	get_midi_controller_assignment:  proc "c" (
+		this: rawptr,
+		bus: i32,
+		channel: i16,
+		controller: i16,
+		id: ^u32,
+	) -> Result,
+}
 
 IComponentHandler :: struct {
 	vtbl: ^IComponentHandler_Vtbl,

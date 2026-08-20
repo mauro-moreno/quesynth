@@ -41,6 +41,10 @@ Plugin :: struct {
 	component_vtbl:  ^vst3.IComponent_Vtbl,
 	processor_vtbl:  ^vst3.IAudioProcessor_Vtbl,
 	controller_vtbl: ^vst3.IEditController_Vtbl,
+	// Fourth, and after the three above rather than among them: `from_*`
+	// recovers the plugin from a field offset, so the order of the ones
+	// already there cannot change.
+	midi_map_vtbl:   ^vst3.IMidi_Mapping_Vtbl,
 
 	ref_count:       i32,
 
@@ -57,6 +61,9 @@ Plugin :: struct {
 	max_block:       int,
 	active:          bool,
 	params_dirty:    bool,
+	// Which program a host last selected. Kept only so it can be reported
+	// back: the sound itself lives in `values` like any other.
+	program:         i32,
 
 	// The host's handler, kept only so `setComponentHandler` has somewhere to
 	// put it. Nothing here calls back into it: this plugin never changes a
@@ -94,6 +101,10 @@ from_processor :: proc "contextless" (this: rawptr) -> ^Plugin {
 
 from_controller :: proc "contextless" (this: rawptr) -> ^Plugin {
 	return (^Plugin)(uintptr(this) - uintptr(offset_of(Plugin, controller_vtbl)))
+}
+
+from_midi_map :: proc "contextless" (this: rawptr) -> ^Plugin {
+	return (^Plugin)(uintptr(this) - uintptr(offset_of(Plugin, midi_map_vtbl)))
 }
 
 // -- parameters --------------------------------------------------------------
@@ -143,7 +154,24 @@ param_state_count :: proc(index: int) -> int {
 	return n if n > 0 else 1
 }
 
+// A parameter with no states at all.
+//
+// Parameters 86 to 89 -- the patch's own two controller assignments -- are
+// continuous: they have no state table and their reading is
+// (stored + 1) / CONTINUOUS_DENOMINATOR. Both conversions below used to see
+// a state count of one and answer zero, which pinned all four to zero for
+// every host: a patch's controller assignments could not be read, set or
+// saved through VST3 at all. It went unnoticed because nothing here had ever
+// compared a whole patch against what the host reads back.
+//
+// The stored range is the denominator, so the mapping is a plain division.
+continuous_span :: f64(patch.CONTINUOUS_DENOMINATOR - 1)
+
 normalized_of :: proc(index: int, stored: i32) -> f64 {
+	if patch.PARAMETERS[index].continuous {
+		v := clamp(int(stored), 0, patch.CONTINUOUS_DENOMINATOR - 1)
+		return f64(v) / continuous_span
+	}
 	n := param_state_count(index)
 	if n <= 1 {
 		return 0
@@ -154,6 +182,10 @@ normalized_of :: proc(index: int, stored: i32) -> f64 {
 }
 
 stored_of :: proc(index: int, normalized: f64) -> i32 {
+	if patch.PARAMETERS[index].continuous {
+		t := clamp(normalized, 0, 1)
+		return i32(int(t * continuous_span + 0.5))
+	}
 	n := param_state_count(index)
 	if n <= 1 {
 		return 0
@@ -541,12 +573,18 @@ apply_parameter_changes :: proc(p: ^Plugin, changes: ^vst3.IParameterChanges) {
 			continue
 		}
 		id := queue.vtbl.get_parameter_id(queue)
-		if int(id) >= PARAM_COUNT {
+		if id != PROGRAM_PARAM_ID && int(id) >= PARAM_COUNT {
 			continue
 		}
 		offset: i32
 		value: f64
 		if queue.vtbl.get_point(queue, points - 1, &offset, &value) != vst3.RESULT_OK {
+			continue
+		}
+		// A program change arrives here, as a change to the program
+		// parameter: the host converts the MIDI message into one.
+		if id == PROGRAM_PARAM_ID {
+			select_program(p, program_of(value))
 			continue
 		}
 		stored := stored_of(int(id), value)
@@ -600,14 +638,32 @@ controller_get_state :: proc "c" (this: rawptr, stream: ^vst3.IBStream) -> vst3.
 }
 
 controller_get_parameter_count :: proc "c" (this: rawptr) -> i32 {
-	return i32(PARAM_COUNT)
+	// One more than the synth has: the last is the program.
+	return i32(PARAM_COUNT) + 1
 }
 
 controller_get_parameter_info :: proc "c" (this: rawptr, index: i32, info: ^vst3.Parameter_Info) -> vst3.Result {
 	context = from_controller(this).ctx
-	if info == nil || index < 0 || int(index) >= PARAM_COUNT {
+	if info == nil || index < 0 || int(index) > PARAM_COUNT {
 		return vst3.INVALID_ARGUMENT
 	}
+
+	// The program parameter, which is how VST3 delivers a MIDI Program
+	// Change: there is no event for one. A parameter carrying
+	// kIsProgramChange is what a host routes it to, and selecting a preset
+	// in the host's own menu arrives the same way.
+	if int(index) == PARAM_COUNT {
+		info.id = PROGRAM_PARAM_ID
+		vst3.copy_utf16(&info.title, "Program")
+		vst3.copy_utf16(&info.short_title, "Program")
+		vst3.copy_utf16(&info.units, "")
+		info.step_count = i32(patch.FACTORY_SLOTS - 1)
+		info.default_normalized_value = 0
+		info.unit_id = 0
+		info.flags = vst3.PARAM_IS_PROGRAM_CHANGE | vst3.PARAM_IS_LIST
+		return vst3.RESULT_OK
+	}
+
 	i := int(index)
 	meta := patch.PARAMETERS[i]
 
@@ -667,6 +723,9 @@ controller_plain_param_to_normalized :: proc "c" (this: rawptr, id: u32, plain: 
 controller_get_param_normalized :: proc "c" (this: rawptr, id: u32) -> f64 {
 	p := from_controller(this)
 	context = p.ctx
+	if id == PROGRAM_PARAM_ID {
+		return program_normalized(p.program)
+	}
 	if int(id) >= PARAM_COUNT {
 		return 0
 	}
@@ -676,6 +735,10 @@ controller_get_param_normalized :: proc "c" (this: rawptr, id: u32) -> f64 {
 controller_set_param_normalized :: proc "c" (this: rawptr, id: u32, value: f64) -> vst3.Result {
 	p := from_controller(this)
 	context = p.ctx
+	if id == PROGRAM_PARAM_ID {
+		select_program(p, program_of(value))
+		return vst3.RESULT_OK
+	}
 	if int(id) >= PARAM_COUNT {
 		return vst3.INVALID_ARGUMENT
 	}
@@ -763,6 +826,11 @@ query_interface :: proc(p: ^Plugin, iid: ^vst3.TUID, obj: ^rawptr) -> vst3.Resul
 		obj^ = rawptr(&p.controller_vtbl)
 		return vst3.RESULT_OK
 	}
+	if vst3.tuid_equal(iid, vst3.IID_MIDI_MAPPING()) {
+		p.ref_count += 1
+		obj^ = rawptr(&p.midi_map_vtbl)
+		return vst3.RESULT_OK
+	}
 	return vst3.NO_INTERFACE
 }
 
@@ -843,9 +911,16 @@ make_plugin :: proc() -> ^Plugin {
 	if p == nil {
 		return nil
 	}
+
+	// The factory bank, so a program change has something to select. Here
+	// rather than lazily because this runs on the main thread and may
+	// allocate, while a program change arrives on the audio thread and may
+	// not. It parses once per process however many instances are made.
+	patch.factory_prepare()
 	p.component_vtbl = &COMPONENT_VTBL
 	p.processor_vtbl = &PROCESSOR_VTBL
 	p.controller_vtbl = &CONTROLLER_VTBL
+	p.midi_map_vtbl = &MIDI_MAP_VTBL
 	p.ref_count = 1
 	p.sample_rate = 44100
 	p.max_block = 512

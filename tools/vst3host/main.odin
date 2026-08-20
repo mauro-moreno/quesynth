@@ -212,6 +212,123 @@ main :: proc() {
 		os.exit(1)
 	}
 	controller := (^^vst3.IEditController_Vtbl)(cobj)
+
+	// Can a host find out which parameter a controller moves?
+	//
+	// VST3 delivers no controller messages at all: a host asks IMidiMapping
+	// once and then sends parameter changes. So a plugin that does not answer
+	// this is a plugin whose filter knob no keyboard can reach, and nothing
+	// about that is visible from the outside -- there is no error, the
+	// controller simply does nothing. Asked here the way a host asks it.
+	{
+		mapping_iid := vst3.IID_MIDI_MAPPING()
+		mobj: rawptr
+		if component^.query_interface(obj, &mapping_iid, &mobj) != vst3.RESULT_OK ||
+		   mobj == nil {
+			fmt.eprintln("FAIL: the plugin does not answer to IMidiMapping")
+			os.exit(1)
+		}
+		mapping := (^^vst3.IMidi_Mapping_Vtbl)(mobj)
+
+		// CC 74 is Brightness in the MIDI specification, and the cutoff here.
+		cutoff := cpatch.parameter_index("*filter freq")
+		id: u32
+		if mapping^.get_midi_controller_assignment(mobj, 0, 0, 74, &id) != vst3.RESULT_OK {
+			fmt.eprintln("FAIL: controller 74 is not assigned to anything")
+			os.exit(1)
+		}
+		if int(id) != cutoff {
+			fmt.eprintfln(
+				"FAIL: controller 74 maps to parameter %v, expected %v",
+				id,
+				cutoff,
+			)
+			os.exit(1)
+		}
+
+		// And one that is deliberately not assigned answers "nothing here"
+		// rather than handing back a parameter it was never given.
+		spare: u32 = 0xFFFFFFFF
+		if mapping^.get_midi_controller_assignment(mobj, 0, 0, 20, &spare) == vst3.RESULT_OK {
+			fmt.eprintln("FAIL: an unassigned controller was given a parameter")
+			os.exit(1)
+		}
+
+		mapping^.release(mobj)
+		fmt.printfln("midi     : controller 74 moves parameter %v", cutoff)
+	}
+
+	// Can a host select a patch by number?
+	//
+	// VST3 has no Program Change event either: a host turns the message into
+	// a change to whichever parameter carries kIsProgramChange. So the check
+	// is that such a parameter exists, that setting it loads the patch out of
+	// the bank compiled into the plugin, and that reading it back gives the
+	// program that was asked for.
+	{
+		count := controller^.get_parameter_count(cobj)
+		program_id: u32 = 0xFFFFFFFF
+		steps: i32 = 0
+		for i in 0 ..< count {
+			info: vst3.Parameter_Info
+			if controller^.get_parameter_info(cobj, i, &info) != vst3.RESULT_OK {
+				continue
+			}
+			if info.flags & vst3.PARAM_IS_PROGRAM_CHANGE != 0 {
+				program_id = info.id
+				steps = info.step_count
+			}
+		}
+		if program_id == 0xFFFFFFFF {
+			fmt.eprintln("FAIL: no parameter carries kIsProgramChange")
+			os.exit(1)
+		}
+		if steps != 127 {
+			fmt.eprintfln("FAIL: the program parameter has %v steps, expected 127", steps)
+			os.exit(1)
+		}
+
+		// This host has its own copy of the embedded bank -- src/patch is
+		// compiled into the executable as well as into the plugin -- so it has
+		// to be read in here too. Both copies come from the same file at
+		// compile time, which is what makes comparing them meaningful.
+		cpatch.factory_prepare()
+
+		// Program 6, which is the Organ in the factory bank.
+		wanted, filled := cpatch.factory_patch(6)
+		if !filled {
+			fmt.eprintln("FAIL: the embedded bank has nothing in slot 6")
+			os.exit(1)
+		}
+		controller^.set_param_normalized(cobj, program_id, 6.0 / 127.0)
+
+		// Every parameter, read back the way a host reads them and converted
+		// back to a stored value by the plugin's own arithmetic. Comparing
+		// against the bank rather than against a number this file worked out
+		// for itself: the question is whether the plugin loaded the patch,
+		// and a check that recomputed the mapping here would only be this
+		// host agreeing with itself.
+		wrong := 0
+		for i in 0 ..< cpatch.PARAMETER_COUNT {
+			got := controller^.get_param_normalized(cobj, u32(i))
+			plain := controller^.normalized_param_to_plain(cobj, u32(i), got)
+			if int(plain + 0.5) != wanted[i] {
+				wrong += 1
+			}
+		}
+		if wrong > 0 {
+			fmt.eprintfln("FAIL: %v parameters do not match the patch in slot 6", wrong)
+			os.exit(1)
+		}
+
+		back := controller^.get_param_normalized(cobj, program_id)
+		if int(back * 127.0 + 0.5) != 6 {
+			fmt.eprintfln("FAIL: program read back as %v, expected 6", back * 127.0)
+			os.exit(1)
+		}
+		fmt.printfln("program  : parameter %v selects a patch, 0..%v", program_id, steps)
+	}
+
 	nparams := controller^.get_parameter_count(cobj)
 	fmt.printfln("controller: %v parameters", nparams)
 
