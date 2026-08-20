@@ -1639,3 +1639,12 @@ body.modal-open { overflow: hidden; }
   text-transform: none;
   letter-spacing: 0;
 }
+
+/* The wiki's address, shown when a web view refuses to open a window for it.
+ * Selectable, because the only thing left to do with it is copy it. */
+.options-address {
+  user-select: text;
+  color: var(--ink-dim);
+  font-size: 12px;
+  word-break: break-all;
+}

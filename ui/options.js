@@ -155,9 +155,63 @@
       }
     });
 
+    // --- the manual --------------------------------------------------------
+
+    var help = el("section", "options-block");
+    help.appendChild(el("h3", "options-heading", "The manual"));
+    help.appendChild(el("p", "options-note",
+      "How the instrument works, what every control does, and the mathematics " +
+      "behind it."));
+
+    var note = el("p", "options-note options-address", WIKI);
+    note.hidden = true;
+
+    var read = el("button", "browser-mini", "Open the wiki");
+    read.type = "button";
+    read.addEventListener("click", function () { openManual(read, note); });
+
+    var row = el("div", "options-row");
+    row.appendChild(read);
+    help.appendChild(row);
+    help.appendChild(note);
+    // First. Somebody opening this dialog because they do not know what
+    // something does should not have to read past the controller table to
+    // find where that is written down.
+    wrap.insertBefore(help, wrap.firstChild);
+
     paint();
     wrap.stopLearning = function () { map().learn(null); };
     return wrap;
+  }
+
+  // Where the manual is.
+  //
+  // Opening it is not the same job in the two places this panel runs. In a
+  // browser it is a new tab. In a plugin the page lives inside a web view with
+  // no address bar and nowhere to put a tab, and window.open there either does
+  // nothing or -- worse -- navigates the panel itself to the wiki, leaving
+  // somebody looking at documentation where their synthesiser was.
+  //
+  // So it is tried, and when it does not work the address is shown instead, to
+  // be read and typed somewhere that has a browser. Saying where it is beats
+  // pretending to go there.
+  var WIKI = "https://github.com/mauro-moreno/quesynth/wiki";
+
+  function openManual(button, note) {
+    var opened = null;
+    try {
+      opened = window.open(WIKI, "_blank", "noopener");
+    } catch (e) {
+      opened = null;
+    }
+    if (opened) {
+      try { opened.opener = null; } catch (e) { /* already detached */ }
+      return;
+    }
+    if (note) {
+      note.hidden = false;
+      if (button) button.disabled = true;
+    }
   }
 
   function open() {

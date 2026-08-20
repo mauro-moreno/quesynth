@@ -381,16 +381,6 @@
   // somebody checks it. A host that wants to hand the panel a patch it got from
   // somewhere else can use it too.
   window.SynthPatchFile = {
-    patchText: function () {
-      var api = window.SynthPatch;
-      var built = patchObject(api.name(), api.values());
-      return JSON.stringify({
-        format: FORMAT_PATCH,
-        version: FORMAT_VERSION,
-        name: built.name,
-        parameters: built.parameters,
-      }, null, 2) + "\n";
-    },
     bankText: function () {
       var doc = bankDoc();
       return doc ? JSON.stringify(doc, null, 2) + "\n" : "";
