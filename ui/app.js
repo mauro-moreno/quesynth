@@ -40,6 +40,9 @@
     if (controls[index]) controls[index]();
     var list = dependents[index];
     if (list) for (var i = 0; i < list.length; i++) list[i]();
+    // Only the browser build ships a store; in a plugin the host is already
+    // saving this into the project and a second copy would fight it.
+    if (window.SynthStore) window.SynthStore.touch();
   }
 
   function dependOn(index, fn) {
@@ -1309,6 +1312,18 @@
       });
     }
 
+    // What was remembered, if anything is doing the remembering.
+    //
+    // The factory bank's slots go back first, so that loading slot zero below
+    // loads the edited version of it rather than the one that shipped. The
+    // current sound goes on top of that, because it is what was actually being
+    // played and it need not be any slot's contents.
+    var kept = window.SynthStore ? window.SynthStore.restore() : null;
+    if (kept && kept.factory) {
+      banks[0] = normalizeBank({ label: banks[0].label, patches: kept.factory });
+      if (currentBank === 0) bank = banks[0];
+    }
+
     var name = document.getElementById("bank-name");
     if (name) name.textContent = bank.label;
     // Only when a bank actually came with the page. There is always a bank now
@@ -1317,6 +1332,18 @@
     // has its own state and got there first. A panel that overwrote it on
     // startup would lose the user's sound every time the window was opened.
     if (bankSupplied) loadPatch(0);
+
+    // And then the sound that was actually up, over the top of it. Restored
+    // after loadPatch rather than instead of it, so the slot number and the
+    // bank name are already right and only the sound changes.
+    if (kept && kept.current && kept.current.values) {
+      window.SynthPatch.apply(kept.current.values, kept.current.name);
+      var slot = kept.current.slot;
+      if (typeof slot === "number" && slot >= 0 && slot < BANK_SLOTS) {
+        bankIndex = slot;
+        showPatch({ name: currentName, index: slot, bank: bank.label });
+      }
+    }
   }
 
   // Load one patch out of the compiled-in bank.
@@ -1537,6 +1564,7 @@
       bankIndex = i;
       currentName = bank.patches[i].n;
       showPatch({ name: currentName, index: i, bank: bank.label });
+      if (window.SynthStore) window.SynthStore.flush();
       return true;
     },
 
@@ -1544,6 +1572,7 @@
       if (i < 0 || i >= BANK_SLOTS) return false;
       bank.patches[i] = null;
       if (i === bankIndex) loadPatch(i);
+      if (window.SynthStore) window.SynthStore.flush();
       return true;
     },
 
@@ -1552,6 +1581,19 @@
     // drift into padding differently.
     replace: function (label, patches) {
       window.SynthPatch.setBank(label, patches);
+    },
+
+    // One bank's slots, in the shape a file uses, for whatever is keeping
+    // them. Takes an index because only some banks are worth keeping and the
+    // caller decides which -- ui/store.js keeps the factory and no other.
+    snapshot: function (which) {
+      var b = banks[which];
+      if (!b) return null;
+      var last = -1;
+      for (var i = 0; i < BANK_SLOTS; i++) if (b.patches[i]) last = i;
+      return b.patches.slice(0, last + 1).map(function (p) {
+        return p ? { n: p.n, v: p.v.slice() } : null;
+      });
     },
 
     // The slots that actually hold something, for writing a file. Trailing

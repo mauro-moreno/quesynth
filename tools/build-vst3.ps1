@@ -91,7 +91,16 @@ Copy-Item (Join-Path $root "ext\webview2\x64\WebView2Loader.dll") $binDir -Force
 # The whole panel, which is all ui/ holds: the WebAssembly engine and its glue
 # live in hosts/wasm and belong to that host, not to this one.
 #
-# Note what is *not* copied: host.js. index.html asks for it with an onerror
+# Note what is *not* copied: host.js and store.js. index.html asks for both
+# behind an onerror guard, and neither belongs in a plugin.
+#
+# store.js is the browser remembering the current sound and the factory bank in
+# local storage. In a plugin the host owns that: VST3 and CLAP both save the
+# sound into the project through getState/setState, and a panel that also wrote
+# to its web view's own storage would be a second copy of the same state,
+# restored in an order neither side controls.
+#
+# And host.js: index.html asks for it with an onerror
 # guard, and a native host has no page-side glue to load -- the bridge is on
 # this side of the wall, in editor.odin. Shipping the browser host's file here
 # would be shipping a second engine that must never start.
