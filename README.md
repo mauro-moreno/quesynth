@@ -1,5 +1,7 @@
 # Quesynth
 
+*keh-SINTH*
+
 A virtual analogue synthesiser written in [Odin](https://odin-lang.org), built to
 match [Synth1](https://daichilab.sakura.ne.jp/) closely enough to load its `.sy1`
 patches and sound like them — verified by null-testing against the original
