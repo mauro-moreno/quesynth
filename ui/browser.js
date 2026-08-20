@@ -107,9 +107,17 @@
     panes.appendChild(right);
     wrap.appendChild(panes);
 
-    function paintSources() {
-      left.textContent = "";
+    // What has been typed into the search box, lower-cased once.
+    var query = "";
+    // Built once, kept: see the note above buildHeader.
+    var rows = document.createElement("div");
+    rows.className = "browser-source-list";
+    var empty = document.createElement("div");
+    empty.className = "browser-source-empty";
+    empty.textContent = "No bank of that name";
+    empty.hidden = true;
 
+    function buildHeader() {
       var head = document.createElement("div");
       head.className = "browser-heading";
       var label = document.createElement("span");
@@ -156,7 +164,44 @@
       head.appendChild(actions);
       left.appendChild(head);
 
+      // Bank names, not patch names.
+      //
+      // Searching the patches would mean opening every bank to read them, and
+      // for a zip of a hundred and seventy-five that is exactly the eleven
+      // megabytes of work the listing avoids. What can be searched is what is
+      // already known, which is the names.
+      var find = document.createElement("input");
+      find.type = "search";
+      find.className = "browser-search";
+      find.placeholder = "Search banks";
+      find.setAttribute("aria-label", "Search banks by name");
+      find.addEventListener("input", function () {
+        query = find.value.trim().toLowerCase();
+        paintSources();
+      });
+      // A search box inside a dialog swallows Escape in some browsers to clear
+      // itself; let it through so the dialog still closes on the first press.
+      find.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && !find.value) return;
+        if (e.key === "Escape") {
+          find.value = "";
+          query = "";
+          paintSources();
+          e.stopPropagation();
+        }
+      });
+      left.appendChild(find);
+      left.appendChild(rows);
+      left.appendChild(empty);
+    }
+
+    function paintSources() {
+      rows.textContent = "";
+      var shown = 0;
+
       api().list().forEach(function (b, i) {
+        if (query && b.label.toLowerCase().indexOf(query) < 0) return;
+        shown++;
         var row = button("browser-source" + (b.current ? " on" : "") +
                          (b.used === null && !b.loading ? " unopened" : ""));
         var name = document.createElement("span");
@@ -186,8 +231,10 @@
             paintSlots();
           });
         });
-        left.appendChild(row);
+        rows.appendChild(row);
       });
+
+      empty.hidden = shown > 0;
     }
 
     function paintSlots() {
@@ -283,6 +330,7 @@
       wrap.appendChild(row);
     }
 
+    buildHeader();
     paintSources();
     paintSlots();
 

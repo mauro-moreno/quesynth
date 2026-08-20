@@ -110,7 +110,14 @@
 
     document.body.appendChild(back);
     document.body.classList.add("modal-open");
-    document.addEventListener("keydown", onKey, true);
+    // Bubble, not capture.
+    //
+    // On capture this runs before anything inside the dialog can see the key,
+    // so a field that wants to handle Escape itself -- the bank search clears
+    // rather than closing -- cannot: its stopPropagation comes too late,
+    // because the document already had the event. Bubbling gives the contents
+    // first refusal, which is the order a dialog should have.
+    document.addEventListener("keydown", onKey);
 
     open = { back: back, root: root, previousFocus: document.activeElement };
 
@@ -124,7 +131,7 @@
     if (!open) return;
     var it = open;
     open = null;
-    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("keydown", onKey);
     document.body.classList.remove("modal-open");
     if (it.back.parentNode) it.back.parentNode.removeChild(it.back);
     // Back where it came from, so closing the browser returns the caret to the

@@ -1502,3 +1502,34 @@ body.modal-open { overflow: hidden; }
  * because its name is all that is known about it until it is opened. */
 .browser-source.unopened .browser-source-name { color: var(--ink-faint); }
 .browser-source.unopened:hover .browser-source-name { color: var(--ink-dim); }
+
+/* Searching the bank list. Bank names only -- see the note in ui/browser.js
+ * about why the patches inside an unopened bank are not searchable. */
+.browser-search {
+  flex: 0 0 auto;
+  width: 100%;
+  appearance: none;
+  margin-bottom: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: #0a0a0d;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+}
+.browser-search::placeholder { color: var(--ink-faint); }
+.browser-search:focus { outline: none; border-color: var(--metal-dark); }
+
+/* The rows get their own box so the field above them is never rebuilt. */
+.browser-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.browser-source-empty {
+  padding: 10px 8px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
