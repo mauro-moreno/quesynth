@@ -1546,6 +1546,21 @@
   // Set while a bank from the host is being applied; see publishBank.
   var adoptingBank = false;
 
+  // Keep the bank that is open, whichever one it is.
+  //
+  // publishBank only marks bank zero to be saved, which is right for the
+  // ordinary case and left no way at all to do the thing somebody actually
+  // wants after opening a .zip: make *that* the bank the plugin comes back to.
+  // There was "Save bank…", which downloads a file -- in a plugin that puts it
+  // in Downloads, which is not a bank, and is where this was found.
+  function keepBank() {
+    if (!window.SynthPatchFile || !window.SynthPatchFile.bankText) return false;
+    var text = window.SynthPatchFile.bankText();
+    if (!text) return false;
+    bridge.send({ type: "bank", text: text, save: true });
+    return true;
+  }
+
   function emptyBank(label) {
     return normalizeBank({ label: label, patches: [] });
   }
@@ -1707,6 +1722,23 @@
       return b.patches.slice(0, last + 1).map(function (p) {
         return p ? { n: p.n, v: p.v.slice() } : null;
       });
+    },
+
+    // Keep the open bank as the one this instrument comes back to.
+    //
+    // Only means anything with a host: in the browser the bank that persists
+    // is the factory one and it is kept in local storage already.
+    keep: keepBank,
+    // Is there somewhere to keep a bank?
+    //
+    // Not simply "is there a host": the browser build has one too --
+    // hosts/wasm registers window.synthPost and bridge finds it -- and it
+    // has nowhere to put a bank, which is why store.js exists. So the
+    // question is whether this is the browser, and the answer is whether
+    // store.js is here: it is the one file deliberately not shipped to a
+    // plugin, for exactly the reason that the two remember differently.
+    hosted: function () {
+      return bridge.host !== "standalone" && !window.SynthStore;
     },
 
     // The slots that actually hold something, for writing a file. Trailing

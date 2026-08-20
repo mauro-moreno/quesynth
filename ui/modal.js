@@ -95,7 +95,9 @@
         b.type = "button";
         b.className = "modal-action" + (a.primary ? " primary" : "");
         b.textContent = a.label;
-        b.addEventListener("click", function () { a.onClick(close); });
+        // The button is handed over too, so an action can report back on it
+        // -- keeping a bank writes a file nobody can see happen.
+        b.addEventListener("click", function () { a.onClick(close, b); });
         foot.appendChild(b);
       });
       root.appendChild(foot);

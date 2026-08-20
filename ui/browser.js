@@ -354,11 +354,37 @@
             onClick: function () { if (files() && files().savePatch) files().savePatch(); },
           },
           {
-            label: "Save bank…",
+            // "to file", because there is now a second thing that saves a
+            // bank and the difference between them matters: this one writes
+            // a file you choose, and in a plugin that means Downloads.
+            label: "Save bank to file…",
             onClick: function () { if (files() && files().saveBank) files().saveBank(); },
           },
           { label: "Done", primary: true, onClick: function (close) { close(); } },
         ];
+
+    // In a plugin, one more: keep this bank. A plugin has somewhere to keep one
+    // and a browser does not -- there the factory bank is remembered already
+    // and the rest are files you opened.
+    if (!writing && api().hosted && api().hosted()) {
+      actions.splice(actions.length - 1, 0, {
+        label: "Keep as my bank",
+        // Says so afterwards. Keeping a bank writes a file somewhere the player
+        // cannot see, and a button that does nothing visible is one people
+        // press twice and then distrust.
+        onClick: function (close, button) {
+          var ok = api().keep();
+          if (!button) return;
+          var was = button.textContent;
+          button.textContent = ok ? "Kept" : "Could not keep it";
+          button.disabled = true;
+          setTimeout(function () {
+            button.textContent = was;
+            button.disabled = false;
+          }, 1400);
+        },
+      });
+    }
 
     window.SynthModal.show(writing ? "Write" : "Patches", body, actions);
     if (writing) body.focusField();
