@@ -138,7 +138,7 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 		e.global_lfo[j].shape = params.lfo[j].shape
 	}
 
-	smoother_init(&e.cutoff_smooth, params.filter_cutoff_hz, SMOOTHING_SECONDS, e.sample_rate)
+	smoother_init(&e.cutoff_smooth, params.filter_cutoff_state, SMOOTHING_SECONDS, e.sample_rate)
 	smoother_init(&e.gain_smooth, params.amp_gain, SMOOTHING_SECONDS, e.sample_rate)
 	smoother_init(&e.pan_smooth, params.pan, SMOOTHING_SECONDS, e.sample_rate)
 
@@ -221,7 +221,7 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false) {
 	}
 
 	if snap {
-		smoother_reset(&e.cutoff_smooth, params.filter_cutoff_hz)
+		smoother_reset(&e.cutoff_smooth, params.filter_cutoff_state)
 		smoother_reset(&e.gain_smooth, params.amp_gain)
 		smoother_reset(&e.pan_smooth, params.pan)
 
@@ -701,7 +701,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
 		}
 
-		params.filter_cutoff_hz = smoother_process(&e.cutoff_smooth, e.params.filter_cutoff_hz)
+		params.filter_cutoff_state = smoother_process(&e.cutoff_smooth, e.params.filter_cutoff_state)
 		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
 		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
 

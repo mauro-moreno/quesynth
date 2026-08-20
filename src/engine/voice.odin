@@ -54,6 +54,45 @@ Voice :: struct {
 	age:          u64,
 }
 
+// Resolve a possibly fractional parameter-19 state on the same cutoff surface
+// selected at patch binding. Geometric interpolation is the natural operation
+// for frequency, both between adjacent states and between the measured low-Q
+// and high-Q 24 dB curves.
+filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
+	bounded := dsp.clamp32(state, 0, f32(FILTER_TABLE_SIZE - 1))
+	lo := int(math.floor(bounded))
+	hi := clamp_int(lo + 1, 0, FILTER_TABLE_SIZE - 1)
+	fraction := bounded - f32(lo)
+
+	if p.filter_slope == .Slope_24 {
+		low_q := exp_map(
+			fraction,
+			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[lo],
+			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[hi],
+		)
+		high_q := exp_map(
+			fraction,
+			FILTER_CUTOFF_HZ_24[lo],
+			FILTER_CUTOFF_HZ_24[hi],
+		)
+		cutoff := filter_cutoff_24_effective_topology_scale(
+			p.filter_cutoff_topology_scale,
+			bounded,
+		) * exp_map(
+			p.filter_cutoff_surface_blend,
+			low_q,
+			high_q,
+		)
+		return cutoff
+	}
+
+	cutoff := exp_map(fraction, FILTER_CUTOFF_HZ[lo], FILTER_CUTOFF_HZ[hi])
+	if p.filter_mode == .Band_Pass {
+		cutoff *= BAND_PASS_CENTRE_RATIO
+	}
+	return cutoff
+}
+
 // Lay out the unison stack: detune, pan and, when requested, start phase.
 //
 // The detune spread is symmetric about the note, so a stack never shifts the
@@ -464,48 +503,26 @@ voice_process :: proc(
 	// gives. Around a semitone, and not yet modelled.
 	track_octaves := p.filter_key_track * (base_note - FILTER_TRACK_REFERENCE_NOTE) / 12.0
 
-	env_octaves := p.filter_env_octaves
+	env_cutoff_states := p.filter_env_cutoff_states
 	if p.filter_velocity {
 		// Parameter 24: "Select whether the amount of envelope variation
 		// changes according to the velocity of the note played."
-		env_octaves *= v.velocity
+		env_cutoff_states *= v.velocity
 	}
-	// The envelope's own contribution, already in octaves: the binding measured
-	// how far a step of parameter 21 moves the corner, so there is no scaling
-	// constant left to choose here. There used to be one -- six octaves at full
-	// amount -- and it was the reason a patch with a low cutoff and a negative
-	// amount stayed audible in this engine while the reference fell silent. The
-	// real range is about ten octaves either way.
-	//
-	// That raw range is a law fitted clear of the filter's own limits, and at a
-	// cutoff with little headroom it overshoots them: parameter 19 at 80 has
-	// 5.9 octaves to the floor, not the law's 10.05. Scaling the raw law by a
-	// fractional envelope value and clamping only the final Hz sends that
-	// fraction past a wall the reference's own envelope never sees --
-	// `s1probe cutoffprobe --sweep sustain --cutoff 80 --amount 0 --type 1
-	// --res 107` measures a mid sustain landing at 453 Hz where that gives
-	// 246 Hz, because the reference reaches full depth at 6.02 octaves of real
-	// travel and takes its fraction of *that*, not of the law's 10.05. So the
-	// full-depth excursion is clamped first, against the knob's own range
-	// rather than the general DSP safety floor, and the envelope's fraction is
-	// taken of whatever excursion survives that.
-	// The wall the excursion clamps against is the 24 dB path's own floor and
-	// ceiling when that is the path in use, not the 12 dB path's.
-	cutoff_floor := p.filter_slope == .Slope_24 ? FILTER_CUTOFF_HZ_24[0] : FILTER_CUTOFF_HZ[0]
-	cutoff_ceiling: f32
-	if p.filter_slope == .Slope_24 {
-		cutoff_ceiling = FILTER_CUTOFF_HZ_24[FILTER_TABLE_SIZE - 1]
-	} else {
-		cutoff_ceiling = FILTER_CUTOFF_HZ[FILTER_TABLE_SIZE - 1]
-	}
-	full_env_cutoff := dsp.clamp32(
-		p.filter_cutoff_hz * math.pow(f32(2.0), env_octaves),
-		cutoff_floor,
-		cutoff_ceiling,
+	// Clamp the full envelope destination in controller-state space first, then
+	// take the envelope fraction of the achievable state travel. This ordering
+	// is observable near either end of the cutoff knob. For example, cutoff 44
+	// and amount 31 request -64 states: the endpoint stops at state 0, sustain
+	// 73 takes 57.5% of the surviving 44-state trip, and lands near state 19.
+	full_env_state := dsp.clamp32(
+		p.filter_cutoff_state + env_cutoff_states,
+		0,
+		f32(FILTER_TABLE_SIZE - 1),
 	)
-	achievable_env_octaves := math.log2(full_env_cutoff / p.filter_cutoff_hz)
-	cutoff_octaves := track_octaves + achievable_env_octaves * filter_env + mod_cutoff_octaves
-	cutoff := p.filter_cutoff_hz * math.pow(f32(2.0), cutoff_octaves)
+	achievable_env_states := full_env_state - p.filter_cutoff_state
+	cutoff_state := p.filter_cutoff_state + achievable_env_states * filter_env
+	cutoff := filter_cutoff_at_state(p, cutoff_state)
+	cutoff *= math.pow(f32(2.0), track_octaves + mod_cutoff_octaves)
 	cutoff = dsp.clamp32(cutoff, dsp.MIN_CUTOFF_HZ, sample_rate * dsp.MAX_CUTOFF_RATIO)
 
 	// -- amplitude -----------------------------------------------------------

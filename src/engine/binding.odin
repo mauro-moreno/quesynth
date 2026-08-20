@@ -180,6 +180,76 @@ filter_saturation_drive :: proc(stored: int) -> f32 {
 	return FILTER_SATURATION_DRIVE[last]
 }
 
+// Where the 24 dB response moves from its resonance-0 corner surface to the
+// high-Q peak surface. The transition was measured at cutoff states 44, 64, 80
+// and 110. At each resonance the four log-frequency fractions agreed closely;
+// these are their means:
+//
+//   resonance       0       4       8      16      32      64     107
+//   blend       0.0000  0.2405  0.4332  0.7000  0.8773  0.9835  1.0000
+//
+// Interpolation is linear between measured controller states here and
+// geometric between the two frequency tables below. Frequencies and cutoff
+// ratios live in octaves, so an arithmetic Hz blend would be the wrong space.
+FILTER_CUTOFF_24_RESONANCE_STATES := [?]int{0, 4, 8, 16, 32, 64, 107}
+FILTER_CUTOFF_24_RESONANCE_BLEND := [?]f32{0.0, 0.2405, 0.4332, 0.7000, 0.8773, 0.9835, 1.0}
+
+// Converting the reference's audible corner target into the coefficient this
+// engine's two-section topology needs. At low Q its -3 dB corner is consistently
+// 0.80 of the supplied coefficient, so the resonance-0 surface needs 1.255x.
+// The factor was measured from cutoff 44 through 110 at every resonance knot;
+// it reaches unity once the resonant peak, rather than the cascade's corner
+// ratio, anchors the response.
+FILTER_CUTOFF_24_TOPOLOGY_SCALE := [?]f32{1.255, 1.259, 1.264, 1.267, 1.165, 1.0, 1.0}
+
+filter_cutoff_24_resonance_blend :: proc(stored: int) -> f32 {
+	state := resolved_position(20, stored)
+	if state <= FILTER_CUTOFF_24_RESONANCE_STATES[0] {
+		return FILTER_CUTOFF_24_RESONANCE_BLEND[0]
+	}
+	last := len(FILTER_CUTOFF_24_RESONANCE_STATES) - 1
+	if state >= FILTER_CUTOFF_24_RESONANCE_STATES[last] {
+		return FILTER_CUTOFF_24_RESONANCE_BLEND[last]
+	}
+	for i in 0 ..< last {
+		lo_state := FILTER_CUTOFF_24_RESONANCE_STATES[i]
+		hi_state := FILTER_CUTOFF_24_RESONANCE_STATES[i + 1]
+		if state <= hi_state {
+			t := f32(state - lo_state) / f32(hi_state - lo_state)
+			return dsp.lerp32(FILTER_CUTOFF_24_RESONANCE_BLEND[i], FILTER_CUTOFF_24_RESONANCE_BLEND[i + 1], t)
+		}
+	}
+	return FILTER_CUTOFF_24_RESONANCE_BLEND[last]
+}
+
+filter_cutoff_24_topology_scale :: proc(stored: int) -> f32 {
+	state := resolved_position(20, stored)
+	if state <= FILTER_CUTOFF_24_RESONANCE_STATES[0] {
+		return FILTER_CUTOFF_24_TOPOLOGY_SCALE[0]
+	}
+	last := len(FILTER_CUTOFF_24_RESONANCE_STATES) - 1
+	if state >= FILTER_CUTOFF_24_RESONANCE_STATES[last] {
+		return FILTER_CUTOFF_24_TOPOLOGY_SCALE[last]
+	}
+	for i in 0 ..< last {
+		lo_state := FILTER_CUTOFF_24_RESONANCE_STATES[i]
+		hi_state := FILTER_CUTOFF_24_RESONANCE_STATES[i + 1]
+		if state <= hi_state {
+			t := f32(state - lo_state) / f32(hi_state - lo_state)
+			return dsp.lerp32(FILTER_CUTOFF_24_TOPOLOGY_SCALE[i], FILTER_CUTOFF_24_TOPOLOGY_SCALE[i + 1], t)
+		}
+	}
+	return FILTER_CUTOFF_24_TOPOLOGY_SCALE[last]
+}
+
+// Near the 20 Hz DSP floor the filter's measured corner converges on its
+// coefficient frequency, so the low-Q topology compensation must converge on
+// one too. It reaches the full measured factor by cutoff state 20; applying the
+// factor unchanged at state zero raises the audible floor from 23 to 28 Hz.
+filter_cutoff_24_effective_topology_scale :: proc(scale, state: f32) -> f32 {
+	return dsp.lerp32(1, scale, dsp.clamp32(state / 20.0, 0, 1))
+}
+
 // Envelope times, read out of the reference.
 //
 // These were a chosen curve -- 1 ms to 12 s, exponential -- because the displays
@@ -607,24 +677,31 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// the real curve runs 24 Hz to about 17 kHz and, above stored 16, moves in
 	// steps of very close to one semitone.
 	//
-	// The 24 dB path does not share that curve, and reading it the same way --
-	// the -3 dB point against an open reference, at resonance 0 -- does not
-	// reach it either. A first attempt built exactly that and made the bank
-	// worse: 29 of 123 patches regressed, every one of them at high resonance,
-	// because raising Q raises a peak near the corner and the -3 dB point,
-	// defined relative to *that* render's own peak, follows it upward by over
-	// an octave. `FILTER_CUTOFF_HZ_24` reads the peak's own frequency instead,
-	// with resonance held at 107 for the whole sweep -- high enough for the
-	// peak to exist and be sharp, clear of the handful of settings at the very
-	// bottom of the range where even that resonance puts the peak below the
-	// analysed floor (`extrapolate_head` covers those). See docs/null-test.md
-	// for the full trail, including why the -3 dB corner is not resonance-
-	// invariant on a filter with a peak and the peak's own frequency, read at
-	// high Q, is a better estimate of the parameter this curve is actually
-	// meant to capture.
-	e.filter_cutoff_hz =
-		(e.filter_slope == .Slope_24 ? FILTER_CUTOFF_HZ_24 : FILTER_CUTOFF_HZ)[
-			clamp_int(resolved_position(19, p.values[19]), 0, FILTER_TABLE_SIZE - 1)]
+	// The 24 dB path needs two surfaces. `FILTER_CUTOFF_HZ_24_LOW_RESONANCE`
+	// reads the -3 dB corner at resonance 0; `FILTER_CUTOFF_HZ_24` reads the
+	// peak at resonance 107. Substituting either globally is wrong: the first
+	// regressed 29 high-Q patches, while the second leaves resonance-0 corners
+	// 1.1 octaves high around the middle of the knob. A six-resonance sweep
+	// measured how the audible corner travels between them, and the helper
+	// above resolves that transition in log-frequency space.
+	cutoff_state := clamp_int(resolved_position(19, p.values[19]), 0, FILTER_TABLE_SIZE - 1)
+	e.filter_cutoff_state = f32(cutoff_state)
+	if e.filter_slope == .Slope_24 {
+		blend := filter_cutoff_24_resonance_blend(p.values[20])
+		topology_scale := filter_cutoff_24_topology_scale(p.values[20])
+		base_topology_scale := filter_cutoff_24_effective_topology_scale(topology_scale, f32(cutoff_state))
+		e.filter_cutoff_surface_blend = blend
+		e.filter_cutoff_topology_scale = topology_scale
+		e.filter_cutoff_hz = base_topology_scale * exp_map(
+			blend,
+			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[cutoff_state],
+			FILTER_CUTOFF_HZ_24[cutoff_state],
+		)
+	} else {
+		e.filter_cutoff_surface_blend = 0
+		e.filter_cutoff_topology_scale = 1
+		e.filter_cutoff_hz = FILTER_CUTOFF_HZ[cutoff_state]
+	}
 	// That table is the low pass's corner, and the band pass does not centre on
 	// it. See the constant.
 	if e.filter_mode == .Band_Pass {
@@ -649,28 +726,13 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.filter_output_gain = FILTER_OUTPUT_GAIN[state]
 	}
 
-	// Displays "-63".."64". Divided by 64 so the positive end reaches exactly
-	// 1.0 and the centre is no envelope contribution.
-	// Parameter 21, in octaves, measured. Not clamped to a range here: the
-	// corner it produces is clamped in `voice_process`, which is where the
-	// filter's actual limits live, and clamping the amount instead would apply
-	// one cutoff setting's headroom to every other.
-	//
-	// A second measured law for the same reason the cutoff curve above needed
-	// one: the 24 dB path's octaves-per-step is its own number, and now that
-	// both curves are read the same way -- the resonant peak at resonance 107
-	// rather than the -3 dB corner at 0 -- 0.155091 against the 12 dB path's
-	// 0.159530 is a small difference, not the large one an earlier, resonance-0
-	// reading gave.
-	if e.filter_slope == .Slope_24 {
-		e.filter_env_octaves =
-			f32(resolved_position(21, p.values[21]) - FILTER_ENV_CENTRE_STATE_24) *
-			FILTER_ENV_OCTAVES_PER_STEP_24
-	} else {
-		e.filter_env_octaves =
-			f32(resolved_position(21, p.values[21]) - FILTER_ENV_CENTRE_STATE) *
-			FILTER_ENV_OCTAVES_PER_STEP
-	}
+	// Parameter 21 displays -63..64, with stored 63 as zero. Controlled sweeps
+	// reveal the underlying law more directly than an octave fit: every amount
+	// step moves the full envelope endpoint by exactly two parameter-19 states.
+	// Sampling the cutoff table after that movement naturally reproduces both
+	// the nearly constant high-Q octave slope and the varying low-Q slope.
+	e.filter_env_cutoff_states =
+		f32(resolved_position(21, p.values[21]) - FILTER_ENV_CENTRE_STATE) * 2.0
 	// A bare 0..127. The readme: fully right "the frequency changes an octave
 	// with a one octave change in the note number played (full)", fully left
 	// "leave the frequency unchanged", so the linear 0..1 reading is the

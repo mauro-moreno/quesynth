@@ -378,6 +378,49 @@ test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 		"stored 122 did not bind to its measured drive")
 }
 
+@(test)
+test_24db_cutoff_binding_tracks_resonance_surface :: proc(t: ^testing.T) {
+	p := default_patch()
+	for index in ([]int{14, 19, 20, 21}) {
+		p.present[index] = true
+	}
+	p.values[14] = 1 // 24 dB low pass
+	p.values[19] = 64
+	p.values[21] = 20
+
+	p.values[20] = 0
+	low := engine.bind_patch(p)
+	low_expected := engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] * f32(1.255)
+	testing.expectf(t, abs(low.filter_cutoff_hz - low_expected) < 0.001,
+		"resonance-0 cutoff did not use the low-Q surface: %v", low.filter_cutoff_hz)
+	testing.expectf(t, abs(engine.filter_cutoff_at_state(&low, 0) - engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[0]) < 0.001,
+		"resonance-0 floor did not follow the low-Q surface")
+	testing.expectf(t, abs(low.filter_env_cutoff_states - f32(20 - 63) * 2.0) < 0.001,
+		"filter envelope amount did not resolve to two cutoff states per step")
+	testing.expect_value(t, low.filter_cutoff_state, f32(64))
+	testing.expect_value(t, low.filter_cutoff_surface_blend, f32(0))
+	testing.expect_value(t, low.filter_cutoff_topology_scale, f32(1.255))
+
+	p.values[20] = 4
+	mid := engine.bind_patch(p)
+	expected_mid := f32(1.259) * engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] *
+		math.pow(engine.FILTER_CUTOFF_HZ_24[64] / engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64], f32(0.2405))
+	testing.expectf(t, abs(mid.filter_cutoff_hz - expected_mid) < 0.001,
+		"resonance-4 cutoff did not use the measured log blend: %v vs %v", mid.filter_cutoff_hz, expected_mid)
+
+	p.values[20] = 107
+	high := engine.bind_patch(p)
+	testing.expectf(t, abs(high.filter_cutoff_hz - engine.FILTER_CUTOFF_HZ_24[64]) < 0.001,
+		"resonance-107 cutoff did not reach the high-Q surface: %v", high.filter_cutoff_hz)
+	testing.expectf(t, abs(engine.filter_cutoff_at_state(&high, f32(engine.FILTER_TABLE_SIZE - 1)) - engine.FILTER_CUTOFF_HZ_24[engine.FILTER_TABLE_SIZE - 1]) < 0.001,
+		"resonance-107 ceiling did not follow the high-Q surface")
+
+	p.values[20] = 127
+	at_top := engine.bind_patch(p)
+	testing.expectf(t, abs(at_top.filter_cutoff_hz - high.filter_cutoff_hz) < 0.001,
+		"cutoff surface moved above its measured resonance-107 endpoint")
+}
+
 // A non-finite input must not be able to lodge itself in the filter state, or
 // one bad sample would silence the rest of the render.
 @(test)
@@ -708,19 +751,18 @@ test_out_of_range_stored_value_stays_bounded :: proc(t: ^testing.T) {
 	p := default_patch()
 	testing.expect_value(t, p.values[21], 128)
 	bound := engine.bind_patch(p)
-	// The amount is in octaves now, and the reference's own range is about ten
-	// either way, so the bound is what the measured law can reach across the
-	// 128 states rather than a normalised fraction.
-	limit := f32(engine.FILTER_TABLE_SIZE) * engine.FILTER_ENV_OCTAVES_PER_STEP
+	// The amount is a signed state excursion. The top endpoint is 64 amount
+	// steps above centre, at two cutoff states per step.
+	limit := f32(engine.FILTER_TABLE_SIZE)
 	testing.expectf(
 		t,
-		bound.filter_env_octaves >= -limit && bound.filter_env_octaves <= limit,
-		"filter env amount left its range: %v octaves",
-		bound.filter_env_octaves,
+		bound.filter_env_cutoff_states >= -limit && bound.filter_env_cutoff_states <= limit,
+		"filter env amount left its range: %v cutoff states",
+		bound.filter_env_cutoff_states,
 	)
 	// Stored 128 is out of range at the top, so it resolves to the top state and
 	// the envelope opens the filter rather than closing it.
-	testing.expect(t, bound.filter_env_octaves > 0, "the top state should open the filter")
+	testing.expect(t, bound.filter_env_cutoff_states > 0, "the top state should open the filter")
 
 	// A negative stored value must clamp at the bottom, not read as a maximum.
 	p.values[21] = -999

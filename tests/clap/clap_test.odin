@@ -682,7 +682,10 @@ test_midi_cc_uses_the_current_automated_patch :: proc(t: ^testing.T) {
 	resonance := param_event(0, 20, 32)
 	input_push(&input, &resonance)
 	run_block(plugin, &render, &input, &output)
-	testing.expect_value(t, s.eng.params.filter_cutoff_hz, want.filter_cutoff_hz)
+	want_after_resonance_patch := s.eng.patch
+	want_after_resonance_patch.values[19] = 127
+	want_after_resonance := engine.bind_patch(want_after_resonance_patch)
+	testing.expect_value(t, s.eng.params.filter_cutoff_hz, want_after_resonance.filter_cutoff_hz)
 
 	// Reassigning the slot to another source cannot reuse CC1's stale value as
 	// though it had already arrived from CC2.

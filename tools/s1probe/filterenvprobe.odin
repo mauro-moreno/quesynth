@@ -229,13 +229,13 @@ filter_open_reference :: proc(
 // reference's -- comparing against the reference's open band levels would
 // charge this engine for any gain difference between the two at full open,
 // which is a different question from where the corner sits.
-open_ours :: proc(cutoff, amount, sustain: int, note: u8) -> (bands, centres: []f64, ok: bool) {
+open_ours :: proc(note: u8) -> (bands, centres: []f64, ok: bool) {
 	set_compare_timing(COMPARE_BLOCK_DEFAULT)
 	held := (int(FILTER_PROBE_SECONDS * f64(SAMPLE_RATE)) + g_block - 1) / g_block
 	g_hold_frames = held * g_block
 	g_total_frames = g_hold_frames + g_block * 8
 
-	p := filter_probe_patch(cutoff, amount, sustain)
+	p := filter_probe_patch(127, 63, 127)
 	audio := render_ours(p, int(note))
 	if audio == nil {
 		return nil, nil, false
@@ -324,8 +324,8 @@ cmd_cutoffprobe :: proc(dll: string, sweep: string, cutoff, amount, sustain: int
 	// a long way to travel, and the sustain fraction is read off as the share of
 	// that travel actually taken.
 	if sweep == "sustain" {
-		fmt.printfln("cutoffprobe: sweeping the filter envelope sustain, cutoff %v, amount %v",
-			cutoff, amount)
+		fmt.printfln("cutoffprobe: sweeping the filter envelope sustain, cutoff %v, amount %v, type %v, resonance %v",
+			cutoff, amount, g_probe_filter_type, g_probe_resonance)
 		fmt.println()
 		at_zero := 0.0
 		at_full := 0.0
@@ -343,7 +343,7 @@ cmd_cutoffprobe :: proc(dll: string, sweep: string, cutoff, amount, sustain: int
 		fmt.printfln("sustain 0 puts the corner at %v Hz, sustain 127 at %v Hz: %v octaves of travel",
 			dec0(at_zero), dec0(at_full), sdec2(full_travel))
 
-		our_open_bands, our_centres, our_open_ok := open_ours(cutoff, 63, 127, note)
+		our_open_bands, our_centres, our_open_ok := open_ours(note)
 		defer delete(our_open_bands)
 		defer delete(our_centres)
 		fmt.println()
@@ -368,8 +368,9 @@ cmd_cutoffprobe :: proc(dll: string, sweep: string, cutoff, amount, sustain: int
 	}
 
 	sweeping_cutoff := sweep != "amount"
-	fmt.printfln("cutoffprobe: sweeping %v, note %v, noise through a 12 dB low pass",
-		sweeping_cutoff ? "the cutoff knob" : "the envelope amount", note)
+	fmt.printfln("cutoffprobe: sweeping %v, note %v, filter type %v, resonance %v",
+		sweeping_cutoff ? "the cutoff knob" : "the envelope amount", note,
+		g_probe_filter_type, g_probe_resonance)
 	if sweeping_cutoff {
 		fmt.printfln("             envelope amount held at %v, sustain %v", amount, sustain)
 	} else {
@@ -388,7 +389,11 @@ cmd_cutoffprobe :: proc(dll: string, sweep: string, cutoff, amount, sustain: int
 		fmt.println()
 	}
 
-	fmt.printfln("%8v %10v %12v", "stored", "corner Hz", sweeping_cutoff ? "octaves" : "offset oct")
+	our_open_bands, our_centres, our_open_ok := open_ours(note)
+	defer delete(our_open_bands)
+	defer delete(our_centres)
+	fmt.printfln("%8v %10v %12v %10v %10v", "stored", "corner Hz",
+		sweeping_cutoff ? "octaves" : "offset oct", "our Hz", "our oct")
 	for v in values {
 		hz, ok := probe_corner(
 			dll, pristine, work, open_bands, centres,
@@ -400,8 +405,19 @@ cmd_cutoffprobe :: proc(dll: string, sweep: string, cutoff, amount, sustain: int
 			fmt.printfln("%8v %10v %12v", v, hz > 0 ? dec0(hz) : "-", "out of range")
 			continue
 		}
+		our_hz, our_ok := 0.0, false
+		if our_open_ok {
+			our_hz, our_ok = corner_ours(
+				our_open_bands, our_centres,
+				sweeping_cutoff ? v : cutoff,
+				sweeping_cutoff ? amount : v,
+				sustain, note,
+			)
+		}
 		octaves := reference_hz > 0 ? log2f(hz / reference_hz) : log2f(hz / 20.0)
-		fmt.printfln("%8v %10v %12v", v, dec0(hz), sdec2(octaves))
+		our_oct := our_ok && hz > 0 ? sdec2(log2f(our_hz / hz)) : "-"
+		fmt.printfln("%8v %10v %12v %10v %10v", v, dec0(hz), sdec2(octaves),
+			our_ok ? dec0(our_hz) : "-", our_oct)
 		free_all(context.temp_allocator)
 	}
 }

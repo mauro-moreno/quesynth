@@ -375,6 +375,15 @@ Engine_Params :: struct {
 	filter_mode:        dsp.Filter_Mode,
 	filter_slope:       dsp.Filter_Slope,
 	filter_cutoff_hz:   f32,
+	// Parameter 19's resolved controller state. The filter envelope moves this
+	// state, rather than multiplying the already-resolved frequency by a fixed
+	// octave amount; the cutoff tables are deliberately not uniform in octaves.
+	filter_cutoff_state: f32,
+	// The two controls needed to sample that same 24 dB surface at fractional
+	// controller states while the filter envelope is moving. They are neutral
+	// (0 and 1) for the 12 dB path.
+	filter_cutoff_surface_blend: f32,
+	filter_cutoff_topology_scale: f32,
 	// Parameter 20 on 0..1, kept because it is the knob's own position and
 	// several things want to know it, and the same knob resolved to the filter's
 	// damping k = 1/Q, which is what the audio path consumes. Resolved once at
@@ -386,16 +395,10 @@ Engine_Params :: struct {
 	// reference does not simply pass it through; measured, and the same curve for
 	// every response and both slopes.
 	filter_output_gain: f32,
-	// Parameter 21, signed on -1..1.
-	// Parameter 21, as the octaves the corner moves when the envelope is at full
-	// level. Signed; negative closes the filter as the envelope rises.
-	//
-	// Octaves rather than a -1..1 fraction because that is what was measured:
-	// `s1probe filtertable` fits 0.1595 octaves per step, so the knob reaches
-	// about +10.2 and -10.1 octaves at its ends. The fraction this replaced was
-	// scaled by an invented six octaves in `voice_process`, which is why patches
-	// pairing a low cutoff with a negative amount would not close.
-	filter_env_octaves: f32,
+	// Parameter 21 as signed cutoff-controller states at full envelope level.
+	// Each amount step moves two cutoff states. The full endpoint is clamped in
+	// state space before the envelope fraction is applied.
+	filter_env_cutoff_states: f32,
 	// Parameter 22, 0..1, where 1 is one octave of cutoff per octave of note.
 	filter_key_track:   f32,
 	// Parameter 23 resolved to the measured peak-normalised tanh drive.

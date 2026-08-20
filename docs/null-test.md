@@ -4008,3 +4008,118 @@ spectral error; patch 083, previously the worst patch in the bank, falls from
 DSP suite now includes the measured peak invariance, two exact binding knots,
 the over-unity stability sweep, and a regression guard that prevents the 24 dB
 path from compounding the shaper.
+
+## The low-resonance 24 dB corner and sustain states 0--16
+
+The high-resonance cutoff table left two related loose ends above: patch 002
+uses the 24 dB path at resonance 0, while `FILTER_CUTOFF_HZ_24` was measured
+from the peak at resonance 107; and the filter-sustain check sampled every
+sixteen states, so it did not establish what happens immediately above stored
+zero. Both were measured directly.
+
+**Low-resonance cutoff.** The envelope was pinned neutral, keyboard tracking
+off, and the -3 dB corner was read against an open render at ten cutoff states
+and six low-to-mid resonance settings. Selected rows:
+
+| cutoff | res 0 | res 4 | res 8 | res 16 | res 32 | res 64 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 44 | 86 Hz | 102 Hz | 118 Hz | 147 Hz | 170 Hz | 185 Hz |
+| 64 | 255 Hz | 307 Hz | 355 Hz | 436 Hz | 506 Hz | 556 Hz |
+| 80 | 637 Hz | 768 Hz | 884 Hz | 1078 Hz | 1234 Hz | 1349 Hz |
+| 110 | 4586 Hz | 5114 Hz | 5592 Hz | 6245 Hz | 6668 Hz | 6896 Hz |
+
+This is a continuous resonance surface, not a special case at exactly zero.
+Most of its travel happens below resonance 32; by 64 it is already close to the
+peak-at-107 readings (190, 567, 1356 and 6894 Hz at the same four cutoff states).
+The difference at resonance 0 is 1.15 octaves at cutoff 64 and 1.09 octaves at
+cutoff 80 -- large enough to explain a 24 dB low pass being tens of decibels
+wrong above its corner.
+
+The complete resonance-0 run resolved 121 of 128 cutoff settings and wrote
+`build/filter_table_24_res0.odin`, since promoted to
+`src/engine/filter_table_24_low.odin`: 23 Hz through 15.6 kHz. It also reproduced
+the envelope-amount slope, 0.1630 octaves per state. That agreement matters:
+the low-resonance defect is the base response, not a second envelope-amount
+law.
+
+This does **not** mean the parameter's internal frequency literally changes
+with resonance. A -3 dB corner defined relative to the response's own maximum
+moves as Q changes; that was why the resonance-0 table was previously rejected
+as a global replacement. It does mean the current high-Q calibration is the
+wrong audible response for the low-Q end of this engine's different topology.
+The implemented fix therefore uses a resonance-conditioned response rather
+than replacing the existing high-Q table globally.
+
+**Sustain immediately above zero.** The first sweep used cutoff 100 and amount
+20, but its full-depth endpoint approached the filter floor. A second sweep at
+cutoff 110 and amount 50 kept the complete 2.2--2.5 octave trajectory inside
+the analysed band. States 0 through 8 were measured individually, then every
+second state through 16.
+
+At type 1, resonance 0, the first four measured fractions were:
+
+| stored 17 | measured | linear |
+|---:|---:|---:|
+| 1 | 0.0057 | 0.0079 |
+| 2 | 0.0166 | 0.0157 |
+| 3 | 0.0220 | 0.0236 |
+| 4 | 0.0323 | 0.0315 |
+
+Every point is within 0.0022 of linear, with the error alternating around it.
+There is no low-end dead zone, offset, or hidden coarse state conversion. At
+state 8 the fraction is 0.0719 against 0.0630, and at 16 it is 0.1432 against
+0.1260; the deviation grows away from zero, but it is not a sustain-controller
+curve. The same parameter through type 0 at resonance 0 reads 0.1273 at state
+16, and through type 1 at resonance 16 reads 0.1299. A real parameter-17 curve
+cannot depend on the selected filter slope and resonance; the measured corner
+can, as the table above demonstrates.
+
+Patch 002's own cutoff 44, amount 31 combination confirms that every low state
+is active: its reference corners at sustain 0--8 are 86, 85, 83, 81, 80, 79,
+77, 76 and 75 Hz. Normalising that trajectory against its floor-limited 23 Hz
+endpoint makes it look strongly convex, but that is the same endpoint confound,
+not evidence for remapping the controller.
+
+**Implementation.** Binding now resolves the 24 dB corner by geometrically
+blending the resonance-0 corner table into the resonance-107 peak table. Seven
+measured resonance anchors (0, 4, 8, 16, 32, 64 and 107) define the blend, and
+a measured topology correction converts the reference corner to this engine's
+cascade coefficient. The correction fades near the DSP floor, where applying
+its mid-band value unchanged raised the minimum corner from 23 to 28 Hz.
+
+The amount sweep also exposed a more useful law than the earlier octave fit:
+parameter 21 moves exactly **two parameter-19 states per amount step**. The
+apparent octave slope changes only because the low-Q cutoff table is not
+uniform in octaves. `voice_process` now clamps the full envelope destination
+to cutoff states 0--127, applies the linear parameter-17 fraction to the
+achievable state travel, and samples the same resonance-conditioned surface at
+the resulting fractional state. Keyboard tracking and LFO modulation remain
+octave offsets after that lookup.
+
+Two controlled checks bound the result:
+
+| probe | reference | engine after fix | error |
+|---|---:|---:|---:|
+| cutoff 44, amount 31, sustain 73, res 0 | 31 Hz | 32 Hz | +0.06 oct |
+| cutoff 110, amount 50, sustain 64, res 0 | 1831 Hz | 1809 Hz | -0.02 oct |
+| cutoff 110, amount 50, sustain 127, res 0 | 823 Hz | 813 Hz | -0.02 oct |
+
+Across the neutral-envelope cutoff sweep, states 32--110 are within 0.03
+octave and state 20 is within 0.07. At the analyser boundary state 0 still
+reads 26 Hz against 23 Hz (+0.16 octave); this is the remaining floor/topology
+error, not the old one-octave mid-band displacement.
+
+**Bank verdict.** The isolated 123-patch run is deliberately recorded even
+though the aggregate does not improve: spectral mean/median move from
+7.13/6.69 to 7.26/6.87 dB, envelope mean from 3.07 to 3.02 dB, and brightness
+bias from +0.05 to +0.02 octave. The controlled filter response is now right,
+but some factory patches had the old bright cutoff accidentally compensating
+other oscillator/filter-shape errors. Of the low-resonance 24 dB cases, patch
+012 improves 4.46 dB spectrally, 014 improves 1.88 dB and 076 improves 1.71 dB;
+patch 002 itself regresses 3.05 dB in the whole-patch spectral score while its
+measured sustain corner improves from a +0.45-octave error to +0.06. The bank
+cannot be used to justify preserving a known-wrong parameter law.
+
+**Verdict.** Parameter 17 remains linear. The low-resonance 24 dB surface and
+the state-domain envelope movement are implemented and directly verified; the
+last isolated gap is the bottom 3 Hz at the DSP floor.
