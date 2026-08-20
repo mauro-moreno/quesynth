@@ -350,14 +350,11 @@
       ? [{ label: "Cancel", onClick: function (close) { close(); } }]
       : [
           {
-            label: "Save patch…",
-            onClick: function () { if (files() && files().savePatch) files().savePatch(); },
-          },
-          {
-            // "to file", because there is now a second thing that saves a
-            // bank and the difference between them matters: this one writes
-            // a file you choose, and in a plugin that means Downloads.
-            label: "Save bank to file…",
+            // Export, not save. There are two ways to keep a bank and the
+            // difference between them is why both exist: this one writes a
+            // file you choose -- in a plugin, that means Downloads -- and Keep
+            // puts it where the instrument will look for it next time.
+            label: "Export",
             onClick: function () { if (files() && files().saveBank) files().saveBank(); },
           },
           { label: "Done", primary: true, onClick: function (close) { close(); } },
@@ -368,7 +365,7 @@
     // and the rest are files you opened.
     if (!writing && api().hosted && api().hosted()) {
       actions.splice(actions.length - 1, 0, {
-        label: "Keep as my bank",
+        label: "Keep",
         // Says so afterwards. Keeping a bank writes a file somewhere the player
         // cannot see, and a button that does nothing visible is one people
         // press twice and then distrust.

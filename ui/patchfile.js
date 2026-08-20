@@ -62,19 +62,6 @@
     return (base || "patch") + extension;
   }
 
-  function savePatch() {
-    var api = window.SynthPatch;
-    if (!api) return;
-    var name = api.name();
-    var doc = {
-      format: FORMAT_PATCH,
-      version: FORMAT_VERSION,
-      name: patchObject(name, api.values()).name,
-      parameters: patchObject(name, api.values()).parameters,
-    };
-    download(safeName(name, ".json"), JSON.stringify(doc, null, 2) + "\n");
-  }
-
   function bankDoc() {
     var slots = window.SynthBank;
     var api = window.SynthPatch;
@@ -408,7 +395,6 @@
       var doc = bankDoc();
       return doc ? JSON.stringify(doc, null, 2) + "\n" : "";
     },
-    savePatch: savePatch,
     saveBank: saveBank,
     load: loadText,
     loadBytes: loadBytes,
