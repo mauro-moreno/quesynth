@@ -1,6 +1,43 @@
 package synth_vst3
 
 import "../../src/patch"
+import "../panel"
+
+// The bank this instance plays out of, and keeping it.
+//
+// Here rather than on the Editor so it can be reached without one: an Editor
+// needs a web view, a web view needs WebView2 beside the binary, and that put
+// the whole of this out of reach of a test. The CLAP side was checkable and
+// this was not, which is a poor reason for two formats to differ.
+plugin_set_bank :: proc(p: ^Plugin, text: string, save: bool) {
+	if p == nil || text == "" {
+		return
+	}
+
+	parsed, err := patch.parse_bank_json(transmute([]u8)text)
+	if err != .None {
+		// Refused rather than written: a bank that will not parse would come
+		// back as no bank at all on the next start.
+		return
+	}
+	defer patch.destroy_bank(parsed)
+
+	// Always played, only sometimes kept. A plugin selecting programs out
+	// of a bank the panel is not showing means one number is two sounds;
+	// writing to disk is the separate question, and only the panel's own
+	// bank answers yes to it.
+	patch.slots_load(&p.slots, parsed)
+	if save {
+		panel.bank_write(text)
+	}
+}
+
+plugin_read_bank :: proc(p: ^Plugin) -> string {
+	if p == nil {
+		return ""
+	}
+	return patch.slots_write_json(&p.slots, context.temp_allocator)
+}
 
 // Programs: how a VST3 host selects a patch by number.
 //

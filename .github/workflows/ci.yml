@@ -48,6 +48,7 @@ jobs:
           odin test tests/clap
           odin test tests/patch
           odin test tests/panel
+          odin test tests/vst3
 
       # Every host, because a change to src/ that breaks one of them is not
       # visible from the suites: the tests link the engine and the patch layer,

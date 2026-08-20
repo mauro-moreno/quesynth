@@ -150,10 +150,12 @@ patch_from_object :: proc(
 // A single patch file.
 parse_patch_json :: proc(data: []byte, allocator := context.allocator) -> (p: Patch, err: Json_Error) {
 	value, parse_err := json.parse(data, allocator = allocator)
+	// Before the check, not after it: json.parse allocates as it goes and
+	// what it built before it gave up still has to go back.
+	defer json.destroy_value(value, allocator)
 	if parse_err != nil {
 		return {}, .Invalid_Json
 	}
-	defer json.destroy_value(value, allocator)
 
 	object, is_object := value.(json.Object)
 	if !is_object {
@@ -216,10 +218,12 @@ init_patch :: proc() -> (p: Patch) {
 
 parse_bank_json :: proc(data: []byte, allocator := context.allocator) -> (bank: Bank, err: Json_Error) {
 	value, parse_err := json.parse(data, allocator = allocator)
+	// Before the check, not after it: json.parse allocates as it goes and
+	// what it built before it gave up still has to go back.
+	defer json.destroy_value(value, allocator)
 	if parse_err != nil {
 		return {}, .Invalid_Json
 	}
-	defer json.destroy_value(value, allocator)
 
 	object, is_object := value.(json.Object)
 	if !is_object {
@@ -235,13 +239,21 @@ parse_bank_json :: proc(data: []byte, allocator := context.allocator) -> (bank: 
 		}
 	}
 
+	// Everything below can fail, and a caller only destroys a bank it was
+	// handed with .None -- which is the right rule and means the name has to
+	// go back before any of those returns.
+	failed := true
+	defer if failed && bank.name != "" {
+		delete(bank.name, allocator)
+	}
+
 	list, has_patches := object["patches"]
 	if !has_patches {
-		return bank, .No_Patches
+		return {}, .No_Patches
 	}
 	array, is_array := list.(json.Array)
 	if !is_array {
-		return bank, .No_Patches
+		return {}, .No_Patches
 	}
 
 	patches := make([]Patch, len(array), allocator)
@@ -258,19 +270,20 @@ parse_bank_json :: proc(data: []byte, allocator := context.allocator) -> (bank: 
 		if !entry_is_object {
 			delete(patches, allocator)
 			delete(filled, allocator)
-			return bank, .Not_An_Object
+			return {}, .Not_An_Object
 		}
 		p, patch_err := patch_from_object(entry_object, allocator)
 		if patch_err != .None {
 			delete(patches, allocator)
 			delete(filled, allocator)
-			return bank, patch_err
+			return {}, patch_err
 		}
 		patches[i] = p
 		filled[i] = true
 	}
 	bank.patches = patches
 	bank.filled = filled
+	failed = false
 	return bank, .None
 }
 

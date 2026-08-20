@@ -163,19 +163,7 @@ editor_set_bank :: proc(user: rawptr, text: string, save: bool) {
 		return
 	}
 
-	parsed, err := patch.parse_bank_json(transmute([]u8)text)
-	if err != .None {
-		// Refused rather than written: a bank that will not parse would come
-		// back as no bank at all on the next start.
-		return
-	}
-	defer patch.destroy_bank(parsed)
-
-	// Always played, only sometimes kept; see the note on set_bank.
-	patch.slots_load(&ed.plugin.slots, parsed)
-	if save {
-		panel.bank_write(text)
-	}
+	plugin_set_bank(ed.plugin, text, save)
 }
 
 // The bank this instance is playing out of, for the panel to show.
@@ -184,7 +172,7 @@ editor_read_bank :: proc(user: rawptr) -> string {
 	if ed == nil || ed.plugin == nil {
 		return ""
 	}
-	return patch.slots_write_json(&ed.plugin.slots, context.temp_allocator)
+	return plugin_read_bank(ed.plugin)
 }
 
 // The whole parameter set, after a state load: the panel is showing the patch

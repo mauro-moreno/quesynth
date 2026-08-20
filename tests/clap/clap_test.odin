@@ -661,11 +661,13 @@ test_program_change_loads_a_patch :: proc(t: ^testing.T) {
 	s := synth.synth_of(plugin)
 	testing.expect(t, s != nil, "no plugin state")
 
-	// Slot 6 of the factory bank. Read through the same accessor the plugin
-	// uses, so this compares the plugin against the bank rather than against
-	// a second copy of it.
-	wanted, ok := patch.factory_patch(6)
-	testing.expect(t, ok, "the embedded factory bank has nothing in slot 6")
+	// Slot 6 of the bank *this instance* loaded, which is not always the one
+	// compiled in: a machine with a saved bank plays that instead. Comparing
+	// against the embedded bank made this test pass or fail on what happened
+	// to be in the app data of whoever ran it -- the same fault as the one
+	// that made the suite need patches/incoming.
+	wanted, ok := patch.slots_patch(&s.slots, 6)
+	testing.expect(t, ok, "the bank has nothing in slot 6")
 	if !ok {return}
 
 	change := midi_event(0, 0xC0, 6, 0)
@@ -674,7 +676,7 @@ test_program_change_loads_a_patch :: proc(t: ^testing.T) {
 
 	same := true
 	for i in 0 ..< synth.PARAM_COUNT {
-		if s.values[i] != i32(wanted[i]) {same = false}
+		if s.values[i] != wanted[i] {same = false}
 	}
 	testing.expect(t, same, "program change did not load the patch in that slot")
 
@@ -818,7 +820,7 @@ test_program_change_on_an_empty_slot_does_nothing :: proc(t: ^testing.T) {
 	testing.expect(t, s != nil, "no plugin state")
 
 	before := s.values
-	_, filled := patch.factory_patch(120)
+	_, filled := patch.slots_patch(&s.slots, 120)
 	testing.expect(t, !filled, "slot 120 was expected to be empty")
 
 	change := midi_event(0, 0xC0, 120, 0)
