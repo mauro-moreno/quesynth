@@ -220,7 +220,7 @@ gui_hide :: proc "c" (plugin: ^clap.Plugin) -> bool {
 //
 // [main-thread]: this arrives from the web view, which is the main thread,
 // and both the file and the parse want an allocator.
-gui_set_bank :: proc(user: rawptr, text: string) {
+gui_set_bank :: proc(user: rawptr, text: string, save: bool) {
 	s := (^Synth)(user)
 	if s == nil || text == "" {
 		return
@@ -234,8 +234,11 @@ gui_set_bank :: proc(user: rawptr, text: string) {
 	}
 	defer patch.destroy_bank(parsed)
 
+	// Always played, only sometimes kept; see the note on set_bank.
 	patch.slots_load(&s.slots, parsed)
-	panel.bank_write(text)
+	if save {
+		panel.bank_write(text)
+	}
 }
 
 // The bank this instance is playing out of, for the panel to show.

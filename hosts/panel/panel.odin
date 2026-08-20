@@ -77,7 +77,13 @@ Host :: struct {
 	// is written to disk is exactly what the panel produced. The panel's
 	// writer and src/patch's reader already agree; re-encoding it in the
 	// middle would be a third implementation to keep in step.
-	set_bank:    proc(user: rawptr, text: string),
+	// `save` separates the two questions this message answers. The bank is
+	// always adopted -- a plugin selecting patches out of a bank the panel
+	// is not showing means one program number is two sounds -- but only the
+	// panel's own bank is written to disk. A bank somebody opened from a
+	// .zip or a folder is already on disk under its own name, and browsing
+	// one should not overwrite what they had saved.
+	set_bank:    proc(user: rawptr, text: string, save: bool),
 	// The bank the host holds, as a quesynth.bank document. Borrowed from
 	// the temporary allocator: it is written into one message and not kept.
 	read_bank:   proc(user: rawptr) -> string,
@@ -355,7 +361,10 @@ on_message :: proc(user: rawptr, text: string) {
 		if !has_text || h.set_bank == nil {
 			return
 		}
-		h.set_bank(h.user, text)
+		// Absent means no: a message without the flag is one from an older
+		// panel, and adopting without saving is the safe half.
+		save, _ := json_bool(object, "save")
+		h.set_bank(h.user, text, save)
 
 	case "cc":
 		cc, has_cc := json_int(object, "cc")

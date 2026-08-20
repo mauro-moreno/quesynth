@@ -157,7 +157,7 @@ editor_volume :: proc(user: rawptr, amount: f32) {
 // is exactly what the panel produced; then it is parsed into this instance's
 // slots, because a program change has to select out of the bank that is on
 // screen and not the one loaded at startup.
-editor_set_bank :: proc(user: rawptr, text: string) {
+editor_set_bank :: proc(user: rawptr, text: string, save: bool) {
 	ed := (^Editor)(user)
 	if ed == nil || ed.plugin == nil || text == "" {
 		return
@@ -171,8 +171,11 @@ editor_set_bank :: proc(user: rawptr, text: string) {
 	}
 	defer patch.destroy_bank(parsed)
 
+	// Always played, only sometimes kept; see the note on set_bank.
 	patch.slots_load(&ed.plugin.slots, parsed)
-	panel.bank_write(text)
+	if save {
+		panel.bank_write(text)
+	}
 }
 
 // The bank this instance is playing out of, for the panel to show.

@@ -1493,6 +1493,7 @@
     setBank: function (label, patches) {
       var made = normalizeBank({ label: label, patches: patches });
       var at = -1;
+      // Publishing happens at the end of this, once currentBank has moved.
       for (var i = 0; i < banks.length; i++) if (banks[i].label === made.label) at = i;
       if (at >= 0) { banks[at] = made; currentBank = at; }
       else { banks.push(made); currentBank = banks.length - 1; }
@@ -1505,25 +1506,45 @@
         list.classList.remove("open");
       }
       loadPatch(0);
+      // Last, so a host is told about the bank that is now current rather than
+      // the one that was.
+      publishBank();
     },
   };
 
-  // Tell a host that the bank changed.
+  // Tell a host which bank is loaded, and whether to keep it.
   //
   // Only a plugin listens: in the browser the bank is remembered in local
-  // storage instead, and host.js ignores a message it has no case for. The
-  // whole bank goes each time rather than a description of what moved --
-  // writing a patch is something a person does, one at a time, and a few tens
-  // of kilobytes on that is nothing next to a second way of saying it.
+  // storage instead, and host.js ignores a message it has no case for.
   //
-  // Only the first bank. The others are files somebody opened and are already
-  // on disk; the same rule the browser follows.
+  // Two separate questions, which is why there is a flag rather than two
+  // conditions on one send:
+  //
+  //   what is playing   always. A plugin selects patches by program change out
+  //                     of its own copy, so if the panel is showing a bank the
+  //                     plugin does not have, "program 12" means two different
+  //                     sounds at once. It did: loading a .zip left the plugin
+  //                     on the bank it started with.
+  //   what is kept      only bank zero, which is the one that started as the
+  //                     factory bank and is the one on disk. The others are
+  //                     files somebody opened -- they are already on disk,
+  //                     under their own names, and overwriting the saved bank
+  //                     by browsing somebody else's would be a poor trade.
+  //
+  // The whole bank goes each time rather than a description of what moved.
+  // Writing a patch is something a person does, one at a time, and a few tens
+  // of kilobytes on that is nothing next to a second way of saying it.
   function publishBank() {
-    if (currentBank !== 0) return;
+    // Not while applying a bank the host just sent: it would go straight back,
+    // and on every editor open.
+    if (adoptingBank) return;
     if (!window.SynthPatchFile || !window.SynthPatchFile.bankText) return;
     var text = window.SynthPatchFile.bankText();
-    if (text) bridge.send({ type: "bank", text: text });
+    if (text) bridge.send({ type: "bank", text: text, save: currentBank === 0 });
   }
+
+  // Set while a bank from the host is being applied; see publishBank.
+  var adoptingBank = false;
 
   function emptyBank(label) {
     return normalizeBank({ label: label, patches: [] });
@@ -1602,6 +1623,7 @@
       bank = banks[i];
       var name = document.getElementById("bank-name");
       if (name) name.textContent = bank.label;
+      publishBank();
       if (quiet) {
         // No slot number. The sound in the engine did not come from this bank,
         // so claiming a slot in it would be a lie -- and a specific one: it
@@ -1855,10 +1877,13 @@
         //
         // Not published back: this came from the host, and sending it straight
         // out again would be a write on every editor open.
+        adoptingBank = true;
         try {
           window.SynthPatchFile.load(msg.text);
         } catch (e) {
           console.error("bank from host:", e.message);
+        } finally {
+          adoptingBank = false;
         }
       } else if (msg.type === "patch") {
         // Which patch a *host* says is loaded, after something other than this
