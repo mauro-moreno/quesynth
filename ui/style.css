@@ -1533,3 +1533,109 @@ body.modal-open { overflow: hidden; }
   font-size: 11px;
   color: var(--ink-faint);
 }
+
+/* --------------------------------------------------------------- configure */
+
+.options {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.options-block { display: flex; flex-direction: column; gap: 8px; }
+
+.options-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.options-heading {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.options-note {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.options-fixed {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+}
+
+.options-fixed-row {
+  display: flex;
+  gap: 12px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: #101014;
+}
+
+.options-fixed-what {
+  flex: 0 0 130px;
+  font-size: 12px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.options-fixed-does {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.options-rows { display: flex; flex-direction: column; gap: 4px; }
+
+.options-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.options-cc {
+  flex: 0 0 56px;
+  font-size: 12px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.options-target {
+  flex: 1 1 auto;
+  min-width: 0;
+  appearance: none;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: #0a0a0d;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+}
+.options-target:focus { outline: none; border-color: var(--metal-dark); }
+
+.options-empty { padding: 8px; font-size: 12px; color: var(--ink-faint); }
+.options-add { align-self: flex-start; margin-top: 4px; }
+
+/* Sentences, not labels. The panel uppercases almost everything, which is right
+ * for a control's name and wrong for a paragraph explaining one. */
+.options-note,
+.options-fixed-does {
+  text-transform: none;
+  letter-spacing: 0;
+}

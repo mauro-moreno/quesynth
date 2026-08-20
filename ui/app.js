@@ -1319,6 +1319,9 @@
     // current sound goes on top of that, because it is what was actually being
     // played and it need not be any slot's contents.
     var kept = window.SynthStore ? window.SynthStore.restore() : null;
+    if (kept && kept.midi && window.SynthMidiMap) {
+      window.SynthMidiMap.restore(kept.midi);
+    }
     if (kept && kept.factory) {
       banks[0] = normalizeBank({ label: banks[0].label, patches: kept.factory });
       if (currentBank === 0) bank = banks[0];
@@ -1443,6 +1446,25 @@
     // neighbouring bank entry's name. `currentName` is set by both paths.
     name: function () {
       return currentName || "Patch";
+    },
+
+    // Move one parameter, on 0..1, exactly as dragging its knob would.
+    //
+    // The same path as the knob rather than a shortcut into `values`: the
+    // control has to repaint, anything depending on it has to repaint, and the
+    // engine has to be told. A controller that changed the sound without
+    // moving the panel would be the worst of the three.
+    setParam: function (index, unit) {
+      var param = byIndex[index];
+      if (!param) return;
+      // `unit` is 0..1, which is what a controller sends once it is divided by
+      // 127. setPosition wants a *state index*, and passing the fraction
+      // straight through stored the fraction: a cutoff of 0.787 rather than of
+      // state 100. How many states there are differs per parameter, so the
+      // scaling has to happen here and not at the call site.
+      var count = param.s ? param.s.length : param.n;
+      var position = Math.round(Math.max(0, Math.min(1, unit)) * (count - 1));
+      setPosition(index, position, true);
     },
 
     // Apply a whole patch. Goes through the same path a bank patch does, so a

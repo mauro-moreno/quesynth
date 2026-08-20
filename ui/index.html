@@ -37,6 +37,8 @@
   <button type="button" class="bank-step" data-step="1" aria-label="Next patch">›</button>
   <button type="button" id="write-toggle" class="bank-write"
           aria-label="Write this sound into a slot">WRITE</button>
+  <button type="button" id="config-toggle" class="bank-write" hidden
+          aria-label="Configure the controllers">CONFIG</button>
   <div class="bank-vol">
     <label for="master-vol">Vol</label>
     <input type="range" id="master-vol" min="0" max="100" value="80"
@@ -81,9 +83,11 @@
 <script src="app.js"></script>
 <script src="midi.js"></script>
 <script src="sy1.js"></script>
+<script src="midimap.js"></script>
 <script src="patchfile.js"></script>
 <script src="store.js" onerror="void 0"></script>
 <script src="modal.js"></script>
 <script src="browser.js"></script>
+<script src="options.js"></script>
 </body>
 </html>

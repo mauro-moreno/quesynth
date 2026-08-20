@@ -85,6 +85,9 @@
       // Only the factory bank, which is the first one and the one that came
       // with the page. Trailing empty slots are dropped; loading pads back.
       factory: banks.snapshot(0),
+      // The controller assignments. Not the patch's -- see ui/midimap.js on
+      // why those are two different things.
+      midi: window.SynthMidiMap ? window.SynthMidiMap.snapshot() : null,
     };
   }
 

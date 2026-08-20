@@ -51,6 +51,11 @@
 
   // Route one incoming message. Only the three that matter here; anything else,
   // including clock and active sensing, is ignored rather than mishandled.
+  // Bank Select arrives as two controllers and does nothing until a Program
+  // Change follows. Kept here because they are a running state of the input,
+  // not of any one message.
+  var bankMsb = 0, bankLsb = 0, pendingBank = null;
+
   function onMessage(e) {
     var d = e.data;
     if (!d || d.length < 2) return;
@@ -75,10 +80,50 @@
         bridge.note(false, d[1], 0);
         if (window.SynthKeys) window.SynthKeys.up(d[1]);
         break;
+      case 0xC0:
+        // Program Change: the patch number, 0..127.
+        //
+        // This is the reason a bank is a hundred and twenty-eight slots and
+        // the reason an empty slot is still a slot -- program 47 has to select
+        // something, and it has to be the same something every time.
+        //
+        // A Bank Select seen earlier applies here rather than when it arrived,
+        // which is what the specification asks for: the pair of controllers
+        // sets a pending bank and the next Program Change is what acts on it.
+        if (window.SynthBank) {
+          if (pendingBank !== null) {
+            var wanted = pendingBank;
+            pendingBank = null;
+            if (wanted >= 0 && wanted < window.SynthBank.list().length) {
+              window.SynthBank.select(wanted, false, function () {
+                window.SynthBank.load(d[1]);
+              });
+              break;
+            }
+          }
+          window.SynthBank.load(d[1]);
+        }
+        break;
       case 0xB0:
+        // A controller being learnt takes the message and nothing else does.
+        if (window.SynthMidiMap && window.SynthMidiMap.saw(d[1])) break;
+
+        // Bank Select, coarse and fine. Held rather than acted on; see the
+        // Program Change above.
+        if (d[1] === 0) { bankMsb = d[2]; pendingBank = bankMsb * 128 + bankLsb; break; }
+        if (d[1] === 32) { bankLsb = d[2]; pendingBank = bankMsb * 128 + bankLsb; break; }
+
         // Everything goes to the engine: parameters 86 to 89 can assign any
         // controller to any destination, so nothing may be swallowed here.
         bridge.send({ type: "cc", cc: d[1], value: d[2] });
+
+        // And then whatever the panel has this controller bound to. Separate
+        // from the engine's own assignment on purpose: that one is patch data
+        // and changes with the sound, this one is the desk and does not.
+        if (window.SynthMidiMap && window.SynthPatch) {
+          var to = window.SynthMidiMap.target(d[1]);
+          if (to >= 0) window.SynthPatch.setParam(to, d[2] / 127);
+        }
         // Controller 1 is the modulation wheel, which is what parameters 86
         // and 88 name by default and what the on-screen wheel represents.
         if (d[1] === 1 && window.SynthWheels) {
