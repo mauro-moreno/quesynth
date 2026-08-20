@@ -120,6 +120,48 @@
     if (window.synthReceive) window.synthReceive(text);
   }
 
+  // Why there is no sound, said on the page.
+  //
+  // Everything that can stop the engine -- a context that will not leave
+  // "suspended", a worklet that will not load, a wasm module that will not
+  // compile -- used to go to the console and nowhere else, and the comment at
+  // the top of this file claimed a button in the strip said so, which had not
+  // been true for some time. On a phone there is no console to look in, so a
+  // failure and a patch that happens to be silent look exactly alike.
+  //
+  // It is a button rather than a label because on iOS the reliable way to get
+  // audio started is a click on something the person meant to click: that
+  // carries the user activation a stray touch may not.
+  var notice = null;
+  function say(text) {
+    if (!notice) {
+      notice = document.createElement("button");
+      notice.type = "button";
+      notice.style.cssText = [
+        "position:fixed", "left:50%", "bottom:16px", "transform:translateX(-50%)",
+        "z-index:9999", "padding:10px 18px", "border-radius:999px",
+        "border:1px solid rgba(255,255,255,0.25)", "background:rgba(20,20,22,0.92)",
+        "color:#eee", "font:inherit", "font-size:14px", "cursor:pointer",
+        "max-width:90vw", "text-align:center",
+      ].join(";");
+      notice.addEventListener("click", wake);
+      document.body.appendChild(notice);
+    }
+    notice.textContent = text;
+    notice.hidden = false;
+  }
+  function quiet() {
+    if (notice) notice.hidden = true;
+  }
+
+  // Only complain once a gesture has been spent and the context still is not
+  // running, so a page nobody has touched yet does not nag.
+  function checkRunning() {
+    if (!ctx) return;
+    if (ctx.state === "running") { quiet(); return; }
+    say("Tap to start audio");
+  }
+
   // Boot the engine. Safe to call repeatedly; only the first one does anything.
   function start() {
     if (ctx || starting) return;
@@ -130,7 +172,17 @@
       console.error("engine: this browser has no AudioContext");
       return;
     }
+    // On iOS a page's audio defaults to the "ambient" session, which the
+    // hardware ringer switch silences -- so a phone with the switch flipped
+    // plays nothing at all and gives no clue why. Declaring the session as
+    // playback is the sanctioned fix; it is Safari 16.4 and later, and absent
+    // everywhere else, so it is asked for and not required.
+    if (navigator.audioSession) {
+      try { navigator.audioSession.type = "playback"; } catch (e) {}
+    }
+
     ctx = new Ctx({ latencyHint: "interactive" });
+    ctx.onstatechange = checkRunning;
 
     Promise.all([
       ctx.audioWorklet.addModule("worklet.js"),
@@ -154,6 +206,7 @@
       node.port.onmessage = function (e) {
         if (e.data && e.data.type === "error") {
           console.error("engine:", e.data.message);
+          say("The audio engine failed to start");
         }
       };
 
@@ -169,11 +222,28 @@
     }).catch(function (err) {
       console.error("engine:", err);
       starting = false;
+      // Distinguished, because they are different problems for whoever is
+      // reading it: one is a browser too old for the API this build needs, the
+      // other is a file that did not arrive.
+      say(ctx && !ctx.audioWorklet
+        ? "This browser cannot run the audio engine"
+        : "The audio engine could not load");
     });
   }
 
   // Registered before bridge.js runs, so the browser is found as a host.
   window.synthPost = post;
+
+  // What the audio is doing, for anything that needs to ask.
+  //
+  // Nothing could, which is why the silence on iOS took as long to pin down as
+  // it did: from outside this file an engine that never left "suspended" and
+  // one playing a patch that happens to be quiet are the same observation.
+  // "idle" means no gesture has started it yet, which is not a fault.
+  window.SynthAudioState = function () {
+    if (!ctx) return starting ? "starting" : "idle";
+    return ctx.state;
+  };
 
   // Set before the engine exists too: the value is held and applied on boot,
   // so moving the control while the page is still silent is not lost.
@@ -186,12 +256,32 @@
     }
   };
 
-  // The first touch anywhere starts the engine, since audio needs a gesture and
-  // the first thing anyone does here is press a key or turn a knob.
+  // The first gesture anywhere starts the engine, since audio needs one and the
+  // first thing anyone does here is press a key or turn a knob.
+  //
+  // Listening on more than pointerdown is not belt and braces. WebKit grants
+  // the user activation that lets an AudioContext leave "suspended" only on
+  // touchend, click and keydown -- touchstart, and so the pointerdown that
+  // WebKit derives from it, is not on that list. Every gesture on iOS is a
+  // pointerdown that never becomes activation, so resume() was called on every
+  // touch, refused every time, and the page stayed silent while behaving
+  // perfectly in every other respect.
+  //
+  // pointerdown stays, and first, because everywhere else it is the earliest
+  // moment the engine can start and that is latency the player feels.
   function wake() {
     start();
-    if (ctx && ctx.state === "suspended") ctx.resume();
+    if (ctx && ctx.state === "suspended") {
+      // The promise rejects when there was no activation to spend, which is
+      // the iOS case above. Swallowed rather than logged: it is the expected
+      // answer on the events that do not carry activation, and the next
+      // listener below is what succeeds.
+      var resumed = ctx.resume();
+      if (resumed && resumed.catch) resumed.catch(function () {});
+    }
+    setTimeout(checkRunning, 400);
   }
-  document.addEventListener("pointerdown", wake, { once: false, passive: true });
-  document.addEventListener("keydown", wake, { once: false, passive: true });
+  ["pointerdown", "touchend", "click", "keydown"].forEach(function (name) {
+    document.addEventListener(name, wake, { once: false, passive: true });
+  });
 })();
