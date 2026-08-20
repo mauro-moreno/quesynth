@@ -1,0 +1,90 @@
+# Everything that can be checked without a person watching, on every push.
+#
+# The tests already ran in two places -- before a release is built, and not at
+# all otherwise -- which is the wrong way round. A release that fails its tests
+# is a release that does not happen, and finding that out at the moment you
+# wanted to publish is finding out too late. This runs the same suites on every
+# push and every pull request, so a break is attached to the commit that caused
+# it.
+#
+# Windows, because that is what the plugins are. The engine and the patch layer
+# are portable and their tests would pass anywhere; the hosts are Win32, COM and
+# WebView2, and building them is a large part of what is worth checking.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same version the engine is developed against; see the note in
+      # pages.yml on why this pin follows the development machine.
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/clap
+          odin test tests/patch
+
+      # Every host, because a change to src/ that breaks one of them is not
+      # visible from the suites: the tests link the engine and the patch layer,
+      # not the plugin wrappers around them.
+      #
+      # Built, not run. What these produce is checked by the two host tools
+      # below and by the release workflow's completeness check.
+      - name: Build the hosts
+        shell: pwsh
+        run: |
+          odin build hosts/vst3 -build-mode:dll -out:build/ci.vst3
+          odin build hosts/clap -build-mode:dll -out:build/ci.clap
+          odin build hosts/wasm -target:js_wasm32 -out:build/ci.wasm
+
+      # The generated files, checked for having been regenerated.
+      #
+      # ui/params.js and the patch bank are both produced from src/patch by a
+      # tool. A change to the parameter table that is not carried into the panel
+      # leaves the two disagreeing, and the symptom is a control that reads the
+      # wrong thing rather than anything that fails to build.
+      - name: The panel's generated files are in step
+        shell: pwsh
+        run: |
+          odin run tools/uiparams -out:build/uiparams.exe
+          git diff --exit-code -- ui/params.js
+
+      # The panel is JavaScript and nothing above would notice a syntax error in
+      # it. A plugin whose editor is a blank window because one file failed to
+      # parse is exactly the sort of break that reaches a release.
+      - name: The panel parses
+        shell: pwsh
+        run: |
+          Get-ChildItem ui/*.js | ForEach-Object {
+            node --check $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "$($_.Name) does not parse" }
+          }
+
+      # And the VST3 plugin answered the way a host asks.
+      #
+      # Headless: this path loads the plugin, renders, and asks the questions a
+      # DAW asks -- the MIDI controller assignments, the program list, the
+      # program parameter. The editor is deliberately not opened here. It needs
+      # a browser process and a message loop, and a check that is slow and
+      # occasionally wrong is worse on a build server than no check at all; it
+      # is run by hand, and tools/claphost is the same for the other format.
+      - name: A host can drive the VST3 plugin
+        shell: pwsh
+        run: |
+          pwsh tools/build-vst3.ps1 -Output build/ci-stage
+          odin build tools/vst3host -out:build/vst3host.exe
+          ./build/vst3host.exe "build/ci-stage/Quesynth.vst3/Contents/x86_64-win/Quesynth.vst3"
+          if ($LASTEXITCODE -ne 0) { throw "the host check failed" }

@@ -2,10 +2,12 @@
 #
 # One job per format, because they do not share a runner or a build command and
 # a matrix over things that differ in every step is a matrix in name only.
-# Today that is VST3 on Windows. CLAP slots in beside it whenever it is wanted
-# -- it builds from hosts/clap with the same Odin invocation and is a single
-# file rather than a bundle. AudioUnit needs two things that do not exist yet: a
-# macOS runner, and hosts/au.
+# Today that is VST3 and CLAP, both on Windows. AudioUnit needs two things that
+# do not exist yet: a macOS runner, and hosts/au.
+#
+# The two jobs look alike and are not the same. A VST3 is one self-contained
+# bundle; a CLAP on Windows is a bare file that has to travel with a folder
+# beside it, so what each one checks for and what each one zips differ.
 #
 # Assets are named `Quesynth-<version>-<format>-<platform>.zip` so a release
 # page with three of them reads unambiguously, and so adding the second and
@@ -120,6 +122,99 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vst3-win64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$env:ASSET" --clobber
+
+  clap-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      # Before the build, for the reason the VST3 job gives.
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/clap
+          odin test tests/patch
+
+      - name: Build
+        shell: pwsh
+        run: pwsh tools/build-clap.ps1 -Output build/clap-stage
+
+      - name: Check it is complete
+        shell: pwsh
+        run: |
+          $stage = "build/clap-stage"
+          $ui = "$stage/Quesynth-ui"
+          $required = @(
+            "$stage/Quesynth.clap", "$stage/WebView2Loader.dll",
+            "$ui/index.html", "$ui/app.js", "$ui/params.js", "$ui/bank.js",
+            "$ui/patchfile.js", "$ui/sy1.js", "$ui/style.css",
+            "$ui/modal.js", "$ui/browser.js", "$ui/midimap.js", "$ui/options.js"
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "the build is missing: $($missing -join ', ')" }
+          # bank.js existing is not the same as bank.js having anything in it.
+          $count = ([regex]::Matches((Get-Content "$ui/bank.js" -Raw), 'n:"')).Count
+          if ($count -lt 1) { throw "the generated patch bank is empty" }
+          Write-Host "build complete, $count patches in the bank"
+
+      # Where the three files go, and why all three. A .clap on its own loads
+      # and plays; it just shows the host's generic controls, because the panel
+      # it looks for is not beside it.
+      - name: Write the install note
+        shell: pwsh
+        run: |
+          @"
+          Quesynth -- CLAP for Windows (64-bit)
+
+          To install, copy all three of
+
+              Quesynth.clap
+              Quesynth-ui\
+              WebView2Loader.dll
+
+          into your CLAP directory, which is normally
+
+              C:\Program Files\Common Files\CLAP
+
+          then rescan plugins in your DAW. Quesynth appears as an instrument.
+
+          All three, not just the .clap. Unlike a VST3 there is no bundle to put
+          them in: the plugin looks for its interface in the folder beside it,
+          and copying the .clap alone gives you an instrument that plays and
+          shows the host's generic controls instead of its own panel.
+
+          The editor needs the Microsoft Edge WebView2 runtime, which is already
+          present on current Windows. Without it the plugin still loads and
+          plays; only the panel is missing.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          "@ | Out-File -FilePath build/clap-stage/INSTALL.txt -Encoding utf8
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $asset = "Quesynth-$version-clap-win64.zip"
+          Compress-Archive -Path build/clap-stage/* -DestinationPath $asset
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clap-win64
           path: ${{ env.ASSET }}
 
       - name: Attach to the release
