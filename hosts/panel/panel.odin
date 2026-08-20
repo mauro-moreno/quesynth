@@ -70,6 +70,17 @@ Host :: struct {
 	bend:        proc(user: rawptr, amount: f32),
 	control:     proc(user: rawptr, cc: int, value: f32),
 	volume:      proc(user: rawptr, amount: f32),
+
+	// The panel's bank changed -- a patch written into a slot, a bank
+	// loaded from a file. The text is a whole quesynth.bank document, and
+	// is handed over as text rather than as something parsed so that what
+	// is written to disk is exactly what the panel produced. The panel's
+	// writer and src/patch's reader already agree; re-encoding it in the
+	// middle would be a third implementation to keep in step.
+	set_bank:    proc(user: rawptr, text: string),
+	// The bank the host holds, as a quesynth.bank document. Borrowed from
+	// the temporary allocator: it is written into one message and not kept.
+	read_bank:   proc(user: rawptr) -> string,
 }
 
 Panel :: struct {
@@ -236,6 +247,17 @@ on_message :: proc(user: rawptr, text: string) {
 
 	switch kind {
 	case "sync":
+		// The bank first, then the sound.
+		//
+		// The panel comes up showing the bank compiled into the page, which
+		// in a plugin is only what a browser would have used -- the real one
+		// is the file the host loaded. Sending it here replaces that copy
+		// before anything is played, and sending it *before* the state
+		// matters: loading a bank in the panel selects its first patch, which
+		// would otherwise overwrite the sound this message is about to send.
+		if h.read_bank != nil {
+			send_bank(p, h.read_bank(h.user))
+		}
 		send_state(p)
 
 	case "set":
@@ -324,6 +346,16 @@ on_message :: proc(user: rawptr, text: string) {
 		if h.volume != nil {
 			h.volume(h.user, f32(clamp(amount, 0, 1)))
 		}
+
+	case "bank":
+		// A whole bank, as text. Only ever a few tens of kilobytes and only
+		// when somebody writes a patch, so there is nothing to be clever
+		// about here.
+		text, has_text := json_string(object, "text")
+		if !has_text || h.set_bank == nil {
+			return
+		}
+		h.set_bank(h.user, text)
 
 	case "cc":
 		cc, has_cc := json_int(object, "cc")
@@ -458,6 +490,23 @@ send_patch :: proc(p: ^Panel, name: string, index: int, bank: string) {
 	strings.write_int(&builder, index)
 	strings.write_string(&builder, `,"bank":`)
 	write_json_string(&builder, bank)
+	strings.write_byte(&builder, '}')
+	webview2.post(&p.view, strings.to_string(builder))
+}
+
+// The bank the plugin holds, handed to the panel.
+//
+// Sent when the panel asks for state, because in a plugin the bank on disk
+// is the real one and the copy compiled into the page is only what a browser
+// would have used. Without this the panel would show the factory bank while
+// a program change played something else -- which is what it did.
+send_bank :: proc(p: ^Panel, text: string) {
+	if p == nil || !p.view.ready || text == "" {
+		return
+	}
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, `{"type":"bank","text":`)
+	write_json_string(&builder, text)
 	strings.write_byte(&builder, '}')
 	webview2.post(&p.view, strings.to_string(builder))
 }

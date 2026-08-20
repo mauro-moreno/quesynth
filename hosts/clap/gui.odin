@@ -4,6 +4,7 @@ package synth_clap
 import "base:runtime"
 
 import "../../src/clap"
+import "../../src/patch"
 import "../panel"
 
 // The interface, in the CLAP build.
@@ -93,6 +94,8 @@ gui_create :: proc "c" (plugin: ^clap.Plugin, api: cstring, is_floating: bool) -
 		bend        = gui_bend,
 		control     = gui_control,
 		volume      = gui_volume,
+		set_bank    = gui_set_bank,
+		read_bank   = gui_read_bank,
 	}
 	s.panel_ready = true
 	return true
@@ -208,6 +211,42 @@ gui_hide :: proc "c" (plugin: ^clap.Plugin) -> bool {
 }
 
 // -- what the panel asks of this host ----------------------------------------
+// The panel changed the bank: keep it, and play out of it.
+//
+// The text is written to disk as it arrived rather than re-encoded, so what
+// is saved is exactly what the panel produced. Then it is parsed into this
+// instance's slots, because a program change has to select out of the bank
+// that is now on screen and not the one loaded at startup.
+//
+// [main-thread]: this arrives from the web view, which is the main thread,
+// and both the file and the parse want an allocator.
+gui_set_bank :: proc(user: rawptr, text: string) {
+	s := (^Synth)(user)
+	if s == nil || text == "" {
+		return
+	}
+
+	parsed, err := patch.parse_bank_json(transmute([]u8)text)
+	if err != .None {
+		// Refused rather than written. A bank that will not parse would
+		// come back as no bank at all on the next start.
+		return
+	}
+	defer patch.destroy_bank(parsed)
+
+	patch.slots_load(&s.slots, parsed)
+	panel.bank_write(text)
+}
+
+// The bank this instance is playing out of, for the panel to show.
+gui_read_bank :: proc(user: rawptr) -> string {
+	s := (^Synth)(user)
+	if s == nil {
+		return ""
+	}
+	return patch.slots_write_json(&s.slots, context.temp_allocator)
+}
+
 
 gui_read_values :: proc(user: rawptr, out: []i32) {
 	s := (^Synth)(user)

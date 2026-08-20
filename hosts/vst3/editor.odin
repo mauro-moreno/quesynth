@@ -151,6 +151,39 @@ editor_volume :: proc(user: rawptr, amount: f32) {
 	ed.plugin.volume = amount
 }
 
+// The panel changed the bank: keep it, and play out of it.
+//
+// The text is written as it arrived rather than re-encoded, so what is saved
+// is exactly what the panel produced; then it is parsed into this instance's
+// slots, because a program change has to select out of the bank that is on
+// screen and not the one loaded at startup.
+editor_set_bank :: proc(user: rawptr, text: string) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil || text == "" {
+		return
+	}
+
+	parsed, err := patch.parse_bank_json(transmute([]u8)text)
+	if err != .None {
+		// Refused rather than written: a bank that will not parse would come
+		// back as no bank at all on the next start.
+		return
+	}
+	defer patch.destroy_bank(parsed)
+
+	patch.slots_load(&ed.plugin.slots, parsed)
+	panel.bank_write(text)
+}
+
+// The bank this instance is playing out of, for the panel to show.
+editor_read_bank :: proc(user: rawptr) -> string {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return ""
+	}
+	return patch.slots_write_json(&ed.plugin.slots, context.temp_allocator)
+}
+
 // The whole parameter set, after a state load: the panel is showing the patch
 // from before it and has no way to know otherwise.
 editor_send_state :: proc(ed: ^Editor) {
@@ -166,7 +199,15 @@ editor_send_patch :: proc(ed: ^Editor, program: int) {
 	if ed == nil {
 		return
 	}
-	panel.send_patch(&ed.panel, patch.factory_name(program), program, "Factory")
+	if ed.plugin == nil {
+		return
+	}
+	panel.send_patch(
+		&ed.panel,
+		patch.slots_name(&ed.plugin.slots, program),
+		program,
+		patch.slots_label(&ed.plugin.slots),
+	)
 }
 
 // One parameter that changed somewhere else -- an automation lane, or the
@@ -369,6 +410,8 @@ make_editor :: proc(p: ^Plugin) -> ^Editor {
 		bend        = editor_bend,
 		control     = editor_control,
 		volume      = editor_volume,
+		set_bank    = editor_set_bank,
+		read_bank   = editor_read_bank,
 	}
 	return ed
 }

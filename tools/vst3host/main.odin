@@ -322,7 +322,16 @@ main :: proc() {
 		}
 
 		units^.release(uobj)
-		fmt.printfln("units    : 1 unit, %v programs, all named", list.program_count)
+		// The first program by name, which is how a bank loaded from disk
+		// can be told from the one compiled into the binary.
+		first: vst3.String128
+		units^.get_program_name(uobj, list.id, 0, &first)
+		fmt.printfln(
+			"units    : %v, %v programs, program 0 is %v",
+			vst3.utf16_to_string(&list.name, context.temp_allocator),
+			list.program_count,
+			vst3.utf16_to_string(&first, context.temp_allocator),
+		)
 	}
 
 	// Can a host select a patch by number?

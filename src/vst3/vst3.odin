@@ -740,3 +740,31 @@ IUnit_Info_Vtbl :: struct {
 		data: ^IBStream,
 	) -> Result,
 }
+
+// The other direction: a String128 back to a string.
+//
+// The exact inverse of copy_utf16 above and no more than that. That one
+// widens each byte into a u16, which is only correct for ASCII, so this
+// narrows each u16 back into a byte. A real UTF-16 decoder here would be
+// pretending this file writes real UTF-16, and it does not.
+//
+// For reading what a plugin reported, which is something only a host does:
+// tools/vst3host prints the names a plugin gives its programs, and a name
+// that came back wrong is invisible if nobody ever converts one back.
+utf16_to_string :: proc(src: ^String128, allocator := context.allocator) -> string {
+	if src == nil {
+		return ""
+	}
+	length := 0
+	for length < len(src) && src[length] != 0 {
+		length += 1
+	}
+	if length == 0 {
+		return ""
+	}
+	out := make([]u8, length, allocator)
+	for i in 0 ..< length {
+		out[i] = u8(src[i] & 0xFF)
+	}
+	return string(out)
+}

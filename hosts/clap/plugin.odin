@@ -108,6 +108,12 @@ Synth :: struct {
 	// its name and number. The sound itself lives in `values` like any
 	// other.
 	program:      int,
+
+	// The bank this instance is playing out of: the file on disk, or the
+	// one compiled in when there is no file yet. Per instance rather than
+	// per process because the panel can change it, and loaded once in
+	// init() where allocating is legal.
+	slots:        patch.Slots,
 }
 
 synth_of :: proc "contextless" (plugin: ^clap.Plugin) -> ^Synth {
@@ -236,7 +242,7 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 	// sound is worse than playing none.
 	if bank != 0 {return}
 
-	values, ok := patch.factory_patch(program)
+	values, ok := patch.slots_patch(&s.slots, program)
 	if !ok {return}
 	s.program = program
 
@@ -244,7 +250,7 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 	for i in 0 ..< PARAM_COUNT {
 		// The bank keeps stored integers as ints; this host keeps them as
 		// i32, which is what the host's own parameter values are.
-		wanted := i32(values[i])
+		wanted := values[i]
 		if s.values[i] != wanted {
 			s.values[i] = wanted
 			changed = true
@@ -410,6 +416,8 @@ plugin_init :: proc "c" (plugin: ^clap.Plugin) -> bool {
 	// allocate, and because it only actually parses once per process however
 	// many instances a host makes.
 	patch.factory_prepare()
+	// And the saved bank over the top of it, if this machine has one.
+	panel.bank_load(&s.slots)
 
 	if s.host != nil && s.host.get_extension != nil {
 		s.host_params = (^clap.Host_Params)(s.host.get_extension(s.host, clap.EXT_PARAMS))
@@ -638,7 +646,12 @@ plugin_on_main_thread :: proc "c" (plugin: ^clap.Plugin) {
 	// The name and the number as well as the values. Without this every
 	// knob moves and the strip goes on naming the patch from before, which
 	// looks like the interface telling you what you are playing.
-	panel.send_patch(&s.editor, patch.factory_name(s.program), s.program, "Factory")
+	panel.send_patch(
+		&s.editor,
+		patch.slots_name(&s.slots, s.program),
+		s.program,
+		patch.slots_label(&s.slots),
+	)
 }
 
 plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {

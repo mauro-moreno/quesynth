@@ -542,6 +542,65 @@ json_bank_keeps_empty_slots :: proc(t: ^testing.T) {
 	}
 }
 
+// A bank a plugin can change has to survive being written and read again.
+//
+// This is what file persistence rests on: the panel hands over a bank, the
+// host parses it into slots, plays out of them, writes them back out on the
+// next change, and reads them at the next start. Anything lost in that circle
+// is a patch somebody saved and did not get back.
+@(test)
+slots_round_trip :: proc(t: ^testing.T) {
+	// A sparse bank, because that is the interesting shape: a sound in slot
+	// 0, a gap, a sound in slot 5, and nothing after it.
+	text: string = `{"format":"quesynth.bank","version":1,"name":"Mine","patches":[
+		{"name":"First","parameters":{"osc1 shape":1,"amp gain":100}},
+		null, null, null, null,
+		{"name":"Sixth","parameters":{"osc1 shape":3}}
+	]}`
+
+	bank, err := patch.parse_bank_json(transmute([]u8)text)
+	testing.expect_value(t, err, patch.Json_Error.None)
+	if err != .None {return}
+	defer patch.destroy_bank(bank)
+
+	slots: patch.Slots
+	patch.slots_load(&slots, bank)
+
+	testing.expect_value(t, patch.slots_label(&slots), "Mine")
+	testing.expect_value(t, patch.slots_name(&slots, 0), "First")
+	testing.expect_value(t, patch.slots_name(&slots, 5), "Sixth")
+	// An empty slot is still a slot, and it plays as Init.
+	testing.expect_value(t, patch.slots_name(&slots, 2), "Init")
+	_, filled := patch.slots_patch(&slots, 2)
+	testing.expect(t, !filled, "slot 2 should be empty")
+
+	// Out to a file and back in.
+	written := patch.slots_write_json(&slots)
+	defer delete(written)
+
+	again, again_err := patch.parse_bank_json(transmute([]u8)written)
+	testing.expect_value(t, again_err, patch.Json_Error.None)
+	if again_err != .None {return}
+	defer patch.destroy_bank(again)
+
+	back: patch.Slots
+	patch.slots_load(&back, again)
+
+	// The names, the gaps and the numbering, all where they were. The gap
+	// is the part that is easy to lose: a writer that skipped it would move
+	// "Sixth" to slot 1 and every reference to program 5 with it.
+	testing.expect_value(t, patch.slots_label(&back), "Mine")
+	for i in 0 ..< patch.FACTORY_SLOTS {
+		before, had := patch.slots_patch(&slots, i)
+		after, has := patch.slots_patch(&back, i)
+		testing.expectf(t, had == has, "slot %v: filled %v became %v", i, had, has)
+		if !had || !has {continue}
+		testing.expect_value(t, patch.slots_name(&back, i), patch.slots_name(&slots, i))
+		for j in 0 ..< patch.PARAMETER_COUNT {
+			testing.expect_value(t, after[j], before[j])
+		}
+	}
+}
 // A whole number written as a float is accepted, because a file produced by a
 // language whose numbers are all doubles will say 64.0; a fraction is not,
 // because there is no state between two stored integers.

@@ -1508,6 +1508,23 @@
     },
   };
 
+  // Tell a host that the bank changed.
+  //
+  // Only a plugin listens: in the browser the bank is remembered in local
+  // storage instead, and host.js ignores a message it has no case for. The
+  // whole bank goes each time rather than a description of what moved --
+  // writing a patch is something a person does, one at a time, and a few tens
+  // of kilobytes on that is nothing next to a second way of saying it.
+  //
+  // Only the first bank. The others are files somebody opened and are already
+  // on disk; the same rule the browser follows.
+  function publishBank() {
+    if (currentBank !== 0) return;
+    if (!window.SynthPatchFile || !window.SynthPatchFile.bankText) return;
+    var text = window.SynthPatchFile.bankText();
+    if (text) bridge.send({ type: "bank", text: text });
+  }
+
   function emptyBank(label) {
     return normalizeBank({ label: label, patches: [] });
   }
@@ -1637,6 +1654,7 @@
       currentName = bank.patches[i].n;
       showPatch({ name: currentName, index: i, bank: bank.label });
       if (window.SynthStore) window.SynthStore.flush();
+      publishBank();
       return true;
     },
 
@@ -1645,6 +1663,7 @@
       bank.patches[i] = null;
       if (i === bankIndex) loadPatch(i);
       if (window.SynthStore) window.SynthStore.flush();
+      publishBank();
       return true;
     },
 
@@ -1829,6 +1848,18 @@
         });
       } else if (msg.type === "param" && typeof msg.index === "number") {
         setStored(msg.index, msg.value);
+      } else if (msg.type === "bank" && typeof msg.text === "string") {
+        // The bank a *plugin* holds, which is the one on disk. The copy
+        // compiled into this page is only what a browser would have used, so
+        // it is replaced rather than added to.
+        //
+        // Not published back: this came from the host, and sending it straight
+        // out again would be a write on every editor open.
+        try {
+          window.SynthPatchFile.load(msg.text);
+        } catch (e) {
+          console.error("bank from host:", e.message);
+        }
       } else if (msg.type === "patch") {
         // Which patch a *host* says is loaded, after something other than this
         // panel changed it -- a MIDI program change, most often.

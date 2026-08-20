@@ -47,6 +47,7 @@ jobs:
           odin test tests/dsp
           odin test tests/clap
           odin test tests/patch
+          odin test tests/panel
 
       # The same script a developer runs. tools/install-vst3.ps1 is local
       # convenience that calls this and then copies the result into a VST3
@@ -147,6 +148,7 @@ jobs:
           odin test tests/dsp
           odin test tests/clap
           odin test tests/patch
+          odin test tests/panel
 
       - name: Build
         shell: pwsh

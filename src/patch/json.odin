@@ -338,16 +338,32 @@ write_patch_json :: proc(p: Patch, allocator := context.allocator) -> string {
 	return strings.to_string(b)
 }
 
-write_bank_json :: proc(name: string, patches: []Patch, allocator := context.allocator) -> string {
+// `filled` says which entries hold a sound. It may be nil, which means they
+// all do -- that is what tools/factorybank hands in, and what every caller
+// did before empty slots existed.
+//
+// An empty one is written as null rather than skipped, because position is
+// meaning: a patch in slot 41 has to still be 41 after a round trip, and a
+// reader that dropped the gaps would shift every later patch down by one.
+write_bank_json :: proc(
+	name: string,
+	patches: []Patch,
+	filled: []bool = nil,
+	allocator := context.allocator,
+) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\n")
 	fmt.sbprintf(&b, "  \"format\": \"%v\",\n  \"version\": %v,\n  \"name\": ", BANK_FORMAT, JSON_FORMAT_VERSION)
 	json_escape(&b, name)
 	strings.write_string(&b, ",\n  \"patches\": [\n")
 	for p, i in patches {
-		strings.write_string(&b, "    {\n")
-		write_patch_body(&b, p, "      ")
-		strings.write_string(&b, "    }")
+		if filled != nil && i < len(filled) && !filled[i] {
+			strings.write_string(&b, "    null")
+		} else {
+			strings.write_string(&b, "    {\n")
+			write_patch_body(&b, p, "      ")
+			strings.write_string(&b, "    }")
+		}
 		if i + 1 < len(patches) {
 			strings.write_string(&b, ",")
 		}

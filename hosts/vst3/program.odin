@@ -42,14 +42,14 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 	}
 	p.program = i32(program)
 
-	values, ok := patch.factory_patch(program)
+	values, ok := patch.slots_patch(&p.slots, program)
 	if !ok {
 		return
 	}
 
 	changed := false
 	for i in 0 ..< PARAM_COUNT {
-		wanted := i32(values[i])
+		wanted := values[i]
 		if p.values[i] != wanted {
 			p.values[i] = wanted
 			changed = true

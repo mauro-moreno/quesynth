@@ -81,7 +81,7 @@ unit_get_program_list_info :: proc "c" (
 	context = p.ctx
 
 	info.id = PROGRAM_LIST_ID
-	put_name(&info.name, "Factory")
+	put_name(&info.name, patch.slots_label(&p.slots))
 	info.program_count = i32(patch.FACTORY_SLOTS)
 	return vst3.RESULT_OK
 }
@@ -104,7 +104,7 @@ unit_get_program_name :: proc "c" (
 	// An empty slot is named rather than left blank. It is still a slot -- a
 	// host's program menu has to have an entry for it or the numbering in that
 	// menu stops matching the numbering everywhere else.
-	put_name(name, patch.factory_name(int(index)))
+	put_name(name, patch.slots_name(&p.slots, int(index)))
 	return vst3.RESULT_OK
 }
 
