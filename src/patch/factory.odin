@@ -30,6 +30,20 @@ FACTORY_SLOTS :: 128
 factory_values: [FACTORY_SLOTS][PARAMETER_COUNT]int
 @(private = "file")
 factory_filled: [FACTORY_SLOTS]bool
+
+// The names, copied rather than borrowed.
+//
+// destroy_bank frees what the parser cloned, so holding its strings would be
+// holding freed memory. A fixed buffer per slot avoids owning an allocation for
+// the life of the process and keeps this readable from the audio thread, which
+// is where a program change arrives. Longer names are cut rather than refused:
+// a name is a label, and a truncated label still selects the right sound.
+@(private = "file")
+NAME_MAX :: 48
+@(private = "file")
+factory_names: [FACTORY_SLOTS][NAME_MAX]u8
+@(private = "file")
+factory_name_len: [FACTORY_SLOTS]int
 @(private = "file")
 factory_once: sync.Once
 
@@ -50,6 +64,13 @@ build_factory :: proc() {
 		if bank.filled != nil && i < len(bank.filled) && !bank.filled[i] {continue}
 		factory_values[i] = p.values
 		factory_filled[i] = true
+
+		name := p.name
+		length := min(len(name), NAME_MAX)
+		for j in 0 ..< length {
+			factory_names[i][j] = name[j]
+		}
+		factory_name_len[i] = length
 	}
 }
 
@@ -60,6 +81,17 @@ build_factory :: proc() {
 // answer that cannot differ.
 factory_prepare :: proc() {
 	sync.once_do(&factory_once, build_factory)
+}
+
+// What to call a slot.
+//
+// An empty one is named rather than left blank, because a host's program menu
+// has to have an entry for it: a gap would make the numbering in that menu stop
+// matching the numbering everywhere else, and the number is the whole point.
+factory_name :: proc "contextless" (slot: int) -> string {
+	if slot < 0 || slot >= FACTORY_SLOTS {return "—"}
+	if !factory_filled[slot] || factory_name_len[slot] == 0 {return "Init"}
+	return string(factory_names[slot][:factory_name_len[slot]])
 }
 
 // The patch in a slot, and whether there is one.

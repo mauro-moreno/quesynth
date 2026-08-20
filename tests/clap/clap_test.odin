@@ -27,6 +27,26 @@ TEST_HOST := clap.Host {
 	request_callback = proc "c" (host: ^clap.Host) {},
 }
 
+// A host that counts the callbacks it is asked for.
+//
+// Its own instance rather than a counter on TEST_HOST: the suite runs on six
+// threads and every test shares that host, so a shared counter would be read
+// and written by whatever else happened to be running.
+Counting_Host :: struct {
+	host:      clap.Host,
+	callbacks: int,
+}
+
+counting_host_init :: proc(c: ^Counting_Host) {
+	c.host = TEST_HOST
+	c.host.host_data = rawptr(c)
+	c.host.request_callback = proc "c" (host: ^clap.Host) {
+		if host == nil || host.host_data == nil {return}
+		counter := (^Counting_Host)(host.host_data)
+		counter.callbacks += 1
+	}
+}
+
 make_plugin :: proc(t: ^testing.T) -> ^clap.Plugin {
 	plugin := synth.FACTORY.create_plugin(&synth.FACTORY, &TEST_HOST, synth.PLUGIN_ID)
 	testing.expect(t, plugin != nil, "factory did not create the plugin")
@@ -662,6 +682,57 @@ test_program_change_loads_a_patch :: proc(t: ^testing.T) {
 	testing.expect(t, output.count > 0, "the host was not told the parameters moved")
 }
 
+// A program change has to reach the panel as well as the engine.
+//
+// The sound changed and the interface went on showing the patch from before
+// it, which is the same class of bug as the VST3 editor missing the `state`
+// message: everything audible worked and everything visible was a lie. The
+// web view may only be spoken to from the thread it was made on, and a
+// program change arrives on the audio thread, so the plugin has to ask the
+// host for a main-thread callback and do it there.
+@(test)
+test_program_change_asks_for_a_callback :: proc(t: ^testing.T) {
+	counter: Counting_Host
+	counting_host_init(&counter)
+	plugin := synth.FACTORY.create_plugin(&synth.FACTORY, &counter.host, synth.PLUGIN_ID)
+	testing.expect(t, plugin != nil, "factory did not create the plugin")
+	if plugin == nil {return}
+	testing.expect(t, plugin.init(plugin), "plugin.init failed")
+	defer plugin.destroy(plugin)
+
+	testing.expect(t, plugin.activate(plugin, 48000, 1, BLOCK), "activate failed")
+	defer plugin.deactivate(plugin)
+	plugin.start_processing(plugin)
+	defer plugin.stop_processing(plugin)
+
+	render: Render
+	render_init(&render)
+	input: Input_Queue
+	input_init(&input)
+	output: Output_Queue
+	output_init(&output)
+
+	before := counter.callbacks
+	change := midi_event(0, 0xC0, 6, 0)
+	input_push(&input, &change)
+	run_block(plugin, &render, &input, &output)
+
+	testing.expect(
+		t,
+		counter.callbacks > before,
+		"a program change did not ask the host for a main-thread callback",
+	)
+
+	// And the callback itself has to be safe to make with no editor open,
+	// which is the usual case: a host may call back whenever it likes.
+	plugin.on_main_thread(plugin)
+
+	// A block with nothing in it must not ask again, or the plugin is
+	// waking the main thread on every buffer for nothing.
+	quiet := counter.callbacks
+	run_block(plugin, &render, &input, &output)
+	testing.expect_value(t, counter.callbacks, quiet)
+}
 // An empty slot is still a slot. Program 120 selects nothing rather than
 // selecting the nearest sound, because a number has to mean the same thing
 // every time it is sent.

@@ -258,6 +258,73 @@ main :: proc() {
 		fmt.printfln("midi     : controller 74 moves parameter %v", cutoff)
 	}
 
+	// Does the host know there are programs to change to?
+	//
+	// A parameter carrying kIsProgramChange is not enough on its own. Both
+	// Ableton and Bitwig ignored program changes entirely with only that,
+	// and said nothing about why: what they look for is a unit owning a
+	// program list, through IUnitInfo. With no list there is nothing to
+	// change to, so the message is never routed.
+	{
+		units_iid := vst3.IID_UNIT_INFO()
+		uobj: rawptr
+		if component^.query_interface(obj, &units_iid, &uobj) != vst3.RESULT_OK ||
+		   uobj == nil {
+			fmt.eprintln("FAIL: the plugin does not answer to IUnitInfo")
+			os.exit(1)
+		}
+		units := (^^vst3.IUnit_Info_Vtbl)(uobj)
+
+		if units^.get_unit_count(uobj) < 1 {
+			fmt.eprintln("FAIL: no units")
+			os.exit(1)
+		}
+		unit: vst3.Unit_Info
+		if units^.get_unit_info(uobj, 0, &unit) != vst3.RESULT_OK {
+			fmt.eprintln("FAIL: getUnitInfo failed")
+			os.exit(1)
+		}
+		// The connection the whole thing turns on: without a list id on the
+		// unit, the program parameter belongs to nothing.
+		if unit.program_list_id == vst3.NO_PROGRAM_LIST_ID {
+			fmt.eprintln("FAIL: the unit owns no program list")
+			os.exit(1)
+		}
+
+		list: vst3.Program_List_Info
+		if units^.get_program_list_info(uobj, 0, &list) != vst3.RESULT_OK {
+			fmt.eprintln("FAIL: getProgramListInfo failed")
+			os.exit(1)
+		}
+		if int(list.program_count) != cpatch.FACTORY_SLOTS {
+			fmt.eprintfln(
+				"FAIL: the list has %v programs, expected %v",
+				list.program_count,
+				cpatch.FACTORY_SLOTS,
+			)
+			os.exit(1)
+		}
+
+		// Every entry has a name, the empty ones included: a gap in a host's
+		// program menu would make its numbering stop matching everything
+		// else's, and the number is the point.
+		blank := 0
+		for i in 0 ..< list.program_count {
+			name: vst3.String128
+			if units^.get_program_name(uobj, list.id, i, &name) != vst3.RESULT_OK ||
+			   name[0] == 0 {
+				blank += 1
+			}
+		}
+		if blank > 0 {
+			fmt.eprintfln("FAIL: %v programs have no name", blank)
+			os.exit(1)
+		}
+
+		units^.release(uobj)
+		fmt.printfln("units    : 1 unit, %v programs, all named", list.program_count)
+	}
+
 	// Can a host select a patch by number?
 	//
 	// VST3 has no Program Change event either: a host turns the message into

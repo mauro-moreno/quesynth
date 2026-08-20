@@ -46,6 +46,7 @@ Plugin :: struct {
 	// recovers the plugin from a field offset, so the order of the ones
 	// already there cannot change.
 	midi_map_vtbl:   ^vst3.IMidi_Mapping_Vtbl,
+	unit_info_vtbl:  ^vst3.IUnit_Info_Vtbl,
 
 	ref_count:       i32,
 
@@ -106,6 +107,10 @@ from_controller :: proc "contextless" (this: rawptr) -> ^Plugin {
 
 from_midi_map :: proc "contextless" (this: rawptr) -> ^Plugin {
 	return (^Plugin)(uintptr(this) - uintptr(offset_of(Plugin, midi_map_vtbl)))
+}
+
+from_unit_info :: proc "contextless" (this: rawptr) -> ^Plugin {
+	return (^Plugin)(uintptr(this) - uintptr(offset_of(Plugin, unit_info_vtbl)))
 }
 
 // -- parameters --------------------------------------------------------------
@@ -738,6 +743,14 @@ controller_set_param_normalized :: proc "c" (this: rawptr, id: u32, value: f64) 
 	context = p.ctx
 	if id == PROGRAM_PARAM_ID {
 		select_program(p, program_of(value))
+		// This path is the main thread -- a host setting the program on the
+		// controller -- so the panel can be told directly. The audio-thread
+		// path in process() cannot, and relies on the host telling the
+		// controller as well, which is what a host does to keep its own
+		// generic panel in step.
+		if p.editor != nil {
+			editor_send_state(p.editor)
+		}
 		return vst3.RESULT_OK
 	}
 	if int(id) >= PARAM_COUNT {
@@ -832,6 +845,11 @@ query_interface :: proc(p: ^Plugin, iid: ^vst3.TUID, obj: ^rawptr) -> vst3.Resul
 		obj^ = rawptr(&p.midi_map_vtbl)
 		return vst3.RESULT_OK
 	}
+	if vst3.tuid_equal(iid, vst3.IID_UNIT_INFO()) {
+		p.ref_count += 1
+		obj^ = rawptr(&p.unit_info_vtbl)
+		return vst3.RESULT_OK
+	}
 	return vst3.NO_INTERFACE
 }
 
@@ -922,6 +940,7 @@ make_plugin :: proc() -> ^Plugin {
 	p.processor_vtbl = &PROCESSOR_VTBL
 	p.controller_vtbl = &CONTROLLER_VTBL
 	p.midi_map_vtbl = &MIDI_MAP_VTBL
+	p.unit_info_vtbl = &UNIT_INFO_VTBL
 	p.ref_count = 1
 	p.sample_rate = 44100
 	p.max_block = 512

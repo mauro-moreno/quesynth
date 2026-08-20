@@ -665,3 +665,78 @@ Process_Context :: struct {
 // tempo and the arpeggiator runs at a nonsense rate.
 #assert(offset_of(Process_Context, tempo) == 72)
 #assert(offset_of(Process_Context, chord) == 88)
+
+// -- units and program lists -------------------------------------------------
+//
+// How a host learns that a plugin has programs, and therefore where to send a
+// MIDI Program Change.
+//
+// A parameter carrying kIsProgramChange is not enough on its own, which is what
+// this file assumed and what left Ableton and Bitwig both ignoring program
+// changes. The flag says "this parameter *is* the program"; IUnitInfo is what
+// says the programs exist -- a unit owning a program list, and a list with a
+// count and names. A host with no list has nothing to change to, so it does not
+// route the message at all.
+//
+// One unit, the root, owning one list. That is the shape of an instrument with
+// a single bank, and adding more would be describing a rack this is not.
+IID_UNIT_INFO :: proc "contextless" () -> TUID {return uid(0x3D4BD6B5, 0x913A4FD2, 0xA886E768, 0xA5EB92C1)}
+
+ROOT_UNIT_ID :: i32(0)
+NO_PROGRAM_LIST_ID :: i32(-1)
+
+Unit_Info :: struct {
+	id:              i32,
+	parent_unit_id:  i32,
+	name:            String128,
+	program_list_id: i32,
+}
+
+Program_List_Info :: struct {
+	id:            i32,
+	name:          String128,
+	program_count: i32,
+}
+
+IUnit_Info_Vtbl :: struct {
+	query_interface:         proc "c" (this: rawptr, iid: ^TUID, obj: ^rawptr) -> Result,
+	add_ref:                 proc "c" (this: rawptr) -> u32,
+	release:                 proc "c" (this: rawptr) -> u32,
+
+	get_unit_count:          proc "c" (this: rawptr) -> i32,
+	get_unit_info:           proc "c" (this: rawptr, index: i32, info: ^Unit_Info) -> Result,
+	get_program_list_count:  proc "c" (this: rawptr) -> i32,
+	get_program_list_info:   proc "c" (this: rawptr, index: i32, info: ^Program_List_Info) -> Result,
+	get_program_name:        proc "c" (this: rawptr, list: i32, index: i32, name: ^String128) -> Result,
+	get_program_info:        proc "c" (
+		this: rawptr,
+		list: i32,
+		index: i32,
+		attribute: cstring,
+		value: ^String128,
+	) -> Result,
+	has_program_pitch_names: proc "c" (this: rawptr, list: i32, index: i32) -> Result,
+	get_program_pitch_name:  proc "c" (
+		this: rawptr,
+		list: i32,
+		index: i32,
+		pitch: i16,
+		name: ^String128,
+	) -> Result,
+	get_selected_unit:       proc "c" (this: rawptr) -> i32,
+	select_unit:             proc "c" (this: rawptr, unit: i32) -> Result,
+	get_unit_by_bus:         proc "c" (
+		this: rawptr,
+		type: i32,
+		dir: i32,
+		bus: i32,
+		channel: i32,
+		unit: ^i32,
+	) -> Result,
+	set_unit_program_data:   proc "c" (
+		this: rawptr,
+		list_or_unit: i32,
+		index: i32,
+		data: ^IBStream,
+	) -> Result,
+}

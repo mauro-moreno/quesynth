@@ -97,6 +97,13 @@ Synth :: struct {
 	// reference keeps its volume knob outside the patch and nothing in the
 	// .sy1 format carries it.
 	volume:       f32,
+
+	// The panel is showing a patch that has since been changed by something
+	// else -- a program change, most often. Set wherever that happens and
+	// acted on in on_main_thread, because the web view may only be spoken to
+	// from the thread it was created on and a program change arrives on the
+	// audio thread.
+	panel_stale:  bool,
 }
 
 synth_of :: proc "contextless" (plugin: ^clap.Plugin) -> ^Synth {
@@ -241,6 +248,15 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 	if changed {
 		s.params_dirty = true
 		s.notify_host = true
+
+		// And the panel, which is showing the patch from before this one.
+		// Not from here: this is the audio thread, and the web view belongs
+		// to the main one. request_callback is documented thread-safe and is
+		// exactly the hand-off it is for.
+		s.panel_stale = true
+		if s.host != nil && s.host.request_callback != nil {
+			s.host.request_callback(s.host)
+		}
 	}
 }
 
@@ -599,7 +615,21 @@ plugin_process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> cla
 	return clap.PROCESS_CONTINUE
 }
 
+// The host calling back after a request_callback.
+//
+// [main-thread], which is what makes talking to the web view legal here and
+// not where the change was made.
 plugin_on_main_thread :: proc "c" (plugin: ^clap.Plugin) {
+	s := synth_of(plugin)
+	if s == nil || !s.panel_stale {
+		return
+	}
+	s.panel_stale = false
+	if !s.editor.open {
+		return
+	}
+	context = runtime.default_context()
+	panel.send_state(&s.editor)
 }
 
 plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
