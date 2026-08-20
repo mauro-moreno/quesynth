@@ -21,9 +21,15 @@
   --bg: #08080a;
   --panel: #0e0e11;
   --panel-edge: #1c1c21;
+  /* Three tiers of text, measured against --panel rather than chosen by eye:
+   * 15.8:1, 7.4:1 and 4.7:1. The faint one used to be #55555e, which is
+   * 2.6:1 -- under half of what WCAG asks of normal text, and it read as
+   * unreadable on a phone in daylight rather than as quiet. The dim one was
+   * passing at 5.6:1 but sits under small labels, so it was lifted with it to
+   * keep the three tiers evenly spaced. */
   --ink: #e8e8ec;
-  --ink-dim: #8a8a93;
-  --ink-faint: #55555e;
+  --ink-dim: #a0a0aa;
+  --ink-faint: #7d7d87;
 
   /* The silver a knob is made of: a lit top edge falling to a dark underside. */
   --metal-lit: #dcdce2;
