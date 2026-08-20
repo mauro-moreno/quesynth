@@ -306,12 +306,12 @@ test_resonance_tables_are_bounded_and_monotonic :: proc(t: ^testing.T) {
 	}
 }
 
-// Saturation is a nonlinearity in the signal path, so it gets its own sweep:
-// a nonlinearity inside a resonant feedback path is the classic way a filter
-// that is stable at unity gain stops being stable when driven.
+// Saturation is a nonlinearity in the signal path, so it gets its own sweep.
+// The measured transfer is bounded, but it can receive an over-unity unison
+// sum and must remain finite at every setting.
 @(test)
 test_filter_saturation_bounded :: proc(t: ^testing.T) {
-	for sat in ([]f32{0.0, 0.5, 1.0}) {
+	for drive in ([]f32{0.0, 2.321027, 16.879008}) {
 		f: dsp.Filter
 		dsp.filter_init(&f)
 		dsp.filter_set(&f, 800.0, 1.0, SR)
@@ -320,11 +320,62 @@ test_filter_saturation_bounded :: proc(t: ^testing.T) {
 			// Deliberately over unity: a unison stack summing in phase does
 			// exactly this.
 			x := 4.0 * math.sin(f32(i) * 0.05)
-			y := dsp.filter_process(&f, x, .Low_Pass, .Slope_24, sat)
-			testing.expectf(t, finite(y), "saturation %v went non-finite", sat)
-			testing.expectf(t, abs(y) < 40.0, "saturation %v reached %v", sat, y)
+			y := dsp.filter_process(&f, x, .Low_Pass, .Slope_24, drive)
+			testing.expectf(t, finite(y), "saturation drive %v went non-finite", drive)
+			testing.expectf(t, abs(y) < 40.0, "saturation drive %v reached %v", drive, y)
 		}
 	}
+}
+
+@(test)
+test_filter_saturation_is_peak_normalised :: proc(t: ^testing.T) {
+	for drive in ([]f32{0.110344, 2.321027, 16.879008}) {
+		testing.expectf(t, abs(dsp.filter_saturate(1.0, drive) - 1.0) < 0.00001,
+			"positive peak moved at drive %v", drive)
+		testing.expectf(t, abs(dsp.filter_saturate(-1.0, drive) + 1.0) < 0.00001,
+			"negative peak moved at drive %v", drive)
+	}
+	testing.expect_value(t, dsp.filter_saturate(0.25, 0.0), f32(0.25))
+	testing.expect(t, dsp.filter_saturate(0.01, 16.879008) > 0.1,
+		"the measured high-drive curve should amplify small signals")
+}
+
+// The reference's open-filter transfer is the same in both slopes. Applying the
+// saturation after each section would compound it in the 24 dB cascade, so keep
+// a direct guard on the single, completed-filter placement.
+@(test)
+test_filter_saturation_is_not_compounded_by_slope :: proc(t: ^testing.T) {
+	f12, f24: dsp.Filter
+	dsp.filter_init(&f12)
+	dsp.filter_init(&f24)
+	dsp.filter_set_damping(&f12, 12000.0, 2.0, SR, .Slope_12)
+	dsp.filter_set_damping(&f24, 12000.0, 2.0, SR, .Slope_24)
+
+	difference, signal: f64
+	for i in 0 ..< 12000 {
+		x := 0.2 * math.sin(f32(i) * 0.02)
+		y12 := dsp.filter_process(&f12, x, .Low_Pass, .Slope_12, 2.321027)
+		y24 := dsp.filter_process(&f24, x, .Low_Pass, .Slope_24, 2.321027)
+		if i >= 4000 {
+			d := f64(y12 - y24)
+			difference += d * d
+			signal += f64(y12) * f64(y12)
+		}
+	}
+	testing.expectf(t, difference / signal < 0.0001,
+		"open 24 dB response compounded saturation: relative error %v", difference / signal)
+}
+
+@(test)
+test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[23] = 109
+	p.present[23] = true
+	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 9.634074) < 0.00001,
+		"stored 109 did not bind to its measured drive")
+	p.values[23] = 122
+	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 15.213064) < 0.00001,
+		"stored 122 did not bind to its measured drive")
 }
 
 // A non-finite input must not be able to lodge itself in the filter state, or

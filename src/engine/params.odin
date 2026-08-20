@@ -398,7 +398,8 @@ Engine_Params :: struct {
 	filter_env_octaves: f32,
 	// Parameter 22, 0..1, where 1 is one octave of cutoff per octave of note.
 	filter_key_track:   f32,
-	filter_saturation:  f32,
+	// Parameter 23 resolved to the measured peak-normalised tanh drive.
+	filter_saturation_drive: f32,
 	filter_velocity:    bool,
 	filter_attack:      f32,
 	filter_decay:       f32,

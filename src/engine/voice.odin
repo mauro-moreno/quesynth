@@ -646,7 +646,7 @@ voice_process :: proc(
 			mixed,
 			p.filter_mode,
 			p.filter_slope,
-			p.filter_saturation,
+			p.filter_saturation_drive,
 		)
 
 		sample := filtered * p.filter_output_gain * gain * stack_scale

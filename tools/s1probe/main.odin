@@ -602,6 +602,8 @@ usage :: proc() {
 	fmt.eprintln("  s1probe patchdiag   [dll] <patch.sy1> [--note <n>]")
 	fmt.eprintln("                          -- peak/RMS of one patch, ref vs. ours, with a fixed")
 	fmt.eprintln("                             set of one-parameter-at-a-time variants")
+	fmt.eprintln("  s1probe filtersaturation [dll] [--values <list>] [--gains <list>]")
+	fmt.eprintln("                          [--type <n>] [--cutoff <n>] [--res <n>] [--note <n>]")
 	fmt.eprintln("  -- the extra effect unit, parameters 77..81 --")
 	fmt.eprintln("  s1probe fxprobe   [dll] [--config <name>] [--note <n>] [--dump]")
 	fmt.eprintln("  s1probe fxsweep   [dll] [--type <0..9>] [--ctl <1|2|3>] [--values <list>]")
@@ -630,7 +632,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" {
+	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" {
 		if len(rest) >= 2 && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -1830,6 +1832,43 @@ main :: proc() {
 			}
 		}
 		cmd_filterdistortion(dll, fdtype, fdcutoff, u8(clamp(fdnote, 0, 127)), fdspec, fdgain)
+	case "filtersaturation":
+		fstype := 0
+		fscutoff := 127
+		fsres := 0
+		fsnote := 60
+		fsvalues := "0,16,32,48,64,80,96,109,112,122,127"
+		fsgains := "32,64,96,127"
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--type":
+					if !parse_probe_int(rest, i + 1, &fstype) {usage()}
+					i += 2
+				case "--cutoff":
+					if !parse_probe_int(rest, i + 1, &fscutoff) {usage()}
+					i += 2
+				case "--res":
+					if !parse_probe_int(rest, i + 1, &fsres) {usage()}
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &fsnote) {usage()}
+					i += 2
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					fsvalues = rest[i + 1]
+					i += 2
+				case "--gains":
+					if i + 1 >= len(rest) {usage()}
+					fsgains = rest[i + 1]
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_filtersaturation(dll, fstype, fscutoff, fsres, u8(clamp(fsnote, 0, 127)), fsvalues, fsgains)
 	case "oscspectrum":
 		if len(rest) < 1 {usage()}
 		ospath := rest[0]

@@ -205,21 +205,34 @@ svf_pick :: proc "contextless" (f: ^Filter, mode: Filter_Mode, lp, bp, hp: f32) 
 
 // Process one sample.
 //
-// `saturation` is 0..1 and drives a soft nonlinearity on the way in, with an
-// output trim that keeps the perceived level roughly constant as it is raised.
-// The readme calls this parameter "saturation" and describes it as "a simple
-// distortion effect", so it sits in the signal path around the filter rather
-// than inside the integrator feedback.
-filter_process :: proc "contextless" (f: ^Filter, x: f32, mode: Filter_Mode, slope: Filter_Slope, saturation: f32) -> f32 {
+// `saturation_drive` is parameter 23 after its measured curve has been resolved
+// by the engine. The reference is a peak-normalised tanh: it raises the small-
+// signal gain and adds odd harmonics while leaving full-scale peaks fixed. It is
+// applied once to the completed filter response. This is observable in the 24 dB
+// mode: applying it per section compounds the transfer and produces 5.8 dB too
+// much THD at stored 32, while the reference has the same open-filter transfer
+// in both slopes. The previous soft clip plus an unrelated `1 + 2*sat` trim did
+// the opposite at the top of the knob, losing 3.7 dB where the reference loses
+// none.
+filter_saturate :: proc "contextless" (x, drive: f32) -> f32 {
+	if !is_finite(x) {
+		return 0
+	}
+	d := clamp32(drive, 0, 20)
+	if d <= 0 {
+		return x
+	}
+	norm := math.tanh(d)
+	if norm <= 0 {
+		return x
+	}
+	return math.tanh(x * d) / norm
+}
+
+filter_process :: proc "contextless" (f: ^Filter, x: f32, mode: Filter_Mode, slope: Filter_Slope, saturation_drive: f32) -> f32 {
 	input := x
 	if !is_finite(input) {
 		input = 0
-	}
-
-	sat := clamp32(saturation, 0.0, 1.0)
-	if sat > 0 {
-		drive := 1.0 + 8.0 * sat
-		input = soft_clip(input * drive) / (1.0 + 2.0 * sat)
 	}
 
 	lp, bp, hp := svf_process(f, &f.stage[0], input)
@@ -230,5 +243,5 @@ filter_process :: proc "contextless" (f: ^Filter, x: f32, mode: Filter_Mode, slo
 		out = svf_pick(f, mode, lp2, bp2, hp2)
 	}
 
-	return sanitize(out)
+	return sanitize(filter_saturate(out, saturation_drive))
 }

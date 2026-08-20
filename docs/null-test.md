@@ -3934,3 +3934,77 @@ stores no parameter 82 values, it exercises the feedback correction: spectral
 mean improved 7.45 to 7.44 dB and median 6.90 to 6.87 dB. Null median stayed
 -2.25 dB, level bias stayed +0.06 dB, and no engine render was silent or
 non-finite.
+
+## Filter saturation, measured and implemented
+
+Parameter 23 was still one of the engine's explicitly chosen laws. It drove a
+generic soft clip with `drive = 1 + 8 * saturation`, then divided the result by
+`1 + 2 * saturation`. At the top of the knob that trim lost 3.7 dB of peak
+level. The reference loses none.
+
+**Method.** `s1probe filtersaturation` was added beside `filterdistortion`. It
+drives a sine through a non-moving filter and sweeps parameter 23, reporting
+the fundamental, THD, RMS and peak for the reference and this engine. Repeating
+the sweep at several amp-gain settings establishes their ordering: parameter 29
+scales the completed saturation result and does not alter its normalised
+transfer.
+
+With the filter open and resonance off, every saturation setting has exactly
+the same peak as saturation zero. The RMS and odd-harmonic series approach a
+square wave as the knob rises. Both observations are described by one transfer:
+
+```
+y = tanh(drive * x) / tanh(drive)
+```
+
+Inverting the measured THD gives the drive curve. Selected knots are:
+
+| stored 23 | drive | reference THD |
+|---:|---:|---:|
+| 2 | 0.110344 | -59.9 dB |
+| 16 | 0.403366 | -37.7 dB |
+| 32 | 0.812051 | -26.5 dB |
+| 64 | 2.321027 | -13.9 dB |
+| 96 | 6.096842 | -8.9 dB |
+| 109 | 9.634074 | -7.9 dB |
+| 122 | 15.213064 | -7.3 dB |
+| 127 | 16.879008 | -7.2 dB |
+
+The binding stores 23 measured knots, including the exact settings used by the
+two worst saturation-heavy factory patches, and linearly interpolates between
+them. The widest gap is eight controller states and stays below the probe's
+0.1 dB THD resolution. Stored zero remains an exact bypass.
+
+**Placement.** The shaper runs once on the completed filter response. This is
+not just the convenient place to put it. With the filter open the reference's
+transfer is identical in the 12 and 24 dB modes. Applying the same shaper after
+each section of this engine's two-section 24 dB cascade compounds it: at stored
+32, THD becomes -20.7 dB against the reference's -26.5 dB. One application
+matches -26.5 dB in both slopes. At stored 127 both reference and engine read
+-7.2 dB, and the engine's peak remains fixed just as the reference's does.
+
+There is a boundary to that result. At a low cutoff the reference's four-pole
+path generates more gain and harmonics than a linear cascade followed by one
+tanh can: type 1, cutoff 33, saturation 122 reads -16.9 dB THD in the reference
+and -41.2 dB here. Putting the shaper per section reaches the harmonics but
+breaks the independently measured open-filter transfer. This is the nonlinear
+four-pole topology gap documented in the earlier ladder investigation, not a
+reason to distort the now-measured knob law to fit one operating point.
+
+**Bank verdict: kept.** The isolated 123-patch run, against the immediately
+preceding ping-pong baseline:
+
+| metric | before | after |
+|---|---:|---:|
+| spectral mean | 7.44 dB | **7.13 dB** |
+| spectral median | 6.87 dB | **6.69 dB** |
+| envelope mean | 3.10 dB | **3.07 dB** |
+| level bias | +0.06 dB | +0.15 dB |
+| null median | -2.25 dB | -2.25 dB |
+
+The change lands where it should. Patch 032 falls from 18.90 to 8.34 dB mean
+spectral error; patch 083, previously the worst patch in the bank, falls from
+28.95 to 4.71 dB. The run produced no silent or non-finite engine renders. The
+DSP suite now includes the measured peak invariance, two exact binding knots,
+the over-unity stability sweep, and a regression guard that prevents the 24 dB
+path from compounding the shaper.

@@ -135,6 +135,51 @@ pow_f32 :: proc(base, exponent: f32) -> f32 {
 	return math.pow(base, exponent)
 }
 
+// Parameter 23's measured drive curve.
+//
+// A sine through an open, non-resonant filter identifies both halves of the
+// law independently. The reference keeps the waveform's peak fixed at every
+// setting and every downstream gain, while its harmonic series approaches a
+// square wave. That is a peak-normalised tanh:
+//
+//     y = tanh(drive * x) / tanh(drive)
+//
+// The values below invert the measured THD at each knot. Linear interpolation
+// is deliberate: the knots are at most eight states apart across the curved
+// part of the control, making the interpolation error smaller than the probe's
+// 0.1 dB THD resolution. Stored 109 and 122 are included because the two worst
+// factory outliers use those exact settings.
+FILTER_SATURATION_STATES := [?]int{
+	0, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64,
+	72, 80, 88, 96, 104, 109, 112, 120, 122, 124, 127,
+}
+FILTER_SATURATION_DRIVE := [?]f32{
+	0.0, 0.110344, 0.156102, 0.238590, 0.319932, 0.403366,
+	0.588754, 0.812051, 1.088197, 1.418726, 1.827576, 2.321027,
+	2.917104, 3.711868, 4.771326, 6.096842, 8.177998, 9.634074,
+	10.250473, 13.854322, 15.213064, 15.9, 16.879008,
+}
+
+filter_saturation_drive :: proc(stored: int) -> f32 {
+	state := resolved_position(23, stored)
+	if state <= FILTER_SATURATION_STATES[0] {
+		return FILTER_SATURATION_DRIVE[0]
+	}
+	last := len(FILTER_SATURATION_STATES) - 1
+	if state >= FILTER_SATURATION_STATES[last] {
+		return FILTER_SATURATION_DRIVE[last]
+	}
+	for i in 0 ..< last {
+		lo_state := FILTER_SATURATION_STATES[i]
+		hi_state := FILTER_SATURATION_STATES[i + 1]
+		if state <= hi_state {
+			t := f32(state - lo_state) / f32(hi_state - lo_state)
+			return dsp.lerp32(FILTER_SATURATION_DRIVE[i], FILTER_SATURATION_DRIVE[i + 1], t)
+		}
+	}
+	return FILTER_SATURATION_DRIVE[last]
+}
+
 // Envelope times, read out of the reference.
 //
 // These were a chosen curve -- 1 ms to 12 s, exponential -- because the displays
@@ -631,7 +676,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// "leave the frequency unchanged", so the linear 0..1 reading is the
 	// documented one.
 	e.filter_key_track = unit_position(22, p.values[22])
-	e.filter_saturation = unit_position(23, p.values[23])
+	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 
 	// -- amplifier -----------------------------------------------------------
