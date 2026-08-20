@@ -145,18 +145,18 @@ apply_params :: proc(s: ^Synth) {
 	if len(s.eng.voices) > 0 {
 		params.polyphony = len(s.eng.voices)
 	}
+	// Controller modulation is always relative to the current stored patch.
+	// Keeping only Engine_Params here made a later CC use the patch from
+	// activation, even after automation or a Program Change had replaced it.
+	s.eng.patch = s.mirror
+	s.eng.has_patch = true
+	for i in 0 ..< 2 {
+		if s.eng.params.midi_ctrl[i].cc != params.midi_ctrl[i].cc {
+			s.eng.ctrl_value[i] = 0
+		}
+	}
 	s.eng.params = params
-
-	// Shapes live on the LFO objects, so they have to be pushed out; the
-	// envelope times live on the voices for the same reason. Both loops are
-	// bounded by the pool size and neither allocates.
-	for j in 0 ..< 2 {
-		s.eng.global_lfo[j].shape = params.lfo[j].shape
-	}
-	for i in 0 ..< len(s.eng.voices) {
-		engine.voice_apply_params(&s.eng.voices[i], &s.eng.params, s.eng.sample_rate)
-	}
-	engine.engine_update_lfo_rates(&s.eng)
+	engine.engine_refresh_controllers(&s.eng)
 }
 
 // Stage a full parameter set from the main thread.
@@ -747,7 +747,10 @@ PARAMS := clap.Plugin_Params {
 		// The parameter id is the Synth1 parameter index, which is also the
 		// index a .sy1 file records. Nothing else would survive a patch file.
 		param_info.id = clap.Id(index)
-		param_info.flags = clap.PARAM_IS_STEPPED | clap.PARAM_IS_AUTOMATABLE
+		param_info.flags = clap.PARAM_IS_AUTOMATABLE
+		if !patch.PARAMETERS[index].continuous {
+			param_info.flags |= clap.PARAM_IS_STEPPED
+		}
 		param_info.cookie = nil
 		copy_name(param_info.name[:], param_name(index))
 		param_info.min_value = f64(param_min(index))

@@ -204,12 +204,19 @@ engine_load_patch :: proc(e: ^Engine, p: patch.Patch, sample_rate: f32) {
 // gives 0.0333, because the note began under the wrong filter.
 engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false) {
 	params := bind_patch(p)
+	previous_ctrl := e.params.midi_ctrl
 	e.patch = p
 	e.has_patch = true
+	for i in 0 ..< 2 {
+		if previous_ctrl[i].cc != params.midi_ctrl[i].cc {
+			e.ctrl_value[i] = 0
+		}
+	}
 
 	count := clamp_int(params.polyphony, 1, MAX_POLYPHONY)
 	if e.voices == nil || count != len(e.voices) {
 		engine_init(e, params, e.sample_rate)
+		engine_refresh_controllers(e)
 		return
 	}
 
@@ -237,21 +244,7 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false) {
 	}
 
 	e.params = params
-
-	// Not everything derived lives in `Engine_Params`. The LFO shapes sit on the
-	// oscillator objects, because that is where the running phase is, and the
-	// envelope times sit on the voices for the same reason -- so a change to
-	// either has to be pushed out or it would not reach a note already sounding.
-	// This is what `apply_params` in the CLAP plugin does, and the two must agree
-	// or the same patch would behave differently in a host and in the browser.
-	for j in 0 ..< 2 {
-		e.global_lfo[j].shape = params.lfo[j].shape
-	}
-	for i in 0 ..< len(e.voices) {
-		voice_apply_params(&e.voices[i], &e.params, e.sample_rate)
-	}
-
-	engine_update_lfo_rates(e)
+	engine_refresh_controllers(e)
 }
 
 // A MIDI control change arrived.
@@ -288,38 +281,72 @@ engine_control_change :: proc(e: ^Engine, cc: int, value: int) {
 		return
 	}
 
+	engine_refresh_controllers(e)
+}
+
+// Rebuild the live parameter block from the stored patch and the last value of
+// each controller assignment. Hosts call this after adopting automation so an
+// unrelated knob edit does not erase modulation until the wheel moves again.
+engine_refresh_controllers :: proc(e: ^Engine) {
+	if !e.has_patch {return}
 	work := e.patch
+	displacement: [patch.PARAMETER_COUNT]f32
+	touched: [patch.PARAMETER_COUNT]bool
 	for i in 0 ..< 2 {
 		c := e.params.midi_ctrl[i]
-		if c.target < 0 || c.cc < 0 {
+		if !controller_target_valid(c.target) || c.cc < 0 {
 			continue
 		}
-		states := patch.parameter_states(c.target)
-		top := len(states) > 0 ? len(states) - 1 : 127
-		base := resolved_position(c.target, e.patch.values[c.target])
-		// The controller displaces the knob by its share of the whole range, which
-		// is what a sensitivity given as a percentage of full scale means.
-		moved := base + int(c.amount * e.ctrl_value[i] * f32(top) + (c.amount < 0 ? -0.5 : 0.5))
-		work.values[c.target] = stored_for_position(c.target, clamp_int(moved, 0, top))
+		top := len(patch.parameter_states(c.target)) - 1
+		if top <= 0 {continue}
+		// Contributions are collected before rounding. Two assignments aimed at
+		// one knob are additive; applying each independently would make the second
+		// silently overwrite the first.
+		displacement[c.target] += c.amount * e.ctrl_value[i] * f32(top)
+		touched[c.target] = true
+	}
+	for target in 0 ..< patch.PARAMETER_COUNT {
+		if !touched[target] {continue}
+		top := len(patch.parameter_states(target)) - 1
+		base := resolved_position(target, e.patch.values[target])
+		delta := displacement[target]
+		moved := base + int(delta + (delta < 0 ? -0.5 : 0.5))
+		work.values[target] = stored_for_position(target, clamp_int(moved, 0, top))
 	}
 
 	// Keep everything the voices are mid-note on; only the derived parameters
 	// change. `engine_init` would reallocate the voice pool and cut the sound.
 	e.params = bind_patch(work)
+	// Pool size is topology chosen outside the real-time path. A controller may
+	// move parameter 94's displayed value, but an audio callback cannot allocate
+	// or free voices.
+	if len(e.voices) > 0 {
+		e.params.polyphony = len(e.voices)
+	}
+	// A controller is a live parameter edit. Shapes and envelope settings are
+	// cached on the running LFOs and voices, so rebinding Engine_Params alone
+	// would leave those destinations unchanged until the next note.
+	for j in 0 ..< 2 {
+		e.global_lfo[j].shape = e.params.lfo[j].shape
+	}
+	for i in 0 ..< len(e.voices) {
+		voice_apply_params(&e.voices[i], &e.params, e.sample_rate)
+	}
 	engine_update_lfo_rates(e)
+}
+
+// The reference's destination menu does not offer the routing controls
+// themselves. Enforcing that at the engine boundary also makes malformed patch
+// data inert instead of allowing a controller to rewrite its own definition.
+controller_target_valid :: proc(target: int) -> bool {
+	if target < 0 || target >= patch.PARAMETER_COUNT {return false}
+	return target != 50 && target != 51 && (target < 86 || target > 89)
 }
 
 // The stored integer that selects a position, the inverse of `resolved_position`.
 stored_for_position :: proc(index, position: int) -> int {
-	states := patch.parameter_states(index)
-	if position < 0 || position >= len(states) {
-		return position
-	}
-	if !patch.PARAMETERS[index].display_keyed {
-		return position
-	}
-	if d, ok := patch.display_integer(states[position].display); ok {
-		return d
+	if stored, ok := patch.parameter_stored_at_position(index, position); ok {
+		return stored
 	}
 	return position
 }

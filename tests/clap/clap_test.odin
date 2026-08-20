@@ -7,6 +7,7 @@ import "core:strings"
 import "core:testing"
 
 import clap "../../src/clap"
+import engine "../../src/engine"
 import patch "../../src/patch"
 import synth "../../hosts/clap"
 
@@ -309,11 +310,11 @@ test_param_info_matches_patch_table :: proc(t: ^testing.T) {
 			info.min_value <= info.default_value && info.default_value <= info.max_value,
 			"default outside the advertised range",
 		)
-		testing.expect_value(
-			t,
-			info.flags,
-			clap.PARAM_IS_STEPPED | clap.PARAM_IS_AUTOMATABLE,
-		)
+		expected_flags := clap.PARAM_IS_AUTOMATABLE
+		if !reference.continuous {
+			expected_flags |= clap.PARAM_IS_STEPPED
+		}
+		testing.expect_value(t, info.flags, expected_flags)
 	}
 }
 
@@ -634,6 +635,63 @@ test_midi_cc_reaches_the_engine :: proc(t: ^testing.T) {
 	input_push(&input, &wheel_down)
 	run_block(plugin, &render, &input, &output)
 	testing.expect_value(t, s.eng.ctrl_value[0], f32(0))
+}
+
+// Parameter automation must also replace the stored patch controller motion is
+// relative to. Otherwise a CC after an edit jumps back to the values and routing
+// that were present when the plugin was activated.
+@(test)
+test_midi_cc_uses_the_current_automated_patch :: proc(t: ^testing.T) {
+	plugin := make_plugin(t)
+	if plugin == nil {return}
+	defer plugin.destroy(plugin)
+	testing.expect(t, plugin.activate(plugin, 48000, 1, BLOCK), "activate failed")
+	defer plugin.deactivate(plugin)
+	plugin.start_processing(plugin)
+	defer plugin.stop_processing(plugin)
+
+	render: Render
+	render_init(&render)
+	input: Input_Queue
+	input_init(&input)
+	output: Output_Queue
+	output_init(&output)
+
+	for &event in ([]clap.Event_Param_Value {
+		param_event(0, 19, 0),
+		param_event(0, 50, 127),
+		param_event(0, 86, 45057),
+		param_event(0, 87, 19),
+		param_event(0, 88, 0),
+	}) {
+		input_push(&input, &event)
+	}
+	run_block(plugin, &render, &input, &output)
+
+	wheel := midi_event(0, 0xB0, 1, 127)
+	input_push(&input, &wheel)
+	run_block(plugin, &render, &input, &output)
+
+	s := synth.synth_of(plugin)
+	want_patch := s.eng.patch
+	want_patch.values[19] = 127
+	want := engine.bind_patch(want_patch)
+	testing.expect_value(t, s.eng.params.filter_cutoff_hz, want.filter_cutoff_hz)
+
+	// An unrelated edit keeps the wheel's current displacement.
+	resonance := param_event(0, 20, 32)
+	input_push(&input, &resonance)
+	run_block(plugin, &render, &input, &output)
+	testing.expect_value(t, s.eng.params.filter_cutoff_hz, want.filter_cutoff_hz)
+
+	// Reassigning the slot to another source cannot reuse CC1's stale value as
+	// though it had already arrived from CC2.
+	new_source := param_event(0, 86, 45058)
+	input_push(&input, &new_source)
+	run_block(plugin, &render, &input, &output)
+	testing.expect_value(t, s.eng.ctrl_value[0], f32(0))
+	base := engine.bind_patch(s.eng.patch)
+	testing.expect_value(t, s.eng.params.filter_cutoff_hz, base.filter_cutoff_hz)
 }
 
 // A Program Change selects a patch by number out of the bank compiled into

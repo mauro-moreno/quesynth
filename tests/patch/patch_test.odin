@@ -4,6 +4,33 @@ import "core:testing"
 import patch "../../src/patch"
 
 @(test)
+test_stored_domains_cover_real_patch_encodings :: proc(t: ^testing.T) {
+	for c in ([]struct {index, lo, hi: int} {
+		{64, 0, 4},       // display-keyed: 1, 2, 4 (plus accepted zero)
+		{33, 0, 127},     // measured table continues across the .sy1 grid
+		{21, 0, 128},     // the reference default is one beyond its table
+		{86, 0, 65535},   // raw controller source
+	}) {
+		lo, hi, ok := patch.parameter_stored_range(c.index)
+		testing.expect(t, ok)
+		testing.expect_value(t, lo, c.lo)
+		testing.expect_value(t, hi, c.hi)
+	}
+}
+
+@(test)
+test_display_keyed_positions_round_trip :: proc(t: ^testing.T) {
+	for stored, position in ([]int{1, 2, 4}) {
+		got_position, ok := patch.parameter_position(64, stored)
+		testing.expect(t, ok)
+		testing.expect_value(t, got_position, position)
+		got_stored, inverse_ok := patch.parameter_stored_at_position(64, position)
+		testing.expect(t, inverse_ok)
+		testing.expect_value(t, got_stored, stored)
+	}
+}
+
+@(test)
 test_sy1_fields_and_defaults :: proc(t: ^testing.T) {
 	text := "Synth1  Test Name  \r\ncolor=violet\r\nver=105\r\n0,17\r\n45,0"
 	data := transmute([]byte)text

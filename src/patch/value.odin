@@ -63,10 +63,84 @@ display_integer :: proc "contextless" (s: string) -> (value: int, ok: bool) {
 
 // The measured state table for a parameter; empty when the parameter is
 // continuous and therefore has no states.
-parameter_states :: proc(index: int) -> []Parameter_State {
+parameter_states :: proc "contextless" (index: int) -> []Parameter_State {
 	if index < 0 || index >= PARAMETER_COUNT {return nil}
 	p := PARAMETERS[index]
 	return PARAMETER_STATES[p.state_offset:][:p.state_count]
+}
+
+// The complete domain of integers a host must preserve for a parameter.
+//
+// This is deliberately not just 0..state_count-1. Display-keyed parameters
+// store the displayed number (chorus stages stores 1, 2 or 4), parameters that
+// continue their measured grid accept the whole 7-bit .sy1 range, and the four
+// controller-assignment fields are genuine 16-bit values. Keeping this rule in
+// the patch package gives every host one answer for state <-> plain conversion.
+parameter_stored_range :: proc "contextless" (index: int) -> (lo, hi: int, ok: bool) {
+	if index < 0 || index >= PARAMETER_COUNT {return 0, 0, false}
+	p := PARAMETERS[index]
+	if p.continuous {
+		return 0, CONTINUOUS_DENOMINATOR - 1, true
+	}
+
+	lo, hi = 0, p.state_count - 1
+	if p.display_keyed {
+		found := false
+		states := PARAMETER_STATES[p.state_offset:][:p.state_count]
+		for state in states {
+			value, is_int := display_integer(state.display)
+			if !is_int {continue}
+			if !found {
+				lo, hi, found = value, value, true
+			} else {
+				lo = min(lo, value)
+				hi = max(hi, value)
+			}
+		}
+		if found {lo = min(lo, 0)}
+	} else if p.out_of_range == .Continue_Grid {
+		hi = max(hi, 127)
+	}
+
+	// A reference default is part of the live domain even when it sits one step
+	// beyond the measured table (parameter 21 is the concrete case).
+	lo = min(lo, p.default)
+	hi = max(hi, p.default)
+	return lo, hi, true
+}
+
+// The table position selected by a stored integer. This is the shared inverse
+// used by host display adapters and by controller motion; it follows the same
+// display-keyed rule as parameter_norm and saturates unresolved values exactly
+// as the engine binding does.
+parameter_position :: proc "contextless" (index, stored: int) -> (position: int, ok: bool) {
+	states := parameter_states(index)
+	if len(states) == 0 {return 0, false}
+	p := PARAMETERS[index]
+	if p.display_keyed {
+		for state, i in states {
+			if value, is_int := display_integer(state.display); is_int && value == stored {
+				return i, true
+			}
+		}
+	} else if stored >= 0 && stored < len(states) {
+		return stored, true
+	}
+	if stored < 0 {return 0, true}
+	return len(states) - 1, true
+}
+
+// The stored integer selecting a table position, inverse to parameter_position
+// for every measured state.
+parameter_stored_at_position :: proc "contextless" (index, position: int) -> (stored: int, ok: bool) {
+	states := parameter_states(index)
+	if position < 0 || position >= len(states) {return 0, false}
+	if PARAMETERS[index].display_keyed {
+		if value, is_int := display_integer(states[position].display); is_int {
+			return value, true
+		}
+	}
+	return position, true
 }
 
 // The value the plugin reports for a state index, including indices past the

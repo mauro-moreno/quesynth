@@ -29,6 +29,7 @@ import "../../src/patch"
 
 MIDI_NOTE_OFF :: 0x80
 MIDI_NOTE_ON :: 0x90
+MIDI_CONTROL_CHANGE :: 0xB0
 MIDI_PITCH_BEND :: 0xE0
 
 // The 14-bit MIDI bend range is 0..16383 with 8192 at rest. Both halves are
@@ -127,6 +128,9 @@ live_handle_midi :: proc(s: ^Live, message: u32) {
 
 	case MIDI_NOTE_OFF:
 		engine.engine_note_off(&s.eng, int(data1))
+
+	case MIDI_CONTROL_CHANGE:
+		engine.engine_control_change(&s.eng, int(data1), int(data2))
 
 	case MIDI_PITCH_BEND:
 		raw := int(data1) | (int(data2) << 7)

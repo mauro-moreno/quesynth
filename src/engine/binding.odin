@@ -31,24 +31,8 @@ import "../patch"
 // table. Use this for parameters whose meaning is "how far along the range",
 // never for ones whose display is a semantic identifier.
 resolved_position :: proc(index, stored: int) -> int {
-	states := patch.parameter_states(index)
-	if len(states) == 0 {return 0}
-
-	p := patch.PARAMETERS[index]
-	if p.display_keyed {
-		for s, i in states {
-			if d, is_int := patch.display_integer(s.display); is_int && d == stored {
-				return i
-			}
-		}
-	} else if stored >= 0 && stored < len(states) {
-		return stored
-	}
-
-	// Out of range. Clamping at the near end rather than always at the top
-	// keeps a negative stored integer from reading as a maximum.
-	if stored < 0 {return 0}
-	return len(states) - 1
+	position, ok := patch.parameter_position(index, stored)
+	return position if ok else 0
 }
 
 // The display string of the resolved state.

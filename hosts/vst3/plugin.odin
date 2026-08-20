@@ -1,6 +1,7 @@
 package synth_vst3
 
 import "base:runtime"
+import "core:strconv"
 
 import "../../src/engine"
 import "../../src/patch"
@@ -138,29 +139,26 @@ apply_params :: proc(p: ^Plugin) {
 	if len(p.eng.voices) > 0 {
 		params.polyphony = len(p.eng.voices)
 	}
+	p.eng.patch = p.mirror
+	p.eng.has_patch = true
+	for i in 0 ..< 2 {
+		if p.eng.params.midi_ctrl[i].cc != params.midi_ctrl[i].cc {
+			p.eng.ctrl_value[i] = 0
+		}
+	}
 	p.eng.params = params
-
-	// Shapes live on the LFO objects and envelope times on the voices, so both
-	// have to be pushed out rather than read from `params` at render time.
-	for j in 0 ..< 2 {
-		p.eng.global_lfo[j].shape = params.lfo[j].shape
-	}
-	for i in 0 ..< len(p.eng.voices) {
-		engine.voice_apply_params(&p.eng.voices[i], &params, p.eng.sample_rate)
-	}
+	engine.engine_refresh_controllers(&p.eng)
 	p.params_dirty = false
 }
 
 // A parameter's normalised 0..1 value, which is what VST3 trades in, from its
-// stored integer -- and back.
-//
-// The stored integer is the state's *index*, so the conversion is by position
-// in the state table rather than by any value the display carries. That keeps a
-// display-keyed parameter (whose displays are not in numeric order) working:
-// index 3 is the fourth state whatever it reads as.
+// stored integer -- and back. The span is the complete stored domain, not the
+// measured state-table length: those differ for display-keyed values, continued
+// grids and the four 16-bit controller fields.
 param_state_count :: proc(index: int) -> int {
-	n := len(patch.parameter_states(index))
-	return n if n > 0 else 1
+	lo, hi, ok := patch.parameter_stored_range(index)
+	if !ok {return 1}
+	return hi - lo + 1
 }
 
 // A parameter with no states at all.
@@ -173,36 +171,20 @@ param_state_count :: proc(index: int) -> int {
 // saved through VST3 at all. It went unnoticed because nothing here had ever
 // compared a whole patch against what the host reads back.
 //
-// The stored range is the denominator, so the mapping is a plain division.
-continuous_span :: f64(patch.CONTINUOUS_DENOMINATOR - 1)
-
 normalized_of :: proc(index: int, stored: i32) -> f64 {
-	if patch.PARAMETERS[index].continuous {
-		v := clamp(int(stored), 0, patch.CONTINUOUS_DENOMINATOR - 1)
-		return f64(v) / continuous_span
-	}
-	n := param_state_count(index)
-	if n <= 1 {
-		return 0
-	}
-	v := int(stored)
-	v = clamp(v, 0, n - 1)
-	return f64(v) / f64(n - 1)
+	lo, hi, ok := patch.parameter_stored_range(index)
+	if !ok || hi <= lo {return 0}
+	v := clamp(int(stored), lo, hi)
+	return f64(v - lo) / f64(hi - lo)
 }
 
 stored_of :: proc(index: int, normalized: f64) -> i32 {
-	if patch.PARAMETERS[index].continuous {
-		t := clamp(normalized, 0, 1)
-		return i32(int(t * continuous_span + 0.5))
-	}
-	n := param_state_count(index)
-	if n <= 1 {
-		return 0
-	}
+	lo, hi, ok := patch.parameter_stored_range(index)
+	if !ok || hi <= lo {return i32(lo)}
 	t := clamp(normalized, 0, 1)
 	// Round rather than truncate: a host sending back exactly what it was given
-	// must land on the same state it came from.
-	return i32(int(t * f64(n - 1) + 0.5))
+	// must land on the same stored integer it came from.
+	return i32(lo + int(t * f64(hi - lo) + 0.5))
 }
 
 // -- IComponent --------------------------------------------------------------
@@ -680,9 +662,10 @@ controller_get_parameter_info :: proc "c" (this: rawptr, index: i32, info: ^vst3
 	vst3.copy_utf16(&info.title, meta.name)
 	vst3.copy_utf16(&info.short_title, meta.name)
 	vst3.copy_utf16(&info.units, "")
-	// `stepCount` is the number of steps *between* values, so a parameter with
-	// n states has n-1. Zero would declare it continuous.
-	info.step_count = i32(max(param_state_count(i) - 1, 0))
+	// `stepCount` is the number of steps *between* values. The four raw 16-bit
+	// controller fields are continuous even though the engine stores their
+	// current sample as an integer.
+	info.step_count = patch.PARAMETERS[i].continuous ? 0 : i32(max(param_state_count(i) - 1, 0))
 	info.default_normalized_value = normalized_of(i, i32(meta.default))
 	info.unit_id = 0
 	info.flags = vst3.PARAM_CAN_AUTOMATE
@@ -699,16 +682,43 @@ controller_get_param_string_by_value :: proc "c" (this: rawptr, id: u32, normali
 	i := int(id)
 	states := patch.parameter_states(i)
 	stored := stored_of(i, normalized)
-	if len(states) == 0 || int(stored) >= len(states) {
+	position, ok := patch.parameter_position(i, int(stored))
+	if len(states) == 0 || !ok || position < 0 || position >= len(states) {
 		vst3.copy_utf16(str, "")
 		return vst3.RESULT_OK
 	}
-	vst3.copy_utf16(str, states[stored].display)
+	vst3.copy_utf16(str, states[position].display)
 	return vst3.RESULT_OK
 }
 
 controller_get_param_value_by_string :: proc "c" (this: rawptr, id: u32, s: [^]u16, normalized: ^f64) -> vst3.Result {
-	return vst3.NOT_IMPLEMENTED
+	context = from_controller(this).ctx
+	if s == nil || normalized == nil || int(id) >= PARAM_COUNT {
+		return vst3.INVALID_ARGUMENT
+	}
+	text := vst3.utf16_to_string((^vst3.String128)(s))
+	if len(text) == 0 {return vst3.INVALID_ARGUMENT}
+	defer delete(text)
+
+	i := int(id)
+	meta := patch.PARAMETERS[i]
+	states := patch.parameter_states(i)
+	if !meta.continuous && !meta.display_keyed {
+		for state, position in states {
+			if state.display == text {
+				stored, _ := patch.parameter_stored_at_position(i, position)
+				normalized^ = normalized_of(i, i32(stored))
+				return vst3.RESULT_OK
+			}
+		}
+	}
+
+	stored, parsed := strconv.parse_int(text, 10)
+	if !parsed {return vst3.INVALID_ARGUMENT}
+	lo, hi, range_ok := patch.parameter_stored_range(i)
+	if !range_ok {return vst3.INVALID_ARGUMENT}
+	normalized^ = normalized_of(i, i32(clamp(stored, lo, hi)))
+	return vst3.RESULT_OK
 }
 
 // The plain value is the stored integer, which is what the .sy1 format and

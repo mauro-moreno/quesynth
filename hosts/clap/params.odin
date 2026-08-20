@@ -107,21 +107,10 @@ param_display_span :: proc "contextless" (index: int) -> (lo, hi: int, ok: bool)
 // 138 patches under patches/incoming lands inside the result, which tests/clap
 // asserts.
 param_range :: proc "contextless" (index: int) -> (lo, hi: int) {
-	p := patch.PARAMETERS[index]
-	if p.continuous {
-		return 0, patch.CONTINUOUS_DENOMINATOR - 1
-	}
-
-	lo, hi = 0, p.state_count - 1
-	if span_lo, span_hi, ok := param_display_span(index); ok && p.display_keyed {
-		lo, hi = min(0, span_lo), span_hi
-	} else if p.out_of_range == .Continue_Grid && hi < STORED_MAX_7BIT {
-		hi = STORED_MAX_7BIT
-	}
-
-	lo = min(lo, p.default)
-	hi = max(hi, p.default)
-	return
+	ok: bool
+	lo, hi, ok = patch.parameter_stored_range(index)
+	if !ok {return 0, 0}
+	return lo, hi
 }
 
 param_min :: proc "contextless" (index: int) -> int {

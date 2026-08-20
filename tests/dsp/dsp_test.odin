@@ -28,6 +28,50 @@ finite :: proc(v: f32) -> bool {
 	return v > -math.F32_MAX && v < math.F32_MAX
 }
 
+@(test)
+test_midi_controller_assignments_add_on_one_destination :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[19] = 0
+	p.values[50] = 127
+	p.values[51] = 127
+	p.values[86] = 0xB001
+	p.values[87] = 19
+	p.values[88] = 0xB002
+	p.values[89] = 19
+
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_control_change(&e, 1, 64)
+	engine.engine_control_change(&e, 2, 64)
+
+	want_patch := p
+	want_patch.values[19] = 127
+	want := engine.bind_patch(want_patch)
+	testing.expect_value(t, e.params.filter_cutoff_hz, want.filter_cutoff_hz)
+}
+
+@(test)
+test_midi_controller_updates_cached_lfo_shape :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[42] = 0
+	p.values[50] = 127
+	p.values[86] = 0xB001
+	p.values[87] = 42
+
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	before := e.global_lfo[0].shape
+	engine.engine_control_change(&e, 1, 127)
+
+	want_patch := p
+	want_patch.values[42], _ = patch.parameter_stored_at_position(42, 5)
+	want := engine.bind_patch(want_patch)
+	testing.expect(t, e.global_lfo[0].shape != before, "controller did not move the LFO shape")
+	testing.expect_value(t, e.global_lfo[0].shape, want.lfo[0].shape)
+}
+
 // ---------------------------------------------------------------------------
 // Oscillators
 // ---------------------------------------------------------------------------

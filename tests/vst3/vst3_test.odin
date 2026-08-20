@@ -6,6 +6,21 @@ import "core:testing"
 import "../../src/patch"
 import synth "../../hosts/vst3"
 
+@(test)
+stored_values_survive_vst3_normalization :: proc(t: ^testing.T) {
+	for c in ([]struct {index, stored: int} {
+		{64, 4},      // display-keyed, not state position 2
+		{33, 64},     // beyond the measured state table
+		{21, 128},    // out-of-table reference default
+		{86, 45057},  // 16-bit MIDI source B001
+		{89, 65535},
+	}) {
+		normalized := synth.normalized_of(c.index, i32(c.stored))
+		got := synth.stored_of(c.index, normalized)
+		testing.expect_value(t, got, i32(c.stored))
+	}
+}
+
 // The VST3 half of the bank, checked the way the CLAP half is.
 //
 // These two formats do the same thing by different routes and the checking was
