@@ -1,6 +1,7 @@
 package clap_tests
 
 import "base:runtime"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -1705,12 +1706,21 @@ test_state_round_trip_after_process_events_while_active :: proc(t: ^testing.T) {
 // where the reference itself clamps.
 // ---------------------------------------------------------------------------
 
-// Locate the committed patch corpus.
+// Locate the patch corpus, if this machine has one.
 //
 // `odin test tests/clap` is run from the repository root, but the package also
-// has to be testable from its own directory, so both are tried. The corpus is
-// committed (unlike ext/synth1), which is what makes this test runnable
-// anywhere the repository is.
+// has to be testable from its own directory, so both are tried.
+//
+// It used to say the corpus was committed, and that is no longer true:
+// patches/incoming is Synth1's own banks and other people's, and it was taken
+// out of the repository over exactly that. `patches/*` is ignored and only
+// patches/quesynth/factory.json is tracked.
+//
+// So the corpus is a thing a development machine may happen to have, and the
+// test below is skipped where it does not. That is a real loss -- it is the
+// check that a hundred and twenty-eight real patches all sit inside the ranges
+// this plugin advertises -- and pretending otherwise by failing would only mean
+// a suite that can never pass on a fresh clone.
 corpus_root :: proc() -> (path: string, ok: bool) {
 	for candidate in ([]string{"patches/incoming", "../../patches/incoming"}) {
 		if os.exists(candidate) {
@@ -1745,7 +1755,13 @@ collect_sy1 :: proc(dir: string, out: ^[dynamic]string) {
 test_every_committed_patch_value_is_inside_the_advertised_range :: proc(t: ^testing.T) {
 	root, found := corpus_root()
 	if !found {
-		testing.fail_now(t, "patches/incoming is missing; the corpus is committed and must be present")
+		// Skipped, not failed. The corpus is not in the repository and cannot
+		// be: see corpus_root. Logged so a run that skipped it does not read
+		// like a run that checked it.
+		log.info(
+			"skipped: patches/incoming is not on this machine, so there is no corpus to check",
+		)
+		return
 	}
 
 	files: [dynamic]string
@@ -1755,10 +1771,9 @@ test_every_committed_patch_value_is_inside_the_advertised_range :: proc(t: ^test
 	}
 	collect_sy1(root, &files)
 
-	// A silent pass over an empty corpus would make this test worthless, so the
-	// A silent pass over an empty corpus would make this test worthless, so the
-	// count is asserted. 128 .sy1 files are committed today (the rest of
-	// patches/incoming is measurement notes); more may be added.
+	// A silent pass over an empty corpus would make this test worthless, so
+	// the count is asserted: a corpus that is present must be a real one.
+	// 128 .sy1 files is what Synth1's own bank holds; more may be there.
 	testing.expectf(t, len(files) >= 128, "found only %d .sy1 files under %s", len(files), root)
 	checked := 0
 	violations := 0

@@ -31,6 +31,17 @@ jobs:
         with:
           release: dev-2026-05
 
+      # Odin will not create the directory it is told to write into, and a
+      # fresh checkout has no build/ because it is ignored. The failure is
+      # "LLVM Error: no such file or directory" four times over and no mention
+      # of a path, which reads like a broken toolchain rather than a missing
+      # folder -- and it cannot happen on a development machine, where build/
+      # has existed since the first compile. pages.yml already carries the same
+      # line for the same reason.
+      - name: Somewhere to build into
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path build | Out-Null
+
       - name: Test
         run: |
           odin test tests/dsp
