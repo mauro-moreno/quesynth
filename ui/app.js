@@ -1222,7 +1222,48 @@
   // the host to change patch and waits to be told what happened. Anything else
   // would put a second idea of "what is loaded" in the panel, and the whole state
   // model here rests on there being one.
-  var bank = window.SYNTH1_BANK || null;
+  // A bank is a hundred and twenty-eight slots. Always, however few of them
+  // hold a sound.
+  //
+  // That is the convention every hardware synthesiser and every soft synth
+  // that grew out of one follows, and it is not decoration. A fixed slot count
+  // is what makes a patch addressable by number rather than only by name, so
+  // "47" means something over MIDI and in a set list; and it is what gives a
+  // new sound somewhere to be saved *to*. A bank that is only as long as the
+  // sounds already in it has no empty slots, and so no way to grow.
+  //
+  // The file on disk stays short: the factory bank is sixteen entries and is
+  // padded here. An empty slot is null rather than a written-out Init patch,
+  // so a saved bank is the size of what is actually in it.
+  var BANK_SLOTS = 128;
+
+  // The sound a slot has when nothing has been put in it: every parameter at
+  // its default, which is the reference plugin's own init patch.
+  function initValues() {
+    var out = [];
+    for (var i = 0; i < PARAMS.length; i++) out.push(PARAMS[i].def);
+    return out;
+  }
+
+  function normalizeBank(b) {
+    var slots = new Array(BANK_SLOTS);
+    for (var i = 0; i < BANK_SLOTS; i++) slots[i] = null;
+    if (b && b.patches) {
+      for (var j = 0; j < b.patches.length && j < BANK_SLOTS; j++) {
+        var e = b.patches[j];
+        // A null, or an entry with no parameters, is an empty slot.
+        slots[j] = e && e.v && e.v.length ? { n: e.n || "Untitled", v: e.v.slice() } : null;
+      }
+    }
+    return { label: (b && b.label) || "Bank", patches: slots };
+  }
+
+  var bank = normalizeBank(window.SYNTH1_BANK);
+  // Whether anything was compiled into the page at all. An empty bank of a
+  // hundred and twenty-eight Inits is still a bank you can save into, but the
+  // strip must not claim a patch is loaded before one is.
+  var bankSupplied = !!(window.SYNTH1_BANK && window.SYNTH1_BANK.patches &&
+                        window.SYNTH1_BANK.patches.length);
   // What is loaded right now, whether it came from the bank or from a file.
   var currentName = "";
   var bankIndex = -1;
@@ -1248,19 +1289,25 @@
     }
 
     var read = el.querySelector(".bank-read");
-    if (read && bank) {
+    if (read) {
       read.classList.add("pickable");
       read.addEventListener("click", function (e) {
         e.stopPropagation();
-        showBankList(read);
+        // The browser if it is loaded, the old popover if it is not. A native
+        // host that ships a trimmed panel still gets a way to change patch.
+        if (window.SynthBrowser) window.SynthBrowser.open();
+        else showBankList(read);
       });
     }
 
-    if (bank) {
-      var name = document.getElementById("bank-name");
-      if (name) name.textContent = bank.label;
-      loadPatch(0);
-    }
+    var name = document.getElementById("bank-name");
+    if (name) name.textContent = bank.label;
+    // Only when a bank actually came with the page. There is always a bank now
+    // -- an empty one is still 128 slots you can save into -- but loading slot
+    // zero of it would send an Init patch to the host, and in a plugin the host
+    // has its own state and got there first. A panel that overwrote it on
+    // startup would lose the user's sound every time the window was opened.
+    if (bankSupplied) loadPatch(0);
   }
 
   // Load one patch out of the compiled-in bank.
@@ -1269,11 +1316,14 @@
   // the engine rebinds on each one, and a patch change that rebound a hundred
   // times would be audible as a smear rather than a change.
   function loadPatch(index) {
-    if (!bank || !bank.patches.length) return;
-    var n = bank.patches.length;
+    if (!bank) return;
+    var n = BANK_SLOTS;
     // Wraps, so stepping past either end is a way round rather than a dead stop.
     bankIndex = ((index % n) + n) % n;
-    var p = bank.patches[bankIndex];
+    // An empty slot loads as Init rather than being skipped over. Skipping
+    // would make the empty ones invisible to the arrows, and then there would
+    // be no way to arrive at one in order to save into it.
+    var p = bank.patches[bankIndex] || { n: "Init", v: initValues() };
 
     for (var i = 0; i < p.v.length; i++) {
       if (byIndex[i] !== undefined) values[i] = p.v[i];
@@ -1381,7 +1431,8 @@
     },
 
     setBank: function (label, patches) {
-      bank = { label: label, patches: patches };
+      bank = normalizeBank({ label: label, patches: patches });
+      bankSupplied = true;
       bankIndex = 0;
       var list = document.getElementById("bank-list");
       if (list) {
@@ -1389,6 +1440,60 @@
         list.classList.remove("open");
       }
       loadPatch(0);
+    },
+  };
+
+  // The bank as slots: what the browser and the file menu both work through.
+  window.SynthBank = {
+    SLOTS: BANK_SLOTS,
+
+    label: function () { return bank.label; },
+    setLabel: function (text) {
+      bank.label = String(text || "Bank");
+      showPatch({ name: currentName, index: bankIndex, bank: bank.label });
+    },
+
+    // The slots themselves. Names only -- a caller listing 128 rows does not
+    // need 128 copies of 99 parameters.
+    slots: function () {
+      return bank.patches.map(function (p) { return p ? { name: p.n } : null; });
+    },
+
+    index: function () { return bankIndex; },
+    load: function (i) { loadPatch(i); },
+
+    // Put the sound that is currently loaded into a slot.
+    store: function (i, name) {
+      if (i < 0 || i >= BANK_SLOTS) return false;
+      bank.patches[i] = { n: String(name || currentName || "Untitled"),
+                          v: window.SynthPatch.values() };
+      bankIndex = i;
+      currentName = bank.patches[i].n;
+      showPatch({ name: currentName, index: i, bank: bank.label });
+      return true;
+    },
+
+    clear: function (i) {
+      if (i < 0 || i >= BANK_SLOTS) return false;
+      bank.patches[i] = null;
+      if (i === bankIndex) loadPatch(i);
+      return true;
+    },
+
+    // Replace the whole bank, padding to the slot count. The same call the
+    // file menu makes through SynthPatch.setBank; both are here so neither can
+    // drift into padding differently.
+    replace: function (label, patches) {
+      window.SynthPatch.setBank(label, patches);
+    },
+
+    // The slots that actually hold something, for writing a file. Trailing
+    // empties are dropped: a bank whose last sound is in slot 20 writes 21
+    // entries, not 128, and padding puts it back where it was on the way in.
+    used: function () {
+      var last = -1;
+      for (var i = 0; i < BANK_SLOTS; i++) if (bank.patches[i]) last = i;
+      return bank.patches.slice(0, last + 1);
     },
   };
 

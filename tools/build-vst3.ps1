@@ -98,7 +98,7 @@ Copy-Item (Join-Path $root "ext\webview2\x64\WebView2Loader.dll") $binDir -Force
 $panel = @(
     "index.html", "style.css",
     "app.js", "bridge.js", "layout.js", "midi.js", "params.js",
-    "patchfile.js", "sy1.js"
+    "patchfile.js", "sy1.js", "modal.js", "browser.js"
 )
 foreach ($file in $panel) {
     Copy-Item (Join-Path $root "ui\$file") $uiDir -Force

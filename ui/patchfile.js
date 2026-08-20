@@ -75,37 +75,41 @@
     download(safeName(name, ".json"), JSON.stringify(doc, null, 2) + "\n");
   }
 
-  function saveBank() {
+  function bankDoc() {
+    var slots = window.SynthBank;
     var api = window.SynthPatch;
-    if (!api) return;
-    var bank = api.bank();
-    if (!bank || !bank.patches.length) return;
+    if (!slots || !api) return null;
 
-    // The bank as it stands, including any patch the player has edited: the
-    // current parameter set replaces the entry it was loaded from, so saving
-    // after a tweak keeps the tweak. Anything else would quietly discard it.
+    // Position is meaning. A patch in slot 41 has to come back in slot 41, or
+    // every reference to it by number -- a set list, a program change -- points
+    // at a different sound after a round trip. So an empty slot is written as
+    // null rather than skipped: that is what keeps the ones after it in place.
+    //
+    // Trailing empties are dropped. A bank whose last sound is in slot 20
+    // writes 21 entries and loading pads it back to 128; there is nothing to
+    // preserve about an empty slot at the end.
+    var here = slots.index();
+    // Including an edit in progress: the live parameters replace the entry
+    // they were loaded from, so saving after a tweak keeps the tweak. Anything
+    // else would quietly discard it.
     var current = api.values();
-    var patches = bank.patches.map(function (p, i) {
-      var values = i === bankIndexOf(bank) ? current : p.v;
-      return patchObject(p.n, values);
+    var patches = slots.used().map(function (p, i) {
+      if (i === here) return patchObject(p ? p.n : api.name(), current);
+      return p ? patchObject(p.n, p.v) : null;
     });
 
-    var doc = {
+    return {
       format: FORMAT_BANK,
       version: FORMAT_VERSION,
-      name: bank.label || "Bank",
+      name: slots.label(),
       patches: patches,
     };
-    download(safeName(bank.label || "bank", ".json"), JSON.stringify(doc, null, 2) + "\n");
   }
 
-  // Which entry of the bank is loaded. Read off the bar rather than tracked
-  // here, so there is one answer to it and app.js owns it.
-  function bankIndexOf(bank) {
-    var shown = document.getElementById("bank-patch");
-    if (!shown) return -1;
-    var n = parseInt(String(shown.textContent).split(":")[0], 10);
-    return isNaN(n) ? -1 : n;
+  function saveBank() {
+    var doc = bankDoc();
+    if (!doc) return;
+    download(safeName(doc.name || "bank", ".json"), JSON.stringify(doc, null, 2) + "\n");
   }
 
   // -- reading ---------------------------------------------------------------
@@ -213,11 +217,15 @@
       if (!Array.isArray(doc.patches) || !doc.patches.length) {
         throw new Error("the bank has no patches");
       }
+      // A null entry is an empty slot, and it is kept rather than compacted
+      // away: dropping it would shift every patch after it down by one and
+      // silently renumber the bank.
       var patches = doc.patches.map(function (p) {
+        if (!p) return null;
         return { n: p.name || "Patch", v: valuesFrom(p.parameters || {}) };
       });
       api.setBank(doc.name || "Bank", patches);
-      return doc.patches.length + " patches";
+      return patches.filter(Boolean).length + " patches";
     }
 
     checkHeader(doc, FORMAT_PATCH);
@@ -326,9 +334,16 @@
         parameters: built.parameters,
       }, null, 2) + "\n";
     },
+    bankText: function () {
+      var doc = bankDoc();
+      return doc ? JSON.stringify(doc, null, 2) + "\n" : "";
+    },
     load: loadText,
     loadBytes: loadBytes,
     sniff: sniff,
+    // Exposed so the bank browser can offer the same thing without owning a
+    // second file input, and so both paths end up in one place.
+    pick: pickFile,
   };
 
   document.addEventListener("DOMContentLoaded", function () {

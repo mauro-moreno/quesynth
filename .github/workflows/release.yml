@@ -62,7 +62,8 @@ jobs:
           $required = @(
             "$bin/Quesynth.vst3", "$bin/WebView2Loader.dll",
             "$ui/index.html", "$ui/app.js", "$ui/params.js", "$ui/bank.js",
-            "$ui/patchfile.js", "$ui/sy1.js", "$ui/style.css"
+            "$ui/patchfile.js", "$ui/sy1.js", "$ui/style.css",
+            "$ui/modal.js", "$ui/browser.js"
           )
           $missing = $required | Where-Object { -not (Test-Path $_) }
           if ($missing) { throw "the bundle is missing: $($missing -join ', ')" }

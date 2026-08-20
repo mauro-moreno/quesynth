@@ -495,6 +495,53 @@ json_bank_round_trips :: proc(t: ^testing.T) {
 	}
 }
 
+// An empty slot is a null in the array, and it has to survive being read.
+//
+// A bank is a fixed row of slots and position is meaning: a patch in slot 41 is
+// "41" to a set list and to a program change. Writing empty slots as null is
+// what keeps the numbering, and a reader that refused them -- which this one
+// did -- made a bank saved from the interface unreadable by every tool here.
+@(test)
+json_bank_keeps_empty_slots :: proc(t: ^testing.T) {
+	text: string = `{"format":"quesynth.bank","version":1,"name":"Sparse","patches":[
+		{"name":"First","parameters":{"osc1 shape":1}},
+		null,
+		null,
+		{"name":"Fourth","parameters":{"osc1 shape":3}}
+	]}`
+
+	bank, err := patch.parse_bank_json(transmute([]u8)text)
+	defer patch.destroy_bank(bank)
+
+	testing.expect_value(t, err, patch.Json_Error.None)
+	// Four slots, not the two that hold a sound: dropping the nulls would move
+	// "Fourth" from slot three to slot one.
+	testing.expect_value(t, len(bank.patches), 4)
+	testing.expect_value(t, len(bank.filled), 4)
+	// Stop here if the shape is wrong. Everything below indexes both slices,
+	// and a reader that refuses nulls leaves them empty -- which would end this
+	// test in a bounds panic instead of in the assertion that explains it.
+	if err != .None || len(bank.patches) != 4 || len(bank.filled) != 4 {
+		return
+	}
+
+	testing.expect_value(t, bank.filled[0], true)
+	testing.expect_value(t, bank.filled[1], false)
+	testing.expect_value(t, bank.filled[2], false)
+	testing.expect_value(t, bank.filled[3], true)
+
+	testing.expect_value(t, bank.patches[0].name, "First")
+	testing.expect_value(t, bank.patches[3].name, "Fourth")
+	testing.expect_value(t, bank.patches[0].values[0], 1)
+	testing.expect_value(t, bank.patches[3].values[0], 3)
+
+	// An empty slot plays as Init: every parameter at its default.
+	testing.expect_value(t, bank.patches[1].name, "Init")
+	for j in 0 ..< patch.PARAMETER_COUNT {
+		testing.expect_value(t, bank.patches[1].values[j], patch.PARAMETERS[j].default)
+	}
+}
+
 // A whole number written as a float is accepted, because a file produced by a
 // language whose numbers are all doubles will say 64.0; a fraction is not,
 // because there is no state between two stored integers.

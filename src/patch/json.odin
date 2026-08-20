@@ -186,6 +186,32 @@ check_header :: proc(object: json.Object, expected: string) -> Json_Error {
 Bank :: struct {
 	name:    string,
 	patches: []Patch,
+	// Which slots actually held a sound in the file.
+	//
+	// A bank is a fixed row of slots and most of them are usually empty, so the
+	// format writes an empty one as null rather than as a written-out Init
+	// patch -- the file stays the size of what is in it, and, more importantly,
+	// the ones after it keep their numbers. A reader that dropped nulls would
+	// shift every later patch down by one and silently renumber the bank.
+	//
+	// The empty slots are materialised as Init patches, because that is what
+	// they sound like and every caller wants to play them. This says which ones
+	// they were, so a writer can put the nulls back.
+	filled:  []bool,
+}
+
+// The sound an empty slot has: every parameter at its default.
+//
+// The name is not cloned, so it must not be freed with the rest of a parsed
+// bank. destroy_bank knows this; see the note there about borrowed names.
+init_patch :: proc() -> (p: Patch) {
+	p.name = "Init"
+	p.version = SY1_BIPOLAR_VERSION
+	for i in 0 ..< PARAMETER_COUNT {
+		p.values[i] = PARAMETERS[i].default
+		p.present[i] = true
+	}
+	return
 }
 
 parse_bank_json :: proc(data: []byte, allocator := context.allocator) -> (bank: Bank, err: Json_Error) {
@@ -219,20 +245,32 @@ parse_bank_json :: proc(data: []byte, allocator := context.allocator) -> (bank: 
 	}
 
 	patches := make([]Patch, len(array), allocator)
+	filled := make([]bool, len(array), allocator)
 	for entry, i in array {
+		// An empty slot. Filled with the defaults, which is the Init sound, and
+		// recorded as empty above.
+		if _, is_null := entry.(json.Null); is_null {
+			patches[i] = init_patch()
+			filled[i] = false
+			continue
+		}
 		entry_object, entry_is_object := entry.(json.Object)
 		if !entry_is_object {
 			delete(patches, allocator)
+			delete(filled, allocator)
 			return bank, .Not_An_Object
 		}
 		p, patch_err := patch_from_object(entry_object, allocator)
 		if patch_err != .None {
 			delete(patches, allocator)
+			delete(filled, allocator)
 			return bank, patch_err
 		}
 		patches[i] = p
+		filled[i] = true
 	}
 	bank.patches = patches
+	bank.filled = filled
 	return bank, .None
 }
 
@@ -337,11 +375,22 @@ destroy_patch :: proc(p: Patch, allocator := context.allocator) {
 }
 
 destroy_bank :: proc(bank: Bank, allocator := context.allocator) {
-	for p in bank.patches {
+	for p, i in bank.patches {
+		// An empty slot's patch was made by init_patch, whose name is a string
+		// literal rather than a clone. Freeing it would hand the allocator a
+		// pointer into static memory. `filled` is what tells the two apart, and
+		// a bank with no `filled` at all -- one built by hand rather than
+		// parsed -- is treated as all real, which is what it is.
+		if bank.filled != nil && i < len(bank.filled) && !bank.filled[i] {
+			continue
+		}
 		destroy_patch(p, allocator)
 	}
 	if bank.patches != nil {
 		delete(bank.patches, allocator)
+	}
+	if bank.filled != nil {
+		delete(bank.filled, allocator)
 	}
 	if bank.name != "" {
 		delete(bank.name, allocator)
