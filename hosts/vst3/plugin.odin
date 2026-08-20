@@ -750,6 +750,7 @@ controller_set_param_normalized :: proc "c" (this: rawptr, id: u32, value: f64) 
 		// generic panel in step.
 		if p.editor != nil {
 			editor_send_state(p.editor)
+			editor_send_patch(p.editor, int(p.program))
 		}
 		return vst3.RESULT_OK
 	}

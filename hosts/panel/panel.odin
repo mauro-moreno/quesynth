@@ -436,3 +436,68 @@ json_bool :: proc(object: json.Object, key: string) -> (bool, bool) {
 	flag, is_bool := value.(json.Boolean)
 	return bool(flag), is_bool
 }
+
+// Which patch is loaded, by name and by number.
+//
+// Sent alongside the state after something other than the panel changes the
+// sound -- a MIDI program change, most often. Without it every knob moves and
+// the strip goes on naming the patch from before, which is the sort of half-lie
+// that is worse than no update at all: the interface looks like it is telling
+// you what you are playing.
+//
+// The protocol at the top of ui/bridge.js has always had this message; nothing
+// on this side ever sent one.
+send_patch :: proc(p: ^Panel, name: string, index: int, bank: string) {
+	if p == nil || !p.view.ready {
+		return
+	}
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, `{"type":"patch","name":`)
+	write_json_string(&builder, name)
+	strings.write_string(&builder, `,"index":`)
+	strings.write_int(&builder, index)
+	strings.write_string(&builder, `,"bank":`)
+	write_json_string(&builder, bank)
+	strings.write_byte(&builder, '}')
+	webview2.post(&p.view, strings.to_string(builder))
+}
+
+// A JSON string, quoted and escaped.
+//
+// Patch names come out of somebody else's bank and are not this project's to
+// vouch for: one containing a quote or a backslash would otherwise produce a
+// message the panel cannot parse, and the symptom would be the name silently
+// never updating for that one patch.
+@(private = "file")
+write_json_string :: proc(builder: ^strings.Builder, text: string) {
+	strings.write_byte(builder, '"')
+	for i in 0 ..< len(text) {
+		c := text[i]
+		switch c {
+		case '"':
+			strings.write_string(builder, `\"`)
+		case '\\':
+			strings.write_string(builder, `\\`)
+		case '\n':
+			strings.write_string(builder, `\n`)
+		case '\r':
+			strings.write_string(builder, `\r`)
+		case '\t':
+			strings.write_string(builder, `\t`)
+		case:
+			// Control characters have to be escaped as well; everything else,
+			// UTF-8 included, goes through as bytes.
+			if c < 0x20 {
+				strings.write_string(builder, `\u00`)
+				// Odin will not index a constant string, so the digits are a
+				// variable.
+				hex := "0123456789abcdef"
+				strings.write_byte(builder, hex[(c >> 4) & 0xF])
+				strings.write_byte(builder, hex[c & 0xF])
+			} else {
+				strings.write_byte(builder, c)
+			}
+		}
+	}
+	strings.write_byte(builder, '"')
+}

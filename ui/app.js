@@ -1830,6 +1830,19 @@
       } else if (msg.type === "param" && typeof msg.index === "number") {
         setStored(msg.index, msg.value);
       } else if (msg.type === "patch") {
+        // Which patch a *host* says is loaded, after something other than this
+        // panel changed it -- a MIDI program change, most often.
+        //
+        // Not only drawn. The panel's own idea of what is loaded has to move
+        // with it, or the next "save patch" writes the sound that is playing
+        // under the name of the one before it, which is the bug the
+        // currentName note above is about, arriving by a different road.
+        if (typeof msg.name === "string" && msg.name !== "") {
+          currentName = msg.name;
+        }
+        if (typeof msg.index === "number" && msg.index >= 0 && msg.index < BANK_SLOTS) {
+          bankIndex = msg.index;
+        }
         showPatch(msg);
       }
     });

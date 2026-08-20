@@ -3,6 +3,7 @@ package synth_vst3
 
 import "base:runtime"
 
+import "../../src/patch"
 import "../../src/vst3"
 import "../panel"
 
@@ -157,6 +158,15 @@ editor_send_state :: proc(ed: ^Editor) {
 		return
 	}
 	panel.send_state(&ed.panel)
+}
+
+// Which patch is loaded, by name and by number, so the strip follows a
+// program change instead of naming the one before it.
+editor_send_patch :: proc(ed: ^Editor, program: int) {
+	if ed == nil {
+		return
+	}
+	panel.send_patch(&ed.panel, patch.factory_name(program), program, "Factory")
 }
 
 // One parameter that changed somewhere else -- an automation lane, or the

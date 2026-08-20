@@ -104,6 +104,10 @@ Synth :: struct {
 	// from the thread it was created on and a program change arrives on the
 	// audio thread.
 	panel_stale:  bool,
+	// Which program a host last selected, kept so the panel can be told
+	// its name and number. The sound itself lives in `values` like any
+	// other.
+	program:      int,
 }
 
 synth_of :: proc "contextless" (plugin: ^clap.Plugin) -> ^Synth {
@@ -234,6 +238,7 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 
 	values, ok := patch.factory_patch(program)
 	if !ok {return}
+	s.program = program
 
 	changed := false
 	for i in 0 ..< PARAM_COUNT {
@@ -630,6 +635,10 @@ plugin_on_main_thread :: proc "c" (plugin: ^clap.Plugin) {
 	}
 	context = runtime.default_context()
 	panel.send_state(&s.editor)
+	// The name and the number as well as the values. Without this every
+	// knob moves and the strip goes on naming the patch from before, which
+	// looks like the interface telling you what you are playing.
+	panel.send_patch(&s.editor, patch.factory_name(s.program), s.program, "Factory")
 }
 
 plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
