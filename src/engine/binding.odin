@@ -531,8 +531,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// Displays "-62 cent".."+61 cent".
 	e.fine_tune_cents = display_number(72, p.values[72], 0)
 
-	// Parameter 45 is a bare 0..127. Taken as a modulation index on 0..1; the
-	// depth in hertz is applied in voice.odin where the carrier pitch is known.
+	// Parameter 45 is a bare 0..127. Preserve its linear knob position here: LFO
+	// and modulation-envelope destinations move in controller space, then
+	// voice.odin converts the result through the measured nonlinear FM curve
+	// where the carrier increment is known.
 	e.osc1_fm = unit_position(45, p.values[45])
 
 	// Parameter 76 is a bare 0..127. Read as cents of detune across the

@@ -114,7 +114,9 @@ oscillator_advance :: proc "contextless" (o: ^Oscillator) -> (wrapped: bool, wra
 //
 //     osc1_phase = osc1_phase + osc1_delta + (osc2_out * fmAmount * 2048/2)
 //
-// on a 2048-entry table, i.e. an accumulated displacement of up to half a cycle.
+// on a 2048-entry table. That settles accumulation and direction; it does not
+// identify the mapping from the panel's 0..127 position to `fmAmount`, which is
+// measured separately in voice.odin.
 //
 // A displacement can be negative and larger than the increment, so unlike
 // `oscillator_advance` the phase can move backwards across the cycle boundary.

@@ -348,7 +348,8 @@ Engine_Params :: struct {
 	key_shift:          f32,
 	// Parameter 72, in cents, applied to both oscillators.
 	fine_tune_cents:    f32,
-	// Parameter 45, as a modulation index on 0..1.
+	// Parameter 45's knob position on 0..1. The audio path converts this through
+	// the measured nonlinear FM depth curve after LFO/mod-envelope movement.
 	osc1_fm:            f32,
 	// Parameter 76, in cents, spread across the oscillator 1 unison stack.
 	osc1_detune:        f32,

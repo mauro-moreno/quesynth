@@ -602,6 +602,8 @@ usage :: proc() {
 	fmt.eprintln("  s1probe patchdiag   [dll] <patch.sy1> [--note <n>]")
 	fmt.eprintln("                          -- peak/RMS of one patch, ref vs. ours, with a fixed")
 	fmt.eprintln("                             set of one-parameter-at-a-time variants")
+	fmt.eprintln("  s1probe fmfilter    [dll] [--note <n>] [patch.sy1 ...]")
+	fmt.eprintln("                          -- FM spectrum before and through a moving filter")
 	fmt.eprintln("  s1probe filtersaturation [dll] [--values <list>] [--gains <list>]")
 	fmt.eprintln("                          [--type <n>] [--cutoff <n>] [--res <n>] [--note <n>]")
 	fmt.eprintln("  -- the extra effect unit, parameters 77..81 --")
@@ -632,8 +634,8 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" {
-		if len(rest) >= 2 && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
+	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" {
+		if len(rest) >= 1 && (cmd == "fmfilter" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
 		}
@@ -1983,6 +1985,30 @@ main :: proc() {
 				}
 			}
 			cmd_patchdiag(dll, pdpath, u8(clamp(pdnote, 0, 127)))
+		}
+	case "fmfilter":
+		{
+			ffnote := 60
+			ffpaths: [dynamic]string
+			defer delete(ffpaths)
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &ffnote) {usage()}
+					i += 2
+				case:
+					append(&ffpaths, rest[i])
+					i += 1
+				}
+			}
+			if len(ffpaths) == 0 {
+				append(&ffpaths,
+					"patches/incoming/soundbank00/012.sy1",
+					"patches/incoming/soundbank00/014.sy1",
+					"patches/incoming/soundbank00/038.sy1")
+			}
+			cmd_fmfilter(dll, ffpaths[:], u8(clamp(ffnote, 0, 127)))
 		}
 	case "chorusprobe":
 		hsweep := "level"

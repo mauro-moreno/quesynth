@@ -2019,6 +2019,19 @@ test_oscillator_phase_offset_is_between_the_oscillators :: proc(t: ^testing.T) {
 // FM direction
 // ---------------------------------------------------------------------------
 
+@(test)
+test_fm_knob_uses_the_measured_convex_depth_curve :: proc(t: ^testing.T) {
+	testing.expect_value(t, engine.fm_frequency_depth(0), f32(0))
+	testing.expectf(t, abs(engine.fm_frequency_depth(1) - 96.0) < 0.0001,
+		"full FM depth did not reach 96 carrier frequencies")
+	testing.expectf(t, abs(engine.fm_frequency_depth(f32(43.0 / 127.0)) - 0.24856) < 0.001,
+		"FM state 43 left its measured depth")
+	testing.expectf(t, abs(engine.fm_frequency_depth(f32(68.0 / 127.0)) - 3.09136) < 0.001,
+		"FM state 68 left its measured depth")
+	testing.expectf(t, abs(engine.fm_frequency_depth(f32(77.0 / 127.0)) - 6.12421) < 0.001,
+		"FM state 77 left its measured depth")
+}
+
 // A patch stripped down to the two oscillators, so an FM assertion is about FM
 // and not about whatever else the default patch has running. Both LFOs and the
 // modulation envelope are switched off because all three can reach the FM index

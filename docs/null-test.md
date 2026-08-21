@@ -4123,3 +4123,84 @@ cannot be used to justify preserving a known-wrong parameter law.
 **Verdict.** Parameter 17 remains linear. The low-resonance 24 dB surface and
 the state-domain envelope movement are implemented and directly verified; the
 last isolated gap is the bottom 3 Hz at the DSP floor.
+
+## FM before and through the moving filter
+
+Fixing the low-resonance cutoff made 012 and 014 much better, but both remained
+outliers, and 038 had the same tell: switching parameter 45 off made this engine
+many decibels louder behind the moving filter while barely changing the
+reference. `patchdiag` could show the level consequence but could not separate
+an FM spectrum that was too wide from a filter trajectory that was too closed.
+
+`s1probe fmfilter` is the focused instrument for that separation. With no file
+arguments it runs 012, 014 and 038. It disables effects, LFOs, the oscillator
+modulation envelope, arpeggiator and unison, then renders four variants through
+both engines:
+
+```
+build/s1probe_fmfilter.exe fmfilter
+```
+
+- the patch's moving filter with FM;
+- the same trajectory with parameter 45 at zero;
+- FM through a neutral, wide-open filter;
+- the wide-open no-FM control.
+
+Four 4096-sample FFT windows follow the trajectory at 0.02, 0.12, 0.35 and
+0.80 seconds. The probe reports RMS, centroid and sixth-octave spectral error
+for every variant, then divides moving-filter RMS by its matching open control.
+That last ratio is the filter's attenuation with the upstream FM spectrum
+removed as a confound. An open-filter parameter-45 sweep is printed afterward.
+
+**The defect is upstream.** With the old implementation at each fixture's own
+FM setting, the open-filter centroids were:
+
+| patch | parameter 45 | reference | old engine |
+|---:|---:|---:|---:|
+| 012 | 68 | 326 Hz | 6487 Hz |
+| 014 | 43 | 277 Hz | 2887 Hz |
+| 038 | 77 | 690 Hz | 5726 Hz |
+
+The voice path multiplied the knob's linear 0..1 position by half a turn and
+added that displacement every sample. It therefore made the deviation almost
+independent of carrier frequency and treated the panel position as an already
+resolved phase offset. The moving filters then rejected 12--23 dB more of that
+ultrawide spectrum than the reference filters did. The recently corrected
+cutoff trajectory was not responsible.
+
+The static sweep establishes two missing semantics. FM depth is relative to the
+carrier's per-sample increment, and parameter 45 is very strongly convex. The
+reference barely moves through the lower quarter, then rises quickly above the
+middle. Across the complete sweep and the three fixtures, the fitted peak
+frequency-deviation ratio is:
+
+```
+depth = 96 * (position / 127)^5.5
+phase displacement = osc2 * depth * carrier phase increment
+```
+
+States 43, 68 and 77 therefore resolve to 0.249, 3.091 and 6.124 carrier
+frequencies, rather than 0.339, 0.535 and 0.606 half-turn offsets. Oscillator 2
+still modulates oscillator 1, the displacement still accumulates into phase,
+ring modulation still takes precedence, and LFO-to-FM continues to move in
+parameter-45 controller space before this curve is applied.
+
+At the representative 0.35 second moving-filter window, spectral error changes
+from 14.61 to 3.15 dB for 012, 3.40 to 2.12 for 014, and 11.72 to 1.06 for 038.
+The whole-patch isolated comparison is stronger still:
+
+| patch | before | after | centroid, reference/engine |
+|---:|---:|---:|---:|
+| 012 | 10.36 dB | 2.15 dB | 262/261 Hz |
+| 014 | 19.36 dB | 8.98 dB | 264/263 Hz |
+| 038 | 9.10 dB | 0.93 dB | 271/272 Hz |
+
+**Bank verdict.** Across all 123 comparable patches, spectral mean/median improve
+from 7.26/6.87 to 6.77/6.23 dB, envelope mean from 3.02 to 2.67 dB, and null
+depth from -3.63 to -3.96 dB. Fourteen patches have nonzero static FM: ten
+improve, three regress and one is unchanged, for a 4.16 dB mean spectral
+improvement in that group. 076 improves by 10.81 dB and the three fixtures by
+8.16--10.38 dB. Patches 127 and 128 regress by 2.33 and 4.42 dB and remain the
+important high-FM residuals; their spectra point at waveform/alias distribution,
+not a reason to restore the linear phase-offset law that the direct sweep
+disproves.

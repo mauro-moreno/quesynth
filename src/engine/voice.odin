@@ -54,6 +54,20 @@ Voice :: struct {
 	age:          u64,
 }
 
+// Parameter 45 is a position, not a linear modulation index. The open-filter
+// sweep in `s1probe fmfilter` stays nearly flat through the lower quarter and
+// then rises sharply: states 43, 68 and 77 resolve to peak deviations of 0.249,
+// 3.091 and 6.124 carrier frequencies. A power law fits the complete sweep and
+// the three moving-filter fixtures; a linear reading sends their centroids into
+// the 3--6 kHz range and lets the filter reject 12--23 dB too much signal.
+FM_FREQUENCY_DEPTH_MAX :: f32(96.0)
+FM_FREQUENCY_DEPTH_EXPONENT :: f32(5.5)
+
+fm_frequency_depth :: proc(position: f32) -> f32 {
+	u := dsp.clamp32(position, 0, 1)
+	return FM_FREQUENCY_DEPTH_MAX * math.pow(u, FM_FREQUENCY_DEPTH_EXPONENT)
+}
+
 // Resolve a possibly fractional parameter-19 state on the same cutoff surface
 // selected at patch binding. Geometric interpolation is the natural operation
 // for frequency, both between adjacent states and between the measured low-Q
@@ -565,7 +579,7 @@ voice_process :: proc(
 	// times louder than a single voice.
 	stack_scale := f32(1.0) / math.sqrt(f32(v.unison_count))
 
-	fm_index := dsp.clamp32(p.osc1_fm + mod_fm, 0, 1)
+	fm_position := dsp.clamp32(p.osc1_fm + mod_fm, 0, 1)
 
 	// -- audio rate ----------------------------------------------------------
 
@@ -614,8 +628,9 @@ voice_process :: proc(
 		//   - His write-up of Synth1's oscillator section, which gives the phase
 		//     update as osc1_phase += osc1_delta + osc2_out * fmAmount * 2048/2.
 		//
-		// So oscillator 2 modulates oscillator 1, the displacement is up to half
-		// a cycle at full amount, and it accumulates into the phase.
+		// So oscillator 2 modulates oscillator 1 and the displacement accumulates
+		// into the phase. The panel position is converted to its measured frequency
+		// depth below; it is not itself a phase offset.
 		dsp.oscillator_advance(&u.osc2)
 		dsp.oscillator_advance(&u.sub)
 
@@ -627,8 +642,8 @@ voice_process :: proc(
 		// Ring takes precedence: the readme and the manual agree that "FM
 		// modulation is only possible when ring modulation is off".
 		fm_offset: f32 = 0
-		if fm_index > 0 && !p.osc_ring {
-			fm_offset = osc2_value * fm_index * 0.5
+		if fm_position > 0 && !p.osc_ring {
+			fm_offset = osc2_value * fm_frequency_depth(fm_position) * u.osc1.increment
 		}
 		wrapped, wrap_frac := dsp.oscillator_advance_modulated(&u.osc1, fm_offset)
 
