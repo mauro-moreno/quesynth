@@ -924,12 +924,22 @@ every part of it:
 - **Parameter 92's unison spread applied regardless**, where the same entry says it
   "is not effective unless the phase is fixed in the oscillator section".
 
-The free-running offset itself is measured. Fitting it from how far each harmonic is
-pulled down gives 158 degrees from the fundamental's 14.5 dB and 5.4 predicted
-against 5.0 measured on the third — and the reading is the **same at three notes an
-octave apart**, so it is a fixed initial offset rather than accumulated history, and
-therefore reproducible. It is kept at the measured 0.440 turns rather than tuned:
-0.480 was tried across the whole bank and is indistinguishable.
+The free-running offset itself is measured, and the first reading of it was wrong
+by a sign — see [069 Oboe, and three phase errors in the
+oscillator](#069-oboe-and-three-phase-errors-in-the-oscillator) at the end of
+this document. Fitting it from how far each harmonic is pulled down gives 158
+degrees from the fundamental's 14.5 dB and 5.4 predicted against 5.0 measured on
+the third — and the reading is the **same at three notes an octave apart**, so it
+is a fixed initial offset rather than accumulated history, and therefore
+reproducible. It was kept at that 0.440 turns rather than tuned: 0.480 was tried
+across the whole bank and is indistinguishable.
+
+**What an attenuation fit cannot do is tell `+phi` from `-phi`.** Cancellation
+between two same-pitch oscillators goes as `cos(2*pi*k*phi)`, which is even, so
+both signs pull every harmonic down by exactly the same amount. The magnitude
+above is right; the sign was never determined and came down wrong. The offset is
+now **0.5623 turns**, read off the reference's own start phase instead of fitted
+from a depth. Everything else in this section stands.
 
 ### What it bought
 
@@ -4375,3 +4385,270 @@ does to the stereo image rather than in where the echo lands, and this change
 neither causes nor fixes it. Separate investigation. 069 Oboe's +10.99 dB level
 error, at z = 4.57 the bank's clearest level outlier, is likewise untouched
 here.
+
+## 069 Oboe, and three phase errors in the oscillator
+
+**The outlier.** Over the 123 comparable patches at the previous commit, 069.sy1
+"Oboe" led absolute level error at **10.99 dB, z = 4.5** — 3.8 interquartile
+ranges above the third quartile, against a 1.5×IQR fence of 5.96 — and sat
+second on envelope error at **8.53 dB, z = 3.6**. It was the only patch in the
+bank extreme on two independent metrics. Nothing else qualified: the spectral
+leaders (088, 086, 001 at 16.7, 16.7, 16.3 dB) are the top of a smooth tail and
+sit inside their own 1.5×IQR fence; the width leaders 119/089/111 are a trio
+rather than one separated patch; and the `f0` leaders are octave ambiguity in
+the pitch estimator, since `pitch_cents` on the same rows reads under a cent.
+
+069 is a **triangle and a saw in unison**, mixed 48 : 52, through a 12 dB low
+pass at cutoff 45 with a negative envelope amount. Its render was **11 dB louder
+and 0.38 octaves darker at once**, which no gain error and no cutoff error can
+be together.
+
+### The gap is between the oscillators, not in either one
+
+`patchdiag` blamed the filter, which is a red herring: the filter *amplifies*
+what arrives. Stripping 069 one record at a time, and then muting one oscillator
+at a time, says where the error is:
+
+| variant | spectral | envelope | level | null | correlation |
+|---|--:|--:|--:|--:|--:|
+| as-is | 11.45 | 8.53 | +10.99 | −0.29 | 0.288 |
+| filter bypassed, EQ neutral, chorus off, LFO 1 off ("c3") | 3.84 | 1.71 | +3.52 | −3.64 | 0.753 |
+| **c3, oscillator 1 only** | **0.39** | 0.85 | −0.15 | **−39.91** | 0.999992 |
+| **c3, oscillator 2 only** | **0.14** | 0.57 | −0.14 | **−28.04** | 0.999428 |
+
+Each oscillator alone nulls at −40 and −28 dB. Mixed, they null at −3.6 dB and
+come out 3.5 dB loud. Both waveforms are right and their *relationship* is
+wrong, which can only be phase. The harmonic breakdown of c3 leaves no room at
+all:
+
+```
+ k   refMag    ourMag   dB(o/r)      carried by
+ 1  3.611e-2  9.555e-2   +8.45   triangle + saw
+ 2  3.944e-2  3.879e-2   -0.14   saw only
+ 3  3.171e-2  1.723e-2   -5.30   triangle + saw
+ 4  1.970e-2  1.938e-2   -0.14   saw only
+ 5  1.749e-2  1.208e-2   -3.21   triangle + saw
+ 6  1.311e-2  1.291e-2   -0.14   saw only
+```
+
+Every harmonic the saw carries alone matches to 0.14 dB. Every harmonic both
+oscillators reach is wrong. The error lives exactly and only where they overlap.
+
+### Three phase errors, each measured directly
+
+**D1 — the triangle started at its trough.** Projecting the fundamental out of
+single-oscillator renders at note 60 gives the reference's start phase as
+−0.2507 turns for sine, saw *and* triangle alike, against −0.4954 for our
+triangle: a difference of exactly **−0.2500** once the +0.0053 of render
+alignment common to every shape is removed. Folding 100 cycles of the two
+renders shows it without any transform:
+
+```
+reference triangle          our triangle (before)
+0.000   0.0055              0.000  -0.2179   <- ref crosses zero rising at 0
+0.250   0.2230              0.250   0.0105      ours is at its trough
+0.500  -0.0056              0.500   0.2179
+0.750  -0.2230              0.750  -0.0105
+```
+
+**D3 — the pulse used the wrong duty.** Same method, at stored width 29:
+
+```
+reference pulse, pw=29                our pulse (before), pw=29
+0.000  -0.1680  (edge)                0.000   0.0577  (edge)
+0.031   0.0271  \  high +0.0271       0.031   0.2065  \  high +0.2076
+  ...            >  for 88.6%           ...            >  for 11.4%
+0.875   0.0276  /                     0.125   0.0437  /
+0.906  -0.1711  (edge)                0.156  -0.0276  \  low  -0.0268
+0.938  -0.2113  low -0.2113             ...            >  for 88.6%
+0.969  -0.2113     for 11.4%          0.969  -0.0268  /
+```
+
+The reference's pulse is high for **`1 - pw`** of the cycle; ours was high for
+`pw`. `|sin(pi*k*d)|` is symmetric in `d <-> 1-d`, so the two duties have
+**identical magnitude spectra** — on a single pulse the spectral metric read
+0.18 dB while the null read −0.08 dB. Predicting the phase of the first two
+harmonics from the `1 - pw` model reproduces the reference to four decimals
+(−0.4431 against −0.4432 at k=1; −0.3863 against −0.3863 at k=2).
+
+The vendor manual points the other way and is describing the knob rather than
+the polarity: *"p/w — Set the pulse width of the pulse wave. Turn left to narrow
+the width, turn right to widen it"* (`docs/synth1-readme-eng.txt:128`). At stored
+29, left of centre, what is narrow in the reference is the **negative**
+excursion. The changelog *does* pin the saw, which is why the saw was already
+right; the triangle and the pulse got no such sentence, and both were wrong.
+
+**D2 — the free-running offset had the right magnitude and the wrong sign.**
+Method: render a descending saw with an instant amplitude attack, filter open
+and no effects; place the falling edge of each of the first 24 cycles to
+sub-sample precision by interpolating across the jump; fit a line through
+(cycle, time) and extrapolate the intercept back to note-on. Do it with each
+oscillator alone; the difference is the offset. No spectra and no cancellation
+depth are involved.
+
+| rate | note 36 | note 48 | note 60 | note 72 | note 84 |
+|--:|--:|--:|--:|--:|--:|
+| 48 kHz | 0.5624 | 0.5621 | 0.5624 | 0.5629 | *0.5575* |
+| 96 kHz | 0.5622 | 0.5621 | 0.5619 | 0.5623 | 0.5624 |
+
+Nine readings give **0.56230, standard deviation 0.00030**, over four octaves
+and two sample rates. The method's own accuracy is established by the same
+measurement: run against this engine it reads the constant back to within
+0.0008. The 48 kHz note-84 cell is discarded on a stated ground rather than
+because it is inconvenient — a cycle there is 20 samples, and sub-sample edge
+interpolation cannot resolve a thousandth of a turn across a band-limited edge
+that short; the same note at 96 kHz, where the cycle is 40 samples, is in line
+with the rest. The value does not move with note or rate, so it is a fixed
+**phase**: a fixed sample offset would have halved between the two rates.
+
+A frequency-domain cross-check agrees at notes 48/60/72 over saw, pulse and
+triangle pairs: 0.5623 every time. 32 kHz gave no reading at all — the reference
+renders silence through this harness at that rate, which is recorded as a limit
+of the measurement and not as a result.
+
+**Written at the precision the reading carries.** 9/16 = 0.5625 sits inside the
+interval and cannot be told apart from it — across the whole bank the two agree
+to four decimals on every aggregate — so it stays a hypothesis rather than the
+value. 0.5600, the exact sign flip of the old 0.440, is about seven standard
+deviations out and is **ruled out by the start-phase reading alone**, with no
+null depth involved in saying so.
+
+**A discarded step, recorded so nobody repeats it.** The constant was first
+swept over 0.5500/0.5600/0.5623/0.5625/0.5700 against the null depth of one
+probe patch at one note. That is fitting a constant to a metric, and it was also
+incapable of settling the question: the readings were −18.41, −25.75, −24.47,
+−26.81, −20.90 dB, non-monotone around the true value, and would have preferred
+0.5625 on noise. It is not evidence and none of the above rests on it.
+
+### The single-oscillator nulls
+
+| single oscillator, filter open, no effects | before | after |
+|---|--:|--:|
+| sine | −44.34 | −44.34 |
+| saw | −28.65 | −28.65 |
+| **triangle** | **−39.91** | **−44.14** |
+| **pulse** | **−0.08** | **−27.17** |
+| **two oscillators mixed (069's c3)** | **−3.64** | **−24.47** |
+
+### This is a systematic correction, not an outlier fix
+
+069 is the outlier, but what produces it is shared: the change moves **108 of
+123 patches** by more than 0.005 dB on level, envelope or null depth. It alters
+the phase relationship of every two-oscillator patch and the waveform of every
+triangle and every pulse, so it is gated on the whole-bank aggregate.
+
+| metric | before | after | change |
+|---|--:|--:|---|
+| spectral mean (119 valid) | 6.7597 | **6.6538** | −0.106 |
+| spectral median (119 valid) | 6.2274 | **5.9766** | −0.251 |
+| envelope mean | 2.5025 | **2.0956** | **−0.407 (−16%)** |
+| envelope median | 2.0627 | **1.7701** | −0.293 |
+| level error, mean absolute | 1.9255 | **1.6529** | −0.273 |
+| level bias, signed mean | +0.1928 | +0.1749 | −0.018 |
+| level, signed median | +0.1702 | **+0.0464** | closer to zero |
+| **null depth mean** | −3.9634 | **−6.6565** | **2.69 dB deeper (+68%)** |
+| **null depth median** | −2.5547 | **−6.0802** | **3.53 dB deeper** |
+| correlation mean | 0.6083 | **0.7607** | +0.152 |
+| stereo width delta mean | −0.0237 | −0.0246 | −0.0009 |
+
+Counts: spectral **45 better / 49 worse**, envelope **82 / 24**, null depth
+**84 deeper / 15 shallower** (at 0.05 dB). Spectral improves on both mean and
+median while more patches move up than down, because the improvements are large
+(−5.48, −3.11, −3.07, −1.79, −1.57) and the largest regression is +1.28.
+
+**What it buys.** 117 Perc1 — which this document already names the bank's
+historically worst patch — goes 9.55 → **4.06** spectral, 6.21 → **2.05**
+envelope and −6.06 → **−0.01** dB level, all three from D3 alone. 029 E Guitar
+3, the previous top envelope outlier at 9.08 dB, goes to **1.24** from D2 alone.
+069 itself goes 11.45 → 8.35, 8.53 → 4.78, +10.99 → **+6.18**, with its null
+2.69 dB deeper. 078 Whistle 2 nulls 10.20 dB deeper, 004 Honky Piano 10.66 dB
+deeper, 039 Synth Bass 1 11.78 dB deeper.
+
+**Named regressions.** Three are material and are the reason to read this
+section before touching these lines again:
+
+- **033 Acoustic Bass, envelope 1.41 → 5.99 dB.** The largest single regression
+  and the only one that creates a new top-five envelope entry (z 2.57 after).
+  Attributed entirely to D2 — D1 and D3 leave it at 1.41 — and **not
+  diagnosed**. It is the one result here that would justify holding the change.
+- **047 Harp**, the only patch worse on three metrics at once: envelope +0.76,
+  level +1.21, null 3.40 dB shallower, against spectral −1.48.
+- **085 Sync lead 2, level 2.46 → 4.36 dB**, against an envelope improvement of
+  −0.93 and a null 3.34 dB deeper.
+
+Above 0.1 dB the rest are: spectral — 031 +1.28, 108 +1.27, 016 +1.11, 118
++0.74, 083 +0.73, 046 +0.62, 121 +0.50, 033 +0.43, 084 +0.37, 066 +0.25, 063
++0.24, 079 +0.24, 103 +0.23, 060 +0.23, 088 +0.21, 081 +0.20, 126 +0.20, 019
++0.19, 094 +0.16, 054 +0.16, 044 +0.15, 068 +0.14, 018 +0.13, 051 +0.12, 096
++0.12; envelope — 084 +1.53, 088 +0.62, 124 +0.43, 062 +0.31, 003 +0.29, 083
++0.27, 092 +0.26, 052 +0.25, 127 +0.16, 063 +0.16, 114 +0.15, 090 +0.12, 082
++0.12, 050 +0.11; level — 094 +0.51, 060 +0.41, 056 +0.35, 124 +0.35, 074
++0.33, 018 +0.27, 050 +0.22, 063 +0.18, 077 +0.16, 112 +0.16, 116 +0.14, 108
++0.13, 067 +0.12, 072 +0.11; null — 062 +1.63, 032 +0.80, 089 +0.51, 117 +0.45,
+033 +0.42, 027 +0.41, 002 +0.40, 075 +0.22, 053 +0.20, 028 +0.18, 048 +0.14,
+052 +0.13, 006 +0.12. Everything not listed is under 0.1 dB. The full
+enumeration is one command away:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/bank.csv
+```
+
+### The three parts do not stand alone
+
+| patch | metric | before | D1 only | D2 only | D3 only | D1+D2 | **all three** |
+|---|---|--:|--:|--:|--:|--:|--:|
+| 069 Oboe | level | 10.99 | 5.54 | *13.77* | 10.99 | 6.18 | **6.18** |
+| 069 Oboe | envelope | 8.53 | 5.43 | *9.89* | 8.53 | 4.78 | **4.78** |
+| 029 E Guitar 3 | envelope | 9.08 | 9.08 | **1.24** | 9.08 | 1.24 | **1.24** |
+| 117 Perc1 | level | 6.06 | 6.06 | 6.06 | **0.01** | 6.06 | **0.01** |
+| 002 Piano | envelope | 4.09 | *7.77* | *4.92* | *7.41* | *5.91* | **2.10** |
+| 004 Honky Piano | envelope | 5.12 | 5.15 | 5.20 | *5.49* | 3.96 | **0.95** |
+
+**002 Piano is the decisive row.** Every partial correction makes it worse — the
+triangle alone raises it to 7.77 and would have created a new bank outlier — and
+only the complete correction improves it. D2 applied alone regresses 069, the
+patch that started this. Three phase errors compose: removing one at a time
+moves the relationship to a different wrong place. The parts are separable for
+attribution and not for shipping.
+
+### The trap, in the form it took here
+
+**No existing test could see any of the three**, and one of them is a good test
+that *cannot* catch this by construction.
+`test_pulse_at_half_width_is_a_square` checks the one width where D3 is
+invisible: a square is its own duty complement.
+`test_oscillator_phase_offset_is_between_the_oscillators` asserts that half a
+turn between two same-pitch pulses cancels the fundamental — correct, external,
+and blind to D2, **because cancellation depth is an even function of phase**.
+Any test built on "how far did this harmonic drop" is sign-blind, which is
+exactly how a sign survived being measured.
+
+The three pins added to `tests/dsp` are therefore signed and anchored on the
+reference's own numbers: the triangle and the pulse against the folded cycles
+printed above, and the offset as a *signed* phase difference between the two
+oscillators' own fundamentals. Reverting each of the three source lines fails
+exactly one of them.
+
+### Still open
+
+- **033 Acoustic Bass's +4.58 dB envelope regression**, located to D2 and not
+  explained.
+- **069's remaining +6.18 dB**, which is not the oscillator. With the filter
+  opened it falls to +0.92, and with a *static* cutoff at 45 to +0.75, so the
+  residual is the filter **envelope** at a negative amount over a low cutoff —
+  not the cutoff table and not the resonance. 069 belongs to a woodwind level
+  cluster that is now the bank's leading group: 083 (9.86), 071 (8.56), 032
+  (7.04), 073 (6.27), 069 (6.18), 070 (5.73), 077 (4.45). They share a filter
+  configuration, not an oscillator one.
+- **119 SynDrum's stereo width**, and 089/111 with it. Untouched by this change.
+- **The bank-wide width deficit** (signed mean −0.0246), the known chorus and
+  delay energy shortfall.
+
+### A correction to this document's own record
+
+The spectral figures quoted in different sections here are not inconsistent, and
+one earlier report was wrong to flag them: 6.7597 over all 123 rows and 6.5399
+over the 119 with `spectral_valid=true` are the same number under two
+denominators (6.7597 × 119 / 123 = 6.5399). Where a spectral mean appears, it is
+the 119 valid rows unless it says otherwise.

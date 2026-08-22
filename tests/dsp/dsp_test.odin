@@ -1012,6 +1012,111 @@ test_pulse_at_half_width_is_a_square :: proc(t: ^testing.T) {
 	testing.expectf(t, abs(low + 0.5) < 0.05, "square low was %v, expected -0.5", low)
 }
 
+// The triangle crosses zero rising at phase 0 and peaks a quarter turn later.
+//
+// Checked against the reference's own render rather than against arithmetic:
+// folding 100 cycles of `Synth1 VST64.dll` at note 60 reads 0.0055, 0.2230,
+// -0.0056, -0.2230 at phases 0, 0.25, 0.5 and 0.75, which divided by its own
+// peak is 0.02, 1, -0.03, -1. This engine started at the trough instead, a
+// quarter turn late, and projecting the fundamental out of both renders agrees:
+// -0.2507 turns for the reference against -0.4954 for ours.
+//
+// The table is what makes the check signed, and signed is the whole point. A
+// quarter turn the other way gives 0, -1, 0, +1: the same magnitude spectrum,
+// the same RMS, the same everything a single-oscillator metric can see, and the
+// wrong waveform. Asserting `value(0) == 0` on its own would accept it.
+@(test)
+test_triangle_starts_at_its_rising_zero_crossing :: proc(t: ^testing.T) {
+	// The reference's amplitudes at the four quarter points and the peak they
+	// are normalised by, both from the same folded render, so its gain divides
+	// out and only the shape is compared.
+	ref := [4]f32{0.0055, 0.2230, -0.0056, -0.2230}
+	ref_peak := f32(0.2230)
+
+	o: dsp.Oscillator
+	dsp.oscillator_init(&o, 11)
+	dsp.oscillator_set_frequency(&o, 100.0, SR)
+
+	for q in 0 ..< 4 {
+		phase := f32(q) * 0.25
+		dsp.oscillator_set_phase(&o, phase)
+		got := dsp.oscillator_value(&o, .Triangle, 0.5)
+		want := ref[q] / ref_peak
+		testing.expectf(t, abs(got - want) < 0.05,
+			"triangle at phase %v gave %v; the reference's folded cycle says %v",
+			phase, got, want)
+	}
+
+	// Rising through phase 0, not falling. The reference climbs from 0.0055 to
+	// 0.2230 over the first quarter; the two zero crossings on their own cannot
+	// tell the two directions apart.
+	dsp.oscillator_set_phase(&o, 0.05)
+	early := dsp.oscillator_value(&o, .Triangle, 0.5)
+	testing.expectf(t, early > 0.1,
+		"the triangle should be rising just after phase 0, got %v", early)
+}
+
+// The pulse is high for `1 - pw` of its cycle, not for `pw`.
+//
+// Anchored on the reference's own folded render at stored width 29: high
+// +0.0271 for 88.6% of the cycle, low -0.2113 for the remaining 11.4%. The two
+// levels sit in the ratio the DC-free two-saw form predicts for that duty, so
+// the fraction and the ratio pin the duty from two directions.
+//
+// No magnitude metric can see this. |sin(pi*k*d)| is symmetric in d <-> 1-d, so
+// both duties have identical magnitude spectra; on a single pulse the spectral
+// error read 0.18 dB while the null read -0.08 dB. It shows only in phase, in
+// mixes and in the null -- 117 Perc1's level error went from 6.06 dB to 0.01 dB
+// on this one line -- which is why the check is on the shape in time and not on
+// a spectrum. `test_pulse_at_half_width_is_a_square` above passes either way and
+// always would: a square is its own duty complement.
+@(test)
+test_pulse_is_high_for_the_complement_of_its_width :: proc(t: ^testing.T) {
+	p := default_patch()
+	// The width the reference was folded at, taken through the same binding a
+	// patch file goes through, so the stored number and the shape are pinned
+	// together rather than separately.
+	p.values[8] = 29
+	pw := engine.bind_patch(p).pulse_width
+	testing.expectf(t, abs(pw - 0.114) < 0.005,
+		"stored width 29 should be an 11.4%% duty, got %v", pw)
+
+	o: dsp.Oscillator
+	dsp.oscillator_init(&o, 13)
+	// 100 Hz divides the sample rate, so a whole number of cycles fits the scan
+	// and the fraction below is the waveform's own.
+	dsp.oscillator_set_frequency(&o, 100.0, SR)
+	period := int(SR / 100.0)
+
+	above := 0
+	total := period * 8
+	for _ in 0 ..< total {
+		dsp.oscillator_advance(&o)
+		if dsp.oscillator_value(&o, .Pulse, pw) > 0 {above += 1}
+	}
+	fraction := f32(above) / f32(total)
+	testing.expectf(t, abs(fraction - (1.0 - pw)) < 0.01,
+		"the pulse was high for %v of its cycle; the reference is high for %v",
+		fraction, 1.0 - pw)
+
+	// The two plateau levels, read away from both edges where the PolyBLEP
+	// correction is zero, against the reference's own two levels.
+	dsp.oscillator_set_phase(&o, 0.5)
+	high := dsp.oscillator_value(&o, .Pulse, pw)
+	dsp.oscillator_set_phase(&o, 1.0 - 0.5 * pw)
+	low := dsp.oscillator_value(&o, .Pulse, pw)
+	testing.expectf(t, high > 0 && low < 0,
+		"the plateaux should straddle zero, got %v and %v", high, low)
+
+	// 0.0271 / -0.2113 = -0.1283 in the reference. Swapping the duty makes this
+	// -7.8, so the ratio is a wide margin rather than a fine one.
+	want_ratio := f32(0.0271 / -0.2113)
+	ratio := high / low
+	testing.expectf(t, abs(ratio - want_ratio) < 0.01,
+		"the plateaux are in the ratio %v; the reference's folded cycle says %v",
+		ratio, want_ratio)
+}
+
 // The top of parameter 8's range is a square, and its middle is a quarter duty.
 // This is the mapping the harmonic measurement pinned down, and getting it wrong
 // by the factor of two it used to be wrong by changes the timbre of every pulse
@@ -2101,6 +2206,98 @@ test_oscillator_phase_offset_is_between_the_oscillators :: proc(t: ^testing.T) {
 		apart_h1 < apart_h2 * 0.25,
 		fmt.tprintf("half a turn apart, h1 %.6f was not cancelled against h2 %.6f", apart_h1, apart_h2),
 	)
+}
+
+// One frequency of a DFT by direct projection, returning magnitude and a
+// *signed* phase in turns.
+//
+// Hann-windowed because the render is not a whole number of cycles at this
+// frequency: without a window the harmonics leak into the projection and move
+// its phase, which is the one quantity being read here.
+fundamental_phase :: proc(x: []f32, hz, sample_rate: f64) -> (mag: f64, turns: f64) {
+	re, im := 0.0, 0.0
+	n := f64(len(x))
+	for v, i in x {
+		w := 0.5 - 0.5 * math.cos(2.0 * math.PI * f64(i) / n)
+		a := 2.0 * math.PI * hz * f64(i) / sample_rate
+		re += f64(v) * w * math.cos(a)
+		im -= f64(v) * w * math.sin(a)
+	}
+	mag = math.sqrt(re * re + im * im) / n
+	turns = math.atan2(im, re) / (2.0 * math.PI)
+	return
+}
+
+// Oscillator 2's free-running start phase, as a signed quantity.
+//
+// The defect here was a sign, and how it survived being "measured" is worth
+// keeping in front of whoever edits this next. The old 0.440 was fitted from how
+// far each harmonic is pulled down when the two oscillators are mixed, and
+// cancellation between two same-pitch oscillators goes as cos(2*pi*k*phi), which
+// is even: no attenuation can tell +phi from -phi.
+// `test_oscillator_phase_offset_is_between_the_oscillators` above is a good test
+// built exactly that way, and it cannot fail on this no matter how wrong the
+// sign is. So this one projects each oscillator's own fundamental and subtracts
+// the two phases, which is signed by construction. Do not substitute a
+// cancellation depth back in.
+//
+// Two things are checked, and they are checked against different authorities on
+// purpose. That the rendered offset matches the constant is a wiring check --
+// only oscillator 2 carries it, in the right direction -- and it is internal, so
+// it proves nothing about the value. That the constant is 0.5623 is the external
+// one: read off `Synth1 VST64.dll` by placing the falling edges of the first
+// cycles of a fast-attack saw and extrapolating back to note-on, at notes 36 to
+// 84 over 48 kHz and 96 kHz, standard deviation 0.0003.
+@(test)
+test_free_running_oscillator_two_starts_a_measured_phase_ahead :: proc(t: ^testing.T) {
+	N :: 24000
+
+	base := default_patch()
+	base.values[0] = 1 // oscillator 1: saw
+	base.values[1] = 1 // oscillator 2: saw
+	base.values[2] = 64 // same pitch
+	base.values[3] = 66 // no oscillator 2 fine tune, display "00 cent"
+	base.values[4] = 1 // oscillator 2 tracks the keyboard, so both are at one pitch
+	base.values[6] = 0 // no sync
+	base.values[7] = 0 // no ring modulation
+	base.values[19] = 127 // filter open
+	base.values[21] = 63 // no filter envelope
+	base.values[25] = 0 // an instant attack, so nothing shapes the first cycles
+	base.values[26] = 127
+	base.values[27] = 127 // and a flat sustain, so nothing decays across the window
+	base.values[57] = 0 // LFO 1 off
+	base.values[72] = 64 // no global fine tune
+	base.values[73] = 0 // unison off
+	base.values[91] = 0 // the phase is *not* fixed: this is the free-running case
+	base.values[95] = 0 // sub oscillator silent
+
+	one := base
+	one.values[5] = 0 // "100 : 0" -- oscillator 1 alone
+	two := base
+	two.values[5] = 127 // "0 : 100" -- oscillator 2 alone
+
+	a := make([]f32, N)
+	defer delete(a)
+	b := make([]f32, N)
+	defer delete(b)
+	render_phase_patch(one, a)
+	render_phase_patch(two, b)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+	mag_a, turns_a := fundamental_phase(a, f0, f64(SR))
+	mag_b, turns_b := fundamental_phase(b, f0, f64(SR))
+	testing.expect(t, mag_a > 1.0e-4 && mag_b > 1.0e-4, "a render was silent")
+
+	delta := turns_b - turns_a
+	for delta < 0 {delta += 1.0}
+	for delta >= 1.0 {delta -= 1.0}
+	testing.expectf(t, abs(delta - f64(engine.OSC_PHASE_FREE_TURNS)) < 0.002,
+		"oscillator 2 renders %.4f turns ahead of oscillator 1, not the %.4f it is set to",
+		delta, engine.OSC_PHASE_FREE_TURNS)
+
+	testing.expectf(t, abs(engine.OSC_PHASE_FREE_TURNS - 0.5623) < 0.001,
+		"OSC_PHASE_FREE_TURNS is %v; the reference's start phase reads 0.5623 +/- 0.001",
+		engine.OSC_PHASE_FREE_TURNS)
 }
 // ---------------------------------------------------------------------------
 // FM direction

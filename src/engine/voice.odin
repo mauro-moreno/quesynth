@@ -189,16 +189,18 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			} else {
 				// A voice with no history, and parameter 91 not fixing anything. The
 				// reference is not silent about this case even though it is nominally
-				// free-running: measured at three notes an octave apart, oscillator 2
-				// sits a fixed distance behind oscillator 1, and the reading does not
-				// move with pitch.
+				// free-running: oscillator 2 sits a fixed distance behind oscillator
+				// 1, and the reading does not move with pitch or with sample rate.
 				//
-				// It is fitted from how far each harmonic is pulled down against the
-				// same patch with the phase fixed and no offset. Two harmonics agree:
-				// the fundamental comes back 14.5 dB down, which needs 158 degrees,
-				// and the third comes back 5.0 dB down, which at 158 degrees predicts
-				// 5.4. Starting both oscillators at zero instead -- which is what this
-				// did before -- is the one relationship that maximises every partial.
+				// The distance is read off the reference's own first cycles -- the
+				// falling edges of a fast-attack saw, extrapolated back to note-on --
+				// at five notes over four octaves and two sample rates. See
+				// OSC_PHASE_FREE_TURNS in params.odin for the method and the figure.
+				//
+				// It used to be fitted from how far each harmonic is pulled down,
+				// which gave the right magnitude and the wrong sign, because
+				// attenuation between two same-pitch oscillators is an even function
+				// of the offset and cannot distinguish one from the other.
 				//
 				// The caveat is recorded rather than hidden: this is the offset after a
 				// fresh load and a fixed silence, which is the condition the null test

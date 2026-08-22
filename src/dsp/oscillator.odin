@@ -183,7 +183,27 @@ oscillator_value :: proc "contextless" (o: ^Oscillator, shape: Waveform, pulse_w
 	case .Triangle:
 		// No discontinuity in the waveform itself, only in its derivative, so
 		// its alias energy falls off fast enough to leave uncorrected.
-		return 1.0 - 4.0 * abs(t - 0.5)
+		//
+		// The quarter turn is measured, not cosmetic. Folding 100 cycles of the
+		// reference's own render at note 60 reads 0.0055, 0.2230, -0.0056,
+		// -0.2230 at phases 0, 0.25, 0.5 and 0.75: it crosses zero rising at
+		// phase 0 and peaks a quarter turn later. This engine started at the
+		// trough instead, which is exactly a quarter turn late, and projecting
+		// the fundamental out of both renders says the same -- -0.2507 turns for
+		// the reference against -0.4954 for ours, a difference of -0.2500 once
+		// the +0.0053 of render alignment common to every shape is removed.
+		//
+		// Do not simplify the offset away. A triangle playing alone does not
+		// carry it in its magnitude spectrum, so it is invisible there, and it
+		// wrecks every patch that mixes a triangle against anything at the same
+		// pitch. 069 Oboe mixes a triangle and a saw in unison at 48:52 and came
+		// out 10.99 dB loud and 0.38 octaves dark at once, which no gain error
+		// and no cutoff error can be together.
+		u := t + 0.25
+		if u >= 1.0 {
+			u -= 1.0
+		}
+		return 1.0 - 4.0 * abs(u - 0.5)
 
 	case .Saw:
 		v := 1.0 - 2.0 * t
@@ -192,7 +212,7 @@ oscillator_value :: proc "contextless" (o: ^Oscillator, shape: Waveform, pulse_w
 		return v
 
 	case .Pulse:
-		// The difference of two saws, one delayed by the pulse width.
+		// The difference of two saws, one delayed against the other.
 		//
 		// Not a naive `t < pw ? 1 : -1` with two corrections bolted on. That form
 		// carries a DC offset of 2*pw - 1, which is nearly the whole waveform at
@@ -205,13 +225,31 @@ oscillator_value :: proc "contextless" (o: ^Oscillator, shape: Waveform, pulse_w
 		// Two saws differenced are DC-free by construction, whatever the width.
 		// It is also what the reference does; its author's description of the
 		// oscillator section says the pulse has no wavetable of its own and is
-		// made by shifting a saw against itself, the shift being the width.
+		// made by shifting a saw against itself, the shift setting the width.
 		//
 		// Each saw carries its own PolyBLEP, so both edges stay band-limited and
 		// the signs work out without special-casing: the delayed saw is
 		// subtracted, and so is its correction.
 		pw := clamp32(pulse_width, 0.01, 0.99)
-		t2 := t - pw
+		// The shift is `1 - pw`, not `pw`. The reference's pulse is high for
+		// `1 - pw` of the cycle and low for `pw`: folding 100 cycles of its own
+		// render at stored width 29 reads high +0.0271 for 88.6% of the cycle
+		// and low -0.2113 for the remaining 11.4%, two levels in exactly the
+		// ratio the DC-free form predicts for that duty.
+		//
+		// No magnitude metric can see this. |sin(pi*k*d)| is symmetric in
+		// d <-> 1-d, so both duties have identical magnitude spectra; on a
+		// single pulse the spectral error read 0.18 dB while the null read
+		// -0.08 dB. It shows only in phase, in mixes and in the null. 117 Perc1,
+		// which docs/null-test.md names the bank's historically worst patch,
+		// went from 6.06 dB of level error to 0.01 dB on this line alone.
+		//
+		// The vendor manual points the other way, and is describing the knob
+		// rather than the polarity: "p/w -- Set the pulse width of the pulse
+		// wave. Turn left to narrow the width, turn right to widen it." At
+		// stored 29, left of centre, what is narrow in the reference is the
+		// negative excursion.
+		t2 := t - (1.0 - pw)
 		if t2 < 0 {
 			t2 += 1.0
 		}

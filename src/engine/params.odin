@@ -524,11 +524,33 @@ Engine_Params :: struct {
 // Where oscillator 2 starts relative to oscillator 1 when parameter 91 is not
 // fixing the phase, in turns.
 //
-// Measured. See the note at the use site in voice.odin: 158 degrees, fitted from
-// two harmonics and confirmed to be the same at three notes an octave apart.
+// Read directly off the reference's start phase, not fitted from a
+// cancellation depth. Render a descending saw with an instant amplitude
+// attack, filter open and no effects; place the falling edge of each of the
+// first 24 cycles to sub-sample precision, fit a line through them, and
+// extrapolate back to note-on. Do it with oscillator 1 alone and with
+// oscillator 2 alone, and the difference is the offset. Nine readings at notes
+// 36, 48, 60, 72 and 84 across 48 kHz and 96 kHz give 0.56230, standard
+// deviation 0.00030. The same method reads this engine's own constant back to
+// within 0.0008, so it is unbiased far below the last digit written here.
+// Projecting the fundamental's phase out of two same-pitch oscillators agrees
+// independently: 0.5623 at notes 48, 60 and 72, over saw, pulse and triangle
+// pairs.
 //
-// Kept at the measured figure rather than tuned against the null test. 0.480 was
-// tried across the whole bank and is indistinguishable -- envelope error 11.19
-// against 11.25 dB, spectral median 11.74 against 11.69 -- so there is no evidence
-// to prefer anything over the reading.
-OSC_PHASE_FREE_TURNS :: f32(0.440)
+// It does not move with note or with sample rate, so it is a fixed phase and
+// not a fixed time or sample count. A fixed sample offset would have halved
+// between 48 and 96 kHz; it did not move at all.
+//
+// The previous 0.440 came from fitting how far each harmonic is pulled down --
+// "the fundamental comes back 14.5 dB down, which needs 158 degrees". The
+// magnitude was right and the sign was never determined: cancellation between
+// two same-pitch oscillators goes as cos(2*pi*k*phi), which is even, so no
+// attenuation fit can tell +phi from -phi. Do not put one back in its place.
+//
+// Written at the precision the reading carries and no further. 9/16 = 0.5625
+// sits inside the interval and cannot be told apart from it -- over the whole
+// bank the two agree to four decimals on every aggregate -- so it stays a
+// hypothesis rather than the value. 0.5600, the exact sign flip of the old
+// 0.440, is about seven standard deviations out and is ruled out by the
+// reading alone, with no null depth involved in saying so.
+OSC_PHASE_FREE_TURNS :: f32(0.5623)
