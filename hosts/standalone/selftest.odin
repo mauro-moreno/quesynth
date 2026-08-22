@@ -48,7 +48,10 @@ run_selftest :: proc(patch_path, output_path: string) -> int {
 		fmt.eprintfln("error: cannot parse %s", patch_path)
 		return 1
 	}
-	if owned {defer patch.destroy_patch(parsed)}
+	// At this scope, not nested in the `if`: a defer inside a block runs at the
+	// end of that block, which would free the name while the patch is still in
+	// use below.
+	defer if owned {patch.destroy_patch(parsed)}
 
 	eng: engine.Engine
 	engine.engine_load_patch(&eng, parsed, f32(SELFTEST_SAMPLE_RATE))

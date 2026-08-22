@@ -68,44 +68,99 @@ trim_ascii_space :: proc(data: []byte) -> []byte {
 }
 
 
+// Is this line one of the file's `index,value` records?
+//
+// Tested rather than assumed, because the header above the records is not
+// always there. Knowing what a record looks like is what lets the name, the
+// colour and the version each be optional without any of them swallowing a
+// record by accident.
+sy1_is_record :: proc(line: []byte) -> bool {
+	trimmed := trim_ascii_space(line)
+	if len(trimmed) == 0 {return false}
+
+	comma := -1
+	for c, i in trimmed {
+		if c == ',' {
+			if comma >= 0 {return false}
+			comma = i
+		}
+	}
+	if comma <= 0 || comma >= len(trimmed)-1 {return false}
+
+	for i in 0 ..< comma {
+		if trimmed[i] < '0' || trimmed[i] > '9' {return false}
+	}
+	value := trimmed[comma+1:]
+	if value[0] == '-' || value[0] == '+' {
+		value = value[1:]
+	}
+	if len(value) == 0 {return false}
+	for c in value {
+		if c < '0' || c > '9' {return false}
+	}
+	return true
+}
+
 parse_sy1 :: proc(data: []byte) -> (patch: Patch, err: Sy1_Error) {
 	for i in 0 ..< PARAMETER_COUNT {
 		patch.values[i] = PARAMETERS[i].default
 	}
 
-	line, pos := line_end(data, 0)
-	if has_prefix(line, "Synth1 ") {
-		patch.name = bytes_string(line[len("Synth1 "):])
-	} else if len(line) > 0 {
-		// The checked-in factory bank has legacy files whose first line is
-		// already the name; keep accepting that measured form.
-		patch.name = bytes_string(line)
-	} else {
+	if len(trim_ascii_space(data)) == 0 {
 		return {}, .Missing_Header
 	}
 
-	if pos >= len(data) {
-		return {}, .Malformed_Color
+	// The three header lines are each optional, and each is claimed only by a
+	// line that is actually one of them.
+	//
+	// Every one of them is missing from real banks. Synth1's own factory files
+	// name themselves on the first line with no `Synth1 ` prefix -- 127 of the
+	// 128 in soundbank00 do -- and the older third-party banks have no `color=`
+	// or `ver=` line at all: 386 of the 16698 patches in the collection this
+	// project tests against are name-then-records, some of them with only the
+	// first fifty parameters that version had. A reader that insists on the
+	// full header refuses all of them, and the reference plugin loads them.
+	line, pos := line_end(data, 0)
+	switch {
+	case has_prefix(line, "Synth1 "):
+		patch.name = bytes_string(line[len("Synth1 "):])
+	case sy1_is_record(line) || has_prefix(line, "color=") || has_prefix(line, "ver="):
+		// Nameless: this line is content, so it is not consumed here.
+		pos = 0
+	case len(trim_ascii_space(line)) > 0:
+		patch.name = bytes_string(line)
+	case:
+		// A leading blank line names nothing and is not a record either.
+		break
 	}
-	line, pos = line_end(data, pos)
-	if !has_prefix(line, "color=") {
-		return {}, .Malformed_Color
-	}
-	patch.color = bytes_string(line[len("color="):])
 
-	if pos >= len(data) {
-		return {}, .Malformed_Version
+	if pos < len(data) {
+		resume := pos
+		line, pos = line_end(data, pos)
+		if has_prefix(line, "color=") {
+			patch.color = bytes_string(line[len("color="):])
+		} else {
+			pos = resume
+		}
 	}
-	line, pos = line_end(data, pos)
-	if !has_prefix(line, "ver=") {
-		return {}, .Malformed_Version
+
+	// No `ver=` line leaves the version at zero, which `upgrade_pre_107` reads
+	// as "unknown" and therefore converts nothing. That is deliberate: a file
+	// that does not say which format it is in cannot be converted out of it,
+	// and this project does not apply a law it has not measured.
+	if pos < len(data) {
+		resume := pos
+		line, pos = line_end(data, pos)
+		if has_prefix(line, "ver=") {
+			version, ok := strconv.parse_int(bytes_string(line[len("ver="):]), 10)
+			if !ok {
+				return {}, .Malformed_Version
+			}
+			patch.version = version
+		} else {
+			pos = resume
+		}
 	}
-	version_text := bytes_string(line[len("ver="):])
-	version, ok := strconv.parse_int(version_text, 10)
-	if !ok {
-		return {}, .Malformed_Version
-	}
-	patch.version = version
 
     for pos < len(data) {
         line, pos = line_end(data, pos)

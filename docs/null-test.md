@@ -96,14 +96,43 @@ This was initially misread as a cumulative instantiation limit, because two
 full-bank runs stopped after exactly 94 patches. They stopped there because `095`
 is the 95th patch.
 
-A segfault inside a loaded DLL takes the process with it, so the defence is not
-to catch it but to lose nothing when it happens: rows are appended to the CSV as
-each patch completes, and `--skip` and `--offset` step over a fatal patch.
+**It is the arpeggiator, and it is not this host's doing.** Two probes narrow it:
+
+- `s1probe paramcrash <patch.sy1>` restores one parameter at a time to the value
+  the plugin's own factory chunk holds and renders. Of the twenty-eight
+  parameters where `095` differs from the factory state, exactly one restoration
+  survives: parameter 59, the arpeggiator switch. Every other one still dies.
+- `s1probe hostprobe <patch.sy1>` varies what the host does, one thing per case,
+  each in a child process: `audioMasterTempoAt` answered 0 or BPM×10000,
+  `audioMasterWantMidi` and `audioMasterProcessEvents` answered 0 or 1, the
+  transport claimed rolling or stopped, an empty `effProcessEvents` dispatched
+  before every block or not at all, the retained event list zeroed after each
+  dispatch, blocks of 64, 512 and 1024, and the state chunk pushed before the
+  resume, after it, or with a suspend-and-resume cycle behind it. **All eleven
+  die.** On a patch with the arpeggiator off, all eleven render to the same peak
+  to four decimal places, so none of them is changing the audio either.
+
+One of those cases has a lesson in it. `empty-events-per-block` appeared to fix
+the crash on the first run — because dispatching the empty list before the first
+block overwrote the note-on, so the reference rendered silence, and a probe that
+counted "did not crash" as success called that a pass. That is the failure mode
+CONTRIBUTING.md names, in a new costume: the probe was measuring its own input.
+It now fails a case whose render is silent, and `empty-events-per-block` dies
+with the rest.
+
+So the fault is inside a twenty-year-old binary this project cannot patch, and
+the defence is to lose nothing when it happens. `compare` renders **each patch in
+its own process by default** for any run of more than one: a patch that kills the
+reference costs its own row and the run finishes. Rows are appended to the CSV as
+each patch completes, and the summary names the casualties.
 
 ```
-build/s1probe.exe compare ext/synth1/Synth1/soundbank00 \
-    --skip 095.sy1,098.sy1,100.sy1,101.sy1,106.sy1 --csv build/nulltest.csv
+build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/nulltest.csv
 ```
+
+`--skip` and `--offset` still work, and are no longer the only defence.
+`--no-isolate` puts the render back in this process, which is what a debugger
+attached to the crash wants.
 
 ## Reading the aggregates
 

@@ -71,7 +71,11 @@ main :: proc() {
 		fmt.eprintfln("error: cannot parse %s", patch_path)
 		os.exit(1)
 	}
-	if owned {defer patch.destroy_patch(parsed)}
+	// Not `if owned {defer ...}`: a defer inside a block runs at the end of
+	// *that block*, so the name would be freed here and read below. The name is
+	// wanted at the end of this procedure, so the release has to be deferred at
+	// this scope, guarded rather than nested.
+	defer if owned {patch.destroy_patch(parsed)}
 
 	eng: engine.Engine
 	engine.engine_load_patch(&eng, parsed, f32(SAMPLE_RATE))

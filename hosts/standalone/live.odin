@@ -166,7 +166,10 @@ live_load_patch :: proc(patch_path: string) -> (parsed: patch.Patch, name: strin
 		fmt.eprintfln("error: cannot parse %s", patch_path)
 		return {}, "", false
 	}
-	if owned {defer patch.destroy_patch(parsed)}
+	// Deliberately not `if owned {defer ...}`: a defer inside a block runs at
+	// the end of that block, which would free the cloned name one line before
+	// it is read.
+	defer if owned {patch.destroy_patch(parsed)}
 	// Only `values` is read from here on -- `bind_patch` never looks at the
 	// name or the colour -- so copying the name is enough to make the struct
 	// safe to keep after `data` goes away.

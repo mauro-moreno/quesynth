@@ -105,7 +105,25 @@
     return out;
   }
 
+  // Is this line one of the file's `index,value` records?
+  //
+  // The same test `sy1_is_record` makes in src/patch/sy1.odin, and for the same
+  // reason: the header above the records is optional, so telling a header line
+  // from a record is what lets each part of it be missing.
+  function isRecord(line) {
+    var parts = line.trim().split(",");
+    if (parts.length !== 2) return false;
+    return /^[0-9]+$/.test(parts[0].trim()) && /^[-+]?[0-9]+$/.test(parts[1].trim());
+  }
+
   // Parse one `.sy1`. Returns { name, version, values } or throws.
+  //
+  // All three header lines are optional. Synth1's own factory files name
+  // themselves with no `Synth1 ` prefix, and older third-party banks have no
+  // `color=` or `ver=` line at all -- 386 of the 16698 patches this project
+  // tests against are name-then-records. See the note in sy1.odin, which this
+  // has to keep agreeing with: tools/sy1check compares the two readers over
+  // every patch in a bank and a disagreement is a build failure.
   function parse(bytes, defaults) {
     var lines = toText(bytes).split(/\r\n|\n|\r/);
     if (!lines.length) throw new Error("empty file");
@@ -114,20 +132,35 @@
     var present = [];
     for (var i = 0; i < values.length; i++) present.push(false);
 
-    var name = lines[0];
-    if (name.indexOf("Synth1 ") === 0) {
-      name = name.slice("Synth1 ".length);
-    } else if (!name.length) {
-      throw new Error("not a .sy1 file");
+    var name = "";
+    var at = 0;
+    var first = lines[0];
+    if (first.indexOf("Synth1 ") === 0) {
+      name = first.slice("Synth1 ".length);
+      at = 1;
+    } else if (isRecord(first) || first.indexOf("color=") === 0 || first.indexOf("ver=") === 0) {
+      // Nameless: this line is content.
+      at = 0;
+    } else if (first.trim().length) {
+      name = first;
+      at = 1;
+    } else {
+      at = 1;
     }
 
-    if (lines.length < 3) throw new Error("not a .sy1 file");
-    if (lines[1].indexOf("color=") !== 0) throw new Error("not a .sy1 file");
-    if (lines[2].indexOf("ver=") !== 0) throw new Error("not a .sy1 file");
-    var version = parseInt(lines[2].slice("ver=".length), 10);
-    if (isNaN(version)) throw new Error("not a .sy1 file");
+    if (at < lines.length && lines[at].indexOf("color=") === 0) at++;
 
-    for (var l = 3; l < lines.length; l++) {
+    // No `ver=` leaves the version at zero, which upgradePre107 reads as
+    // "unknown" and therefore converts nothing.
+    var version = 0;
+    if (at < lines.length && lines[at].indexOf("ver=") === 0) {
+      version = parseInt(lines[at].slice("ver=".length), 10);
+      if (isNaN(version)) throw new Error("not a .sy1 file");
+      at++;
+    }
+
+    var seen = 0;
+    for (var l = at; l < lines.length; l++) {
       var line = lines[l].trim();
       if (!line.length) continue;
       var parts = line.split(",");
@@ -140,7 +173,12 @@
       }
       values[index] = value;
       present[index] = true;
+      seen++;
     }
+
+    // A file of nothing but a name is not a patch. Checked because the header
+    // no longer proves the format on its own.
+    if (!seen) throw new Error("not a .sy1 file");
 
     upgradePre107(values, present, version);
     return { name: name.trim(), version: version, values: values };

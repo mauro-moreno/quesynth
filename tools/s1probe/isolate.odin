@@ -87,15 +87,20 @@ run_isolated :: proc(exe, dll, patch_path: string, opt: Compare_Options) -> (u32
 
 	strings.write_string(&b, "--child ")
 
-	command := strings.to_string(b)
+	return spawn_and_wait(strings.to_string(b))
+}
+
+// Run a command line to completion and return its exit code.
+//
+// Handles are inherited, so a child's rows land in the parent's output in the
+// order they are produced and the table reads as one run.
+spawn_and_wait :: proc(command: string) -> (u32, bool) {
 	wide := win.utf8_to_wstring(command)
 
 	startup: win.STARTUPINFOW
 	startup.cb = size_of(win.STARTUPINFOW)
 	info: win.PROCESS_INFORMATION
 
-	// Handles are inherited, so the child's rows land in the parent's output in
-	// the order they are produced and the table reads as one run.
 	created := win.CreateProcessW(nil, wide, nil, nil, true, 0, nil, nil, &startup, &info)
 	if !created {
 		return 0, false

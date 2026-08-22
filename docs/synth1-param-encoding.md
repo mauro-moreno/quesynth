@@ -240,3 +240,39 @@ no editor open: `numPrograms` stays 1 and the parameters do not move.
 
 That route is still dead, but it is no longer needed: `effSetChunk` reaches the
 same loader without an editor.
+
+## What a `.sy1` file actually looks like
+
+Measured over 16,698 patches: Synth1's own factory bank, and the 175 third-party
+banks in the shared collection. Every one of these forms is a file the reference
+loads, so all of them are files this project has to read.
+
+```
+Synth1 <name>      the name line, and the `Synth1 ` prefix is optional
+color=<name>       optional
+ver=<number>       optional
+<index>,<value>    one per parameter, in no particular order
+```
+
+**The prefix is the exception, not the rule.** 127 of the 128 files in
+`soundbank00` open with the bare patch name; only `001.sy1` says `Synth1
+brastring`. A reader keyed on the literal word therefore rejects almost the
+whole bank — which this project's `detect_format` did, while its own `parse_sy1`
+read those same files perfectly. The two disagreeing was invisible from either
+side: the parser's tests passed, and the sniffer's answer was never compared
+against the parser's.
+
+**`color=` and `ver=` are both absent from older banks.** 386 of the 16,698 are
+name-then-records, some carrying only the first fifty parameters that version of
+the plugin had. Missing records take the reference's own default, which is what
+`parse_sy1` pre-fills, so a fifty-parameter file loads as a modern patch with
+forty-nine defaults.
+
+A file with no `ver=` is left unconverted. The pre-1.07 conversion applies to
+files that *say* they are pre-1.07; a file that does not say cannot be converted
+by a law nothing measured, and this project does not guess one. See the note
+above `upgrade_pre_107` in `src/patch/sy1.odin`.
+
+`tools/patchprobe` is what these counts come from: it takes every patch in a
+tree through sniff, parse, bind and render, and reports the stage each one
+reached rather than a pass or a fail.

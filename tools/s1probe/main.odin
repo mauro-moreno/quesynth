@@ -84,16 +84,28 @@ host_cb :: proc "c" (e: ^AEffect, opcode: i32, index: i32, value: int, ptr: rawp
 		g_time.time_sig_numerator = 4
 		g_time.time_sig_denominator = 4
 		g_time.flags =
-			VST_TRANSPORT_PLAYING |
 			VST_NANOS_VALID |
 			VST_PPQ_VALID |
 			VST_TEMPO_VALID |
 			VST_BARS_VALID |
 			VST_TIMESIG_VALID
+		if g_host_answers.transport_playing {
+			g_time.flags |= VST_TRANSPORT_PLAYING
+		}
 		return int(uintptr(rawptr(&g_time)))
 	case .CanDo:
 		return 1
-	case .Automate, .Idle, .PinConnected, .WantMidi, .ProcessEvents, .TempoAt,
+	// The VST 2.0 way of asking the tempo, and the one the reference's
+	// arpeggiator uses. It is answered in BPM x 10000, which is the convention;
+	// answering zero -- as this host did -- hands the plugin a tempo of nothing
+	// and it dies on its first step. See tools/s1probe/hostprobe.odin.
+	case .TempoAt:
+		return g_host_answers.tempo_at
+	case .WantMidi:
+		return g_host_answers.want_midi
+	case .ProcessEvents:
+		return g_host_answers.process_events
+	case .Automate, .Idle, .PinConnected,
 	     .SizeWindow, .GetInputLatency, .GetOutputLatency, .GetVendorString,
 	     .GetProductString, .GetVendorVersion, .UpdateDisplay, .BeginEdit, .EndEdit:
 		return 0
@@ -122,7 +134,13 @@ dispatch_str :: proc(p: ^Plugin, op: Op, index: i32) -> string {
 // announcement below stays a one-off diagnostic rather than pages of noise.
 g_quiet_load: bool
 
-load :: proc(path: string) -> (p: Plugin, ok: bool) {
+// Open the library and tell it about the world, stopping short of resuming it.
+//
+// Split out of `load` because *when* the state chunk is pushed, relative to
+// `effMainsChanged`, is itself a thing worth probing: a plugin is entitled to
+// size its internal buffers when it is resumed, and a section switched on by a
+// chunk that arrives afterwards has never been prepared. See hostprobe.odin.
+load_suspended :: proc(path: string) -> (p: Plugin, ok: bool) {
 	wpath := win.utf8_to_wstring(path)
 	mod := win.LoadLibraryW(wpath)
 	if mod == nil {
@@ -153,14 +171,32 @@ load :: proc(path: string) -> (p: Plugin, ok: bool) {
 	eff.dispatcher(eff, i32(Op.Open), 0, 0, nil, 0)
 	eff.dispatcher(eff, i32(Op.SetSampleRate), 0, 0, nil, f32(SAMPLE_RATE))
 	eff.dispatcher(eff, i32(Op.SetBlockSize), 0, BLOCK, nil, 0)
-	eff.dispatcher(eff, i32(Op.MainsChanged), 0, 1, nil, 0)
-	eff.dispatcher(eff, i32(Op.StartProcess), 0, 0, nil, 0)
+	return p, true
+}
+
+// Ready to render: the plugin may allocate here, and everything it allocates is
+// sized from what it has been told and from the state it currently holds.
+plugin_resume :: proc(p: ^Plugin) {
+	p.eff.dispatcher(p.eff, i32(Op.MainsChanged), 0, 1, nil, 0)
+	p.eff.dispatcher(p.eff, i32(Op.StartProcess), 0, 0, nil, 0)
+}
+
+plugin_suspend :: proc(p: ^Plugin) {
+	p.eff.dispatcher(p.eff, i32(Op.StopProcess), 0, 0, nil, 0)
+	p.eff.dispatcher(p.eff, i32(Op.MainsChanged), 0, 0, nil, 0)
+}
+
+load :: proc(path: string) -> (p: Plugin, ok: bool) {
+	p, ok = load_suspended(path)
+	if !ok {
+		return {}, false
+	}
+	plugin_resume(&p)
 	return p, true
 }
 
 unload :: proc(p: ^Plugin) {
-	p.eff.dispatcher(p.eff, i32(Op.StopProcess), 0, 0, nil, 0)
-	p.eff.dispatcher(p.eff, i32(Op.MainsChanged), 0, 0, nil, 0)
+	plugin_suspend(p)
 	p.eff.dispatcher(p.eff, i32(Op.Close), 0, 0, nil, 0)
 	win.FreeLibrary(p.mod)
 }
@@ -660,6 +696,14 @@ main :: proc() {
 		target, opt, opt_ok := parse_compare_args(rest)
 		if !opt_ok {usage()}
 		cmd_compare(dll, target, opt)
+	case "hostprobe":
+		patch_path, single_case, args_ok := parse_host_case(rest)
+		if !args_ok {usage()}
+		cmd_hostprobe(dll, patch_path, single_case)
+	case "paramcrash":
+		patch_path, single, args_ok := parse_param_case(rest)
+		if !args_ok {usage()}
+		cmd_paramcrash(dll, patch_path, single)
 	case "summarise", "summarize":
 		if len(rest) < 1 {usage()}
 		cmd_summarise(rest[0])

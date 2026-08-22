@@ -20,8 +20,10 @@
 //     --self          control run: compare the reference against itself
 //     --no-floor      skip the second reference render
 //     --verbose       full per-patch detail instead of one line each
-//     --isolate       render each patch in a child process, so a patch that
-//                     crashes the reference costs one row and not the run
+//     --isolate       render in a child process even for a single patch; this
+//                     is already the default for a run of more than one, so a
+//                     patch that crashes the reference costs one row, not the run
+//     --no-isolate    render in this process, for attaching a debugger to it
 //
 // The interesting output is the summary. Per-patch numbers say which patch is
 // wrong; the aggregates say *what* is wrong, because a mapping error that is
@@ -144,20 +146,33 @@ close_reference :: proc(p: ^Plugin) {
 // crash. It dies about a sixteenth note into the render, which at 120 BPM is
 // exactly where the first arpeggiator step falls.
 //
-// Three host-side explanations were tried and none of them is it: the MIDI
-// event list outliving the dispatch (fixed anyway in main.odin, because the
-// contract says so), a frozen transport, and announcing kVstTransportChanged.
-// Bracketing `processReplacing` with prints puts the fault inside the call, in
-// a twenty-year-old binary this project cannot patch.
+// Fourteen host-side explanations have now been tried and none of them is it.
+// Three by hand -- the MIDI event list outliving the dispatch (fixed anyway in
+// main.odin, because the contract says so), a frozen transport, and announcing
+// kVstTransportChanged -- and eleven by `hostprobe`, which varies one thing per
+// case in a child process: what `audioMasterTempoAt`, `audioMasterWantMidi` and
+// `audioMasterProcessEvents` answer, whether the transport claims to be
+// rolling, whether an empty `effProcessEvents` is dispatched before every
+// block, whether the retained list is zeroed after each dispatch, the block
+// length, and whether the state chunk is pushed before the resume, after it, or
+// with a suspend-and-resume cycle behind it. All of them die, and on a patch
+// with the arpeggiator off all of them render the same peak, so none of them is
+// changing the audio either.
+//
+// `paramcrash` narrows it from the other side: of the twenty-eight parameters
+// where 095 differs from the plugin's own factory chunk, restoring exactly one
+// makes it render, and that one is 59, the arpeggiator switch.
 //
 // This was first misread as a cumulative instantiation limit, because two
 // full-bank runs stopped after exactly 94 patches. They stopped there because
 // 095 is the 95th patch, not because of any count. It was then misread as one
 // bad patch, because 095 is the only one an interrupted run ever reached.
 //
-// So the defence is `--isolate`, which renders each patch in a child process
-// and costs one row instead of the rest of the run. `--skip` and `--offset`
-// still work and still require somebody to have found the bad patches first.
+// So the fault is inside a twenty-year-old binary this project cannot patch,
+// and the defence is isolation -- now the default for any run of more than one
+// patch, rather than a flag somebody has to know to pass. A patch that kills
+// the reference costs its own row. `--skip` and `--offset` still work and are
+// no longer the only thing standing between a bank run and a dead process.
 g_instantiations: int
 
 // Push a parsed patch into the reference through its own state chunk, and
@@ -878,7 +893,11 @@ Compare_Options :: struct {
 	skip:     string,
 	// Render each patch in a child process, so a patch that crashes the
 	// reference costs one row instead of the rest of the run. See isolate.odin.
+	// On for any run of more than one patch; this asks for it on a single one.
 	isolate:  bool,
+	// Off again, for the one case that wants this process to do the rendering:
+	// a debugger attached to the run that is expected to die.
+	no_isolate: bool,
 	// Set by isolate.odin on the children it spawns. Suppresses the preamble,
 	// the table header and the summary, so a child contributes exactly its own
 	// row and the parent owns everything around it.
@@ -987,7 +1006,18 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 	// Each patch in its own process. The children print their own rows, so the
 	// output reads as one run; the parent only notices which of them died.
-	if opt.isolate {
+	//
+	// On by default for any run of more than one patch, which is the change that
+	// stops a bank run dying. It used to be opt-in, so the default behaviour of
+	// this tool was to stop at the first patch that kills the reference and
+	// leave every patch after it unmeasured -- and the documented way round that
+	// was `--skip` with five file names in it, which only helps somebody who
+	// already knows which five. `tools/s1probe hostprobe` and `paramcrash` say
+	// what the crash is: the arpeggiator, inside the reference, whatever this
+	// host tells it. It is not ours to fix, so the harness stops depending on it
+	// not happening.
+	isolating := !opt.child && !opt.no_isolate && (opt.isolate || len(paths) > 1)
+	if isolating {
 		exe, exe_ok := self_path()
 		if !exe_ok {
 			fmt.eprintln("compare: cannot find this executable to isolate with")
@@ -1275,6 +1305,9 @@ parse_compare_args :: proc(args: []string) -> (target: string, opt: Compare_Opti
 			i += 1
 		case "--isolate":
 			opt.isolate = true
+			i += 1
+		case "--no-isolate":
+			opt.no_isolate = true
 			i += 1
 		case "--no-floor":
 			opt.no_floor = true

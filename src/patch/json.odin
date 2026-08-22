@@ -434,9 +434,20 @@ destroy_bank :: proc(bank: Bank, allocator := context.allocator) {
 // Sniffed and not passed in, because the caller usually has a path and a path
 // can lie: a patch saved from the interface and renamed to `.sy1` is still
 // JSON, and refusing it on the strength of four characters would be a worse
-// answer than reading it. The two formats cannot be confused -- `.sy1` begins
-// with the literal word "Synth1" and JSON with a brace -- so the check is
-// exact rather than a heuristic.
+// answer than reading it.
+//
+// It used to require the literal word "Synth1", which is the one thing a `.sy1`
+// file does not reliably start with. Synth1's own factory bank names the patch
+// on the first line with no prefix -- 127 of the 128 files in soundbank00 do --
+// so the sniffer refused a hundred and twenty-seven patches that `parse_sy1`
+// reads perfectly, and every host that goes through `parse_patch_any` reported
+// them as unreadable. Two readers of one format disagreeing about what the
+// format is, is worse than either being strict.
+//
+// So the two formats are told apart by what they *are*: JSON opens with a
+// brace, and a `.sy1` is a short optional header over lines of
+// `index,value`. Finding one of those records is the test, which is the same
+// question `parse_sy1` asks and therefore cannot disagree with it.
 //
 // This package still touches no filesystem. Everything here takes bytes, which
 // is what lets src/patch compile for the WebAssembly and mobile targets where
@@ -446,6 +457,10 @@ Patch_Format :: enum {
 	Sy1,
 	Json,
 }
+
+// How far in to look for a record before giving up. A `.sy1` header is three
+// lines at most, so anything beyond the fourth line is not this format.
+SY1_SNIFF_LINES :: 6
 
 detect_format :: proc(data: []byte) -> Patch_Format {
 	i := 0
@@ -458,9 +473,22 @@ detect_format :: proc(data: []byte) -> Patch_Format {
 	if data[i] == '{' {
 		return .Json
 	}
+
 	rest := data[i:]
 	if len(rest) >= 6 && string(rest[:6]) == "Synth1" {
 		return .Sy1
+	}
+
+	pos := i
+	for line_number in 0 ..< SY1_SNIFF_LINES {
+		if pos >= len(data) {
+			break
+		}
+		line: []byte
+		line, pos = line_end(data, pos)
+		if has_prefix(line, "color=") || has_prefix(line, "ver=") || sy1_is_record(line) {
+			return .Sy1
+		}
 	}
 	return .Unknown
 }
