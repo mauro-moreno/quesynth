@@ -1177,11 +1177,18 @@ test_peaking_filter_lifts_its_band_and_stays_stable :: proc(t: ^testing.T) {
 
 // Parameter 35's twenty displays are the reference's own notation for musical
 // divisions, and they have to parse into beats exactly. A quarter note is one
-// beat, "(N)" is 4/N beats, "+" sums, "/3" takes two thirds.
+// beat, "(N)" is 4/N beats, "+" sums, "/3" divides by three.
 //
-// The states are not in ascending order of time -- state 9 is a half triplet at
-// 1.33 beats and state 10 a dotted eighth at 0.75 -- so this cannot be replaced
-// by arithmetic on the state index.
+// That last one is the correction this case list carries. It used to read "/3
+// takes two thirds" and assert 0.125*2/3, 2/3 and 8/3 for the three triplet
+// displays -- the musician's convention, taken on faith from nobody's
+// measurement. Sweeping all twenty states through the reference showed every
+// "/3" state playing at exactly half those times. The expectations below are
+// now the reference's, and test_delay_division_table_matches_the_measured_reference
+// pins them to the numbers that came off the DLL.
+//
+// The list is not arithmetic on the state index: nothing about the index says
+// whether a state is a plain note, a dotted sum or a division by three.
 @(test)
 test_delay_division_displays_parse_to_beats :: proc(t: ^testing.T) {
 	Case :: struct {
@@ -1201,10 +1208,10 @@ test_delay_division_displays_parse_to_beats :: proc(t: ^testing.T) {
 		{"(8)+(16)+(32)", 0.875},
 		{"(4)+(8)", 1.5},
 		{"(2)+(4)", 3.0},
-		// Triplets take two thirds of the whole sum.
-		{"(32) /3", 0.125 * 2.0 / 3.0},
-		{"(4) /3", 2.0 / 3.0},
-		{"(1) /3", 8.0 / 3.0},
+		// Triplets divide the whole sum by three.
+		{"(32) /3", 0.125 / 3.0},
+		{"(4) /3", 1.0 / 3.0},
+		{"(1) /3", 4.0 / 3.0},
 	}
 	for c in cases {
 		beats, musical := engine.delay_display_beats(c.display)
@@ -1216,6 +1223,86 @@ test_delay_division_displays_parse_to_beats :: proc(t: ^testing.T) {
 	// State 0 is a fixed time, not a division, and must not read as one.
 	_, musical := engine.delay_display_beats("0.1 msec")
 	testing.expect(t, !musical, "the fixed-millisecond state parsed as a division")
+}
+
+// The regression guard for parameter 35's whole division table, checked against
+// two things that are not this parser.
+//
+// The first is the reference. All twenty of parameter 35's states were rendered
+// through `ext/synth1/Synth1/Synth1 VST64.dll` -- percussive click, 100 % wet,
+// no feedback, no spread, arp and chorus off, at the harness's 120 BPM -- and
+// the first sample above threshold read straight off each render. Nothing is
+// audible before the echo in that patch, so that sample *is* the delay time.
+// The readings below are those measurements, transcribed, and they carry a
+// constant +0.06 ms of the reference's own delay-line offset, which is why the
+// tolerance is 0.15 ms rather than zero. That is still two orders of magnitude
+// under the error this test exists to catch: a wrong "/3" factor moves the
+// nearest of these by 20 ms.
+//
+// The second is src/engine/arpeggiator.odin. Parameter 33 spells its steps in
+// the same notation and ARP_STEP_BEATS was measured separately, with `s1probe
+// arpprobe`. The nineteen musical delay states turn out to be that table
+// reversed, exactly -- which is the check, because the two were written from
+// different measurements and disagreed by a factor of two on every "/3" state
+// until the sweep above settled it. The old test could not see that: it
+// asserted the convention its author had assumed, so it agreed with the code it
+// was checking and could never fail. Pinning the table to the DLL and to a
+// separately measured table is what makes this a test.
+@(test)
+test_delay_division_table_matches_the_measured_reference :: proc(t: ^testing.T) {
+	MS_PER_BEAT :: f32(60000.0 / 120.0)
+
+	// Parameter 35's states in order, with the reference's own display for each
+	// (from ui/params.js, which tools/uiparams reads out of the plugin) and the
+	// millisecond reading from the sweep.
+	Case :: struct {
+		display: string,
+		ref_ms:  f32,
+	}
+	states := []Case {
+		{"0.1 msec", 0.19}, // not a division; handled below
+		{"(32) /3", 20.90},
+		{"(16) /3", 41.73},
+		{"(32)", 62.56},
+		{"(8) /3", 83.40},
+		{"(16)", 125.06},
+		{"(4) /3", 166.73},
+		{"(16)+(32)", 187.56},
+		{"(8)", 250.06},
+		{"(2) /3", 333.40},
+		{"(8)+(16)", 375.06},
+		{"(8)+(16)+(32)", 437.56},
+		{"(4)", 500.06},
+		{"(1) /3", 666.73},
+		{"(4)+(8)", 750.06},
+		{"(4)+(8)+(16)", 875.06},
+		{"(2)", 1000.06},
+		{"(2)+(4)", 1500.06},
+		{"(2)+(4)+(8)", 1750.06},
+		{"(1)", 2000.06},
+	}
+
+	for c, state in states {
+		beats, musical := engine.delay_display_beats(c.display)
+
+		if state == 0 {
+			testing.expect(t, !musical, "the fixed-millisecond state parsed as a division")
+			continue
+		}
+		testing.expectf(t, musical, "%q did not parse as a musical division", c.display)
+
+		ms := beats * MS_PER_BEAT
+		testing.expectf(t, abs(ms - c.ref_ms) < 0.15,
+			"state %v %q is %v ms at 120 BPM; the reference plays it at %v ms",
+			state, c.display, ms, c.ref_ms)
+
+		// The nineteen musical states run longest-first in the arpeggiator's
+		// table and shortest-first here, so state N is ARP_STEP_BEATS[19-N].
+		arp := engine.ARP_STEP_BEATS[len(engine.ARP_STEP_BEATS) - state]
+		testing.expectf(t, abs(beats - arp) < 0.0005,
+			"state %v %q parses to %v beats; the arpeggiator's measured table has the same division at %v beats",
+			state, c.display, beats, arp)
+	}
 }
 
 // Parameter 83 reads out both channel times at once.

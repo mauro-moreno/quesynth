@@ -353,7 +353,7 @@ window.SYNTH1_LAYOUT = [
         label: "Time",
         controls: [
           { p: 35, label: "Time", name: "Delay Time",
-            desc: "Delay time as a division of the beat. Bracketed numbers are note values; a slash three is a triplet." },
+            desc: "Delay time as a division of the beat. Bracketed numbers are note values; a slash three divides that value by three, which is not the same as a musician's triplet." },
           { p: 83, label: "Spread", name: "Delay Time Spread",
             desc: "Offsets the right channel's delay from the left, in milliseconds, to widen the image." },
         ],

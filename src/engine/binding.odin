@@ -295,14 +295,34 @@ FILTER_MAX_HZ :: f32(20000.0)
 // Parse one of parameter 35's twenty delay-time displays into beats.
 //
 // The notation is the reference's own, and it is a table rather than a formula:
-// "(8)" is an eighth note, "(16)+(32)" a dotted sixteenth, "(4) /3" a quarter
-// triplet, and state 0 is not musical at all but a fixed "0.1 msec". The states
-// are not in ascending order of time either -- state 9 is a half triplet at 1.33
-// beats and state 10 a dotted eighth at 0.75 -- so reading the display is the only
-// way to get this right.
+// "(8)" is an eighth note, "(16)+(32)" a dotted sixteenth, "(4) /3" a third of
+// a quarter, and state 0 is not musical at all but a fixed "0.1 msec". Nothing
+// about the state index says which of those shapes a state takes, so reading
+// the display is the only way to get this right.
 //
-// A quarter note is one beat, so "(N)" is 4/N beats and a triplet is two thirds
-// of that.
+// A quarter note is one beat, so "(N)" is 4/N beats and "+" sums. "/3" then
+// divides that sum by three -- literally three, not the musician's two thirds.
+// This parser took the musical convention on trust, and it was wrong. Sweeping
+// all twenty states through the reference (percussive click, 100 % wet, no
+// feedback, at the harness's 120 BPM) measured every "/3" state at exactly half
+// what this code played: state 1 "(32) /3" arrives at 20.90 ms, which is
+// 0.125/3 beats and not 0.125*2/3, and state 13 "(1) /3" at 666.73 ms, which is
+// 4/3 beats and not 8/3. All fourteen non-triplet states were already exact, so
+// the sum arithmetic was never in doubt -- only this one factor was.
+//
+// Parameter 33 reads the same notation and ARP_STEP_BEATS, measured separately
+// with `s1probe arpprobe`, has always divided by three. The nineteen musical
+// states here are that table reversed. The two had disagreed by a factor of two
+// since both were written, and the only test of this parser asserted the
+// assumed convention, so nothing could catch it; tests/dsp now pins both.
+//
+// A second thing the wrong factor cost: this comment used to claim the states
+// were not in ascending order of time. They are. Measured end to end the twenty
+// run 0.19, 20.90, 41.73, 62.56, 83.40, 125.06, 166.73, 187.56, 250.06, 333.40,
+// 375.06, 437.56, 500.06, 666.73, 750.06, 875.06, 1000.06, 1500.06, 1750.06,
+// 2000.06 ms, monotonic throughout -- the readings carry a constant +0.06 ms of
+// the reference's own delay-line offset. Only the doubled triplets made state 9
+// look like it overshot state 10.
 delay_display_beats :: proc(display: string) -> (beats: f32, musical: bool) {
 	if len(display) == 0 || display[0] != '(' {
 		return 0, false
@@ -341,7 +361,7 @@ delay_display_beats :: proc(display: string) -> (beats: f32, musical: bool) {
 		return 0, false
 	}
 	if triplet {
-		total *= 2.0 / 3.0
+		total /= 3.0
 	}
 	return total, true
 }

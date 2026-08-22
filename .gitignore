@@ -65,3 +65,8 @@ hosts/wasm/synth.wasm
 # checkout without this file is not missing anything it cannot rebuild:
 #     odin run tools/uibank
 ui/bank.js
+
+# Browser QA scratch: snapshots, console logs and videos from the Playwright
+# CLI, written beside whatever was being checked. Evidence for one session, not
+# a record of anything measured.
+.playwright-cli/

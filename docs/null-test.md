@@ -3917,6 +3917,15 @@ metric and is not explained yet. It is the fastest of the three, at `(8) /3` and
 a gate of 16, so the suspicion is the voice allocated per step against a release
 that outlasts the step. Recorded rather than tidied away.
 
+**Settled later, and the suspicion above was wrong.** The arpeggiator is not
+involved: with the delay off, 126's step spacing agrees with the reference
+exactly at every parameter-33 state tested, and its envelope error is 4.36 dB.
+The fault was in the *delay*, whose `/3` states were all playing at twice the
+reference's time -- and 126's arp step happened to be exactly twice its delay
+time, so the doubling moved the echo from halfway between steps onto the next
+step, where it vanished. See "The delay's `/3` is a division, not a triplet"
+below; 126's envelope error is now 2.82 dB.
+
 **Still not measured.** Whether the reference's arpeggiator re-triggers one
 voice or allocates a new one per step; what it does when a key is added or
 removed mid-pattern; and whether the step clock is free-running or locked to the
@@ -4233,3 +4242,136 @@ improvement in that group. 076 improves by 10.81 dB and the three fixtures by
 important high-FM residuals; their spectra point at waveform/alias distribution,
 not a reason to restore the linear phase-offset law that the direct sweep
 disproves.
+
+## The delay's `/3` is a division, not a triplet
+
+126 Machine Gun was the bank's one genuine outlier. At 18.69 dB its envelope
+error was 7.04 standard deviations above the mean and 9.7 interquartile ranges
+above the third quartile; the next worst patch, 029 E Guitar 3, was 9.08 dB at
+z = 2.81. Nothing else in the bank was within a factor of two of its z-score,
+and it was the only value past even the 3.0x fence at 7.79 dB by any margin. The
+three worst *spectral* patches -- 088, 086 and 001 at 16.72, 16.68 and 16.30 dB
+-- all sit inside the ordinary 1.5x fence at 19.13 dB and are the top of a
+smooth distribution, so they are the worst patches rather than outliers, and
+they are not this section.
+
+The cause was one line in `delay_display_beats`, and the arpeggiator note above
+had guessed wrong about it.
+
+**Where it is not.** Rendering 126 with the delay switched off (`65,0`) gives an
+envelope error of 4.36 dB, and that number is *identical* before and after the
+change, as it must be. Rendering it with the delay on but moved to any
+non-triplet state gives 2.63 dB at `(32)`, 2.84 dB at `(16)` and 4.95 dB at
+`(8)` -- again identical before and after. So neither the arpeggiator, the
+envelope, the gate nor the FM is involved: only the `/3` states move at all.
+
+**The sweep.** A purpose-built probe patch -- percussive click, `37,127` for
+100 % wet, `36,0` for no feedback, `83,64` for no spread, arp, chorus, effect,
+LFO and unison all off, written as `ver=113` so the pre-1.07 conversion cannot
+interfere -- was rendered through the reference at all twenty of parameter 35's
+states. Nothing is audible in that patch before the echo, so the first sample
+above threshold *is* the delay time. At the harness's 120 BPM:
+
+| state | display | reference | engine, before | before / ref | engine, after |
+|---:|---|---:|---:|---:|---:|
+| 0 | `0.1 msec` | 0.19 ms | 0.17 ms | -- | 0.17 ms |
+| **1** | **`(32) /3`** | **20.90 ms** | **41.73 ms** | **1.997** | **20.90 ms** |
+| **2** | **`(16) /3`** | **41.73 ms** | **83.40 ms** | **1.999** | **41.73 ms** |
+| 3 | `(32)` | 62.56 ms | 62.56 ms | 1.000 | 62.56 ms |
+| **4** | **`(8) /3`** | **83.40 ms** | **166.73 ms** | **1.999** | **83.40 ms** |
+| 5 | `(16)` | 125.06 ms | 125.06 ms | 1.000 | 125.06 ms |
+| **6** | **`(4) /3`** | **166.73 ms** | **333.40 ms** | **2.000** | **166.73 ms** |
+| 7 | `(16)+(32)` | 187.56 ms | 187.56 ms | 1.000 | 187.56 ms |
+| 8 | `(8)` | 250.06 ms | 250.06 ms | 1.000 | 250.06 ms |
+| **9** | **`(2) /3`** | **333.40 ms** | **666.73 ms** | **2.000** | **333.40 ms** |
+| 10 | `(8)+(16)` | 375.06 ms | 375.06 ms | 1.000 | 375.06 ms |
+| 11 | `(8)+(16)+(32)` | 437.56 ms | 437.56 ms | 1.000 | 437.56 ms |
+| 12 | `(4)` | 500.06 ms | 500.06 ms | 1.000 | 500.06 ms |
+| **13** | **`(1) /3`** | **666.73 ms** | **1333.40 ms** | **2.000** | **666.73 ms** |
+| 14 | `(4)+(8)` | 750.06 ms | 750.06 ms | 1.000 | 750.06 ms |
+| 15 | `(4)+(8)+(16)` | 875.06 ms | 875.06 ms | 1.000 | 875.06 ms |
+| 16 | `(2)` | 1000.06 ms | 1000.06 ms | 1.000 | 1000.06 ms |
+| 17 | `(2)+(4)` | 1500.06 ms | 1500.06 ms | 1.000 | 1500.06 ms |
+| 18 | `(2)+(4)+(8)` | 1750.06 ms | 1750.06 ms | 1.000 | 1750.06 ms |
+| 19 | `(1)` | 2000.06 ms | 2000.06 ms | 1.000 | 2000.06 ms |
+
+All six `/3` states are exactly twice too long. All fourteen others are exact to
+the sample, so the sum arithmetic was never in question. In beats the
+reference's law is unambiguous: `(32) /3` is 0.0417 = 0.125/3 and `(1) /3` is
+1.333 = 4/3. That is division by three, and `(2/3) / (1/3)` is precisely the
+factor of two observed. After the change every one of the nineteen musical
+states reads the reference's own time.
+
+Two things in that table are not the defect and should not be read as one. The
+musical readings carry a constant +0.06 ms, which is the reference's delay-line
+offset and shows up on state 0's fixed `0.1 msec` as well. And state 0 itself
+sits one sample early here, 0.17 against 0.19 ms at 48 kHz -- that state takes
+the non-musical branch, it is unchanged by this work, and 0.02 ms is below what
+this method resolves.
+
+**Why nobody caught it.** This engine already knew the answer. `ARP_STEP_BEATS`
+in `src/engine/arpeggiator.odin` was measured separately with `s1probe arpprobe`
+and says so in a comment: "`(N) /3` is that value divided by three ... it is
+*not* the usual triplet convention -- a musician writing 'quarter triplet' means
+two thirds of a quarter, while the reference means one third of it." Parameter
+33 and parameter 35 spell the same nineteen symbols, and the vendor changelog
+treats them as one display (`docs/synth1-readme-eng.txt:473`, Ver1.11: "change
+delay arpegiator tempo display"). The nineteen musical delay states turn out to
+be `ARP_STEP_BEATS` reversed, exactly. The two tables had disagreed by a factor
+of two since both were written.
+
+The vendor manual is where the wrong guess came from and it is worth naming,
+because anyone implementing from the prose would make the same one:
+`docs/synth1-readme-eng.txt:186` describes parameter 35 as "ranging from 1/32
+note triplets to whole note". A 32nd-note triplet is 1/48 note, or 0.0833 beats.
+State 1 measures 0.0417 beats, which is 1/96 note -- `(1/32)/3`. The label is
+loose musical shorthand; the arithmetic is literal division.
+
+And this is the project's named trap in its second form.
+`test_delay_division_displays_parse_to_beats` had asserted the wrong law since
+it was written -- its comment said "`/3` takes two thirds" and its cases were
+`0.125*2/3`, `2/3`, `8/3`. It could never fail, because it checked the parser
+against the convention its author had assumed rather than against anything
+external. It has been rewritten to the measured beats, and
+`test_delay_division_table_matches_the_measured_reference` now pins all twenty
+states to the millisecond readings above *and* to `ARP_STEP_BEATS`.
+
+**Result.** Only 7 of 123 patches move at all; the other 116 carry no triplet
+delay state with the delay audible.
+
+| patch | spectral | envelope | level | note |
+|---|---:|---:|---:|---|
+| **126 Machine Gun** | 6.11 -> **5.03** | 18.69 -> **2.82** | -3.16 -> -4.25 | the outlier, eliminated |
+| **011 MusicBox** | 6.65 -> 6.64 | 8.01 -> **3.54** | +0.02 | was rank-4 envelope |
+| **093 Sweep pad 2** | 9.86 -> **10.48** | 5.98 -> 3.14 | -0.16 | named regression |
+| **114 kick1** | 9.64 -> 9.17 | 1.33 -> 0.93 | -0.90 | |
+| **119 SynDrum** | 14.20 -> 14.23 | 2.96 -> **5.26** | +0.23 | named regression, below |
+| **127 LaserGun** | 10.81 -> 10.57 | 2.12 -> **2.42** | +0.02 | minor regression |
+| 123 SpaceShip | 6.00 -> 5.98 | 5.66 -> 5.66 | +0.09 | |
+
+**Bank verdict.** Across all 123 comparable patches, envelope mean improves from
+2.67 to 2.50 dB, spectral mean from 6.77 to 6.76 dB with the median unchanged at
+6.23, null depth from -3.9574 to -3.9634 dB, correlation from 0.6077 to 0.6083,
+and level bias from +0.207 to +0.193 dB. Mean *absolute* level error worsens by
+0.016 dB, from 1.9095 to 1.9255; that is 126 and 114 alone, moving their echoes,
+and it is named here rather than left out. Envelope: four improved, two
+regressed, 117 unchanged. Spectral: three improved, one regressed.
+
+**Named regressions.** 119 is the largest, at +2.30 dB of envelope error, and it
+is not this change's fault. With the delay off, 119 measures 1.18 dB and both
+builds agree. With the delay moved to `(32)`, a *non*-triplet, both builds agree
+again at 4.34 dB -- worse than the 2.96 dB the old, doubled `(32) /3` happened
+to score. The old placement was accidentally flattering. Putting the echo where
+the reference puts it exposes a second, pre-existing defect in what the delay
+does once it is there. 093 (+0.62 dB spectral) and 127 (+0.30 dB envelope) are
+the other two.
+
+**Still open.** 119's stereo width, which the reference renders at 0.277 and
+this engine at 0.018. Attributed to the delay rather than to unison or chorus:
+with the delay off both are 0.000, with the chorus off they are 0.052 and 0.018,
+and as-is they are 0.277 and 0.018. Moving 119 to the non-triplet `(32)` leaves
+the reference at 0.282 and this engine at 0.018, so the gap is in what the delay
+does to the stereo image rather than in where the echo lands, and this change
+neither causes nor fixes it. Separate investigation. 069 Oboe's +10.99 dB level
+error, at z = 4.57 the bank's clearest level outlier, is likewise untouched
+here.

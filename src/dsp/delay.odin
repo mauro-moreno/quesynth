@@ -5,10 +5,11 @@ package dsp
 // Almost every parameter here came out of the reference's own display strings
 // rather than being chosen, which is unusual for this project: parameter 35's
 // twenty states spell out musical divisions ("(16)+(32)" is a dotted sixteenth,
-// "/3" a triplet), parameter 83 reads out the left and right delay times in
-// milliseconds directly, and parameter 37 is a plain percentage. The binding
-// layer parses those, so the numbers below arrive already in beats, milliseconds
-// and fractions.
+// "/3" is a division by three and not a musician's triplet -- the reference was
+// swept to settle that, see engine.delay_display_beats), parameter 83 reads out
+// the left and right delay times in milliseconds directly, and parameter 37 is
+// a plain percentage. The binding layer parses those, so the numbers below
+// arrive already in beats, milliseconds and fractions.
 //
 // What is still chosen is named at its use site: the feedback curve and the
 // tone control's corner frequencies. The three delay types were measured with
