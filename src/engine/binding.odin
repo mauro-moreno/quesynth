@@ -605,9 +605,76 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	case:
 		e.sub_shape = .Pulse
 	}
-	// Parameter 97 has two states: one octave down or two.
-	e.sub_octave = resolved_position(97, p.values[97]) == 0 ? -12.0 : -24.0
-	e.sub_gain = unit_position(95, p.values[95])
+	// Parameter 97 has two states, and they are "0oct" and "-1oct" -- not the
+	// one-octave-down and two-octaves-down this used to assume. The vendor's own
+	// v1.12 parameter list is explicit ("97 - osc1 sub octave: 0 - 0oct, the same
+	// pitch as the Oscillator 1; 1 - -1oct, one octave under"), and the reference
+	// is unambiguous about both states. At stored 0, with a sine carrier and a
+	// full-gain sine sub, switching the sub in and out changes the reference's
+	// render by -142.5 dB -- float rounding, which is what a normalised mix of
+	// two identical signals gives and nothing else does. The same null appears
+	// for a saw carrier with a saw sub and a triangle with a triangle, at two
+	// gains. At stored 1 the sub's fundamental appears at f0/2 and there is
+	// nothing at f0/4. Stored 2..127 render identically to stored 1.
+	//
+	// The old mapping put the sub an octave below the truth in both states, which
+	// is what made the reference look like it "produces nothing at f0/2": it was
+	// being asked for the wrong state and read in the wrong bin. No factory patch
+	// sets parameter 95, so the bank the null test gates on cannot see any of
+	// this -- 4284 of the 16698 patches in the shared banks do set it, 2450 of
+	// them in the "-1oct" state, and those are what it is gated on instead.
+	e.sub_octave = resolved_position(97, p.values[97]) == 0 ? 0.0 : -12.0
+	// The sub's own level, and where it sits in the oscillator mix. Both read off
+	// the reference rather than taken from the version history's prose.
+	//
+	// The history only says "when the amount of the suboscillator is raised, the
+	// entire volume is automatically adjusted not to grow", which does not say by
+	// how much, or what "the entire volume" covers. The reference's law is
+	//
+	//     out = ((1-m)*(osc1 + a*sub) + m*osc2) / (1 + a*(1-m))
+	//
+	// with m the oscillator mix and `a = 4 * stored95 / 127`. The sub belongs to
+	// oscillator 1 -- the parameter is named "osc1 sub gain" and it means it --
+	// and the automatic compensation divides by the weight the sub actually
+	// carries, which is why the mix appears in the denominator.
+	//
+	// Three readings, each isolating one part of it:
+	//
+	// * `a`, at mix "100 : 0" and "-1oct", where the sub sits at f0/2 and
+	//   oscillator 1 at f0 so they are separate bins. A sine sub against a sine
+	//   carrier at note 48 gives |sub|/|carrier| = 0.25197, 0.50394, 1.00789,
+	//   1.51184, 2.01579, 2.51974, 3.02369, 4.00010 at stored 8, 16, 32, 48, 64,
+	//   80, 96, 127 -- that is 4*stored/127 to 3e-5 across the whole knob. The
+	//   same render gives `1 + a` a second way, as the carrier with the sub off
+	//   over the carrier with it on, and the two agree to five decimals.
+	//
+	// * the division, at "0oct", where the sub runs at oscillator 1's own pitch.
+	//   With the sub's shape matching oscillator 1's, switching a full-gain sub
+	//   in and out changes the reference's render by -142.5 dB. Only a mix
+	//   normalised by its own weights returns the carrier exactly like that;
+	//   holding the carrier and adding the sub cannot.
+	//
+	// * the `(1-m)`, at seven mix settings with two saws four semitones apart so
+	//   that no partial of the sub lands on oscillator 2. Oscillator 2's own
+	//   partial is pulled down by 0.28455, 0.37046, 0.54307, 0.71031, 1.00000 at
+	//   stored mix 32, 64, 96, 112, 127, against this law's 0.27843, 0.36783,
+	//   0.54181, 0.70962, 1.00000. A denominator of `1 + a` alone predicts a flat
+	//   0.22399 and is excluded. At mix "0 : 100" the sub vanishes entirely and
+	//   the reference's render is bit-identical with the sub at full gain.
+	//
+	// What was here before, `mix*(1 - 0.5*g) + sub*g`, had the right shape and
+	// none of the three: at full gain it lifted the carrier by 3 dB where the
+	// reference drops it by 14, undersold the sub by the same reasoning, and kept
+	// the sub audible with oscillator 1 mixed out.
+	SUB_GAIN_AT_FULL :: f32(4.0)
+	{
+		// Folded into the two factors the audio path multiplies by, so that path
+		// holds no divide. `e.osc_mix` is already set above and cannot move at
+		// runtime, so this is a per-patch quantity and not a per-sample one.
+		w := SUB_GAIN_AT_FULL * unit_position(95, p.values[95]) * (1.0 - e.osc_mix)
+		e.sub_gain = w / (1.0 + w)
+		e.sub_carrier_gain = 1.0 / (1.0 + w)
+	}
 
 	// -- oscillator modulation envelope --------------------------------------
 

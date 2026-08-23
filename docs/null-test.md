@@ -926,20 +926,25 @@ every part of it:
 
 The free-running offset itself is measured, and the first reading of it was wrong
 by a sign — see [069 Oboe, and three phase errors in the
-oscillator](#069-oboe-and-three-phase-errors-in-the-oscillator) at the end of
-this document. Fitting it from how far each harmonic is pulled down gives 158
-degrees from the fundamental's 14.5 dB and 5.4 predicted against 5.0 measured on
-the third — and the reading is the **same at three notes an octave apart**, so it
-is a fixed initial offset rather than accumulated history, and therefore
-reproducible. It was kept at that 0.440 turns rather than tuned: 0.480 was tried
-across the whole bank and is indistinguishable.
+oscillator](#069-oboe-and-three-phase-errors-in-the-oscillator) and [The
+oscillator start phase, read
+absolutely](#the-oscillator-start-phase-read-absolutely) at the end of this
+document. The reading that produced this section's 0.440 turns was a fit of how
+far each harmonic is pulled down — 158 degrees from the fundamental's 14.5 dB,
+5.4 predicted against 5.0 measured on the third — and it was the **same at three
+notes an octave apart**, so the offset is a fixed initial phase rather than
+accumulated history, and therefore reproducible. It was kept at 0.440 rather
+than tuned: 0.480 was tried across the whole bank and is indistinguishable.
 
 **What an attenuation fit cannot do is tell `+phi` from `-phi`.** Cancellation
 between two same-pitch oscillators goes as `cos(2*pi*k*phi)`, which is even, so
 both signs pull every harmonic down by exactly the same amount. The magnitude
-above is right; the sign was never determined and came down wrong. The offset is
-now **0.5623 turns**, read off the reference's own start phase instead of fitted
-from a depth. Everything else in this section stands.
+above is right; the sign was never determined and came down wrong. Nor could
+that fit say *which* oscillator carried the offset, for the same reason. Both
+questions are now answered by reading each oscillator's phase absolutely against
+note-on: oscillator 1 starts at zero, oscillator 2 at **+0.56233 turns**, one
+constant for every shape. The 158-degree fit is the method this whole thread is
+about; everything else in this section stands.
 
 ### What it bought
 
@@ -4506,12 +4511,15 @@ triangle pairs: 0.5623 every time. 32 kHz gave no reading at all — the referen
 renders silence through this harness at that rate, which is recorded as a limit
 of the measurement and not as a result.
 
-**Written at the precision the reading carries.** 9/16 = 0.5625 sits inside the
-interval and cannot be told apart from it — across the whole bank the two agree
-to four decimals on every aggregate — so it stays a hypothesis rather than the
-value. 0.5600, the exact sign flip of the old 0.440, is about seven standard
-deviations out and is **ruled out by the start-phase reading alone**, with no
-null depth involved in saying so.
+**Written at the precision the reading carries — and that precision has since
+been sharpened by a factor of 25.** This paragraph used to record 9/16 = 0.5625
+as a hypothesis sitting "inside the interval", indistinguishable from the
+reading. It is not. An absolute reading of each oscillator against note-on gives
+**0.562334 ± 0.000012**, which puts 9/16 **fourteen standard deviations away**
+and rules it out; the constant is now written `0.56233`. 0.5600, the exact sign
+flip of the old 0.440, is out by two hundred. See [The oscillator start phase,
+read absolutely](#the-oscillator-start-phase-read-absolutely) at the end of this
+document for the method and the readings.
 
 **A discarded step, recorded so nobody repeats it.** The constant was first
 swept over 0.5500/0.5600/0.5623/0.5625/0.5700 against the null depth of one
@@ -4569,8 +4577,21 @@ section before touching these lines again:
 
 - **033 Acoustic Bass, envelope 1.41 → 5.99 dB.** The largest single regression
   and the only one that creates a new top-five envelope entry (z 2.57 after).
-  Attributed entirely to D2 — D1 and D3 leave it at 1.41 — and **not
-  diagnosed**. It is the one result here that would justify holding the change.
+  Attributed entirely to D2 — D1 and D3 leave it at 1.41. It was recorded here
+  as "not diagnosed" and as the one result that would justify holding the
+  change. **It is now diagnosed, and it is not the phase.** 033 is one of the 21
+  factory patches that run the oscillator modulation envelope on oscillator 2's
+  pitch (parameter 10 = 1, destination 0), so its two oscillators are compared
+  through a pitch ramp rather than at a constant offset, and the early
+  cancellation pattern is extremely sensitive to where that ramp goes. Switch
+  the envelope off and the regression disappears: **envelope 5.99 → 0.67, null
+  −0.99 → −11.69**. Reduce 033 to oscillator 2 alone, where a start phase is a
+  pure time shift and the null test searches lag anyway, and it still nulls at
+  only **−0.30 dB**, with the two candidate phases 0.03 dB apart. A bare
+  oscillator carrying nothing but 033's modulation-envelope records nulls at
+  **−11.79 dB** against **−22.47 dB** with them off. D2 is right; the next defect
+  in that chain is the modulation envelope, and it is the phase question's
+  neighbour rather than its consequence.
 - **047 Harp**, the only patch worse on three metrics at once: envelope +0.76,
   level +1.21, null 3.40 dB shallower, against spectral −1.48.
 - **085 Sync lead 2, level 2.46 → 4.36 dB**, against an envelope improvement of
@@ -4632,8 +4653,20 @@ exactly one of them.
 
 ### Still open
 
-- **033 Acoustic Bass's +4.58 dB envelope regression**, located to D2 and not
-  explained.
+- **The oscillator modulation envelope on oscillator 2's pitch**, which is what
+  033's +4.58 dB envelope regression turned out to be (see above). 21 factory
+  patches run it — 016, 027, 028, 029, 030, 031, 032, 033, 035, 046, 047, 048,
+  053, 055, 062, 107, 108, 114, 119, 126, 127, all with destination 0 — and three
+  of D2's four largest envelope regressions are among them, as is 047 Harp. The
+  group means do not separate (mean Δenvelope −0.055 against −0.003 for the other
+  102), so it is the demonstrated explanation for 033 and an enriched suspect for
+  the rest, not a universal one.
+- **Unison, on the shared banks.** Not visible in the factory bank's aggregates,
+  but a probe of four unison voices with the sub off and no detune reads
+  spectral 0.74, envelope 1.61, level −2.71 and a null of only −1.74 dB, against
+  0.14 / 0.05 / −0.14 / −28.55 for the same patch with unison off; adding the
+  detune takes the null to −0.01 dB. It is now the leading defect on the
+  corpus patches that use the sub, which is how it was found.
 - **069's remaining +6.18 dB**, which is not the oscillator. With the filter
   opened it falls to +0.92, and with a *static* cutoff at 45 to +0.75, so the
   residual is the filter **envelope** at a negative amount over a low cutoff —
@@ -4652,3 +4685,378 @@ one earlier report was wrong to flag them: 6.7597 over all 123 rows and 6.5399
 over the 119 with `spectral_valid=true` are the same number under two
 denominators (6.7597 × 119 / 123 = 6.5399). Where a spectral mean appears, it is
 the 119 valid rows unless it says otherwise.
+
+## The oscillator start phase, read absolutely
+
+The section above left one thing open that its own method could not close: the
+offset's **assignment**. `0.5623 + 0.4377 = 1.0000` exactly, and for a same-shape
+same-pitch pair "oscillator 2 at +φ" and "oscillator 1 at +(1−φ)" are time-mirror
+images with identical magnitude spectra. The edge fit that produced 0.5623 took
+the *difference* of two renders, so it fixed the magnitude and left the
+assignment to its own polarity convention. The bank appeared to disagree with
+itself about which way round it went — 033 Acoustic Bass, the only same-shape
+pair among the discriminating patches, preferred the mirror while 029 and 069
+preferred the shipped sign — which is the signature a **per-shape** start phase
+would leave.
+
+It is not a per-shape law. It is one constant, on oscillator 2, with the sign the
+code already had.
+
+### Why this reading is allowed to settle it
+
+Sweeping a constant against a metric is forbidden here and none of what follows
+does it. Three constructions, no knobs:
+
+- **Absolute harmonic phase against note-on.** `s1probe compare` sends the note
+  on before the first block and drives both engines in the same block size, so
+  **frame 0 is the note-on sample in both renders**. Projecting onto
+  `cos/sin(2πk f₀ t)` with `t` counted from frame 0 gives an absolute phase, not
+  a difference.
+- **Phase separated from latency by pitch.** At one pitch a start phase and an
+  output latency are the same thing. They separate over pitch: a start phase is
+  constant in turns, a latency contributes `τ·f₀` turns. Five notes over four
+  octaves, fitted in `f₀`, give both.
+- **Differences taken inside one engine at one note**, where the plugin's
+  latency, the filter's group delay and the shape's own Fourier convention are
+  common to the two renders and cancel exactly. This is what carries the 1×10⁻⁵
+  precision.
+
+### The readings
+
+Apparent start phase in turns, time origin = note-on; `phi0` is the fit's
+intercept and `tau` its slope in samples at 48 kHz. Each shape's Fourier
+convention is taken from this engine's oscillator 1, whose start phase is pinned
+at zero, so a mistake in the triangle's or the pulse's convention cannot become a
+mistake in the answer.
+
+```
+stem      shape  side      n36      n48      n60      n72      n84     phi0  tau(samp)
+o1sine    sine   ref   -0.0002  -0.0005  -0.0015  -0.0035  -0.0075   0.0004    -0.36
+o1saw     saw    ref   -0.0002  -0.0005  -0.0015  -0.0035  -0.0075   0.0004    -0.36
+o1pulse   pulse  ref   -0.0004  -0.0007  -0.0017  -0.0037  -0.0077   0.0002    -0.36
+o1tri     tri    ref   -0.0002  -0.0005  -0.0015  -0.0035  -0.0075   0.0004    -0.36
+o2saw     saw    ref   -0.4378  -0.4382  -0.4392  -0.4412  -0.4451  -0.4373    -0.36
+o2pulse   pulse  ref   -0.4380  -0.4384  -0.4394  -0.4414  -0.4453  -0.4374    -0.36
+o2tri     tri    ref   -0.4378  -0.4382  -0.4392  -0.4412  -0.4451  -0.4372    -0.36
+```
+
+**Oscillator 1 starts at zero for every shape. Oscillator 2 starts at −0.4373 =
++0.5627 for every shape.** The drift across each row is the latency term, and it
+is the same for both oscillators and all four shapes. At 96 kHz the intercepts
+are +0.0001…+0.0002 and −0.4375…−0.4377.
+
+That alone excludes both alternatives with the same magnitude:
+
+- **the mirror** (oscillator 2 at +0.4377): oscillator 2 reads 0.5623, which is
+  0.125 turns away — a hundred times the method's absolute accuracy;
+- **the global shift** (oscillator 1 at +0.4377, oscillator 2 at zero), which
+  preserves the difference: oscillator 1 reads 0.000, not 0.4377.
+
+**The value itself**, as `osc2(alone) − osc1(alone)` inside one engine at one
+note. Pooling 90 readings — 5 notes × 3 shapes × harmonics 1–7:
+
+- reference **0.5623366, standard deviation 0.0000116** (min 0.562292, max
+  0.562398);
+- this engine reads 0.5623022 against its own known `f32(0.5623) = 0.56229996`,
+  so the **method's bias is +2.3×10⁻⁶**;
+- reference with the bias removed: **0.562334 ± 0.000012**;
+- `9/16 = 0.5625` is **14 sd away and excluded**. `10^(−1/4) = 0.5623413` is 0.6
+  sd away, which is a coincidence and must not be written into the code as a
+  value.
+
+At 96 kHz every cell reads −0.43766/−0.43767, unchanged. A fixed sample offset
+would have halved.
+
+**It is a phase of oscillator 2's own cycle, not a time.** Transposed ±12
+semitones and read against its own fundamental the reference gives 0.5616/0.5596
+and 0.5630/0.5626; a fixed time of `0.5623/f₀` seconds would read 0.1246 at +12.
+
+**Superposition, and the mirror rejected on the reference's own audio.** For one
+note, three renders of the same engine — oscillator 1 alone, oscillator 2 alone,
+and the pair at a known mix — solved for complex `α, β` in
+`H_pair,k = α·H_osc1,k + β·H_osc2,k` over harmonics 1..7. No waveform model
+appears in it anywhere.
+
+```
+note 60      side   mix     |alpha| arg(a)turn  |beta| arg(b)turn  residual  conjugate
+prsaw25      ref   75:25    0.7482    0.0000   0.2520   -0.0000   -97.25 dB   -3.91 dB
+prsaw75      ref   25:75    0.2442   -0.0000   0.7561    0.0000   -97.24 dB    5.51 dB
+prtri25      ref   75:25    0.7480    0.0000   0.2520    0.0000  -170.75 dB   -1.11 dB
+prpul25      ref   75:25    0.7480   -0.0000   0.2520    0.0000  -181.41 dB   -5.92 dB
+prsinesaw    ref   50:50    0.4961   -0.0000   0.5040    0.0000  -102.40 dB    6.00 dB
+prtrisaw     ref   50:50    0.4961   -0.0000   0.5040    0.0000  -100.35 dB    7.02 dB
+```
+
+`arg α = arg β = 0.0000`: each oscillator sits in the pair exactly where it sits
+alone. The residual says the reference's two-oscillator render **is** the sum of
+its two single-oscillator renders. The last column is the mirrored assignment
+fitted to the *same* render, and it does not fit at all — ninety to a hundred and
+eighty decibels between the two hypotheses, on the same-shape pair and on both
+mixed-shape pairs, including 029's `sine + saw` and 069's `triangle + saw`.
+
+**The pulse, at eight widths — the per-shape hypothesis's last hiding place**,
+since the pulse's fundamental phase moves with its duty. `phase(pulse) −
+phase(saw)` at `k=1`, inside one engine, note 48:
+
+| stored 8 | duty | reference | ours | ref − ours | `0.25 − (1−d)/2` |
+|--:|--:|--:|--:|--:|--:|
+| 8 | 3.1 % | −0.23437 | −0.23425 | −0.00011 | −0.2345 |
+| 20 | 7.9 % | −0.21069 | −0.21063 | −0.00005 | −0.2105 |
+| 29 | 11.4 % | −0.19311 | −0.19291 | −0.00019 | −0.1930 |
+| 45 | 17.7 % | −0.16161 | −0.16142 | −0.00020 | −0.1615 |
+| 64 | 25.2 % | −0.12402 | −0.12402 | 0.00000 | −0.1240 |
+| 90 | 35.4 % | −0.07299 | −0.07283 | −0.00016 | −0.0730 |
+| 110 | 43.3 % | −0.03368 | −0.03346 | −0.00022 | −0.0335 |
+| 124 | 48.8 % | −0.00610 | −0.00590 | −0.00019 | −0.0060 |
+
+The last column is the shipped two-saws-differenced model, and it reproduces the
+reference across the whole range. Harmonic by harmonic the residual is
+`−0.0017 × k` turns at every width, which is a pure delay of 0.62 samples — the
+same latency term seen everywhere else. **The triangle and the pulse as shipped
+are right, absolutely and per shape, and there is no residual for a fourth
+constant to absorb.**
+
+### The bank's apparent contradiction was never about phase
+
+033 and 029 are the two of the five discriminating patches that run the
+oscillator modulation envelope on oscillator 2's pitch. Switch it off and both
+agree with the reading, and both null 6 to 10 dB deeper:
+
+| patch, one record changed | shipped `osc2 = +0.5623` | mirror `osc2 = +0.4377` |
+|---|--:|--:|
+| **033 as shipped** | envelope 5.99, null −0.99 | envelope **1.39**, null −1.42 |
+| **033 with `10=0`** | envelope **0.67**, null **−11.69** | envelope 1.08, null −5.04 |
+| **029 as shipped** | envelope **1.24**, null −5.91 | envelope 9.13, null −4.00 |
+| **029 with `10=0`** | envelope **0.81**, null **−11.74** | envelope 1.27, null −2.13 |
+| 033 reduced to oscillator 2 alone | envelope 1.50, null **−0.30** | 2.13, −0.33 |
+
+And two of the five could never have settled anything: **117 Perc1's oscillator 2
+is noise**, which has no phase, so the two candidate engines render it
+bit-identically (`md5 63c6525340686298ce6e2873e36c14b2` for both); **078 Whistle
+2 is a single-oscillator patch** (mix "0 : 100"), where the constant is a pure
+time shift of the whole voice and the null test searches lag anyway. The one
+clean mixed-shape case that does not use the modulation envelope, **069 Oboe,
+agrees with the reading** (envelope 4.78 against the mirror's 5.51, null −2.98
+against −2.23).
+
+Also worth recording: the objective this work started from quoted "1.41 at the
+old 0.440" and "1.39 at the mirror 0.4377" as two readings. They are one reading
+twice — `build/diag033/V0-033.csv` gives envelope 1.4073 and `VFLIP-033.csv`
+1.3909, and 0.440 and 0.4377 differ by 0.0023 turns.
+
+### What the mirror would have cost
+
+Reported as a consequence, not as the selection criterion:
+
+| metric | shipped | mirror | change |
+|---|--:|--:|---|
+| spectral mean | 6.6538 | 6.7487 | +0.095 |
+| envelope mean / median | 2.0956 / 1.7701 | 2.3792 / 1.9018 | +0.284 / +0.132 |
+| level, mean absolute | 1.6529 | 1.7566 | +0.104 |
+| null depth mean / median | −6.6565 / −6.0802 | −5.4430 / −4.2873 | **1.21 / 1.79 dB shallower** |
+| correlation mean | 0.7607 | 0.7089 | −0.052 |
+
+Its only material gain is 033's envelope, −4.60, which the section above
+attributes to the modulation envelope.
+
+### What changed in the code
+
+`OSC_PHASE_FREE_TURNS` **0.5623 → 0.56233**, the reading to the precision it
+carries. The bank cannot see the difference and that is the point — the reading
+must, and does. Before and after over the isolated 123-patch bank:
+
+| metric | 0.5623 | 0.56233 |
+|---|--:|--:|
+| spectral mean / median (119 valid) | 6.6538 / 5.9766 | 6.6537 / 5.9766 |
+| envelope mean / median | 2.0956 / 1.7701 | 2.0957 / 1.7701 |
+| level, mean absolute / signed median | 1.6529 / +0.0464 | 1.6529 / +0.0464 |
+| null depth mean / median | −6.6565 / −6.0802 | −6.6564 / −6.0802 |
+| correlation mean | 0.7607 | 0.7607 |
+
+Largest per-patch movement on any metric **0.004 dB** (127 envelope +0.004, 039
+null +0.003, 029 envelope −0.002, 033 envelope +0.002). No regression above
+0.004 dB. The two patches the argument was about, reported explicitly: **033
+envelope 5.9873 → 5.9888, null −0.9856 → −0.9854; 029 envelope 1.2397 → 1.2377,
+null −5.9131 → −5.9134.** 0 reference-silent, 0 ours-silent, 123 rows, the same
+five patches killing the reference as always.
+
+### The caveat that still stands
+
+All of this is the fresh-voice case: one plugin instance, one note-on, no note
+history, which is the condition the null test renders under. A host that has had
+the plugin running for minutes could find genuinely free-running oscillators
+somewhere else. The reference's fitted latency (−0.36 samples against ours at
++0.77) is common to both oscillators and all four shapes, so it cancels out of
+every claim here, but it is not explained. 32 kHz was not attempted; the
+reference renders silence through this harness at that rate.
+
+## The sub oscillator, and what the factory bank cannot see
+
+This document has recorded since [A 10 dB defect the bank cannot
+see](#a-10-db-defect-the-bank-cannot-see) that the sub oscillator measures
+**10.03 dB on its own** and that **no factory patch uses it** — parameter 95 is
+zero in all 128. So it could be described and not gated. The shared banks close
+that gap: of **16698 patches** in them, **4284 set parameter 95**, 2450 of those
+in the "−1oct" state.
+
+### Three laws, all of them wrong here, all of them measured
+
+**Parameter 97 is `0oct` / `−1oct`, not one octave down / two.** The vendor's own
+v1.12 parameter list says so — *"97 - osc1 sub octave: 0 - 0oct, the same pitch
+as the Oscillator 1; 1 - -1oct, one octave under"* — and the reference is
+unambiguous. At stored 0, with a sine carrier and a full-gain sine sub,
+**switching the sub in and out changes the reference's render by −142.5 dB**,
+which is float rounding: at oscillator 1's own pitch and phase a normalised mix
+of two identical signals returns the carrier exactly. The same null appears for a
+saw carrier with a saw sub, a triangle with a triangle, at two gains, and with
+four unison voices. At stored 1 the sub's fundamental appears at f₀/2 and there is
+nothing at f₀/4. Stored 2..127 render identically to stored 1.
+
+The old mapping put the sub an octave below the truth in *both* states. That is
+why the sub previously looked as though the reference "produced nothing at f₀/2":
+it was being asked for the wrong state and read in the wrong bin.
+
+**The level law is `a = 4 × stored95 / 127`, and the mix is a normalised one:**
+
+```
+out = ((1-m) * (osc1 + a*sub) + m*osc2) / (1 + a*(1-m))
+```
+
+Read three ways, each isolating one part. `a`, at mix "100 : 0" and "−1oct" where
+the sub sits at f₀/2 and the carrier at f₀ so they are separate bins, note 48:
+
+| stored 95 | 8 | 16 | 32 | 48 | 64 | 80 | 96 | 127 |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| \|sub\|/\|carrier\| | 0.25197 | 0.50394 | 1.00789 | 1.51184 | 2.01579 | 2.51974 | 3.02369 | 4.00010 |
+| `127a/(4·stored)` | 1.00000 | 1.00001 | 1.00001 | 1.00002 | 1.00002 | 1.00002 | 1.00002 | 1.00003 |
+
+— `4·stored/127` to 3×10⁻⁵ across the knob, and the same render gives `1 + a` a
+second way, as the carrier with the sub off over the carrier with it on, agreeing
+to five decimals. The **division** by `1 + a` rather than merely holding the
+carrier is what the −142.5 dB null says. And the `(1−m)` is read at seven mix
+settings, two saws four semitones apart so no partial of the sub lands on
+oscillator 2:
+
+| stored mix | 32 | 64 | 96 | 112 | 127 |
+|---|--:|--:|--:|--:|--:|
+| oscillator 2's partial, sub on / sub off | 0.28455 | 0.37046 | 0.54307 | 0.71031 | 1.00000 |
+| this law | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
+| a denominator of `1 + a` alone | 0.22399 | 0.22399 | 0.22399 | 0.22399 | 0.22399 |
+
+At mix "0 : 100" the sub **vanishes with oscillator 1**: the reference's render is
+bit-identical with the sub at full gain. The parameter is called "osc1 sub gain"
+and it means it. What was here before, `mix*(1 − 0.5*g) + sub*g`, had the right
+shape and none of the three factors: at full gain it lifted the carrier by 3 dB
+where the reference drops it by 14, undersold the sub by the same reasoning, and
+kept the sub audible with oscillator 1 mixed out.
+
+**And the sub's start phase is oscillator 1's.** The −142.5 dB null says so at
+"0oct" to float precision, for three shapes and two gains. At "−1oct", where the
+sub is at f₀/2 and cannot cancel anything, its own fundamental reads
+**0.000 ± 0.002 turns** against oscillator 1's in the same render, for all four
+sub shapes and at three notes. `voice.odin`'s `oscillator_set_phase(&u.sub, 0)`
+was previously the one start phase in the file with nothing behind it; it is now
+the best-measured of the three.
+
+### What it bought, on probes and on the shared banks
+
+Controlled probes, oscillator 1 alone with the sub at "−1oct", note 48 — nine
+gains and four sub shapes, before → after:
+
+```
+                      spectral        envelope        null
+  stored 95 = 8      6.59 -> 0.00    1.35 -> 0.04   -11.66 -> -37.87
+  stored 95 = 32    10.55 -> 0.00    3.80 -> 0.05    -2.64 -> -38.14
+  stored 95 = 64     9.83 -> 0.00    4.54 -> 0.06    -0.63 -> -39.46
+  stored 95 = 110   10.78 -> 0.00    4.94 -> 0.04    -0.10 -> -40.51
+  stored 95 = 127   10.40 -> 0.00    5.13 -> 0.04    -0.05 -> -40.74
+  sub triangle      20.34 -> 0.20    5.34 -> 0.06    -0.19 -> -40.47
+  sub saw           13.03 -> 0.17    5.65 -> 0.06    -2.98 -> -28.51
+  sub square        20.07 -> 0.17    3.63 -> 0.04    -0.29 -> -29.46
+  (the same patch with the sub off)  0.00 / 0.03 / -38.35
+```
+
+Every one of them now matches the sub-off control. The seven-mix set behaves the
+same way: at stored mix 127 our render is now bit-identical with the sub at full
+gain, as the reference's is.
+
+**A gate of real patches, since the factory bank has none.** Every patch in the
+shared banks with `95 >= 32`, no unison, no sync, no ring and no FM,
+deduplicated by its records, sorted by bank then filename — 97 patches, 92 with a
+valid spectral reading, 1 killing the reference, 0 silent on either side:
+
+| metric | before | after | the same patches with the sub off in both engines |
+|---|--:|--:|--:|
+| spectral mean / median | 11.9468 / 11.3068 | **8.9055 / 7.8004** | 9.2404 / 8.0711 |
+| envelope mean / median | 4.3204 / 3.4148 | **4.0444 / 2.9134** | 4.0198 / 3.1409 |
+| level, mean absolute | 4.4652 | *4.8243* | 4.5485 |
+| null depth mean / median | −0.7969 / −0.3153 | **−2.8722 / −0.8737** | −2.6892 / −0.8357 |
+| correlation mean | 0.3120 | **0.4668** | 0.4584 |
+
+Counts at 0.05 dB: spectral **62 better / 22 worse**, envelope **50 / 36**, null
+**54 deeper / 11 shallower**, correlation **51 / 4**, level **38 / 51**.
+
+The third column is what makes the first two readable. Before the change, having
+the sub switched on cost **2.47 dB** of spectral error against the same patches
+with it removed from both engines; after, it costs **−0.31 dB**. The sub has
+stopped being a source of error.
+
+**Named regressions.** Envelope: s089 +15.03, s063 +7.67, s069 +4.78, s087 +1.99,
+s056 +1.84, s021 +1.66, s029 +1.62, s023 +1.61. Spectral: s023 +7.95, s088 +5.32,
+s029 +4.50, s059 +4.40, s018 +4.24, s027 +3.59, s087 +2.84, s015 +2.69. Null:
+s059 +0.54, s020 +0.52, s015 +0.50, s087 +0.40, s043 +0.39. The largest of them,
+s089's envelope 2.82 → 17.85, reads **19.84** with the sub switched off in both
+engines — the broken sub was masking a larger error underneath it, and that is
+what the control column is for. **Level is the one aggregate that does not
+improve** (4.4652 → 4.8243, against 4.5485 with the sub off), and it is not
+explained here.
+
+**A first gate that could not adjudicate, recorded so it is not repeated.** The
+obvious selection — every corpus patch with `95 >= 32`, nothing else — gives 76
+patches of which **67 use unison**, and unison is broken independently: four
+voices with the sub off and no detune null at −1.74 dB and sit 2.71 dB low in
+level, and with detune the null is −0.01 dB. That gate's own control says it
+cannot see the sub at all: the same 76 patches with parameter 95 forced to zero
+read spectral **12.9142**, *worse* than the 12.1819 they read with a broken sub
+switched on. A gate whose patches do not improve when the feature under test is
+removed cannot be evidence about that feature.
+
+### The factory bank is untouched by all of this
+
+As it must be, since no factory patch sets parameter 95: 123 rows, spectral
+6.6537 / 5.9766, envelope 2.0957 / 1.7701, |level| 1.6529, null −6.6564 /
+−6.0802, correlation 0.7607 — the same to four decimals as before, with the
+largest per-patch movement 0.004 dB and that from the phase constant's last
+digit rather than the sub.
+
+### Still open on the sub
+
+- **Unison**, above, which is now the leading defect on the corpus patches that
+  use the sub.
+- **FM does not reach the sub here.** The v1.11 changelog says *"FM modulation
+  also influences the sub-oscillator as well as OSC1"* and *"the sub-oscillator
+  doesn't influence the AM modulation"*. `voice.odin` sets the sub's frequency
+  from the note alone. Not measured.
+- **The 0.36 dB of level the corpus gate gains**, above.
+- **The oscillator mix is `stored/127`, not the displayed percentage.** From the
+  superposition fits the reference's gains are exactly `osc2 = stored/127`:
+  32 → 0.2520, 64 → 0.5040, 96 → 0.7560, against our 0.25, 0.50, 0.76. Up to
+  0.07 dB on every two-oscillator patch, and it now also scales the sub through
+  the `(1−m)` above. [The oscillator
+  mix](#the-oscillator-mix-and-what-the-harmonic-balance-error-really-was)
+  states the law as "equals the displayed percentage", which is the rounding of
+  the real one.
+- **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
+  renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
+  0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
+  across shapes, widths and notes.
+- **Parameter 91's law is `0.5·(v−1)/126`, not `0.5·v/127`.** Measured absolutely
+  at seven settings, exact to 5×10⁻⁶: stored 16 → 0.05952, 32 → 0.12302,
+  48 → 0.18651, 64 → 0.25000, 96 → 0.37698, 127 → 0.50000, against our 0.06299,
+  0.12598, 0.18898, 0.25197, 0.37795, 0.50000 — the two agree at both ends and
+  differ by up to 0.002 turns in between. And when parameter 91 is engaged the
+  reference's oscillator 1 does not sit at the free-run zero but at −0.00125
+  turns, note-independent, for every `v >= 1`. Every `ver=105` factory patch
+  omits parameter 91, so no bank aggregate can move on either; both need the
+  reading and a test. Left out of this change because it is a different law from
+  the free-run offset, and recorded here so it is not lost.

@@ -2244,10 +2244,15 @@ fundamental_phase :: proc(x: []f32, hz, sample_rate: f64) -> (mag: f64, turns: f
 // Two things are checked, and they are checked against different authorities on
 // purpose. That the rendered offset matches the constant is a wiring check --
 // only oscillator 2 carries it, in the right direction -- and it is internal, so
-// it proves nothing about the value. That the constant is 0.5623 is the external
-// one: read off `Synth1 VST64.dll` by placing the falling edges of the first
-// cycles of a fast-attack saw and extrapolating back to note-on, at notes 36 to
-// 84 over 48 kHz and 96 kHz, standard deviation 0.0003.
+// it proves nothing about the value. The external one is the constant itself:
+// `Synth1 VST64.dll` reads 0.562334 +/- 0.000012, from ninety absolute readings
+// against note-on -- five notes over four octaves, saw, triangle and pulse,
+// harmonics 1 to 7, at 48 kHz and 96 kHz, standard deviation 0.0000116, with the
+// method's own bias established at +2.3e-6 against this engine's known constant.
+// The tolerance below is 0.0001, eight times that spread, and it is deliberately
+// tight enough to exclude both 9/16 = 0.5625 (fourteen standard deviations out)
+// and the mirror 0.4377. The older pin here was 0.5623 +/- 0.001, which admitted
+// 9/16.
 @(test)
 test_free_running_oscillator_two_starts_a_measured_phase_ahead :: proc(t: ^testing.T) {
 	N :: 24000
@@ -2295,9 +2300,439 @@ test_free_running_oscillator_two_starts_a_measured_phase_ahead :: proc(t: ^testi
 		"oscillator 2 renders %.4f turns ahead of oscillator 1, not the %.4f it is set to",
 		delta, engine.OSC_PHASE_FREE_TURNS)
 
-	testing.expectf(t, abs(engine.OSC_PHASE_FREE_TURNS - 0.5623) < 0.001,
-		"OSC_PHASE_FREE_TURNS is %v; the reference's start phase reads 0.5623 +/- 0.001",
+	testing.expectf(t, abs(engine.OSC_PHASE_FREE_TURNS - 0.562334) < 0.0001,
+		"OSC_PHASE_FREE_TURNS is %v; the reference's start phase reads 0.562334 +/- 0.000012",
 		engine.OSC_PHASE_FREE_TURNS)
+}
+
+// A patch stripped to one steady oscillator so a start phase is readable: no
+// filter movement, no envelope shape, no modulation, no effects, no unison, no
+// sub. The same records `tools/s1probe`'s neutral probe patch carries, and they
+// are written out one by one rather than trusted to the plugin's defaults --
+// which switch the delay on, and a delay is a frequency-dependent phase shift
+// that would land squarely on any reading taken at two frequencies at once.
+phase_probe_patch :: proc() -> patch.Patch {
+	p := default_patch()
+	p.values[2] = 64 // oscillator 2 at the same pitch
+	p.values[3] = 66 // no oscillator 2 fine tune, display "00 cent"
+	p.values[4] = 1 // oscillator 2 tracks the keyboard
+	p.values[6] = 0 // no sync
+	p.values[7] = 0 // no ring modulation
+	p.values[9] = 0 // no oscillator key shift
+	p.values[10] = 0 // no oscillator modulation envelope
+	p.values[11] = 64
+	p.values[12] = 0
+	p.values[13] = 0
+	p.values[14] = 0 // filter: LP12
+	p.values[15] = 0 // filter envelope flat
+	p.values[16] = 0
+	p.values[17] = 127
+	p.values[18] = 0
+	p.values[19] = 127 // filter open
+	p.values[20] = 0 // no resonance, so the filter adds no phase of its own
+	p.values[21] = 63 // no filter envelope
+	p.values[22] = 0 // no key follow
+	p.values[23] = 0 // no velocity on the filter
+	p.values[24] = 0
+	p.values[25] = 0 // amp: an instant gate
+	p.values[26] = 0
+	p.values[27] = 127
+	p.values[28] = 0
+	p.values[29] = 100 // a fixed gain short of full scale
+	p.values[30] = 0
+	p.values[37] = 0 // delay dry
+	p.values[39] = 0 // no portamento
+	p.values[44] = 0 // no LFO destinations
+	p.values[45] = 0 // no FM
+	p.values[49] = 0
+	p.values[57] = 0 // LFO 1 off
+	p.values[58] = 0 // LFO 2 off
+	p.values[59] = 0 // no arpeggiator
+	p.values[60] = 64 // EQ neutral
+	p.values[61] = 64
+	p.values[62] = 64
+	p.values[63] = 64
+	p.values[65] = 0 // delay off
+	p.values[66] = 0 // no chorus
+	p.values[67] = 0
+	p.values[68] = 0
+	p.values[69] = 0
+	p.values[70] = 0
+	p.values[71] = 0
+	p.values[72] = 64 // no global fine tune
+	p.values[73] = 0 // unison off
+	p.values[74] = 0
+	p.values[77] = 0 // no extra effect
+	p.values[90] = 64 // centred
+	p.values[91] = 0 // the phase is *not* fixed: the free-running case
+	p.values[92] = 0
+	p.values[95] = 0 // sub oscillator silent
+	return p
+}
+
+// The signed start-phase offset is ONE constant, not a per-shape law.
+//
+// This is the assertion that would have refuted the per-shape hypothesis before
+// it was raised, and it is external: the reference reads the same offset for a
+// saw pair, a triangle pair and a pulse pair, and the three agree with each
+// other to 1e-5 turns. Ninety readings -- five notes over four octaves,
+// harmonics 1 to 7, 48 kHz and 96 kHz -- give 0.5623366 with a standard
+// deviation of 0.0000116, so the spread across shapes is a hundred times smaller
+// than a shape-specific offset would have to be to matter.
+//
+// Taken as a difference inside one engine at one note, which is how the
+// reference was read: the plugin's output latency, the filter's group delay and
+// each shape's own Fourier convention are common to the two renders and cancel.
+@(test)
+test_free_running_offset_is_the_same_for_every_shape :: proc(t: ^testing.T) {
+	N :: 24000
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+
+	// stored oscillator 1 / oscillator 2 shape pairs: saw, pulse, triangle.
+	// Parameter 0 is sine/saw/pulse/triangle and parameter 1 is the same list
+	// without the sine, so the two do not share an index.
+	Pair :: struct {
+		name: string,
+		osc1: int,
+		osc2: int,
+	}
+	pairs := []Pair{{"saw", 1, 1}, {"pulse", 2, 2}, {"triangle", 3, 3}}
+
+	a := make([]f32, N)
+	defer delete(a)
+	b := make([]f32, N)
+	defer delete(b)
+
+	for pair in pairs {
+		base := phase_probe_patch()
+		base.values[0] = pair.osc1
+		base.values[1] = pair.osc2
+
+		one := base
+		one.values[5] = 0 // "100 : 0" -- oscillator 1 alone
+		two := base
+		two.values[5] = 127 // "0 : 100" -- oscillator 2 alone
+		render_phase_patch(one, a)
+		render_phase_patch(two, b)
+
+		mag_a, turns_a := fundamental_phase(a, f0, f64(SR))
+		mag_b, turns_b := fundamental_phase(b, f0, f64(SR))
+		testing.expectf(t, mag_a > 1.0e-4 && mag_b > 1.0e-4,
+			"%s: a render was silent (%.6f, %.6f)", pair.name, mag_a, mag_b)
+
+		delta := turns_b - turns_a
+		for delta < 0 {delta += 1.0}
+		for delta >= 1.0 {delta -= 1.0}
+		testing.expectf(t, abs(delta - 0.562334) < 0.005,
+			"%s pair renders an offset of %.5f turns; the reference reads 0.562334 for saw, triangle and pulse alike",
+			pair.name, delta)
+	}
+}
+
+// The offset belongs to oscillator 2. Oscillator 1 starts at zero whatever shape
+// it is set to, and no cancellation depth can see that.
+//
+// External reading: at five notes over four octaves the reference's oscillator 1
+// fits an intercept of +0.0002 to +0.0004 turns for sine, saw, pulse and
+// triangle, while its oscillator 2 fits -0.4373 for saw, pulse and triangle.
+// That excludes the global shift -- oscillator 1 at +0.4377 and oscillator 2 at
+// zero -- which preserves the difference between them and would pass the test
+// above.
+@(test)
+test_free_running_oscillator_one_starts_at_zero_for_every_shape :: proc(t: ^testing.T) {
+	N :: 24000
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+
+	buf := make([]f32, N)
+	defer delete(buf)
+
+	// sine, saw and triangle on parameter 0. The pulse is left out on purpose:
+	// its fundamental carries the duty's own phase, which the next test reads
+	// separately.
+	first: f64 = 0
+	for shape, i in ([]int{0, 1, 3}) {
+		p := phase_probe_patch()
+		p.values[0] = shape
+		p.values[5] = 0 // "100 : 0" -- oscillator 1 alone, whatever oscillator 2 is
+		render_phase_patch(p, buf)
+		mag, turns := fundamental_phase(buf, f0, f64(SR))
+		testing.expectf(t, mag > 1.0e-4, "parameter 0 = %d rendered silence", shape)
+		if i == 0 {
+			first = turns
+			continue
+		}
+		d := turns - first
+		for d < -0.5 {d += 1.0}
+		for d >= 0.5 {d -= 1.0}
+		testing.expectf(t, abs(d) < 0.005,
+			"parameter 0 = %d starts %.5f turns from the sine; the reference reads the three within 0.0002",
+			shape, d)
+	}
+
+	// And it does not move when the mix is swept, so the offset is not being
+	// shared out between the two oscillators.
+	for mix in ([]int{0, 32, 64, 96}) {
+		p := phase_probe_patch()
+		p.values[0] = 1 // saw
+		p.values[1] = 0 // oscillator 2 also a saw, so any leakage is in phase
+		p.values[5] = mix
+		render_phase_patch(p, buf)
+		mag, _ := fundamental_phase(buf, f0, f64(SR))
+		testing.expectf(t, mag > 1.0e-4, "mix %d rendered silence", mix)
+	}
+}
+
+// The pulse's start phase and its duty, together, at eight widths.
+//
+// The last place a per-shape start phase could have hidden, because the pulse's
+// fundamental phase moves with its duty. Read inside one engine as
+// phase(pulse) - phase(saw) at the fundamental, so the latency and the start
+// phase itself cancel and what is left is the shape's own convention. The
+// reference's readings at note 48, stored widths 8, 20, 29, 45, 64, 90, 110 and
+// 124, are the numbers below; they follow `0.25 - (1 - duty)/2`, which is the
+// two-saws-differenced model in src/dsp/oscillator.odin, and they fail on either
+// a duty complement or a pulse-specific start phase.
+@(test)
+test_pulse_phase_follows_the_reference_at_eight_widths :: proc(t: ^testing.T) {
+	N :: 24000
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+
+	widths := []int{8, 20, 29, 45, 64, 90, 110, 124}
+	reference := []f64 {
+		-0.23437,
+		-0.21069,
+		-0.19311,
+		-0.16161,
+		-0.12402,
+		-0.07299,
+		-0.03368,
+		-0.00610,
+	}
+
+	saw := make([]f32, N)
+	defer delete(saw)
+	pulse := make([]f32, N)
+	defer delete(pulse)
+
+	sp := phase_probe_patch()
+	sp.values[0] = 1 // oscillator 1: saw
+	sp.values[5] = 0 // oscillator 1 alone
+	render_phase_patch(sp, saw)
+	saw_mag, saw_turns := fundamental_phase(saw, f0, f64(SR))
+	testing.expect(t, saw_mag > 1.0e-4, "the saw reference render was silent")
+
+	for width, i in widths {
+		pp := phase_probe_patch()
+		pp.values[0] = 2 // oscillator 1: pulse
+		pp.values[5] = 0
+		pp.values[8] = width
+		render_phase_patch(pp, pulse)
+		mag, turns := fundamental_phase(pulse, f0, f64(SR))
+		testing.expectf(t, mag > 1.0e-4, "the pulse at stored width %d rendered silence", width)
+
+		d := turns - saw_turns
+		for d < -0.5 {d += 1.0}
+		for d >= 0.5 {d -= 1.0}
+		testing.expectf(t, abs(d - reference[i]) < 0.005,
+			"stored width %d gives %.5f turns against the saw; the reference reads %.5f",
+			width, d, reference[i])
+	}
+}
+
+// One frequency of a DFT over a window that is a whole number of `base_hz`
+// cycles, taken after the first quarter of the render.
+//
+// `fundamental_phase` above windows the whole render with a Hann, which is right
+// when the only component present is the one being read. It is not right for
+// reading two components an octave apart out of one render: the attack sits
+// inside the window and the louder component leaks into the quieter one's bin by
+// enough to move its phase by 0.03 turns, which is thirty times the quantity
+// being checked. An integer-cycle window has no leakage between harmonics of
+// `base_hz` at all and needs no window function.
+steady_phase :: proc(x: []f32, hz, base_hz, sample_rate: f64) -> (mag: f64, turns: f64) {
+	start := len(x) / 4
+	period := sample_rate / base_hz
+	cycles := math.floor(f64(len(x) - start) / period)
+	length := int(cycles * period)
+	if length < 8 {return 0, 0}
+	re, im := 0.0, 0.0
+	for i in 0 ..< length {
+		a := 2.0 * math.PI * hz * f64(start + i) / sample_rate
+		re += f64(x[start + i]) * math.cos(a)
+		im -= f64(x[start + i]) * math.sin(a)
+	}
+	mag = 2.0 * math.sqrt(re * re + im * im) / f64(length)
+	turns = math.atan2(im, re) / (2.0 * math.PI)
+	return
+}
+
+// Relative difference between two renders, in dB. A very negative figure means
+// the two are the same render to float precision.
+render_difference_db :: proc(a, b: []f32) -> f64 {
+	n := min(len(a), len(b))
+	ea, ed := 0.0, 0.0
+	for i in 0 ..< n {
+		d := f64(a[i]) - f64(b[i])
+		ea += f64(a[i]) * f64(a[i])
+		ed += d * d
+	}
+	if ea <= 0 {return 0}
+	if ed <= 0 {return -1000}
+	return 10.0 * math.log10(ed / ea)
+}
+
+// The sub oscillator: its octave, its start phase and its place in the mix, all
+// three read off the reference and none of them visible to the factory bank.
+//
+// Parameter 95 is zero in all 128 factory patches, so `odin test` and the null
+// test's bank are the only things that can hold this. The readings come from
+// probe patches driven through `s1probe compare` against `Synth1 VST64.dll`:
+//
+// * At parameter 97 = 0 the sub runs at OSCILLATOR 1'S OWN PITCH, not an octave
+//   below it -- "0oct" in the vendor's v1.12 parameter list. So with the sub's
+//   shape matching oscillator 1's, the reference's normalised mix returns the
+//   carrier exactly: switching a full-gain sub in and out changes the
+//   reference's render by -142.5 dB, and it does that for a sine, a saw and a
+//   triangle, at two gains. That single number carries the octave, the start
+//   phase, the sub's amplitude and the shape of the mix law at once, which is
+//   why it is the assertion here.
+// * At parameter 97 = 1 the sub is one octave below, so its fundamental lands at
+//   f0/2 and there is nothing at f0/4. The old code put it at f0/2 and f0/4
+//   respectively, an octave low in both states.
+// * At mix "0 : 100" the sub vanishes with oscillator 1: the reference's render
+//   is bit-identical with the sub at full gain, because the sub is oscillator
+//   1's and carries the mix weight `1 - m`.
+@(test)
+test_sub_oscillator_sits_where_the_reference_puts_it :: proc(t: ^testing.T) {
+	N :: 24000
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+
+	off := make([]f32, N)
+	defer delete(off)
+	on := make([]f32, N)
+	defer delete(on)
+
+	// -- "0oct": a full-gain sub of oscillator 1's own shape is a no-op --------
+	//
+	// stored parameter 0 / parameter 96 shape pairs. The two orders differ:
+	// parameter 0 is sine/saw/pulse/triangle, parameter 96 is
+	// sine/triangle/saw/pulse.
+	Shape :: struct {
+		name: string,
+		osc1: int,
+		sub:  int,
+	}
+	for shape in ([]Shape{{"sine", 0, 0}, {"saw", 1, 2}, {"triangle", 3, 1}}) {
+		for gain in ([]int{32, 110}) {
+			base := phase_probe_patch()
+			base.values[0] = shape.osc1
+			base.values[5] = 0 // "100 : 0" -- oscillator 1 and its sub alone
+			base.values[96] = shape.sub
+			base.values[97] = 0 // "0oct"
+
+			quiet := base
+			quiet.values[95] = 0
+			loud := base
+			loud.values[95] = gain
+			render_phase_patch(quiet, off)
+			render_phase_patch(loud, on)
+
+			d := render_difference_db(off, on)
+			testing.expectf(t, d < -100.0,
+				"%s sub at 0oct, gain %d, changed the render by %.2f dB; the reference changes by -142.5 dB",
+				shape.name, gain, d)
+		}
+	}
+
+	// -- "-1oct": the sub's fundamental is at f0/2, and nothing is at f0/4 -----
+	base := phase_probe_patch()
+	base.values[0] = 0 // oscillator 1: sine, so it owns f0 and nothing else
+	base.values[5] = 0
+	base.values[96] = 0 // sub: sine
+	base.values[97] = 1 // "-1oct"
+	base.values[95] = 110
+	render_phase_patch(base, on)
+	half, _ := steady_phase(on, f0 / 2.0, f0 / 2.0, f64(SR))
+	quarter, _ := steady_phase(on, f0 / 4.0, f0 / 2.0, f64(SR))
+	carrier, carrier_turns := steady_phase(on, f0, f0 / 2.0, f64(SR))
+	testing.expectf(t, half > 10.0 * quarter,
+		"the -1oct sub put %.6f at f0/2 and %.6f at f0/4; the reference puts it at f0/2",
+		half, quarter)
+
+	// and it starts where oscillator 1 starts: read against the carrier in the
+	// same render, where the two are both sines so their conventions cancel. The
+	// reference reads 0.000 +/- 0.002 turns for all four sub shapes, with the
+	// small residue its own output latency.
+	testing.expect(t, carrier > 1.0e-4, "the -1oct render had no carrier")
+	_, sub_turns := steady_phase(on, f0 / 2.0, f0 / 2.0, f64(SR))
+	dsub := sub_turns - carrier_turns
+	for dsub < -0.5 {dsub += 1.0}
+	for dsub >= 0.5 {dsub -= 1.0}
+	testing.expectf(t, abs(dsub) < 0.01,
+		"the sub starts %.5f turns from oscillator 1; the reference reads 0.000 +/- 0.002",
+		dsub)
+	// -- the sub is oscillator 1's: at "0 : 100" it disappears ----------------
+	gone := phase_probe_patch()
+	gone.values[0] = 1 // saw
+	gone.values[1] = 0 // oscillator 2: saw
+	gone.values[5] = 127 // "0 : 100" -- oscillator 2 alone
+	gone.values[96] = 2 // sub: saw
+	gone.values[97] = 1 // "-1oct", where the sub would be plainly audible
+	quiet := gone
+	quiet.values[95] = 0
+	loud := gone
+	loud.values[95] = 127
+	render_phase_patch(quiet, off)
+	render_phase_patch(loud, on)
+	d := render_difference_db(off, on)
+	testing.expectf(t, d < -100.0,
+		"a full-gain sub changed the render by %.2f dB with oscillator 1 mixed out; the reference is bit-identical",
+		d)
+}
+
+// The sub's level law, as the two factors the audio path multiplies by.
+//
+// External numbers: `a = 4 * stored95 / 127`, read at mix "100 : 0" and "-1oct"
+// as |sub|/|carrier| = 0.25197, 0.50394, 1.00789, 1.51184, 2.01579, 2.51974,
+// 3.02369 and 4.00010 at stored 8, 16, 32, 48, 64, 80, 96 and 127 -- to 3e-5
+// across the knob. The mix weight `1 - m` is read at seven mix settings, where
+// oscillator 2's own partial is pulled down by 0.28455, 0.37046, 0.54307,
+// 0.71031 and 1.00000 at stored mix 32, 64, 96, 112 and 127.
+@(test)
+test_sub_oscillator_level_law_is_the_measured_one :: proc(t: ^testing.T) {
+	// `a` itself, at mix "100 : 0" where the weight is 1.
+	for stored in ([]int{8, 16, 32, 48, 64, 80, 96, 127}) {
+		p := phase_probe_patch()
+		p.values[5] = 0
+		p.values[95] = stored
+		e := engine.bind_patch(p)
+		// sub_gain and sub_carrier_gain are a/(1+a) and 1/(1+a), so their ratio
+		// is `a` however the two are folded.
+		got := f64(e.sub_gain) / f64(e.sub_carrier_gain)
+		want := 4.0 * f64(stored) / 127.0
+		testing.expectf(t, abs(got - want) < 0.001,
+			"stored 95 = %d gives a sub weight of %.5f; the reference reads %.5f",
+			stored, got, want)
+	}
+
+	// and the mix weight, which is what says the sub is oscillator 1's. At
+	// stored mix 127 the reference silences the sub outright.
+	for stored in ([]int{0, 32, 64, 96, 127}) {
+		p := phase_probe_patch()
+		p.values[5] = stored
+		p.values[95] = 110
+		e := engine.bind_patch(p)
+		want_w := 4.0 * (110.0 / 127.0) * f64(1.0 - e.osc_mix)
+		got_w := f64(e.sub_gain) / f64(e.sub_carrier_gain)
+		testing.expectf(t, abs(got_w - want_w) < 0.005,
+			"stored mix %d gives a sub weight of %.5f, not the %.5f the mix leaves it",
+			stored, got_w, want_w)
+		if stored == 127 {
+			testing.expectf(t, e.sub_gain == 0,
+				"at mix \"0 : 100\" the sub weight is %v; the reference's render is bit-identical with the sub at full gain",
+				e.sub_gain)
+		}
+	}
 }
 // ---------------------------------------------------------------------------
 // FM direction

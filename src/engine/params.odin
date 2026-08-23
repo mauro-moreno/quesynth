@@ -359,9 +359,13 @@ Engine_Params :: struct {
 	osc_phase_shift:    f32,
 	osc_phase_fixed:    bool,
 	sub_shape:          dsp.Waveform,
-	// Parameter 97, in semitones below oscillator 1: -12 or -24.
+	// Parameter 97, in semitones below oscillator 1: 0 or -12.
 	sub_octave:         f32,
+	// The two sides of the reference's normalised sub mix, already divided out
+	// so the audio path holds no divide: the output is
+	// `mixed*sub_carrier_gain + sub*sub_gain`. Zero `sub_gain` means no sub.
 	sub_gain:           f32,
+	sub_carrier_gain:   f32,
 
 	// -- oscillator modulation envelope --------------------------------------
 	mod_env_on:         bool,
@@ -524,22 +528,49 @@ Engine_Params :: struct {
 // Where oscillator 2 starts relative to oscillator 1 when parameter 91 is not
 // fixing the phase, in turns.
 //
-// Read directly off the reference's start phase, not fitted from a
-// cancellation depth. Render a descending saw with an instant amplitude
-// attack, filter open and no effects; place the falling edge of each of the
-// first 24 cycles to sub-sample precision, fit a line through them, and
-// extrapolate back to note-on. Do it with oscillator 1 alone and with
-// oscillator 2 alone, and the difference is the offset. Nine readings at notes
-// 36, 48, 60, 72 and 84 across 48 kHz and 96 kHz give 0.56230, standard
-// deviation 0.00030. The same method reads this engine's own constant back to
-// within 0.0008, so it is unbiased far below the last digit written here.
-// Projecting the fundamental's phase out of two same-pitch oscillators agrees
-// independently: 0.5623 at notes 48, 60 and 72, over saw, pulse and triangle
-// pairs.
+// Read ABSOLUTELY, one oscillator at a time, against note-on -- not as a
+// difference between two renders of a fitted quantity. `s1probe compare` sends
+// the note on before the first block and drives both engines in the same block
+// size, so frame 0 is the note-on sample and a harmonic phase projected from
+// frame 0 is an absolute phase. A start phase and an output latency are the
+// same thing at one pitch and separate over pitch, because a start phase is
+// constant in turns while a latency contributes tau*f0 turns; fitting five
+// notes over four octaves in f0 returns both. The reference reads:
+//
+//   oscillator 1, sine/saw/pulse/triangle:  +0.0002 .. +0.0004 turns
+//   oscillator 2, saw/pulse/triangle:       -0.4373 .. -0.4372, i.e. +0.5627
+//   fitted latency, both oscillators, all four shapes:  -0.36 samples
+//
+// So the offset belongs to oscillator 2 and points forwards, and that reading
+// -- not a cancellation depth -- is what fixes the assignment and the sign. The
+// two alternatives with the same magnitude are excluded by it: the mirror
+// (oscillator 2 at +0.4377) is 0.125 turns from what oscillator 2 reads, and
+// the global shift (oscillator 1 at +0.4377, oscillator 2 at zero), which
+// preserves the difference between them, is excluded by oscillator 1 reading
+// zero. A third construction agrees on the reference's own two-oscillator
+// audio: solving H_pair = alpha*H_osc1 + beta*H_osc2 over harmonics 1..7 gives
+// arg(alpha) = arg(beta) = 0.0000 turns and a residual of -97 dB, where the
+// mirrored model fits the same render at -4 to +7 dB.
+//
+// The value is that difference taken inside one engine at one note, where the
+// plugin's latency, the filter's group delay and each shape's own Fourier
+// convention cancel exactly because they are common to the two renders. Ninety
+// readings -- five notes over four octaves, saw, triangle and pulse, harmonics
+// 1..7 -- give 0.5623366, standard deviation 0.0000116. The same method reads
+// this engine's own constant back with a bias of +2.3e-6, so the reference sits
+// at 0.562334 +/- 0.000012. 96 kHz gives the same figure.
 //
 // It does not move with note or with sample rate, so it is a fixed phase and
 // not a fixed time or sample count. A fixed sample offset would have halved
-// between 48 and 96 kHz; it did not move at all.
+// between 48 and 96 kHz; it did not move at all. Transposing oscillator 2 by an
+// octave and reading it against its own fundamental still gives 0.560, where a
+// fixed time of 0.5623/f0 seconds would give 0.125.
+//
+// It is one constant and not a per-shape law. Saw, triangle and pulse agree to
+// 1e-5; oscillator 1 starts at zero for all four shapes; and the pulse, whose
+// phase moves with its duty and was the last place a per-shape law could hide,
+// matches the `1 - pw` model in oscillator.odin at eight widths to 2e-4 turns.
+// The sub oscillator starts at oscillator 1's phase exactly -- see voice.odin.
 //
 // The previous 0.440 came from fitting how far each harmonic is pulled down --
 // "the fundamental comes back 14.5 dB down, which needs 158 degrees". The
@@ -547,10 +578,12 @@ Engine_Params :: struct {
 // two same-pitch oscillators goes as cos(2*pi*k*phi), which is even, so no
 // attenuation fit can tell +phi from -phi. Do not put one back in its place.
 //
-// Written at the precision the reading carries and no further. 9/16 = 0.5625
-// sits inside the interval and cannot be told apart from it -- over the whole
-// bank the two agree to four decimals on every aggregate -- so it stays a
-// hypothesis rather than the value. 0.5600, the exact sign flip of the old
-// 0.440, is about seven standard deviations out and is ruled out by the
-// reading alone, with no null depth involved in saying so.
-OSC_PHASE_FREE_TURNS :: f32(0.5623)
+// 9/16 = 0.5625 was recorded here as a hypothesis "inside the interval" that
+// could not be told apart from the reading. The absolute reading is 25 times
+// sharper and rules it out: 0.5625 is fourteen standard deviations away.
+// 10^(-1/4) = 0.5623413 is 0.6 sd away and is a coincidence until something
+// else supports it; it must not be written here as a value. Where the constant
+// comes from is not established -- the oscillator's phase is 16:16 fixed point
+// into a 2048-entry table, so a turn is 2^27 steps, and 0.562334 lands on no
+// round number of them.
+OSC_PHASE_FREE_TURNS :: f32(0.56233)

@@ -192,10 +192,25 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				// free-running: oscillator 2 sits a fixed distance behind oscillator
 				// 1, and the reading does not move with pitch or with sample rate.
 				//
-				// The distance is read off the reference's own first cycles -- the
-				// falling edges of a fast-attack saw, extrapolated back to note-on --
-				// at five notes over four octaves and two sample rates. See
-				// OSC_PHASE_FREE_TURNS in params.odin for the method and the figure.
+				// Each of these three phases is now an absolute reading against
+				// note-on rather than a difference between renders, which is what
+				// makes the *assignment* readable at all. Oscillator 1 reads
+				// 0.000 +/- 0.002 turns for all four shapes, so the zero below is
+				// measured and not a convention; oscillator 2 reads +0.5627 for saw,
+				// triangle and pulse alike, so there is one constant here and not a
+				// per-shape law; and the offset is 0.562334 +/- 0.000012 with the
+				// three shapes agreeing to 1e-5. See OSC_PHASE_FREE_TURNS in
+				// params.odin for the method and the alternatives it excludes.
+				//
+				// The sub oscillator's zero is measured the hardest way of the three.
+				// With parameter 97 at "0oct" the sub runs at oscillator 1's own
+				// frequency, so the reference's normalised mix returns exactly the
+				// carrier -- switching a full-gain sub in and out of the reference
+				// changes its render by -142 dB, which is float rounding. That holds
+				// for a sine, a saw and a triangle, so all four sub shapes start
+				// where oscillator 1 starts. At "-1oct" the sub's own fundamental
+				// reads 0.000 +/- 0.002 turns against oscillator 1's in the same
+				// render, for all four shapes.
 				//
 				// It used to be fitted from how far each harmonic is pulled down,
 				// which gave the right magnitude and the wrong sign, because
@@ -671,7 +686,13 @@ voice_process :: proc(
 			sub_value := dsp.oscillator_value(&u.sub, p.sub_shape, 0.5)
 			// The version history: "When the amount of the suboscillator is
 			// raised, the entire volume is automatically adjusted not to grow."
-			mixed = mixed * (1.0 - 0.5 * p.sub_gain) + sub_value * p.sub_gain
+			// Both factors are measured, and they carry the oscillator mix with
+			// them because the sub is oscillator 1's -- see sub_gain in
+			// binding.odin. The line here used to be
+			// `mixed*(1 - 0.5*gain) + sub*gain`, which raised the carrier by up to
+			// 3 dB instead of dividing it down, and left the sub audible with
+			// oscillator 1 mixed out where the reference silences it.
+			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
 		dsp.filter_set_damping(&u.filter, cutoff, p.filter_damping, sample_rate, p.filter_slope)
