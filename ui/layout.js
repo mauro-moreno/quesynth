@@ -170,7 +170,7 @@ window.SYNTH1_LAYOUT = [
             options: ["Sine", "Sawtooth", "Pulse", "Triangle"] },
           { p: 97, label: "Octave", name: "Sub Oscillator Octave", kind: "radio",
             desc: "How far below oscillator 1 the sub oscillator sounds.",
-            options: ["1 Octave Down", "2 Octaves Down"] },
+            options: ["0 Octave Down", "1 Octave Down"] },
         ],
       },
     ],
