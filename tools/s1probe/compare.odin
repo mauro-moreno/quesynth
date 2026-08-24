@@ -20,6 +20,9 @@
 //     --self          control run: compare the reference against itself
 //     --no-floor      skip the second reference render
 //     --verbose       full per-patch detail instead of one line each
+//     --fmsub-gate <case> recursively select and deduplicate unconfounded
+//                     FM + sub records, then render original, fm-off, or
+//                     fm-sub-off on both sides
 //     --isolate       render in a child process even for a single patch; this
 //                     is already the default for a run of more than one, so a
 //                     patch that crashes the reference costs one row, not the run
@@ -472,6 +475,7 @@ print_summary :: proc(rows: []Row) {
 	envelope: [dynamic]f64;   defer delete(envelope)
 	level: [dynamic]f64;      defer delete(level)
 	nulls: [dynamic]f64;      defer delete(nulls)
+	correlation: [dynamic]f64; defer delete(correlation)
 	floor_spectral: [dynamic]f64; defer delete(floor_spectral)
 	floor_envelope: [dynamic]f64; defer delete(floor_envelope)
 	floor_level: [dynamic]f64;    defer delete(floor_level)
@@ -521,6 +525,7 @@ print_summary :: proc(rows: []Row) {
 		append(&envelope, c.envelope_db)
 		append(&level, c.level_db)
 		append(&nulls, c.null_db)
+		append(&correlation, c.correlation)
 		append(&width_delta, c.our_width - c.ref_width)
 
 		if row.has_floor && !row.floor.ref_silent && !row.floor.our_silent && row.floor.spectral_valid {
@@ -581,6 +586,8 @@ print_summary :: proc(rows: []Row) {
 		sdec2(mean(level[:]), 6), sdec2(median(level[:]), 6))
 	fmt.printfln("null depth       mean %v dB   median %v dB   (0 = no cancellation)",
 		dec2(mean(nulls[:]), 6), dec2(median(nulls[:]), 6))
+	fmt.printfln("correlation     mean %v      median %v   (1 = identical waveform)",
+		dec4(mean(correlation[:]), 6), dec4(median(correlation[:]), 6))
 	fmt.println()
 
 	if len(floor_spectral) > 0 {
@@ -791,6 +798,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 	i_env := column(headers, "envelope_db")
 	i_lvl := column(headers, "level_db")
 	i_null := column(headers, "null_db")
+	i_corr := column(headers, "correlation")
 	i_rc := column(headers, "ref_centroid_hz")
 	i_oc := column(headers, "our_centroid_hz")
 	i_rf := column(headers, "ref_f0_hz")
@@ -832,6 +840,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 		r.c.envelope_db = num(fields, i_env)
 		r.c.level_db = num(fields, i_lvl)
 		r.c.null_db = num(fields, i_null)
+		r.c.correlation = num(fields, i_corr)
 		r.c.ref_centroid_hz = num(fields, i_rc)
 		r.c.our_centroid_hz = num(fields, i_oc)
 		r.c.ref_fundamental_hz = num(fields, i_rf)
@@ -873,6 +882,88 @@ cmd_summarise :: proc(path: string) {
 	print_summary(rows[:])
 }
 
+FMSUB_CASE_ORIGINAL :: "original"
+FMSUB_CASE_FM_OFF :: "fm-off"
+FMSUB_CASE_ALL_OFF :: "fm-sub-off"
+
+fmsub_gate_case_valid :: proc(value: string) -> bool {
+	return value == FMSUB_CASE_ORIGINAL || value == FMSUB_CASE_FM_OFF || value == FMSUB_CASE_ALL_OFF
+}
+
+fmsub_gate_selected :: proc(parsed: ^cpatch.Patch) -> bool {
+	if parsed.values[95] < 32 || parsed.values[45] <= 0 {return false}
+	p := sengine.bind_patch(parsed^)
+	if p.unison_voices > 1 || p.osc_sync || p.osc_ring {return false}
+	if p.mod_env_on && p.mod_env_dest == .Fm {return false}
+	for lfo in p.lfo {
+		if lfo.enabled && lfo.destination == .Fm {return false}
+	}
+	return true
+}
+
+fmsub_same_record :: proc(a, b: ^cpatch.Patch) -> bool {
+	for i in 0 ..< cpatch.PARAMETER_COUNT {
+		if a.values[i] != b.values[i] {return false}
+	}
+	return true
+}
+
+fmsub_filter_paths :: proc(paths: ^[dynamic]string) -> (excluded, duplicates, malformed: int) {
+	records: [dynamic]cpatch.Patch
+	defer delete(records)
+	write := 0
+	for i in 0 ..< len(paths^) {
+		path := paths^[i]
+		data, read_err := os.read_entire_file(path, context.allocator)
+		if read_err != nil {
+			delete(path)
+			malformed += 1
+			continue
+		}
+		parsed, parse_err := cpatch.parse_sy1(data)
+		if parse_err != .None {
+			delete(data, context.allocator)
+			delete(path)
+			malformed += 1
+			continue
+		}
+		selected := fmsub_gate_selected(&parsed)
+		duplicate := false
+		if selected {
+			for &prior in records {
+				if fmsub_same_record(&parsed, &prior) {
+					duplicate = true
+					break
+				}
+			}
+		}
+		delete(data, context.allocator)
+		if !selected || duplicate {
+			delete(path)
+			if duplicate {duplicates += 1} else {excluded += 1}
+			continue
+		}
+		append(&records, parsed)
+		paths^[write] = path
+		write += 1
+	}
+	resize(paths, write)
+	return
+}
+
+fmsub_apply_case :: proc(parsed: ^cpatch.Patch, which: string) {
+	switch which {
+	case FMSUB_CASE_FM_OFF:
+		parsed.values[45] = 0
+		parsed.present[45] = true
+	case FMSUB_CASE_ALL_OFF:
+		parsed.values[45] = 0
+		parsed.values[95] = 0
+		parsed.present[45] = true
+		parsed.present[95] = true
+	}
+}
+
 // ------------------------------------------------------------------- command
 
 Compare_Options :: struct {
@@ -910,6 +1001,9 @@ Compare_Options :: struct {
 	// in every design decision. Without it there is no way to tell a 16 dB
 	// spectral error caused by the engine from one caused by the measurement.
 	self:    bool,
+	// Shared-bank FM-to-sub gate. Selection and deduplication use the source
+	// record; this chooses the matched transform rendered on both sides.
+	fmsub_case: string,
 }
 
 cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
@@ -961,6 +1055,18 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 	if strings.has_suffix(strings.to_lower(target), ".sy1") {
 		append(&paths, strings.clone(target))
+	} else if opt.fmsub_case != "" {
+		walker := os.walker_create(target)
+		defer os.walker_destroy(&walker)
+		for info in os.walker_walk(&walker) {
+			if strings.has_suffix(strings.to_lower(info.name), ".sy1") {
+				append(&paths, strings.clone(info.fullpath))
+			}
+		}
+		if path, walk_err := os.walker_error(&walker); walk_err != nil {
+			fmt.eprintfln("compare: cannot walk %q at %q: %v", target, path, walk_err)
+			os.exit(1)
+		}
 	} else {
 		entries, dir_err := os.read_directory_by_path(target, -1, context.allocator)
 		if dir_err != nil {
@@ -969,11 +1075,19 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 		}
 		defer os.file_info_slice_delete(entries, context.allocator)
 		for info in entries {
-			if strings.has_suffix(info.name, ".sy1") {
+			if strings.has_suffix(strings.to_lower(info.name), ".sy1") {
 				append(&paths, strings.clone(info.fullpath))
 			}
 		}
-		slice.sort(paths[:])
+	}
+	slice.sort(paths[:])
+	if opt.fmsub_case != "" {
+		before := len(paths)
+		excluded, duplicates, malformed := fmsub_filter_paths(&paths)
+		if !opt.child {
+			fmt.printfln("FM-to-sub %v gate: %v unique records selected from %v (%v excluded, %v duplicates, %v unreadable)",
+				opt.fmsub_case, len(paths), before, excluded, duplicates, malformed)
+		}
 	}
 
 	if len(paths) == 0 {
@@ -1103,8 +1217,10 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 	for path, patch_index in paths {
 		name := path
-		if idx := strings.last_index_any(path, "/\\"); idx >= 0 {
-			name = path[idx + 1:]
+		if opt.fmsub_case == "" {
+			if idx := strings.last_index_any(path, "/\\"); idx >= 0 {
+				name = path[idx + 1:]
+			}
 		}
 
 		if skip_patch(opt.skip, name) {
@@ -1124,6 +1240,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 			delete(data, context.allocator)
 			continue
 		}
+		if opt.fmsub_case != "" {fmsub_apply_case(&parsed, opt.fmsub_case)}
 
 		ref_audio, mismatches, ref_ok := render_reference_fresh(dll, &parsed, pristine, work, opt.note)
 		if !ref_ok {
@@ -1323,6 +1440,10 @@ parse_compare_args :: proc(args: []string) -> (target: string, opt: Compare_Opti
 		case "--skip":
 			if i + 1 >= len(args) {return "", opt, false}
 			opt.skip = args[i + 1]
+			i += 2
+		case "--fmsub-gate":
+			if i + 1 >= len(args) || !fmsub_gate_case_valid(args[i + 1]) {return "", opt, false}
+			opt.fmsub_case = args[i + 1]
 			i += 2
 		case:
 			if target != "" {

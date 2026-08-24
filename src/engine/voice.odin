@@ -642,36 +642,29 @@ voice_process :: proc(
 		dsp.oscillator_set_frequency(&u.sub, dsp.note_to_hz(note1 + p.sub_octave), sample_rate)
 
 		// Oscillator 2 advances first because it is the FM modulator: its output
-		// displaces oscillator 1's phase within the same sample.
-		//
-		// The direction is the reference's, and it is not the one this file
-		// originally implemented. The run objective said "FM from oscillator 1",
-		// so oscillator 1 was made the modulator, with a note that the readme
-		// disagreed and that the oracle slice should settle it. It is settled,
-		// twice over, by the author of the reference:
-		//
-		//   - The manual, on the FM knob: "oscillator 2 is the modulator,
-		//     oscillator 1 is the carrier."
-		//   - His write-up of Synth1's oscillator section, which gives the phase
-		//     update as osc1_phase += osc1_delta + osc2_out * fmAmount * 2048/2.
-		//
-		// So oscillator 2 modulates oscillator 1 and the displacement accumulates
-		// into the phase. The panel position is converted to its measured frequency
-		// depth below; it is not itself a phase offset.
+		// displaces oscillator 1's phase within the same sample. The sub follows
+		// the same fractional frequency deviation, so its displacement uses its
+		// own increment. This keeps the deviation identical at 0oct and halves it
+		// at -1oct, as measured against Synth1 v1.11.
 		dsp.oscillator_advance(&u.osc2)
-		dsp.oscillator_advance(&u.sub)
 
-		// Read before oscillator 1 is advanced, and before hard sync can reset
-		// this oscillator below: the modulator's contribution to this sample is
-		// its state at the top of the sample.
+		// Read before oscillator 1 or the sub advances, and before hard sync can
+		// reset oscillator 2 below: the modulator's contribution to this sample
+		// is its state at the top of the sample.
 		osc2_value := dsp.oscillator_value(&u.osc2, p.osc2_shape, pulse_width)
 
-		// Ring takes precedence: the readme and the manual agree that "FM
-		// modulation is only possible when ring modulation is off".
 		fm_offset: f32 = 0
+		sub_fm_offset: f32 = 0
 		if fm_position > 0 && !p.osc_ring {
-			fm_offset = osc2_value * fm_frequency_depth(fm_position) * u.osc1.increment
+			depth := fm_frequency_depth(fm_position)
+			fm_offset = osc2_value * depth * u.osc1.increment
+			sub_fm_offset = osc2_value * depth * u.sub.increment
 		}
+
+		// Ring modulation suppresses FM for both oscillator 1 and the sub.
+		// The reference's v1.11 changelog says FM reaches the sub, while the
+		// manual says FM is unavailable when ring modulation is on.
+		dsp.oscillator_advance_modulated(&u.sub, sub_fm_offset)
 		wrapped, wrap_frac := dsp.oscillator_advance_modulated(&u.osc1, fm_offset)
 
 		if p.osc_sync && wrapped {

@@ -84,6 +84,10 @@ run_isolated :: proc(exe, dll, patch_path: string, opt: Compare_Options) -> (u32
 	if opt.self {
 		strings.write_string(&b, "--self ")
 	}
+	if opt.fmsub_case != "" {
+		strings.write_string(&b, "--fmsub-gate ")
+		quote(&b, opt.fmsub_case)
+	}
 
 	strings.write_string(&b, "--child ")
 

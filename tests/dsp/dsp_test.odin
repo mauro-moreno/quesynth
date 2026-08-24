@@ -2964,7 +2964,7 @@ fm_test_patch :: proc() -> patch.Patch {
 
 // Render one block of the sustained portion, which is enough to compare two
 // signal paths and short enough to run many times.
-fm_render :: proc(p: patch.Patch, out: []f32) {
+fm_render_at_note :: proc(p: patch.Patch, out: []f32, note: int) {
 	e: engine.Engine
 	engine.engine_load_patch(&e, p, SR)
 	defer engine.engine_destroy(&e)
@@ -2972,8 +2972,12 @@ fm_render :: proc(p: patch.Patch, out: []f32) {
 	discard := make([]f32, len(out))
 	defer delete(discard)
 
-	engine.engine_note_on(&e, 60, 1.0)
+	engine.engine_note_on(&e, note, 1.0)
 	engine.engine_process(&e, out, discard)
+}
+
+fm_render :: proc(p: patch.Patch, out: []f32) {
+	fm_render_at_note(p, out, 60)
 }
 
 fm_max_difference :: proc(a, b: []f32) -> f32 {
@@ -2983,6 +2987,111 @@ fm_max_difference :: proc(a, b: []f32) -> f32 {
 		if d > worst {worst = d}
 	}
 	return worst
+}
+
+fm_test_fft_forward :: proc(re, im: []f64) {
+	n := len(re)
+	if n < 2 || len(im) != n || n & (n - 1) != 0 {return}
+	j := 0
+	for i in 1 ..< n {
+		bit := n >> 1
+		for bit != 0 && j & bit != 0 {
+			j ~= bit
+			bit >>= 1
+		}
+		j |= bit
+		if i < j {
+			re[i], re[j] = re[j], re[i]
+			im[i], im[j] = im[j], im[i]
+		}
+	}
+	length := 2
+	for length <= n {
+		half := length / 2
+		angle := -2.0 * math.PI / f64(length)
+		wr, wi := math.cos(angle), math.sin(angle)
+		for start := 0; start < n; start += length {
+			cr, ci := 1.0, 0.0
+			for k in 0 ..< half {
+				a, b := start + k, start + k + half
+				vr := re[b] * cr - im[b] * ci
+				vi := re[b] * ci + im[b] * cr
+				re[b], im[b] = re[a] - vr, im[a] - vi
+				re[a], im[a] = re[a] + vr, im[a] + vi
+				next_cr := cr * wr - ci * wi
+				ci = cr * wi + ci * wr
+				cr = next_cr
+			}
+		}
+		length <<= 1
+	}
+}
+
+fm_analytic_phase :: proc(signal: []f32) -> []f64 {
+	n := len(signal)
+	if n < 2 || n & (n - 1) != 0 {return nil}
+	re, im := make([]f64, n), make([]f64, n)
+	defer delete(im)
+	for value, i in signal {re[i] = f64(value)}
+	fm_test_fft_forward(re, im)
+	for k in 1 ..< n / 2 {
+		re[k], im[k] = 2.0 * re[k], 2.0 * im[k]
+	}
+	for k in n / 2 + 1 ..< n {
+		re[k], im[k] = 0, 0
+	}
+	for i in 0 ..< n {im[i] = -im[i]}
+	fm_test_fft_forward(re, im)
+	for i in 0 ..< n {
+		re[i], im[i] = re[i] / f64(n), -im[i] / f64(n)
+	}
+	phase := make([]f64, n)
+	previous := math.atan2(im[0], re[0])
+	phase[0] = previous
+	for i in 1 ..< n {
+		current := math.atan2(im[i], re[i])
+		delta := current - previous
+		for delta > math.PI {delta -= 2.0 * math.PI}
+		for delta < -math.PI {delta += 2.0 * math.PI}
+		phase[i] = phase[i - 1] + delta
+		previous = current
+	}
+	delete(re)
+	return phase
+}
+
+fm_sub_audio_slope :: proc(base_carrier, base_mix, fm_carrier, fm_mix: []f32) -> f64 {
+	n := min(min(len(base_carrier), len(base_mix)), min(len(fm_carrier), len(fm_mix)))
+	base_sub, fm_sub := make([]f32, n), make([]f32, n)
+	defer delete(base_sub)
+	defer delete(fm_sub)
+	for i in 0 ..< n {
+		base_sub[i] = (5.0 * base_mix[i] - base_carrier[i]) / 4.0
+		fm_sub[i] = (5.0 * fm_mix[i] - fm_carrier[i]) / 4.0
+	}
+	base_carrier_phase := fm_analytic_phase(base_carrier[:n])
+	fm_carrier_phase := fm_analytic_phase(fm_carrier[:n])
+	base_sub_phase := fm_analytic_phase(base_sub)
+	fm_sub_phase := fm_analytic_phase(fm_sub)
+	defer delete(base_carrier_phase)
+	defer delete(fm_carrier_phase)
+	defer delete(base_sub_phase)
+	defer delete(fm_sub_phase)
+	sum_x, sum_y, sum_xx, sum_xy := 0.0, 0.0, 0.0, 0.0
+	points := 0
+	for i := 9600; i < min(n, 62400); i += 2048 {
+		x := fm_carrier_phase[i] - base_carrier_phase[i]
+		y := fm_sub_phase[i] - base_sub_phase[i]
+		if abs(x) < 1.0e-5 {continue}
+		sum_x += x
+		sum_y += y
+		sum_xx += x * x
+		sum_xy += x * y
+		points += 1
+	}
+	if points < 2 {return 0}
+	count := f64(points)
+	return (sum_xy - sum_x * sum_y / count) / (sum_xx - sum_x * sum_x / count)
 }
 
 // With no modulation, the FM-capable advance has to be the plain advance.
@@ -3119,6 +3228,83 @@ test_fm_modulates_oscillator_one_from_oscillator_two :: proc(t: ^testing.T) {
 	testing.expectf(t, peak > 0.0001, "oscillator 2 render was silent: peak %v", peak)
 }
 
+// `s1probe fmsubprobe --values 0,16,24,32,43 --note 48` measures Synth1
+// v1.11 directly. At -1oct its signed sub/OSC1 displacement slopes are
+// 0.473336, 0.470593, 0.454299 and 0.500492 for the four non-zero FM states.
+// Those readings are each nearest the 0.5 fractional-deviation candidate and
+// exclude equal absolute displacement (1) and an unmodulated sub (0).
+@(test)
+test_fm_reaches_sub_with_reference_measured_displacement :: proc(t: ^testing.T) {
+	fmsub_patch :: proc(octave, fm: int, sub_on, ring: bool) -> patch.Patch {
+		p := fm_test_patch()
+		p.values[0] = 0 // oscillator 1: sine
+		p.values[1] = 1 // oscillator 2: triangle
+		p.values[2] = 40 // oscillator 2: -24 semitones
+		p.values[3] = 66 // oscillator 2: 0 cents
+		p.values[4] = 1 // keyboard tracking on
+		p.values[5] = 0 // oscillator 1 and sub alone
+		p.values[45] = fm
+		p.values[95] = sub_on ? 127 : 0
+		p.values[96] = 0 // sub: sine
+		p.values[97] = octave
+		p.values[7] = ring ? 1 : 0
+		p.values[91] = 1 // fixed, equal start phase
+		p.values[19] = 127 // filter open
+		p.values[20] = 0 // no resonance
+		p.values[21] = 63 // no filter-envelope movement
+		p.values[22] = 0 // no filter key tracking
+		p.values[23] = 0 // no filter saturation
+		p.values[25] = 0 // instant amplifier attack
+		p.values[26] = 0 // no amplifier decay
+		p.values[27] = 127 // full sustain
+		p.values[28] = 0 // instant release
+		p.values[29] = 100 // headroom
+		p.values[30] = 0 // no velocity scaling
+		p.values[37] = 0 // delay dry
+		p.values[66] = 0 // chorus off
+		p.values[77] = 0 // extra effect off
+		return p
+	}
+
+	N :: 65536
+	base_carrier, base_mix := make([]f32, N), make([]f32, N)
+	fm_carrier, fm_mix := make([]f32, N), make([]f32, N)
+	defer delete(base_carrier)
+	defer delete(base_mix)
+	defer delete(fm_carrier)
+	defer delete(fm_mix)
+
+	readings := []struct {fm: int, reference_slope: f64} {
+		{16, 0.473336},
+		{24, 0.470593},
+		{32, 0.454299},
+		{43, 0.500492},
+	}
+	for octave in 0 ..< 2 {
+		fm_render_at_note(fmsub_patch(octave, 0, false, false), base_carrier, 48)
+		fm_render_at_note(fmsub_patch(octave, 0, true, false), base_mix, 48)
+		for reading in readings {
+			fm_render_at_note(fmsub_patch(octave, reading.fm, false, false), fm_carrier, 48)
+			fm_render_at_note(fmsub_patch(octave, reading.fm, true, false), fm_mix, 48)
+			slope := fm_sub_audio_slope(base_carrier, base_mix, fm_carrier, fm_mix)
+			want := octave == 0 ? 1.0 : reading.reference_slope
+			tolerance := octave == 0 ? 0.02 : 0.065
+			testing.expectf(t, abs(slope - want) < tolerance,
+				"audio at FM state %d and octave %d gives sub/OSC1 slope %.6f; reference %.6f",
+				reading.fm, octave, slope, want)
+		}
+	}
+
+	// Ring suppresses FM in observable output at both octave settings.
+	for octave in 0 ..< 2 {
+		fm_render_at_note(fmsub_patch(octave, 0, true, true), base_mix, 48)
+		for fm in ([]int{43, 77}) {
+			fm_render_at_note(fmsub_patch(octave, fm, true, true), fm_mix, 48)
+			testing.expectf(t, fm_max_difference(base_mix, fm_mix) == 0,
+				"ring output changed with FM state %d at octave %d", fm, octave)
+		}
+	}
+}
 // The other direction-sensitive fact: with oscillator 1 alone in the mix and FM
 // running, oscillator 2's own shape has to reach the output, because it is the
 // modulator shaping the carrier. If oscillator 2 were the carrier instead, its
