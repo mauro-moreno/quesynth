@@ -5256,6 +5256,74 @@ and **0/+12 semitones**. The fixture at zero detune reads **−0.3293 dB** level
 and **−32.6465 dB** null; with parameter 73 off it reads **−0.1406 dB** and
 **−38.1387 dB**. These are probe outputs, not values copied from the engine.
 
+### Parameter 76: reference evidence; engine mapping unresolved
+
+The first probe measured parameter 75, but the original detuned reproduction
+changes parameter **76** from 0 to 20 while 75 remains 22. Parameter 76 is not
+another outer unison spread. A fresh reference render shows OSC1's centre plus
+four signed pairs:
+
+```text
+d76 = 20 * stored76 / 127 cents
+inner = {-7, -5, -3, -1, 0, +1, +3, +5, +7} * d76
+```
+
+At stored 127 the signed components are −140, −100, −60, −20, 0, +20, +60,
++100 and +140 cents. At stored 20 the same command resolves
+−22.05, −15.76, −9.45, −3.14, 0, +3.14, +9.45, +15.74 and +22.05 cents;
+the old four-peak reader therefore printed the misleading subset
+−15.745/−9.444/−0.002/+22.047.
+
+The reference evidence says this construction is local to OSC1 and does not
+inherit the parameter-93 voice count. Parameter 75 remains an outer voice offset
+and adds to every one of these nine frequencies. A two-voice sweep at p75=64
+and p76=127 reads the Cartesian sum of the p75 ±13.615-cent layers and those
+nine inner offsets. The probe also shows that parameter 91 aligns the nine
+components when engaged, while zero keeps a repeatable non-symmetric phase set.
+These are reference readings only; the engine does not claim this mapping.
+
+The sub was isolated rather than copied from OSC1. With a sine sub at `97=1`,
+sub gain 110, one outer voice and oscillator 1 held at its own octave, p76=0
+leaves one component at the sub frequency. At p76=127 the reference reads nine
+sub components at −140/−100/−60/−20/0/+20/+60/+100/+140 cents. Each isolated
+component reads about **4.40k** in the same phasor window, so the sub uses the
+same measured **0.3 per-component gain**, not a `1/9` trim. Its free phases
+(`+0.3728,+0.4481,+0.2350,+0.3992,0,+0.0920,+0.2871,+0.1751,+0.4059`
+turns against the centre) are separate from OSC1. This proves that the sub
+cannot be added by analogy, but does not prove a shippable engine path.
+
+The committed fixture now records `76,0` explicitly. Reproduce the sweep at two
+notes, then the outer interaction and voice-count controls, with:
+
+```powershell
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 16,22,32,64,96,127 --note 60
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 16,22,32,64,96,127 --note 84
+```
+
+The probe now prints the signed components, phases and isolated sub readings;
+the signed engine assertions were removed because the controlled four-voice
+fixture still does not match. Keep the p76-on fixture committed as the stop
+gate:
+
+```powershell
+./build/s1probe.exe compare ext/synth1/Synth1/Synth1 VST64.dll `
+  tools/s1probe/fixtures/unison-four-p76-20.sy1 --limit 1 --note 60
+```
+
+The baseline symmetric engine reads that literal fixture at **3.26 dB
+spectral, +3.61 dB level, −0.40 dB null**. The one-voice reference evidence is
+strong: p76=20 reads **−22.05/−15.76/−9.45/−3.14/0/+3.14/+9.45/+15.74/+22.05
+cents**, while p76=0 is one component. But the four-voice phase/gain
+composition remains unresolved, so no engine change is retained.
+
+The matched corpus has 48 p76-nonzero files among the 67 selected unison-on
+patches. Its baseline summary is **9.98 dB spectral, 4.91 dB envelope,
+−8.82 dB level, −0.22 dB null**. This is evidence for a future repair, not a
+pass claim.
+
 The shared-bank gate keeps the original selection (`95 >= 32` and unison on),
 flattens recursive input into numbered files, clears stale output, works with a
 single selected patch under strict mode, writes `on.csv` and `unison-off.csv`,

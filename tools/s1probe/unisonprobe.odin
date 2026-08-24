@@ -269,6 +269,22 @@ unison_read_layers :: proc(audio: []f32, f0: f64) -> (out: Unison_Layers, ok: bo
 	return out, true
 }
 
+// Read the complete OSC1 parameter-76 construction. Unlike the older four-layer
+// reader above, this asks for the centre plus all four signed pairs.
+unison_read_inner_components :: proc(audio: []f32, f0: f64) -> (peaks: [dynamic]f64, ok: bool) {
+	mid := unison_mid(audio)
+	defer delete(mid)
+	peaks, ok = unison_spectral_peaks(
+		mid[:min(len(mid), g_hold_frames)],
+		f64(SAMPLE_RATE), f0, max(f0 * 0.20, 12.0), 9,
+	)
+	if !ok {
+		delete(peaks)
+		return nil, false
+	}
+	return peaks, true
+}
+
 unison_render :: proc(
 	dll: string,
 	p: ^cpatch.Patch,
@@ -355,6 +371,102 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 	}
 
 	fmt.println()
+	fmt.println("parameter 76: nine signed OSC1 components (one outer voice)")
+	fmt.println("inner law is centre plus +/-1,3,5,7 times 20*stored/127 cents")
+	for stored in ([]int{0, 8, 16, 20, 32, 64, 96, 127}) {
+		p := base
+		set_param(&p, 73, 0)
+		set_param(&p, 93, 1)
+		set_param(&p, 75, 0)
+		set_param(&p, 76, stored)
+		set_param(&p, 85, 24)
+		set_param(&p, 1, 1)
+		set_param(&p, 5, 0)
+		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
+		unison_require(audio != nil, fmt.tprintf("p76 stored %d render", stored))
+		rms, rms_ok := unison_steady_rms(audio)
+		if rms_ok {fmt.printfln("stored %3v  external RMS %.6f", stored, rms)}
+		peaks, peaks_ok := unison_read_inner_components(audio, f0)
+		if stored == 0 {
+			// A single tone cannot supply nine local maxima; do not report FFT
+			// sidelobes as components.
+			peaks_ok = false
+		}
+		if peaks_ok {
+			fmt.printfln("stored %3v  cents:", stored)
+			for hz in peaks {
+				fmt.printfln("            %+.3f", 1200.0 * math.log2(hz / f0))
+			}
+			fmt.println("            phase turns / magnitude")
+			origin := unison_phasor_window(audio, peaks[len(peaks) / 2], 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+			for hz in peaks {
+				ph := unison_phasor_window(audio, hz, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+				fmt.printfln("            %+.4f  %.6f", unison_relative_turns(ph, origin), math.sqrt(ph.re * ph.re + ph.im * ph.im))
+			}
+		} else {
+			fmt.printfln("stored %3v  unresolved", stored)
+		}
+		delete(peaks)
+		delete(audio)
+	}
+	fmt.println("sub parameter 76 isolation: one voice, -1 octave")
+	for stored in ([]int{0, 127}) {
+		p := base
+		set_param(&p, 73, 0)
+		set_param(&p, 93, 1)
+		set_param(&p, 75, 0)
+		set_param(&p, 76, stored)
+		set_param(&p, 85, 24)
+		set_param(&p, 1, 1)
+		set_param(&p, 5, 0)
+		set_param(&p, 95, 110)
+		set_param(&p, 97, 1)
+		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
+		unison_require(audio != nil, fmt.tprintf("sub p76 stored %d render", stored))
+		if stored == 0 {
+			ph := unison_phasor_window(audio, f0 * 0.5, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+			fmt.printfln("sub stored 000  centre magnitude %.6f", math.sqrt(ph.re * ph.re + ph.im * ph.im))
+		} else {
+			sub_peaks, sub_ok := unison_read_inner_components(audio, f0 * 0.5)
+			if sub_ok {
+				fmt.println("sub stored 127  cents / phase / magnitude:")
+				sub_origin := unison_phasor_window(audio, sub_peaks[len(sub_peaks) / 2], 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+				for hz in sub_peaks {
+					ph := unison_phasor_window(audio, hz, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+					fmt.printfln("            %+.3f  %+.4f  %.6f",
+						1200.0 * math.log2(hz / (f0 * 0.5)), unison_relative_turns(ph, sub_origin),
+						math.sqrt(ph.re * ph.re + ph.im * ph.im))
+				}
+			} else {
+				fmt.println("sub stored 127 unresolved")
+			}
+			delete(sub_peaks)
+		}
+		delete(audio)
+	}
+	fmt.println("p75 interaction: p76=20, four voices")
+	for outer in ([]int{0, 22, 64, 127}) {
+		p := base
+		set_param(&p, 73, 1)
+		set_param(&p, 93, 4)
+		set_param(&p, 75, outer)
+		set_param(&p, 76, 20)
+		set_param(&p, 85, 24)
+		set_param(&p, 1, 1)
+		set_param(&p, 5, 0)
+		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
+		rms, rms_ok := unison_steady_rms(audio)
+		if rms_ok {fmt.printfln("p75 %3v external RMS %.6f", outer, rms)}
+		peaks, peaks_ok := unison_read_inner_components(audio, f0)
+		if peaks_ok {
+			fmt.printfln("p75 %3v  first/last %.3f / %.3f cents (nine-component groups add to outer layers)",
+				outer, 1200.0 * math.log2(peaks[0] / f0), 1200.0 * math.log2(peaks[len(peaks) - 1] / f0))
+		} else {
+			fmt.printfln("p75 %3v  unresolved", outer)
+		}
+		delete(peaks)
+		delete(audio)
+	}
 	fmt.println("zero-detune stack: steady RMS and ratio to one voice")
 	one_rms := 0.0
 	for count in 1 ..= 8 {
@@ -362,6 +474,7 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 		set_param(&p, 73, count > 1 ? 1 : 0)
 		set_param(&p, 93, count)
 		set_param(&p, 75, 0)
+		set_param(&p, 76, 0)
 		set_param(&p, 91, 0)
 		set_param(&p, 92, 0)
 		audio := unison_render(dll, &p, pristine, work, note, 1.5)
@@ -380,6 +493,7 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 		set_param(&p, 73, 0)
 		set_param(&p, 93, 1)
 		set_param(&p, 75, 0)
+		set_param(&p, 76, 0)
 		set_param(&p, 91, 1)
 		set_param(&p, 92, amount)
 		one_audio := unison_render(dll, &p, pristine, work, note, 1.5)
@@ -405,6 +519,7 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 			set_param(&p, 73, count > 1 ? 1 : 0)
 			set_param(&p, 93, count)
 			set_param(&p, 75, 0)
+			set_param(&p, 76, 0)
 			set_param(&p, 91, 1)
 			set_param(&p, 92, amount)
 			audio := unison_render(dll, &p, pristine, work, note, 1.5)
@@ -433,6 +548,7 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 		set_param(&p, 73, 1)
 		set_param(&p, 93, 4)
 		set_param(&p, 75, 0)
+		set_param(&p, 76, 0)
 		set_param(&p, 85, stored)
 		audio := unison_render(dll, &p, pristine, work, note, 2.0)
 		mid := unison_mid(audio)
@@ -453,6 +569,7 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 		set_param(&p, 73, enabled ? 1 : 0)
 		set_param(&p, 93, 4)
 		set_param(&p, 75, 0)
+		set_param(&p, 76, 0)
 		set_compare_timing(COMPARE_BLOCK_DEFAULT)
 		ref, mismatches, ref_ok := render_reference_fresh(dll, &p, pristine, work, note)
 		unison_require(ref_ok && ref != nil && mismatches == 0,
