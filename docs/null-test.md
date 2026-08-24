@@ -5256,73 +5256,99 @@ and **0/+12 semitones**. The fixture at zero detune reads **−0.3293 dB** level
 and **−32.6465 dB** null; with parameter 73 off it reads **−0.1406 dB** and
 **−38.1387 dB**. These are probe outputs, not values copied from the engine.
 
-### Parameter 76: reference evidence; engine mapping unresolved
+### Parameter 76: measured OSC1 component field
 
-The first probe measured parameter 75, but the original detuned reproduction
-changes parameter **76** from 0 to 20 while 75 remains 22. Parameter 76 is not
-another outer unison spread. A fresh reference render shows OSC1's centre plus
-four signed pairs:
+The original detuned reproduction changes parameter **76** from 0 to 20 while
+75 remains 22. Parameter 76 is not another outer unison spread. It creates
+OSC1's centre plus four signed pairs even when parameter 73 is off:
 
 ```text
 d76 = 20 * stored76 / 127 cents
 inner = {-7, -5, -3, -1, 0, +1, +3, +5, +7} * d76
 ```
 
-At stored 127 the signed components are −140, −100, −60, −20, 0, +20, +60,
-+100 and +140 cents. At stored 20 the same command resolves
-−22.05, −15.76, −9.45, −3.14, 0, +3.14, +9.45, +15.74 and +22.05 cents;
-the old four-peak reader therefore printed the misleading subset
-−15.745/−9.444/−0.002/+22.047.
+At stored 20 the reference reads **−22.049, −15.761, −9.448, −3.146,
+−0.008, +3.149, +9.466, +15.730 and +22.055 cents**. Stored 127 reads
+**−140.012, −99.993, −59.987, −20.013, −0.010, +19.990, +60.007,
++99.993 and +140.007 cents**. Sweeps at stored 8, 16, 32, 64 and 96 and at
+notes 60, 84 and 108 follow the same signed law. The engine now binds the base
+step directly and renders all nine components inside every outer layer; it no
+longer multiplies parameter 76 by parameter 93's symmetric spread.
 
-The reference evidence says this construction is local to OSC1 and does not
-inherit the parameter-93 voice count. Parameter 75 remains an outer voice offset
-and adds to every one of these nine frequencies. A two-voice sweep at p75=64
-and p76=127 reads the Cartesian sum of the p75 ±13.615-cent layers and those
-nine inner offsets. The probe also shows that parameter 91 aligns the nine
-components when engaged, while zero keeps a repeatable non-symmetric phase set.
-These are reference readings only; the engine does not claim this mapping.
+Parameter 75 composes outside that field. With two voices, p75=64 and p76=127,
+the probe resolves all **18** Cartesian frequencies, from −153.617 to +153.607
+cents. The p76 voice-count control asks for 9, 18 and 36 peaks at counts 1, 2
+and 4 and gets exactly those counts; the first/last readings are
+−140.012/+140.007, −153.617/+153.607 and −153.622/+153.611 cents. Thus the
+inner field stays nine components per outer layer rather than taking its size
+from parameter 93.
+
+The free phases are signed and are not an additive inner-plus-outer table. The
+probe prints all 36 separately resolved phases at p75=64/p76=127. A second
+controlled field at p75=22/p76=20 reproduces each of the first four outer-layer
+rows within 0.018 turns, which is the matrix used by the engine. Parameter 91 is
+also explicit now: at p76=127, p91=0 prints the non-symmetric OSC1 phases
+`+0.7420,+0.8907,+0.4712,+0.8070,0,+0.1927,+0.5815,+0.3503,+0.8183`
+against the centre, while p91=1 puts every reading within 0.0075 turns of zero.
 
 The sub was isolated rather than copied from OSC1. With a sine sub at `97=1`,
 sub gain 110, one outer voice and oscillator 1 held at its own octave, p76=0
 leaves one component at the sub frequency. At p76=127 the reference reads nine
 sub components at −140/−100/−60/−20/0/+20/+60/+100/+140 cents. Each isolated
-component reads about **4.40k** in the same phasor window, so the sub uses the
-same measured **0.3 per-component gain**, not a `1/9` trim. Its free phases
-(`+0.3728,+0.4481,+0.2350,+0.3992,0,+0.0920,+0.2871,+0.1751,+0.4059`
-turns against the centre) are separate from OSC1. This proves that the sub
-cannot be added by analogy, but does not prove a shippable engine path.
+component reads **4402.9--4409.8** against the p76=0 centre at **14703.3**:
+the gain is **0.3 per component**, not `1/9`. Its separately measured free
+phases are
+`+0.3728,+0.4481,+0.2350,+0.3992,0,+0.0920,+0.2871,+0.1751,+0.4059`.
 
-The committed fixture now records `76,0` explicitly. Reproduce the sweep at two
-notes, then the outer interaction and voice-count controls, with:
+Reproduce the signed values, the p75 Cartesian field, p91 alignment and the
+three voice counts at note 60. The note-108 run also resolves the controlled
+four-voice field; below note 96 its closest pair is narrower than one FFT bin.
 
 ```powershell
 odin build tools/s1probe -out:build/s1probe.exe
-./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
-  --values 16,22,32,64,96,127 --note 60
-./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
-  --values 16,22,32,64,96,127 --note 84
+./build/s1probe.exe unisonprobe "ext/synth1/Synth1/Synth1 VST64.dll" `
+  --fixture tools/s1probe/fixtures/unison-four.sy1 --values 22 --note 60
+./build/s1probe.exe unisonprobe "ext/synth1/Synth1/Synth1 VST64.dll" `
+  --fixture tools/s1probe/fixtures/unison-four.sy1 --values 22 --note 108
 ```
 
-The probe now prints the signed components, phases and isolated sub readings;
-the signed engine assertions were removed because the controlled four-voice
-fixture still does not match. Keep the p76-on fixture committed as the stop
-gate:
+The DSP suite pins the two external signed frequency rows, the public one-voice
+nine-component render, both signed phase sets and fixed alignment, and the
+sub's signed frequencies and 0.3 gain. These tests do not derive their expected
+values from the engine helpers and reject the former symmetric guess.
+
+The committed p76-on fixture is the stop gate:
 
 ```powershell
-./build/s1probe.exe compare ext/synth1/Synth1/Synth1 VST64.dll `
+./build/s1probe.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" `
   tools/s1probe/fixtures/unison-four-p76-20.sy1 --limit 1 --note 60
 ```
 
-The baseline symmetric engine reads that literal fixture at **3.26 dB
-spectral, +3.61 dB level, −0.40 dB null**. The one-voice reference evidence is
-strong: p76=20 reads **−22.05/−15.76/−9.45/−3.14/0/+3.14/+9.45/+15.74/+22.05
-cents**, while p76=0 is one component. But the four-voice phase/gain
-composition remains unresolved, so no engine change is retained.
+The former engine read **3.26 dB spectral, +3.61 dB level and −0.40 dB null**.
+The measured field reads **3.95 dB spectral, 0.78 dB envelope, +0.35 dB level
+and −16.82 dB null**. Spectral error does not improve on this one fixture, so it
+is not used as a broad pass claim; the load-bearing stop condition is that the
+original detuned fixture no longer nulls near 0 dB.
 
-The matched corpus has 48 p76-nonzero files among the 67 selected unison-on
-patches. Its baseline summary is **9.98 dB spectral, 4.91 dB envelope,
-−8.82 dB level, −0.22 dB null**. This is evidence for a future repair, not a
-pass claim.
+The frozen shared subset has 48 p76-nonzero patches among the 67 selected
+unison-on files. The same names were used before and after; the unison-off
+control has 40 non-silent reference rows:
+
+| metric, mean / median | before on | after on | before off | after off |
+|---|--:|--:|--:|--:|
+| spectral dB | 9.98 / 8.78 | 8.83 / 7.46 | 10.88 / 9.41 | 9.39 / 8.17 |
+| envelope dB | 4.91 / 4.48 | 5.18 / 4.48 | 4.65 / 3.71 | 5.01 / 3.92 |
+| signed level dB | −8.82 / −7.40 | −9.32 / −7.89 | −8.01 / −7.35 | −8.59 / −7.77 |
+| null dB | −0.22 / −0.09 | −0.36 / −0.13 | −0.33 / −0.19 | −0.72 / −0.25 |
+
+The spectral and null aggregates improve both with unison on and off, as they
+must: parameter 76 is an OSC1 construction and remains active when parameter 73
+is off. Envelope mean and signed level regress and are recorded rather than
+hidden. This does **not** claim all parameter-76 or unison behavior is fixed.
+The p76 phase rows for outer layers 4--7, its outer-layer sub phase composition,
+and its FM and hard-sync interactions remain unmeasured; the engine retains the
+separately measured component and outer offsets in those paths rather than
+fitting a trim to this corpus.
 
 The shared-bank gate keeps the original selection (`95 >= 32` and unison on),
 flattens recursive input into numbered files, clears stale output, works with a

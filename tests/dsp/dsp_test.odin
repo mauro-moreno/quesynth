@@ -842,6 +842,140 @@ test_unison_detune_matches_the_reference_cents_sweep :: proc(t: ^testing.T) {
 	}
 }
 
+// Parameter 76 is an OSC1-internal construction, measured with outer unison
+// disabled. The nine signed frequencies at stored 20 and 127 come from Synth1
+// itself; they are not derived from the engine helper under test. Keeping every
+// sign rejects the former parameter-93-dependent symmetric spread, which gives
+// one centre component when the outer voice count is one.
+@(test)
+test_osc1_inner_detune_matches_the_signed_reference_components :: proc(t: ^testing.T) {
+	for sweep in ([]struct {
+		stored: int,
+		reference: [9]f32,
+		bound: f32,
+	}{
+		{20, {-22.049, -15.761, -9.448, -3.146, -0.008, 3.149, 9.466, 15.730, 22.055}, 0.03},
+		{127, {-140.012, -99.993, -59.987, -20.013, -0.010, 19.990, 60.007, 99.993, 140.007}, 0.03},
+	}) {
+		p := default_patch()
+		p.values[73] = 0
+		p.values[93] = 1
+		p.values[76] = sweep.stored
+		step := engine.bind_patch(p).osc1_detune
+		for expected, i in sweep.reference {
+			got := engine.osc1_component_cents(i, step)
+			testing.expectf(t, abs(got - expected) < sweep.bound,
+				"stored %d component %d read %+.3f cents; reference reads %+.3f",
+				sweep.stored, i, got, expected)
+		}
+	}
+}
+
+// Exercise the public engine path with one outer voice. The old symmetric
+// guess made parameter 76 inert here because its only outer spread was zero.
+@(test)
+test_osc1_inner_detune_renders_nine_components_with_unison_off :: proc(t: ^testing.T) {
+	N :: 48000
+	single := make([]f32, N)
+	defer delete(single)
+	inner := make([]f32, N)
+	defer delete(inner)
+	p := phase_probe_patch()
+	p.values[0] = 0 // sine OSC1: each projected frequency is unambiguous
+	p.values[5] = 0 // OSC1 only
+	p.values[73] = 0
+	p.values[93] = 1
+	p.values[76] = 0
+	render_phase_patch(p, single)
+	p.values[76] = 127
+	render_phase_patch(p, inner)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+	single_magnitude, _ := fundamental_phase(single, f0, f64(SR))
+	testing.expect(t, single_magnitude > 0.005, "the p76=0 singleton was silent")
+	for cents, i in ([9]f64{-140, -100, -60, -20, 0, 20, 60, 100, 140}) {
+		hz := f0 * math.pow(2.0, cents / 1200.0)
+		magnitude, _ := fundamental_phase(inner, hz, f64(SR))
+		ratio := magnitude / single_magnitude
+		testing.expectf(t, abs(ratio - 0.3) < 0.02,
+			"component %d at %+.0f cents was %.4f of the singleton; reference reads 0.3",
+			i, cents, ratio)
+	}
+}
+
+// The external projection reads signed, non-symmetric free phase sets. An RMS
+// or null depth could accept their mirrors, so inspect the note-on state and pin
+// each sign. Engaging parameter 91 is a separate measured state: it aligns all
+// nine components rather than retaining either free set.
+@(test)
+test_osc1_inner_components_use_signed_free_phases_and_fixed_alignment :: proc(t: ^testing.T) {
+	free_osc1 := [9]f32{0.7485, 0.8978, 0.4838, 0.8087, 0, 0.1927, 0.5867, 0.3539, 0.8215}
+	free_sub := [9]f32{0.3728, 0.4481, 0.2350, 0.3992, 0, 0.0920, 0.2871, 0.1751, 0.4059}
+	for fixed in ([]bool{false, true}) {
+		p := phase_probe_patch()
+		p.values[73] = 0
+		p.values[93] = 1
+		p.values[76] = 127
+		p.values[91] = fixed ? 1 : 0
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		engine.engine_note_on(&e, 60, 1.0)
+		u := &e.voices[0].unison[0]
+		osc1_centre := engine.osc1_component(u, 4).phase
+		sub_centre := engine.sub_component(u, 4).phase
+		for component in 0 ..< 9 {
+			osc1 := engine.osc1_component(u, component).phase - osc1_centre
+			sub := engine.sub_component(u, component).phase - sub_centre
+			for osc1 < 0 {osc1 += 1}
+			for sub < 0 {sub += 1}
+			want_osc1 := fixed ? f32(0) : free_osc1[component]
+			want_sub := fixed ? f32(0) : free_sub[component]
+			testing.expectf(t, abs(osc1 - want_osc1) < 0.00011,
+				"fixed=%v OSC1 component %d phase %.4f; reference reads %.4f",
+				fixed, component, osc1, want_osc1)
+			testing.expectf(t, abs(sub - want_sub) < 0.00011,
+				"fixed=%v sub component %d phase %.4f; reference reads %.4f",
+				fixed, component, sub, want_sub)
+		}
+		engine.engine_destroy(&e)
+	}
+}
+
+// The sub was isolated in the reference at -1 octave. Each of its nine signed
+// components is 0.3 of the p76=0 centre; a 1/9 trim would fail this render test.
+@(test)
+test_parameter_76_sub_components_keep_the_measured_signed_gain :: proc(t: ^testing.T) {
+	N :: 192000 // four seconds resolves the closest +/-20-cent sub pair
+	single := make([]f32, N)
+	defer delete(single)
+	inner := make([]f32, N)
+	defer delete(inner)
+	p := phase_probe_patch()
+	p.values[0] = 0
+	p.values[5] = 0
+	p.values[73] = 0
+	p.values[93] = 1
+	p.values[95] = 110
+	p.values[96] = 0
+	p.values[97] = 1
+	p.values[76] = 0
+	render_phase_patch(p, single)
+	p.values[76] = 127
+	render_phase_patch(p, inner)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0) * 0.5
+	single_magnitude, _ := fundamental_phase(single, f0, f64(SR))
+	testing.expect(t, single_magnitude > 0.005, "the isolated sub singleton was silent")
+	for cents, i in ([9]f64{-140, -100, -60, -20, 0, 20, 60, 100, 140}) {
+		hz := f0 * math.pow(2.0, cents / 1200.0)
+		magnitude, _ := fundamental_phase(inner, hz, f64(SR))
+		ratio := magnitude / single_magnitude
+		testing.expectf(t, abs(ratio - 0.3) < 0.02,
+			"sub component %d at %+.0f cents was %.4f of the singleton; reference reads 0.3",
+			i, cents, ratio)
+	}
+}
+
 // `s1probe` finds two pitch groups at every non-zero parameter-85 setting:
 // even layers stay on the note and odd layers move by the displayed interval.
 // This signed wiring test prevents the old global transpose from returning.

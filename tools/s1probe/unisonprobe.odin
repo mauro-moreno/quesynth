@@ -269,20 +269,33 @@ unison_read_layers :: proc(audio: []f32, f0: f64) -> (out: Unison_Layers, ok: bo
 	return out, true
 }
 
-// Read the complete OSC1 parameter-76 construction. Unlike the older four-layer
-// reader above, this asks for the centre plus all four signed pairs.
-unison_read_inner_components :: proc(audio: []f32, f0: f64) -> (peaks: [dynamic]f64, ok: bool) {
+// Read the complete OSC1 parameter-76 construction. `peak_count` can include
+// outer parameter-75 layers as well as the nine inner components, so
+// interaction and voice-count claims use the same signed peak reader as the
+// one-voice law.
+unison_read_component_field :: proc(
+	audio: []f32,
+	f0: f64,
+	peak_count: int,
+) -> (peaks: [dynamic]f64, ok: bool) {
 	mid := unison_mid(audio)
 	defer delete(mid)
 	peaks, ok = unison_spectral_peaks(
 		mid[:min(len(mid), g_hold_frames)],
-		f64(SAMPLE_RATE), f0, max(f0 * 0.20, 12.0), 9,
+		f64(SAMPLE_RATE), f0, max(f0 * 0.20, 12.0), peak_count,
 	)
 	if !ok {
 		delete(peaks)
 		return nil, false
 	}
 	return peaks, true
+}
+
+unison_read_inner_components :: proc(
+	audio: []f32,
+	f0: f64,
+) -> (peaks: [dynamic]f64, ok: bool) {
+	return unison_read_component_field(audio, f0, 9)
 }
 
 unison_render :: proc(
@@ -444,25 +457,111 @@ cmd_unisonprobe :: proc(dll, fixture: string, values: []int, note: u8) {
 		}
 		delete(audio)
 	}
-	fmt.println("p75 interaction: p76=20, four voices")
-	for outer in ([]int{0, 22, 64, 127}) {
+	fmt.println("p91 interaction: one voice, p76=127")
+	for phase in ([]int{0, 1}) {
+		p := base
+		set_param(&p, 73, 0)
+		set_param(&p, 93, 1)
+		set_param(&p, 75, 0)
+		set_param(&p, 76, 127)
+		set_param(&p, 91, phase)
+		set_param(&p, 85, 24)
+		set_param(&p, 1, 1)
+		set_param(&p, 5, 0)
+		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
+		peaks, peaks_ok := unison_read_inner_components(audio, f0)
+		unison_require(peaks_ok, fmt.tprintf("p91 %d p76 component field", phase))
+		origin := unison_phasor_window(audio, peaks[len(peaks) / 2], 0,
+			int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+		fmt.printfln("p91 %d signed cents / phase against centre:", phase)
+		for hz in peaks {
+			ph := unison_phasor_window(audio, hz, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+			fmt.printfln("            %+.3f  %+.4f",
+				1200.0 * math.log2(hz / f0), unison_relative_turns(ph, origin))
+		}
+		delete(peaks)
+		delete(audio)
+	}
+
+	fmt.println("p75 Cartesian interaction: two voices, p75=64, p76=127")
+	{
+		p := base
+		set_param(&p, 73, 1)
+		set_param(&p, 93, 2)
+		set_param(&p, 75, 64)
+		set_param(&p, 76, 127)
+		set_param(&p, 85, 24)
+		set_param(&p, 1, 1)
+		set_param(&p, 5, 0)
+		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
+		peaks, peaks_ok := unison_read_component_field(audio, f0, 18)
+		unison_require(peaks_ok, "two-voice p75/p76 Cartesian field")
+		fmt.println("18 signed cents / phase against lowest component:")
+		origin := unison_phasor_window(audio, peaks[0], 0,
+			int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+		for hz in peaks {
+			ph := unison_phasor_window(audio, hz, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+			fmt.printfln("            %+.3f  %+.4f",
+				1200.0 * math.log2(hz / f0), unison_relative_turns(ph, origin))
+		}
+		delete(peaks)
+		delete(audio)
+	}
+
+	fmt.println("p76 voice-count control: p75=64, p76=127")
+	for count in ([]int{1, 2, 4}) {
+		p := base
+		set_param(&p, 73, count > 1 ? 1 : 0)
+		set_param(&p, 93, count)
+		set_param(&p, 75, 64)
+		set_param(&p, 76, 127)
+		set_param(&p, 85, 24)
+		set_param(&p, 1, 1)
+		set_param(&p, 5, 0)
+		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
+		peaks, peaks_ok := unison_read_component_field(audio, f0, count * 9)
+		unison_require(peaks_ok, fmt.tprintf("p76 voice-count %d field", count))
+		fmt.printfln("voices %d  components %d  first/last %+.3f / %+.3f cents",
+			count, len(peaks), 1200.0 * math.log2(peaks[0] / f0),
+			1200.0 * math.log2(peaks[len(peaks) - 1] / f0))
+		if count == 4 {
+			origin := unison_phasor_window(audio, peaks[0], 0,
+				int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+			fmt.println("four-voice signed cents / phase against lowest component:")
+			for hz in peaks {
+				ph := unison_phasor_window(audio, hz, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+				fmt.printfln("            %+.3f  %+.4f",
+					1200.0 * math.log2(hz / f0), unison_relative_turns(ph, origin))
+			}
+		}
+		delete(peaks)
+		delete(audio)
+	}
+
+	fmt.println("controlled fixture field: four voices, p75=22, p76=20")
+	if note < 96 {
+		// Two Cartesian pairs are only 0.18 cents apart. At lower notes that is
+		// below this FFT's bin width; do not turn sidelobes into claimed tones.
+		fmt.println("skipped below note 96: the closest pair is not resolvable")
+	} else {
 		p := base
 		set_param(&p, 73, 1)
 		set_param(&p, 93, 4)
-		set_param(&p, 75, outer)
+		set_param(&p, 75, 22)
 		set_param(&p, 76, 20)
 		set_param(&p, 85, 24)
 		set_param(&p, 1, 1)
 		set_param(&p, 5, 0)
 		audio := unison_render(dll, &p, pristine, work, note, UNISON_DETUNE_SECONDS)
-		rms, rms_ok := unison_steady_rms(audio)
-		if rms_ok {fmt.printfln("p75 %3v external RMS %.6f", outer, rms)}
-		peaks, peaks_ok := unison_read_inner_components(audio, f0)
-		if peaks_ok {
-			fmt.printfln("p75 %3v  first/last %.3f / %.3f cents (nine-component groups add to outer layers)",
-				outer, 1200.0 * math.log2(peaks[0] / f0), 1200.0 * math.log2(peaks[len(peaks) - 1] / f0))
-		} else {
-			fmt.printfln("p75 %3v  unresolved", outer)
+		peaks, peaks_ok := unison_read_component_field(audio, f0, 36)
+		unison_require(peaks_ok, "controlled p75=22 p76=20 field")
+		origin := unison_phasor_window(audio, peaks[0], 0,
+			int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+		fmt.println("36 signed cents / phase against lowest component:")
+		for hz in peaks {
+			ph := unison_phasor_window(audio, hz, 0, int(UNISON_PAIR_SECONDS * f64(SAMPLE_RATE)))
+			fmt.printfln("            %+.3f  %+.4f",
+				1200.0 * math.log2(hz / f0), unison_relative_turns(ph, origin))
 		}
 		delete(peaks)
 		delete(audio)

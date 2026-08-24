@@ -560,10 +560,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// where the carrier increment is known.
 	e.osc1_fm = unit_position(45, p.values[45])
 
-	// Parameter 76 is a bare 0..127. Read as cents of detune across the
-	// oscillator 1 stack; 50 cents at full is a quarter tone, which is as wide
-	// as a detune stack stays musical.
-	e.osc1_detune = 50.0 * unit_position(76, p.values[76])
+	// Parameter 76 creates nine components inside OSC1 (and its sub), even with
+	// outer unison disabled. Its measured base step is 20*stored/127 cents; the
+	// audio path applies the signed factors {-7,-5,-3,-1,0,+1,+3,+5,+7}.
+	e.osc1_detune = 20.0 * unit_position(76, p.values[76])
 
 	// Parameter 91 is the phase relationship between the two oscillators at note
 	// on. Stored zero leaves the phase free; the v1.07 alpha changelog says that

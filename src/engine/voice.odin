@@ -17,16 +17,19 @@ import "../dsp"
 
 // One detuned copy of the oscillator section.
 Unison_Voice :: struct {
-	osc1:      dsp.Oscillator,
-	osc2:      dsp.Oscillator,
-	sub:       dsp.Oscillator,
-	filter:    dsp.Filter,
-	// Offset in cents from the voice's pitch.
-	detune:    f32,
-	// Extra offset applied to oscillator 1 only, from parameter 76.
-	osc1_trim: f32,
+	// The centre oscillators retain their old fields so parameter 76 at zero is
+	// the exact single-component path. Eight satellites complete its measured
+	// nine-component OSC1/sub construction when parameter 76 is non-zero.
+	osc1:            dsp.Oscillator,
+	osc1_satellites: [8]dsp.Oscillator,
+	osc2:            dsp.Oscillator,
+	sub:             dsp.Oscillator,
+	sub_satellites:  [8]dsp.Oscillator,
+	filter:          dsp.Filter,
+	// Parameter 75's offset in cents from the outer voice's pitch.
+	detune:          f32,
 	// -1..1.
-	pan:       f32,
+	pan:             f32,
 }
 
 Voice :: struct {
@@ -156,6 +159,108 @@ unison_phase_offset :: proc(index: int, amount: f32) -> f32 {
 	return amount * factor
 }
 
+OSC1_COMPONENT_COUNT :: 9
+OSC1_COMPONENT_CENTRE :: 4
+OSC1_COMPONENT_GAIN :: f32(0.3)
+OSC1_SATELLITE_COUNT :: OSC1_COMPONENT_COUNT - 1
+OSC1_LAYER_PHASE_ANCHOR :: f32(0.2515)
+OSC1_COMPONENT_LAYER_FREE_PHASE := [OSC1_COMPONENT_COUNT][4]f32 {
+	{0,      0.4207, 0.8608, 0.5564},
+	{0.1493, 0.6177, 0.8258, 0.0591},
+	{0.7353, 0.2671, 0.6349, 0.8648},
+	{0.0602, 0.7694, 0.2606, 0.6054},
+	{0.2515, 0.4311, 0.2408, 0.4178},
+	{0.4442, 0.9659, 0.3727, 0.7072},
+	{0.8382, 0.5597, 0.2618, 0.3106},
+	{0.6054, 0.3417, 0.7816, 0.0387},
+	{0.0730, 0.4025, 0.8559, 0.7741},
+}
+
+// Parameter 76's signed OSC1/sub pitch layout. `amount` is the measured base
+// step 20*stored/127 cents, not an outer-unison span.
+osc1_component_cents :: proc(index: int, amount: f32) -> f32 {
+	factor: f32
+	switch clamp_int(index, 0, OSC1_COMPONENT_COUNT - 1) {
+	case 0: factor = -7
+	case 1: factor = -5
+	case 2: factor = -3
+	case 3: factor = -1
+	case 4: factor = 0
+	case 5: factor = 1
+	case 6: factor = 3
+	case 7: factor = 5
+	case: factor = 7
+	}
+	return factor * amount
+}
+
+osc1_component :: proc(u: ^Unison_Voice, index: int) -> ^dsp.Oscillator {
+	i := clamp_int(index, 0, OSC1_COMPONENT_COUNT - 1)
+	if i == OSC1_COMPONENT_CENTRE {return &u.osc1}
+	return &u.osc1_satellites[i if i < OSC1_COMPONENT_CENTRE else i - 1]
+}
+
+sub_component :: proc(u: ^Unison_Voice, index: int) -> ^dsp.Oscillator {
+	i := clamp_int(index, 0, OSC1_COMPONENT_COUNT - 1)
+	if i == OSC1_COMPONENT_CENTRE {return &u.sub}
+	return &u.sub_satellites[i if i < OSC1_COMPONENT_CENTRE else i - 1]
+}
+
+// Signed starts of the nine free-running OSC1 components against their centre.
+// `s1probe unisonprobe` resolves each tone separately at stored 16..127. The
+// values below are the stable readings rounded to the probe's 0.0001-turn
+// resolution; parameter 91's fixed branch aligns them instead.
+osc1_component_free_phase :: proc(index: int) -> f32 {
+	switch clamp_int(index, 0, OSC1_COMPONENT_COUNT - 1) {
+	case 0: return 0.7420
+	case 1: return 0.8907
+	case 2: return 0.4712
+	case 3: return 0.8070
+	case 4: return 0
+	case 5: return 0.1927
+	case 6: return 0.5815
+	case 7: return 0.3503
+	case: return 0.8183
+	}
+}
+
+// With outer unison engaged, the reference does not form component phases by
+// adding one inner table to one outer table. The 36 separately resolved tones
+// at p75=64/p76=127 give this signed matrix for outer layers 0..3; a second
+// p75=22/p76=20 field reproduces every cell within 0.018 turns. Values are
+// anchored so layer 0's centre keeps the measured zero phase.
+osc1_component_layer_free_phase :: proc(layer, component: int) -> f32 {
+	if layer > 3 {
+		// Layers 4..7 have not been resolved with p76 engaged. Keep the two
+		// independently measured free offsets rather than inventing more cells.
+		return unison_phase_offset(layer, 1.0) + osc1_component_free_phase(component)
+	}
+	component_index := clamp_int(component, 0, OSC1_COMPONENT_COUNT - 1)
+	layer_column := 3
+	switch layer {
+	case 0: layer_column = 0
+	case 1: layer_column = 1
+	case 2: layer_column = 2
+	}
+	return OSC1_COMPONENT_LAYER_FREE_PHASE[component_index][layer_column] -
+		OSC1_LAYER_PHASE_ANCHOR
+}
+
+// The sub has the same signed pitch field but a separately measured phase set.
+sub_component_free_phase :: proc(index: int) -> f32 {
+	switch clamp_int(index, 0, OSC1_COMPONENT_COUNT - 1) {
+	case 0: return 0.3728
+	case 1: return 0.4481
+	case 2: return 0.2350
+	case 3: return 0.3992
+	case 4: return 0
+	case 5: return 0.0920
+	case 6: return 0.2871
+	case 7: return 0.1751
+	case: return 0.4059
+	}
+}
+
 unison_layer_pitch :: proc(index: int, pitch: f32) -> f32 {
 	// The reference's unison-pitch control alternates two pitch groups. At a
 	// non-zero setting half the layers remain at the note and the other half
@@ -182,30 +287,44 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 	for i in 0 ..< count {
 		u := &v.unison[i]
 
-		// -0.5 .. +0.5 across the stack, exactly 0 for a single voice.
+		// -0.5 .. +0.5 across the outer stack, exactly 0 for a single voice.
 		spread: f32 = 0
 		if count > 1 {
 			spread = f32(i) / f32(count - 1) - 0.5
 		}
 
 		u.detune = spread * p.unison_detune
-		u.osc1_trim = spread * p.osc1_detune
 		u.pan = dsp.clamp32(2.0 * spread * p.unison_pan_spread, -1, 1)
 
 		if reset_phase || i >= old_count {
 			voice_seed := seed + u32(i) * 2654435761
 
-			// Phases are carried over unless parameter 91 asks for them to be
-			// fixed, so the oscillators have to be initialised without losing
-			// where they were.
+			// Free-running phases survive note changes. Save every parameter-76
+			// component before oscillator_init resets its state.
 			osc1_phase := u.osc1.phase
 			osc2_phase := u.osc2.phase
 			sub_phase := u.sub.phase
+			osc1_satellite_phase: [OSC1_SATELLITE_COUNT]f32
+			sub_satellite_phase: [OSC1_SATELLITE_COUNT]f32
+			for satellite in 0 ..< OSC1_SATELLITE_COUNT {
+				osc1_satellite_phase[satellite] = u.osc1_satellites[satellite].phase
+				sub_satellite_phase[satellite] = u.sub_satellites[satellite].phase
+			}
 			fresh := i >= old_count
 
 			dsp.oscillator_init(&u.osc1, voice_seed ~ 0x1)
 			dsp.oscillator_init(&u.osc2, voice_seed ~ 0x2)
 			dsp.oscillator_init(&u.sub, voice_seed ~ 0x3)
+			for satellite in 0 ..< OSC1_SATELLITE_COUNT {
+				dsp.oscillator_init(
+					&u.osc1_satellites[satellite],
+					voice_seed ~ u32(0x101 + satellite),
+				)
+				dsp.oscillator_init(
+					&u.sub_satellites[satellite],
+					voice_seed ~ u32(0x201 + satellite),
+				)
+			}
 			dsp.filter_init(&u.filter)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
@@ -230,20 +349,35 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			// reads oscillator 1 itself at -0.00125 turns and oscillator 2 ahead by
 			// 0.5*(v-1)/126. Reading each alone against note-on makes both signs
 			// visible; the earlier same-pitch cancellation probe could see neither
-			// the common start nor the sign of the relationship.
+			// the common start nor the sign of the relationship. When engaged, all
+			// nine parameter-76 components align; at zero OSC1 and the sub retain
+			// their separately measured free phase sets.
 			if p.osc_phase_fixed {
 				base_phase := p.osc_phase_shift
-				// Parameter 92 scales a measured, signed per-layer spread.
+				// Parameter 92 scales the measured, signed per-layer spread.
 				stack_phase := unison_phase_offset(i, p.unison_phase_shift)
-				dsp.oscillator_set_phase(&u.osc1, stack_phase + OSC_PHASE_FIXED_START_TURNS)
+				for component in 0 ..< OSC1_COMPONENT_COUNT {
+					dsp.oscillator_set_phase(osc1_component(u, component),
+						stack_phase + OSC_PHASE_FIXED_START_TURNS)
+					dsp.oscillator_set_phase(sub_component(u, component), stack_phase)
+				}
 				dsp.oscillator_set_phase(&u.osc2,
 					stack_phase + OSC_PHASE_FIXED_START_TURNS + base_phase)
-				dsp.oscillator_set_phase(&u.sub, stack_phase)
 			} else if !fresh {
 				// Free-running: pick up where the previous note left off.
 				dsp.oscillator_set_phase(&u.osc1, osc1_phase)
 				dsp.oscillator_set_phase(&u.osc2, osc2_phase)
 				dsp.oscillator_set_phase(&u.sub, sub_phase)
+				for satellite in 0 ..< OSC1_SATELLITE_COUNT {
+					dsp.oscillator_set_phase(
+						&u.osc1_satellites[satellite],
+						osc1_satellite_phase[satellite],
+					)
+					dsp.oscillator_set_phase(
+						&u.sub_satellites[satellite],
+						sub_satellite_phase[satellite],
+					)
+				}
 			} else {
 				// A fresh layer, with parameter 91 fixing nothing. The stack is
 				// still laid out, because the reference's free-running stack is
@@ -252,16 +386,23 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				//
 				// Equal RMS between the two states says only that the *set* is
 				// the same. What ties each offset to its own layer here is the
-				// detuned reading in `unison_phase_offset` above, taken with
+				// detuned p75 reading in `unison_phase_offset` above, taken with
 				// parameter 91 at zero -- this branch -- where the four layers
 				// are separately resolvable and read +0.174, +0.988 and +0.166
 				// turns against the lowest.
 				//
 				// Oscillator 2 keeps its own intra-pair offset on top.
 				stack_phase := unison_phase_offset(i, 1.0)
-				dsp.oscillator_set_phase(&u.osc1, stack_phase)
+				for component in 0 ..< OSC1_COMPONENT_COUNT {
+					component_phase := stack_phase + osc1_component_free_phase(component)
+					if p.osc1_detune > 0 {
+						component_phase = osc1_component_layer_free_phase(i, component)
+					}
+					dsp.oscillator_set_phase(osc1_component(u, component), component_phase)
+					dsp.oscillator_set_phase(sub_component(u, component),
+						stack_phase + sub_component_free_phase(component))
+				}
 				dsp.oscillator_set_phase(&u.osc2, stack_phase + OSC_PHASE_FREE_TURNS)
-				dsp.oscillator_set_phase(&u.sub, stack_phase)
 			}
 		}
 	}
@@ -640,8 +781,7 @@ voice_process :: proc(
 
 		layer_pitch := unison_layer_pitch(i, p.unison_pitch)
 		note1 := base_note + layer_pitch +
-			(u.detune + u.osc1_trim) / CENTS_PER_SEMITONE + mod_osc1_semitones
-		osc1_hz := dsp.note_to_hz(note1)
+			u.detune / CENTS_PER_SEMITONE + mod_osc1_semitones
 
 		osc2_hz: f32
 		if p.osc2_key_track {
@@ -663,9 +803,32 @@ voice_process :: proc(
 			osc2_hz = dsp.note_to_hz(note2)
 		}
 
-		dsp.oscillator_set_frequency(&u.osc1, osc1_hz, sample_rate)
+		// Parameter 76 is inside every outer layer. Zero keeps the exact old
+		// singleton path; every non-zero state enables the measured nine tones,
+		// each at 0.3 of the singleton gain.
+		first_component := OSC1_COMPONENT_CENTRE
+		component_limit := OSC1_COMPONENT_CENTRE + 1
+		component_gain := f32(1.0)
+		if p.osc1_detune > 0 {
+			first_component = 0
+			component_limit = OSC1_COMPONENT_COUNT
+			component_gain = OSC1_COMPONENT_GAIN
+		}
+		for component in first_component ..< component_limit {
+			component_note := note1 +
+				osc1_component_cents(component, p.osc1_detune) / CENTS_PER_SEMITONE
+			dsp.oscillator_set_frequency(
+				osc1_component(u, component),
+				dsp.note_to_hz(component_note),
+				sample_rate,
+			)
+			dsp.oscillator_set_frequency(
+				sub_component(u, component),
+				dsp.note_to_hz(component_note + p.sub_octave),
+				sample_rate,
+			)
+		}
 		dsp.oscillator_set_frequency(&u.osc2, osc2_hz, sample_rate)
-		dsp.oscillator_set_frequency(&u.sub, dsp.note_to_hz(note1 + p.sub_octave), sample_rate)
 
 		// Oscillator 2 advances first because it is the FM modulator: its output
 		// displaces oscillator 1's phase within the same sample.
@@ -683,10 +846,12 @@ voice_process :: proc(
 		//
 		// So oscillator 2 modulates oscillator 1 and the displacement accumulates
 		// into the phase. The panel position is converted to its measured frequency
-		// depth below; it is not itself a phase offset.
+		// depth below; it is not itself a phase offset. One value drives every OSC1
+		// component at that component's own increment.
 		dsp.oscillator_advance(&u.osc2)
-		dsp.oscillator_advance(&u.sub)
-
+		for component in first_component ..< component_limit {
+			dsp.oscillator_advance(sub_component(u, component))
+		}
 		// Read before oscillator 1 is advanced, and before hard sync can reset
 		// this oscillator below: the modulator's contribution to this sample is
 		// its state at the top of the sample.
@@ -694,19 +859,31 @@ voice_process :: proc(
 
 		// Ring takes precedence: the readme and the manual agree that "FM
 		// modulation is only possible when ring modulation is off".
-		fm_offset: f32 = 0
-		if fm_position > 0 && !p.osc_ring {
-			fm_offset = osc2_value * fm_frequency_depth(fm_position) * u.osc1.increment
+		osc1_value: f32 = 0
+		centre_wrapped := false
+		centre_wrap_frac: f32 = 0
+		for component in first_component ..< component_limit {
+			osc1 := osc1_component(u, component)
+			fm_offset: f32 = 0
+			if fm_position > 0 && !p.osc_ring {
+				fm_offset = osc2_value * fm_frequency_depth(fm_position) *
+					osc1.increment
+			}
+			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset)
+			if component == OSC1_COMPONENT_CENTRE {
+				centre_wrapped = wrapped
+				centre_wrap_frac = wrap_frac
+			}
+			osc1_value += dsp.oscillator_value(osc1, p.osc1_shape, pulse_width)
 		}
-		wrapped, wrap_frac := dsp.oscillator_advance_modulated(&u.osc1, fm_offset)
+		osc1_value *= component_gain
 
-		if p.osc_sync && wrapped {
-			// Parameter 6: "when on, oscillator 2's phase is reset in step with
-			// oscillator 1's frequency" -- oscillator 1 is the master.
-			dsp.oscillator_sync(&u.osc2, wrap_frac)
+		if p.osc_sync && centre_wrapped {
+			// OSC1's centre remains the one measured hard-sync master. Satellite
+			// sync interaction has not been measured and is not inferred here.
+			dsp.oscillator_sync(&u.osc2, centre_wrap_frac)
 		}
 
-		osc1_value := dsp.oscillator_value(&u.osc1, p.osc1_shape, pulse_width)
 
 		if p.osc_ring {
 			// Parameter 7: "the output of oscillator 2 is subjected to ring
@@ -719,7 +896,12 @@ voice_process :: proc(
 		mixed := osc1_value * (1.0 - p.osc_mix) + osc2_value * p.osc_mix
 
 		if p.sub_gain > 0 {
-			sub_value := dsp.oscillator_value(&u.sub, p.sub_shape, 0.5)
+			sub_value: f32 = 0
+			for component in first_component ..< component_limit {
+				sub_oscillator := sub_component(u, component)
+				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
+			}
+			sub_value *= component_gain
 			// The version history: "When the amount of the suboscillator is
 			// raised, the entire volume is automatically adjusted not to grow."
 			// Both factors are measured, and they carry the oscillator mix with
@@ -727,7 +909,8 @@ voice_process :: proc(
 			// binding.odin. The line here used to be
 			// `mixed*(1 - 0.5*gain) + sub*gain`, which raised the carrier by up to
 			// 3 dB instead of dividing it down, and left the sub audible with
-			// oscillator 1 mixed out where the reference silences it.
+			// oscillator 1 mixed out where the reference silences it. Parameter 95's
+			// existing normalization remains outside the inner component sum.
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
