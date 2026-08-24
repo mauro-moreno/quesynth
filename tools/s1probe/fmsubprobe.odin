@@ -40,32 +40,37 @@ fmsub_mid :: proc(audio: []f32) -> []f32 {
 	return mid
 }
 
-// Demodulate one fundamental, smooth over its period, and unwrap its phase.
+// Recover the analytic phase with a Hilbert transform. The old one-period
+// moving average attenuated the sub's modulation twice as much as OSC1's,
+// because a sub period is twice as long; that made its slope depend on the
+// analyser rather than the reference signal.
 fmsub_phase_track :: proc(mid: []f32, hz: f64) -> []f64 {
-	result := make([]f64, len(mid))
-	if hz <= 0 || len(mid) == 0 {return result}
-	span := max(int(f64(SAMPLE_RATE) / hz), 2)
-	re, im := make([]f64, len(mid)), make([]f64, len(mid))
-	defer delete(re)
+	if hz <= 0 || len(mid) < 2 {return nil}
+	n := 1
+	for n << 1 <= len(mid) {n <<= 1}
+	re := make([]f64, n)
+	im := make([]f64, n)
 	defer delete(im)
-	w := 2.0 * math.PI * hz / f64(SAMPLE_RATE)
-	for v, i in mid {
-		re[i] = f64(v) * math.cos(w * f64(i))
-		im[i] = -f64(v) * math.sin(w * f64(i))
+	for i in 0 ..< n {re[i] = f64(mid[i])}
+	fft_forward(re, im)
+	for k in 1 ..< n / 2 {
+		re[k] *= 2
+		im[k] *= 2
 	}
-	for _ in 0 ..< 2 {
-		for values in ([]([]f64){re, im}) {
-			acc := 0.0
-			for i in 0 ..< len(values) {
-				acc += values[i]
-				if i >= span {acc -= values[i - span]}
-				values[i] = acc / f64(min(i + 1, span))
-			}
-		}
+	for k in n / 2 + 1 ..< n {
+		re[k] = 0
+		im[k] = 0
 	}
+	for i in 0 ..< n {im[i] = -im[i]}
+	fft_forward(re, im)
+	for i in 0 ..< n {
+		re[i] /= f64(n)
+		im[i] = -im[i] / f64(n)
+	}
+	result := make([]f64, n)
 	prev := math.atan2(im[0], re[0])
 	result[0] = prev
-	for i in 1 ..< len(result) {
+	for i in 1 ..< n {
 		cur := math.atan2(im[i], re[i])
 		d := cur - prev
 		for d > math.PI {d -= 2.0 * math.PI}
@@ -73,23 +78,36 @@ fmsub_phase_track :: proc(mid: []f32, hz: f64) -> []f64 {
 		result[i] = result[i - 1] + d
 		prev = cur
 	}
+	delete(re)
 	return result
 }
 
-fmsub_phase_delta :: proc(a, b: f64) -> f64 {
-	d := a - b
-	for d >= math.PI {d -= 2.0 * math.PI}
-	for d < -math.PI {d += 2.0 * math.PI}
-	return d
+
+Fmsub_Difference :: struct {
+	max: f32,
+	rms: f64,
 }
 
-fmsub_max_difference :: proc(a, b: []f32) -> f32 {
-	peak: f32 = 0
-	for i in 0 ..< min(len(a), len(b)) {
+fmsub_difference :: proc(a, b: []f32) -> (result: Fmsub_Difference) {
+	n := min(len(a), len(b))
+	if n == 0 {return}
+	sum := 0.0
+	for i in 0 ..< n {
 		d := abs(a[i] - b[i])
-		if d > peak {peak = d}
+		if d > result.max {result.max = d}
+		sum += f64(d) * f64(d)
 	}
-	return peak
+	result.rms = math.sqrt(sum / f64(n))
+	return
+}
+
+fmsub_law :: proc(slope: f64, points: int) -> string {
+	if points == 0 {return "control"}
+	if abs(slope - 0.5) < abs(slope) && abs(slope - 0.5) < abs(slope - 1.0) {
+		return "fractional"
+	}
+	if abs(slope - 1.0) < abs(slope) {return "absolute"}
+	return "off"
 }
 
 fmsub_isolate_sub :: proc(mix, carrier: []f32) -> []f32 {
@@ -127,16 +145,22 @@ fmsub_slope :: proc(
 
 	from := int(0.20 * f64(SAMPLE_RATE))
 	to := min(int(1.30 * f64(SAMPLE_RATE)), min(len(carrier_phase), len(sub_phase)))
-	numerator, denominator := 0.0, 0.0
+	sum_x, sum_y, sum_xx, sum_xy := 0.0, 0.0, 0.0, 0.0
 	for i := from; i < to; i += FMSUB_HOP {
-		x := fmsub_phase_delta(carrier_phase[i], carrier_phase0[i])
-		y := fmsub_phase_delta(sub_phase[i], sub_phase0[i])
+		x := carrier_phase[i] - carrier_phase0[i]
+		y := sub_phase[i] - sub_phase0[i]
 		if abs(x) < 1.0e-5 {continue}
-		numerator += x * y
-		denominator += x * x
+		sum_x += x
+		sum_y += y
+		sum_xx += x * x
+		sum_xy += x * y
 		points += 1
 	}
-	if denominator > 0 {slope = numerator / denominator}
+	if points > 1 {
+		n := f64(points)
+		denominator := sum_xx - sum_x * sum_x / n
+		if denominator > 0 {slope = (sum_xy - sum_x * sum_y / n) / denominator}
+	}
 	return
 }
 
@@ -146,9 +170,9 @@ cmd_fmsubprobe :: proc(dll: string, values: []int, note: u8) {
 	defer delete(work)
 	dumped := true
 
-	fmt.println("FM-to-sub probe: oscillator 2 triangle at -24 semitones, note 48")
+	fmt.printfln("FM-to-sub probe: oscillator 2 triangle at -24 semitones, note %v", note)
 	fmt.println("  oscillator 1 is a sine; the sub is a full-gain sine")
-	fmt.println("  -1oct slopes: absolute displacement 1, fractional deviation 0.5, off 0")
+	fmt.println("  -1oct candidates: absolute displacement 1, fractional deviation 0.5, off 0")
 	fmt.println()
 
 	zero_base_carrier := fmsub_probe_patch(0, 0, false, false)
@@ -168,7 +192,7 @@ cmd_fmsubprobe :: proc(dll: string, values: []int, note: u8) {
 	defer delete(base_carrier1)
 	defer delete(base_mix1)
 
-	fmt.println(" stored   -1oct slope   windows   0oct sub-on/off max")
+	fmt.println(" stored   -1oct slope   windows   nearest law   0oct max      0oct RMS")
 	for fm in values {
 		p0c := fmsub_probe_patch(fm, 0, false, false)
 		p0m := fmsub_probe_patch(fm, 0, true, false)
@@ -178,9 +202,17 @@ cmd_fmsubprobe :: proc(dll: string, values: []int, note: u8) {
 		m0 := probe_render(dll, &p0m, pristine, work, note, 1.5, &dumped, nil)
 		c1 := probe_render(dll, &p1c, pristine, work, note, 1.5, &dumped, nil)
 		m1 := probe_render(dll, &p1m, pristine, work, note, 1.5, &dumped, nil)
-		if c0 == nil || m0 == nil || c1 == nil || m1 == nil {continue}
+		if c0 == nil || m0 == nil || c1 == nil || m1 == nil {
+			if c0 != nil {delete(c0)}
+			if m0 != nil {delete(m0)}
+			if c1 != nil {delete(c1)}
+			if m1 != nil {delete(m1)}
+			continue
+		}
 		slope, points := fmsub_slope(base_carrier1, base_mix1, c1, m1, note)
-		fmt.printfln(" %6d   %+.6f   %5d      %.9f", fm, slope, points, fmsub_max_difference(c0, m0))
+		difference := fmsub_difference(c0, m0)
+		fmt.printfln(" %6d   %+.6f   %5d   %-10v   %.9f   %.9f",
+			fm, slope, points, fmsub_law(slope, points), difference.max, difference.rms)
 		delete(c0)
 		delete(m0)
 		delete(c1)
@@ -188,19 +220,20 @@ cmd_fmsubprobe :: proc(dll: string, values: []int, note: u8) {
 	}
 
 	fmt.println()
-	fmt.println(" ring suppression: max difference from FM-off, full-gain sub")
-	fmt.println(" stored   0oct max   -1oct max")
+	fmt.println(" ring suppression: difference from FM-off, full-gain sub")
+	fmt.println(" stored   0oct max      0oct RMS      -1oct max     -1oct RMS")
 	for fm in ([]int{43, 77}) {
-		row := [2]f32{}
+		row := [2]Fmsub_Difference{}
 		for octave in 0 ..< 2 {
 			off := fmsub_probe_patch(0, octave, true, true)
 			on := fmsub_probe_patch(fm, octave, true, true)
 			a := probe_render(dll, &off, pristine, work, note, 1.5, &dumped, nil)
 			b := probe_render(dll, &on, pristine, work, note, 1.5, &dumped, nil)
-			if a != nil && b != nil {row[octave] = fmsub_max_difference(a, b)}
+			if a != nil && b != nil {row[octave] = fmsub_difference(a, b)}
 			if a != nil {delete(a)}
 			if b != nil {delete(b)}
 		}
-		fmt.printfln(" %6d   %.9f   %.9f", fm, row[0], row[1])
+		fmt.printfln(" %6d   %.9f   %.9f   %.9f   %.9f",
+			fm, row[0].max, row[0].rms, row[1].max, row[1].rms)
 	}
 }

@@ -617,6 +617,7 @@ usage :: proc() {
 	fmt.eprintln("  s1probe compare [dll] <patch.sy1 | directory> [--wav <dir>] [--csv <path>]")
 	fmt.eprintln("                        [--note <n>] [--limit <n>] [--offset <n>] [--block <n>]")
 	fmt.eprintln("                        [--verbose] [--self] [--no-floor]")
+	fmt.eprintln("                        [--fmsub-gate <original|fm-off|fm-sub-off>]")
 	fmt.eprintln("  s1probe summarise <compare.csv>")
 	fmt.eprintln("  s1probe envprobe [dll] <attack|decay|release> [--values <list|all>]")
 	fmt.eprintln("                        [--hold <ms>] [--tail <ms>] [--note <n>]")
@@ -833,7 +834,7 @@ main :: proc() {
 		}
 		cmd_mixprobe(dll, parse_env_values(mvals))
 	case "fmsubprobe":
-		fsv := "16,24,32"
+		fsv := "0,16,24,32,43"
 		fsnote := int(FMSUB_NOTE)
 		{
 			i := 0

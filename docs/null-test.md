@@ -5202,59 +5202,98 @@ four had no spectrum left at sustain. They are byte-identical, SHA-256
 ### FM reaches the sub oscillator
 
 The v1.11 changelog says that FM influences the sub as well as OSC1. The
-controlled probe is now checked in as `s1probe fmsubprobe`. It uses one sine
-carrier, a triangle OSC2 modulator at −24 semitones, note 48, OSC1-only mix,
-full-gain sine sub, open filter, flat envelopes, no LFOs, no sync, and no
-unison. Run it against the reference with:
+controlled reference command is:
 
 ```
 odin build tools/s1probe -out:build/s1probe.exe
-./build/s1probe.exe fmsubprobe --values 16,24,32 --note 48
+./build/s1probe.exe fmsubprobe --values 0,16,24,32,43 --note 48
 ```
 
-At `−1oct`, the measured sub/OSC1 phase-displacement slopes were **0.4956,
-0.4859, 0.4685** at FM states 16, 24 and 32 (the last two digits drift as
-sidebands broaden the projection window). The candidates are 1.0 for the same
-absolute displacement, 0.5 for the same fractional deviation scaled by the sub
-increment, and 0 for an unmodulated sub. The result selects the second law:
+The first checked-in analyser did not reproduce the numbers recorded here. It
+smoothed each oscillator over its own period, so the `−1oct` sub was smoothed
+over twice as much time as OSC1, then wrapped the two accumulated phase deltas
+separately. Both operations changed the ratio being measured. `fmsubprobe` now
+forms each signal's analytic phase with one Hilbert transform, keeps the phase
+deltas unwrapped, and fits their signed covariance with a free intercept. The
+same binary and command now reproduce:
+
+| stored FM | `−1oct` sub/OSC1 slope | windows | nearest candidate | `0oct` max | `0oct` RMS |
+|---:|---:|---:|---|---:|---:|
+| 0 | 0 (control) | 0 | control | 2.38e−7 | 3.3e−8 |
+| 16 | +0.473336 | 26 | fractional | 2.38e−7 | 3.3e−8 |
+| 24 | +0.470593 | 26 | fractional | 2.68e−7 | 3.3e−8 |
+| 32 | +0.454299 | 26 | fractional | 2.38e−7 | 3.3e−8 |
+| 43 | +0.500492 | 26 | fractional | 2.09e−7 | 3.3e−8 |
+
+At `−1oct`, the candidates are 1 for equal absolute displacement, 0.5 for
+equal fractional deviation, and 0 for no FM at the sub. All four non-zero rows
+select the 0.5 law. The implemented advance is therefore:
 
 ```
 sub_phase += sub_increment + osc2_value * fm_depth(fm_position) * sub_increment
 ```
 
-At `0oct`, the full-sub and sub-off reference renders differ by at most
-**1.49e−7** sample value (RMS **1.63e−8**) at FM states 0, 16, 24, 32 and 43.
-This is the same-pitch control: both oscillators receive the same fractional
-deviation. Ring is a separate control: with ring on, FM 43 and 77 are exactly
-identical to FM off in both octave states (max and RMS **0**). The engine uses
-one ring gate for both phase advances, so FM-off, sub-off, and ring-on paths keep
-their old advances.
+The `0oct` rows are the same-pitch control: a full-gain sine sub and the
+sub-off carrier differ only at float noise. The probe also measures the ring
+control rather than just stating it: FM 43 and 77 against FM off have max and
+RMS **0** at both `0oct` and `−1oct`.
 
-The signed engine test `test_fm_reaches_sub_at_its_measured_increment` pins both
-octave states and the ring control to those external readings. It does not test
-sub level or unison.
+The engine test is
+`test_fm_reaches_sub_with_reference_measured_displacement`. Its expected table
+contains the four reference slopes above; it no longer computes its expected
+ratio from the engine's increments. It renders the carrier and the normalized
+carrier-plus-sub paths, isolates the audible sub, applies the same analytic
+phase fit, checks the independent `0oct` reading, and keeps ring-on output at
+FM-off. `odin test tests/dsp` passes all 85 tests. Sub-off no-movement is also
+covered by the matched shared-bank control and the factory endpoint gate below.
 
 ### FM + sub shared-bank gate
 
-The real-patch gate selects shared-bank records with **95 ≥ 32**, **45 > 0**,
-and excludes unison, sync, ring, and modulation sources targeting FM. It is
-deduplicated by patch record and sorted by bank then filename. It renders three
-matched cases: the original patch, the same patch with FM and sub both disabled
-in both engines, and the same patch with only FM disabled in both engines. The
-last two controls separate FM-to-sub movement from the pre-existing sub and FM
-errors. The reproducible command is:
+`compare --fmsub-gate <case>` implements this gate. It walks the bank root
+recursively, sorts paths, keeps source records with **95 ≥ 32** and **45 > 0**,
+excludes unison, sync, ring, enabled modulation-envelope-to-FM, and enabled
+LFO-to-FM records, then deduplicates the complete 99-parameter record before
+applying a case. Selection always uses the unchanged source record. The three
+cases alter both the reference and this engine in the same way:
+
+- `original`: no parameter change;
+- `fm-off`: parameter 45 set to zero;
+- `fm-sub-off`: parameters 45 and 95 set to zero.
+
+The reproducible commands are:
 
 ```
-./build/s1probe.exe compare <shared-bank-root> --csv build/fmsub-shared.csv --note 48
-./build/s1probe.exe summarise build/fmsub-shared.csv
+./build/s1probe.exe compare <shared-bank-root> --fmsub-gate original \
+  --no-floor --csv build/fmsub-shared-original.csv --note 48
+./build/s1probe.exe compare <shared-bank-root> --fmsub-gate fm-off \
+  --no-floor --csv build/fmsub-shared-fm-off.csv --note 48
+./build/s1probe.exe compare <shared-bank-root> --fmsub-gate fm-sub-off \
+  --no-floor --csv build/fmsub-shared-fm-sub-off.csv --note 48
+./build/s1probe.exe summarise build/fmsub-shared-original.csv
+./build/s1probe.exe summarise build/fmsub-shared-fm-off.csv
+./build/s1probe.exe summarise build/fmsub-shared-fm-sub-off.csv
 ```
 
-Record row count, invalid spectra, reference crashes, silence, spectral,
-envelope, level, null, and correlation means/medians, plus better/worse counts
-at 0.05 dB. External banks and the reference DLL are not tracked in this
-checkout; the gate is therefore a recorded local command rather than a fabricated
-aggregate. Its disabled-feature controls remain required whenever the corpus is
-available.
+Run on the local shared-bank extraction used by the prior sub gate
+(`build/rp3/sub` in the main worktree), selection found **71 unique records out
+of 4284**, with 4211 excluded, 2 duplicates removed, and 0 unreadable. The same
+eight arpeggiator records killed the reference in all three cases, leaving the
+same **63 matched rows** each time. All three have 0 invalid spectra, 0 silent
+renders on either side, 0 non-finite renders, and 0 parameter-load failures.
+
+| case | spectral mean / median | envelope mean / median | `|level|` mean / median | null mean / median | correlation mean / median |
+|---|---:|---:|---:|---:|---:|
+| original | 10.7378 / 9.4623 | 4.7885 / 3.6700 | 4.6664 / 3.2248 | −1.5204 / −0.4016 | 0.3787 / 0.3608 |
+| FM off | 9.2946 / 7.7017 | 4.6363 / 3.7129 | 5.0926 / 3.6865 | −2.9599 / −0.8598 | 0.4778 / 0.4899 |
+| FM + sub off | 9.1117 / 7.2983 | 4.5458 / 3.7260 | 4.9746 / 3.6474 | −3.1398 / −0.5637 | 0.4668 / 0.4072 |
+
+At a 0.05 threshold, original versus FM-off is better/worse on spectral
+**15/35**, envelope **21/25**, absolute level **22/18**, null depth **6/29**,
+and correlation **4/26**. Original versus FM+sub-off is **15/39**, **19/36**,
+**24/31**, **11/32**, and **11/30** in the same order. These controls do not
+choose the displacement law—the direct signed probe does that. They show that
+the gate now measures the intended active feature set while keeping the known
+broader FM and sub errors visible rather than assigning them to this law.
 
 ### Factory-bank no-movement gate
 
@@ -5267,7 +5306,7 @@ and byte-compare the CSVs:
 $before = Join-Path $env:TEMP "quesynth-fmsub-integration"
 $after  = Join-Path $env:TEMP "quesynth-fmsub-head"
 New-Item -ItemType Directory -Force $before, $after | Out-Null
-git archive open-defects/integration | tar -xf - -C $before
+git archive 8e6c3b4 | tar -xf - -C $before
 git archive HEAD | tar -xf - -C $after
 odin build "$before/tools/s1probe" -out:build/s1probe-fmsub-before.exe
 odin build "$after/tools/s1probe" -out:build/s1probe-fmsub-after.exe
@@ -5276,11 +5315,11 @@ odin build "$after/tools/s1probe" -out:build/s1probe-fmsub-after.exe
 cmp build/fmsub-factory-before.csv build/fmsub-factory-after.csv
 ```
 
-The expected gate is **123 rows, 0 moved patches**, with the same reference
-crashes and silent rows. The existing factory result remains spectral
-**6.6537 / 5.9766**, envelope **2.0957 / 1.7701**, absolute level **1.6529**,
-null **−6.6564 / −6.0802**, and correlation **0.7607**; no FM-to-sub change can
-move it while parameter 95 stays at zero.
+The independent archive builds produce byte-identical 123-row CSVs with SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`.
+Both read spectral **6.6510 / 5.9766**, envelope **2.0969 / 1.7701**,
+`|level|` mean **1.6528**, null **−6.6582 / −6.0558**, and correlation mean
+**0.7607**. Thus **0 of 123 factory patches moved**.
 
 ### Still open on the sub
 
