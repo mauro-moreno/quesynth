@@ -867,29 +867,112 @@ from the one this section is about.
 ## The oscillator mix, and what the harmonic-balance error really was
 
 The mix was the suspect for the 3 to 13 dB of harmonic-balance error on
-two-oscillator patches. It is not the cause: **the mix law is already correct**, and
-measuring it says so unambiguously.
+two-oscillator patches. The crossfade shape was right, but this document called
+its rounded display the law. That was wrong by up to 0.07 dB.
 
-Parameter 5's display states the ratio, but not what the ratio does to the signal —
-a linear crossfade in amplitude, an equal-power crossfade and two independent gains
-all honour the same numbers. Making oscillator 1 a **sine** settles it, because a
-sine has exactly one partial: with oscillator 2 an octave above, the two
-contributions occupy different frequencies entirely and each gain reads off its own
-fundamental.
+Parameter 5's display states a rounded ratio, but not what that ratio does to
+the signal — a linear crossfade in amplitude, an equal-power crossfade and two
+independent gains all honour the same displayed numbers. Making oscillator 1
+a **sine** settles it, because a sine has exactly one partial: with oscillator
+2 an octave above, the two contributions occupy different frequencies entirely
+and each gain reads off its own fundamental.
+
+This run includes both endpoints. The candidate laws agree there, so normalising
+each curve to its own endpoint is an absolute reading, not a fit to how far a
+harmonic moved:
 
 ```
- stored  display   osc1 gain  osc2 gain    sum
-     0   100 : 0     1.000      0.000     1.000
-    32    75 : 25    0.748      0.252     1.000
-    64    50 : 50    0.496      0.504     1.000
-    96    24 : 76    0.244      0.756     1.000
-   127     0 : 100   0.000      1.000     1.000
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe mixprobe --values 0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,127
+
+ stored  display   osc1 gain  osc2 gain      sum
+     0   100 : 0      1.00000    0.00000  1.00000
+    32    75 : 25     0.74803    0.25197  1.00000
+    64    50 : 50     0.49606    0.50394  1.00000
+    96    24 : 76     0.24409    0.75591  1.00000
+   127     0 : 100    0.00000    1.00000  1.00000
 ```
 
-`sum` is 1.000 at all seventeen settings, mean deviation 0.0000, and each gain
-equals the displayed percentage. Equal-power is out by 0.31 on the same test. So it
-is a linear amplitude crossfade reading the percentage directly, which is what the
-binding already did.
+The oscillator 2 readings are `stored/127`: 0.25197 and 0.50394 sit above
+the display's 0.25 and 0.50, while 0.75591 sits below its 0.76. That change of
+residual sign excludes the rounded display law rather than merely finding a
+small offset. `sum` is 1.00000 at all seventeen settings, mean deviation 0.0000;
+the mean equal-power error is 0.3104. So this is a unity-sum linear amplitude
+crossfade, not equal-power or independent non-unity gains, but its exact law is
+`osc2 = stored/127`, `osc1 = 1 - stored/127`.
+
+### The sub's `(1-m)` survives the unrounded reading
+
+Parameter 95's normalised sub mix uses oscillator 1's weight. `mixprobe` repeats
+the earlier check with two saws four semitones apart, a saw sub at `-1oct` and
+stored sub gain 110; no sub partial lands on oscillator 2, so its own partial
+reads the normalising denominator. With `a = 4*110/127`:
+
+| stored mix | 32 | 64 | 96 | 112 | 127 |
+|---|--:|--:|--:|--:|--:|
+| reference, sub on / sub off at oscillator 2 | 0.27838 | 0.36768 | 0.54173 | 0.70962 | 1.00000 |
+| `1/(1+a*(1-stored/127))` | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
+| denominator `1+a` alone | 0.22399 | 0.22399 | 0.22399 | 0.22399 | 0.22399 |
+
+The unrounded `(1-m)` prediction agrees within 0.00015 across the sweep. The
+flat alternative misses by 0.05439 already at stored 32 and cannot reach unity
+when oscillator 1 and its sub vanish at 127.
+
+### Factory-bank result
+
+The full bank was read before and after with the same 123 comparable rows:
+
+```
+./build/s1probe.exe compare patches/incoming/soundbank00 --csv build/mix-before.csv
+./build/s1probe.exe compare patches/incoming/soundbank00 --csv build/mix-after.csv
+./build/s1probe.exe summarise build/mix-before.csv
+./build/s1probe.exe summarise build/mix-after.csv
+```
+
+| metric | rounded display | `stored/127` |
+|---|--:|--:|
+| spectral mean / median | 6.6537 / 5.9766 | **6.6510 / 5.9766** |
+| envelope mean / median | 2.0957 / 1.7701 | *2.0969 / 1.7701* |
+| level, mean absolute | 1.6529 | **1.6528** |
+| level, signed mean / median | +0.1749 / +0.0464 | *+0.1787 / +0.0646* |
+| null depth mean / median | -6.6564 / -6.0802 | **-6.6582** / *-6.0558* |
+| correlation mean / median | 0.76067304 / 0.875526 | *0.76065424 / 0.874448* |
+
+The spectral mean, absolute level and mean null depth improve. Signed level does
+not: its mean rises 0.003803 dB and its median rises 0.0182 dB. Patch 066 leads
+the arithmetic rise at -0.0587 -> +0.0150 dB (delta +0.0737). Its stored mix 120
+raises oscillator 2 from the displayed 0.94 to 0.94488. More generally the
+measured unrounded law raises it at the low-to-middle readings 32 and 64, from
+0.25 and 0.50 to 0.25197 and 0.50394, and lowers it at 96 from 0.76 to 0.75591.
+Of these 123 rows, 105 store a mix below 96; those rows contribute +0.3039 dB
+to the total +0.4678 dB signed level change. The small positive bank mean is
+therefore a measured output shift from redistributing gain on a bank weighted
+toward low-to-middle mixes, not an improvement hidden by absolute level.
+
+The other named regressions are the envelope mean, up 0.00124 dB and led by 033
+at 5.9888 -> 6.0602 (the only envelope regression above 0.05 dB); the null
+median, row 063 at -6.0802 -> -6.0558, while the null mean deepens by 0.00180 dB
+and no patch's null becomes 0.05 dB shallower; and correlation, whose mean falls
+0.00001880, led by 033 at 0.436125 -> 0.432172, and whose median is row 063 at
+0.875526 -> 0.874448.
+
+At CSV precision, the remaining summary movers are also accounted for.
+Brightness mean moves -0.110135 -> -0.110312 octaves (delta -0.000177), led in
+signed movement by 111 at +0.223054 -> +0.213531, while its median improves.
+Tuning mean moves +5.719009 -> +5.719279 cents (delta +0.000270), with the
+largest signed move 053 at -0.57 -> -0.50 cents, while its median also improves.
+Those leaders move toward zero even though cancellation makes each signed mean
+slightly farther from zero. Stereo-width mean improves by 0.00000244; its median
+and both release-length and time-to-peak aggregates do not move. The directly
+measured gain law is not chosen by these interactions with the bank's other open
+defects; the numbers explain rather than hide the small aggregate regressions.
+
+### A correction to this document's own record
+
+The former text said each gain equalled the displayed percentage and that the
+binding was already correct. Its three quoted non-endpoint readings already
+contained the contrary result, rounded to three decimals. Printing five decimals
+and checking the residual on both sides of the rounded display exposes it.
 
 ### The cause was the oscillator phase, and it was wrong three ways
 
@@ -4933,14 +5016,14 @@ the sub sits at f₀/2 and the carrier at f₀ so they are separate bins, note 4
 — `4·stored/127` to 3×10⁻⁵ across the knob, and the same render gives `1 + a` a
 second way, as the carrier with the sub off over the carrier with it on, agreeing
 to five decimals. The **division** by `1 + a` rather than merely holding the
-carrier is what the −142.5 dB null says. And the `(1−m)` is read at seven mix
-settings, two saws four semitones apart so no partial of the sub lands on
-oscillator 2:
+carrier is what the −142.5 dB null says. `s1probe mixprobe` re-reads the `(1−m)`
+at five mix settings, with two saws four semitones apart so no partial of the sub
+lands on oscillator 2:
 
 | stored mix | 32 | 64 | 96 | 112 | 127 |
 |---|--:|--:|--:|--:|--:|
-| oscillator 2's partial, sub on / sub off | 0.28455 | 0.37046 | 0.54307 | 0.71031 | 1.00000 |
-| this law | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
+| oscillator 2's partial, sub on / sub off | 0.27838 | 0.36768 | 0.54173 | 0.70962 | 1.00000 |
+| `1/(1+a*(1-stored/127))` | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
 | a denominator of `1 + a` alone | 0.22399 | 0.22399 | 0.22399 | 0.22399 | 0.22399 |
 
 At mix "0 : 100" the sub **vanishes with oscillator 1**: the reference's render is
@@ -5038,14 +5121,6 @@ digit rather than the sub.
   doesn't influence the AM modulation"*. `voice.odin` sets the sub's frequency
   from the note alone. Not measured.
 - **The 0.36 dB of level the corpus gate gains**, above.
-- **The oscillator mix is `stored/127`, not the displayed percentage.** From the
-  superposition fits the reference's gains are exactly `osc2 = stored/127`:
-  32 → 0.2520, 64 → 0.5040, 96 → 0.7560, against our 0.25, 0.50, 0.76. Up to
-  0.07 dB on every two-oscillator patch, and it now also scales the sub through
-  the `(1−m)` above. [The oscillator
-  mix](#the-oscillator-mix-and-what-the-harmonic-balance-error-really-was)
-  states the law as "equals the displayed percentage", which is the rounding of
-  the real one.
 - **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
   renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
   0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent

@@ -516,11 +516,14 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	e.osc2_cents = display_number(3, p.values[3], 0)
 	e.osc2_key_track = resolved_position(4, p.values[4]) != 0
 
-	// Parameter 5 displays "100 : 0".."0 : 100" as oscillator 1's share, so the
-	// oscillator 2 share this struct stores is the complement of the number the
-	// display leads with.
-	osc1_percent := display_number(5, p.values[5], 50)
-	e.osc_mix = dsp.clamp32(1.0 - osc1_percent / 100.0, 0, 1)
+	// Parameter 5's display rounds the underlying gain and is not the audio law.
+	// `s1probe mixprobe --values 0,32,64,96,127`, with each curve anchored at
+	// both unity endpoints, reads oscillator 2 at 0.25197, 0.50394 and 0.75591.
+	// Those are stored/127 (and oscillator 1 is its complement), above the
+	// display's 0.25 and 0.50 but below its 0.76. The gains sum to 1.00000 at
+	// every setting; mean equal-power error is 0.3104, excluding both the rounded
+	// display percentage and an equal-power crossfade.
+	e.osc_mix = dsp.clamp32(f32(p.values[5]) / 127.0, 0, 1)
 
 	e.osc_sync = resolved_position(6, p.values[6]) != 0
 	e.osc_ring = resolved_position(7, p.values[7]) != 0
@@ -654,10 +657,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	//   normalised by its own weights returns the carrier exactly like that;
 	//   holding the carrier and adding the sub cannot.
 	//
-	// * the `(1-m)`, at seven mix settings with two saws four semitones apart so
-	//   that no partial of the sub lands on oscillator 2. Oscillator 2's own
-	//   partial is pulled down by 0.28455, 0.37046, 0.54307, 0.71031, 1.00000 at
-	//   stored mix 32, 64, 96, 112, 127, against this law's 0.27843, 0.36783,
+	// * the `(1-m)`, re-read by `s1probe mixprobe` at five mix settings with two
+	//   saws four semitones apart so no sub partial lands on oscillator 2. Its
+	//   own partial is pulled down by 0.27838, 0.36768, 0.54173, 0.70962, 1.00000
+	//   at stored mix 32, 64, 96, 112, 127, against this law's 0.27843, 0.36783,
 	//   0.54181, 0.70962, 1.00000. A denominator of `1 + a` alone predicts a flat
 	//   0.22399 and is excluded. At mix "0 : 100" the sub vanishes entirely and
 	//   the reference's render is bit-identical with the sub at full gain.

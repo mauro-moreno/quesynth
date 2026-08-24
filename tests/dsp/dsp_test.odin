@@ -742,6 +742,26 @@ test_signed_and_suffixed_displays_bind_to_units :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.bind_patch(p).pitch_bend_range, 24.0)
 }
 
+// `s1probe mixprobe --values 0,32,64,96,127` anchors each curve at both
+// endpoints and reads the reference's separate oscillator fundamentals. The
+// oscillator 2 gains are 0.2520, 0.5040 and 0.7560; the tolerance excludes the
+// display's rounded 0.25, 0.50 and 0.76.
+@(test)
+test_oscillator_mix_uses_the_reference_stored_ratio :: proc(t: ^testing.T) {
+	for reading in ([]struct {stored: int, gain: f32} {
+		{32, 0.2520},
+		{64, 0.5040},
+		{96, 0.7560},
+	}) {
+		p := default_patch()
+		p.values[5] = reading.stored
+		got := engine.bind_patch(p).osc_mix
+		testing.expectf(t, abs(got - reading.gain) < 0.00015,
+			"stored mix %d bound to %.6f; the reference reads %.4f",
+			reading.stored, got, reading.gain)
+	}
+}
+
 // Parameter 21's own reference default, stored 128, selects no state in a
 // 128-state table. The plugin walks off the grid for it; an engine parameter
 // has to stay bounded, so the binding clamps. This is the case that makes the
@@ -2695,9 +2715,9 @@ test_sub_oscillator_sits_where_the_reference_puts_it :: proc(t: ^testing.T) {
 // External numbers: `a = 4 * stored95 / 127`, read at mix "100 : 0" and "-1oct"
 // as |sub|/|carrier| = 0.25197, 0.50394, 1.00789, 1.51184, 2.01579, 2.51974,
 // 3.02369 and 4.00010 at stored 8, 16, 32, 48, 64, 80, 96 and 127 -- to 3e-5
-// across the knob. The mix weight `1 - m` is read at seven mix settings, where
-// oscillator 2's own partial is pulled down by 0.28455, 0.37046, 0.54307,
-// 0.71031 and 1.00000 at stored mix 32, 64, 96, 112 and 127.
+// across the knob. `s1probe mixprobe` re-reads the mix weight `1 - m` at five
+// settings: oscillator 2's own partial is pulled down by 0.27838, 0.36768,
+// 0.54173, 0.70962 and 1.00000 at stored mix 32, 64, 96, 112 and 127.
 @(test)
 test_sub_oscillator_level_law_is_the_measured_one :: proc(t: ^testing.T) {
 	// `a` itself, at mix "100 : 0" where the weight is 1.
