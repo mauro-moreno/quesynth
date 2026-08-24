@@ -801,22 +801,44 @@ test_unison_switch_collapses_voice_count :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.bind_patch(p).unison_voices, 8)
 }
 
-// Signed unison readings from the reference probe. At stored 127, the four
-// voices land at -50, -16.67, +16.67 and +50 cents; the knob is quadratic,
-// so stored 64 reaches 25.4 cents of total half-span before that layout.
+// Outer-layer half-spans read off the reference by
+//
+//     s1probe unisonprobe --values 6,8,12,16,20,22,26,32,40,48,56,64,72,80,88,96,104,112,120,127 --note 84
+//     s1probe unisonprobe --values 2,3,4,5,6,8,10,12,16,20,24,32,48,64,80,96 --note 108
+//
+// Both sweeps print the four signed layer cents and check them against the
+// reference's own -1/2, -1/6, +1/6, +1/2 layout before reporting a half-span,
+// so a row the transform could not separate cannot become a number here. The
+// two notes agree to 0.13% where they overlap. The bound allows 0.3% plus a
+// small floor for rounded low-span readings, yet stays tight enough to reject
+// both prior laws. At the factory default of stored 22 the reference reads
+// 3.239 cents; the quadratic before this read 1.500 and the linear before that
+// 4.331.
 @(test)
-test_unison_detune_uses_the_reference_quadratic_cents_law :: proc(t: ^testing.T) {
+test_unison_detune_matches_the_reference_cents_sweep :: proc(t: ^testing.T) {
 	for reading in ([][2]f32{
-		{0, 0.0000},
-        {64, 25.3940},
-		{127, 100.0000},
+		{2, 0.251},
+		{4, 0.509},
+		{8, 1.051},
+		{16, 2.244},
+		{22, 3.239},
+		{32, 5.129},
+		{64, 13.614},
+		{96, 27.662},
+		{127, 49.999},
 	}) {
+		stored, reference := reading[0], reading[1]
+		bound := 0.003 * reference + 0.001
 		p := default_patch()
-		p.values[75] = int(reading[0])
-		got := engine.bind_patch(p).unison_detune
-		testing.expectf(t, abs(got - reading[1]) < 0.01,
-			"stored %.0f detune bound to %.4f cents; reference reads %.4f",
-			reading[0], got, reading[1])
+		p.values[75] = int(stored)
+		full_span := engine.bind_patch(p).unison_detune
+		// The layout halves the span, so the outer layers sit at +/- half of it.
+		for outer in ([]f32{-0.5 * full_span, 0.5 * full_span}) {
+			expected := outer < 0 ? -reference : reference
+			testing.expectf(t, abs(outer - expected) < bound,
+				"stored %.0f outer layer %.4f cents; reference reads %+.3f (bound %.4f)",
+				stored, outer, expected, bound)
+		}
 	}
 }
 
@@ -831,28 +853,55 @@ test_unison_pitch_alternates_the_reference_voice_groups :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.unison_layer_pitch(3, -12), -12.0)
 }
 
-// `phaseabsolute` plus the signed unison sweep reads these layer offsets at
-// stored 127. The values are kept signed rather than reduced to magnitudes;
-// cancellation alone could not distinguish the mirror assignments.
+// The signed per-layer start phases, in turns, from
+//
+//     s1probe unisonprobe --values 32,64,96,127 --note 84
+//
+// which reads them twice by different constructions. The digits asserted here
+// are the cumulative projection with oscillator phase fixed and parameter 92 at
+// its top, which resolves about 0.0004 turns. The same command's detuned rows
+// project the four layers simultaneously and against the lowest of them, with
+// no subtraction and with parameter 91 at zero, and read layers 1..3 at +0.174,
+// +0.988 and +0.166 -- the second block below, at that method's own coarser
+// resolution.
+//
+// They are kept signed rather than reduced to magnitudes: cancellation is an
+// even function of an offset, so a magnitude cannot tell a layout from its
+// mirror. The second reading is also the only one that pins a phase to a detune
+// slot, since any permutation of one phase set has the same stack RMS.
 @(test)
 test_unison_phase_spread_uses_signed_reference_offsets :: proc(t: ^testing.T) {
 	for reading in ([][2]f32{
-		{1, 0.174481},
-		{2, 0.988523},
-		{3, 0.166238},
-		{4, 0.875969},
-		{5, 0.779655},
-		{6, 0.375859},
-		{7, 0.837608},
+		{1, 0.174683},
+		{2, 0.988525},
+		{3, 0.166234},
+		{4, 0.875973},
+		{5, 0.779656},
+		{6, 0.375866},
+		{7, 0.837611},
 	}) {
 		got := engine.unison_phase_offset(int(reading[0]), 1.0)
-		testing.expectf(t, abs(got - reading[1]) < 0.000001,
+		testing.expectf(t, abs(got - reading[1]) < 0.0004,
 			"layer %.0f phase factor %.6f; reference reads %.6f",
 			reading[0], got, reading[1])
 	}
-    got := engine.unison_phase_offset(1, 64.0 / 127.0)
-    testing.expectf(t, abs(got - 0.0879) < 0.0002,
-        "stored 64 phase offset %.6f; reference reads about 0.0879", got)
+	// The independent detuned reading, at its own resolution.
+	for reading in ([][2]f32{
+		{1, 0.174},
+		{2, 0.988},
+		{3, 0.166},
+	}) {
+		got := engine.unison_phase_offset(int(reading[0]), 1.0)
+		testing.expectf(t, abs(got - reading[1]) < 0.007,
+			"layer %.0f phase factor %.6f; the detuned projection reads %.3f",
+			reading[0], got, reading[1])
+	}
+	// The patch binding scales those offsets rather than replacing them.
+	p := default_patch()
+	p.values[92] = 64
+	got := engine.unison_phase_offset(1, engine.bind_patch(p).unison_phase_shift)
+	testing.expectf(t, abs(got - 0.088276) < 0.0004,
+		"stored 64 phase offset %.6f; reference reads %.6f", got, 0.088276)
 }
 
 // The reference's layer amplitudes are summed at unity. This is deliberately
@@ -861,6 +910,37 @@ test_unison_phase_spread_uses_signed_reference_offsets :: proc(t: ^testing.T) {
 test_unison_stack_has_no_count_trim :: proc(t: ^testing.T) {
 	for count in ([]int{1, 2, 4, 8}) {
 		testing.expect_value(t, engine.unison_stack_scale(count), 1.0)
+	}
+}
+
+// What says the stack is summed at unity is that its level for 1..8 layers is
+// already accounted for without a trim. `s1probe unisonprobe` reads the
+// reference's steady RMS at zero detune, and the ratios are far from both
+// 1/sqrt(N) and N:
+//
+//     voices  1       2       3       4       5       6       7       8
+//     ratio   1.0000  1.7123  2.5910  3.4068  3.8003  3.8554  3.2229  3.6704
+//
+// They are the coherent sum of the start phases, and they fall at seven layers,
+// which no monotonic count law of any shape can do. This test takes the phase
+// constants, sums them as unit phasors and checks the magnitudes against those
+// readings -- so the phase law and the gain law are tied to one measurement and
+// neither can be adjusted alone.
+@(test)
+test_unison_stack_level_is_the_coherent_sum_of_the_phases :: proc(t: ^testing.T) {
+	reference := [8]f32{1.0000, 1.7123, 2.5910, 3.4068, 3.8003, 3.8554, 3.2229, 3.6704}
+	re, im, one: f32
+	for count in 1 ..= 8 {
+		turns := engine.unison_phase_offset(count - 1, 1.0)
+		re += math.cos(2.0 * math.PI * turns)
+		im += math.sin(2.0 * math.PI * turns)
+		magnitude := math.sqrt(re * re + im * im) * engine.unison_stack_scale(count)
+		if count == 1 {one = magnitude}
+		ratio := magnitude / one
+		expected := reference[count - 1]
+		testing.expectf(t, abs(ratio / expected - 1.0) < 0.006,
+			"%d layers sum to %.4f of one layer; the reference's RMS ratio is %.4f",
+			count, ratio, expected)
 	}
 }
 

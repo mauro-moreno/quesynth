@@ -116,17 +116,30 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	return cutoff
 }
 
-// Lay out the unison stack: measured pitch, pan and phase laws. The stack
-// keeps one oscillator pair per layer; its level is the reference's sum, not
-// an equal-power normalisation.
-//
-// The reference gives every layer the same nominal oscillator level. Its
-// free-running start phases are stable for a fresh voice, and the phase knob
-// scales those same signed offsets when oscillator phase is fixed.
+// Lay out the unison stack: measured pitch, pan and phase laws. The stack keeps
+// one oscillator pair per layer, and its level is the reference's sum rather
+// than an equal-power normalisation.
 //
 // The detune and pan spreads stay symmetric about the note. A single voice has
 // no spread and sits dead centre.
 
+// Signed start phase of each layer, in turns, as `s1probe unisonprobe` reads
+// them off the reference.
+//
+// Two independent constructions agree, which is what makes the *assignment*
+// readable rather than just the set:
+//
+//   - With oscillator phase fixed and parameter 92 at its top, the probe adds
+//     one layer at a time and subtracts the previous stack's phasor, so each
+//     layer is projected within 0.0004 turns and validates these factors.
+//   - With detune engaged the four layers sit at four resolvable frequencies at
+//     once, so each is projected directly against the lowest layer with no
+//     subtraction at all. Over twenty settings and two notes that reads layers
+//     1..3 at +0.174, +0.988 and +0.166 turns, matching below.
+//
+// The second reading is the one that pins a phase to a *detune slot*, and only
+// it can. The stack's RMS at zero detune fixes the phase set and nothing more,
+// because every permutation of one set sums to the same magnitude.
 unison_phase_offset :: proc(index: int, amount: f32) -> f32 {
 	i := clamp_int(index, 0, MAX_UNISON - 1)
 	factor: f32
@@ -146,16 +159,21 @@ unison_phase_offset :: proc(index: int, amount: f32) -> f32 {
 unison_layer_pitch :: proc(index: int, pitch: f32) -> f32 {
 	// The reference's unison-pitch control alternates two pitch groups. At a
 	// non-zero setting half the layers remain at the note and the other half
-	// move by the displayed interval.
+	// move by the displayed interval. It is not a global transpose: at +/-12
+	// semitones the probe reads two groups, -12/0 and 0/+12, not one shifted
+	// stack, and a transpose could not null at -26 dB against either.
 	return pitch if index % 2 == 1 else 0
 }
 
 unison_stack_scale :: proc(count: int) -> f32 {
-	// Synth1 sums the layers at unity. Keep the argument so the call site makes
-	// the count-dependent intent explicit and so this law has a signed test.
+	// Synth1 sums the layers at unity. The count is taken and ignored so the
+	// call site states the count-dependent intent and this law has a signed
+	// test of its own; the reference's RMS ratios for 1..8 layers are the
+	// coherent sum of the start phases above, with no count trim anywhere.
 	_ = count
 	return 1.0
 }
+
 voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_phase: bool) {
 	count := clamp_int(p.unison_voices, 1, MAX_UNISON)
 	old_count := v.unison_count
@@ -227,8 +245,19 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				dsp.oscillator_set_phase(&u.osc2, osc2_phase)
 				dsp.oscillator_set_phase(&u.sub, sub_phase)
 			} else {
-				// A fresh layer uses the measured offsets reached at maximum
-				// unison phase spread. Oscillator 2 keeps its intra-pair offset.
+				// A fresh layer, with parameter 91 fixing nothing. The stack is
+				// still laid out, because the reference's free-running stack is
+				// not incoherent: its layers start on the same signed offsets
+				// that parameter 92 reaches at its top.
+				//
+				// Equal RMS between the two states says only that the *set* is
+				// the same. What ties each offset to its own layer here is the
+				// detuned reading in `unison_phase_offset` above, taken with
+				// parameter 91 at zero -- this branch -- where the four layers
+				// are separately resolvable and read +0.174, +0.988 and +0.166
+				// turns against the lowest.
+				//
+				// Oscillator 2 keeps its own intra-pair offset on top.
 				stack_phase := unison_phase_offset(i, 1.0)
 				dsp.oscillator_set_phase(&u.osc1, stack_phase)
 				dsp.oscillator_set_phase(&u.osc2, stack_phase + OSC_PHASE_FREE_TURNS)

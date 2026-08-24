@@ -898,11 +898,22 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.unison_voices = 1
 	}
 
-	// Parameter 75 is the unison detune amount. The measured spread is symmetric
-	// and quadratic in the knob position: stored 127 reaches +/-50 cents on an
-	// eight-voice stack, so the full span before the symmetric layout is 100 cents.
-	detune_position := unit_position(75, p.values[75])
-	e.unison_detune = 100.0 * detune_position * detune_position
+	// Parameter 75's outer half-span is one exponential in the stored value.
+	//
+	// The constants are a fit to 36 layout-verified readings from
+	// `s1probe unisonprobe` -- stored 6..127 at note 84 and 2..96 at note 108 --
+	// and not an endpoint anchor. Worst relative error 0.22%, RMS 0.066%, which
+	// is the precision the two notes agree to (0.13% where they overlap), so the
+	// residual is the probe's and not the law's.
+	//
+	// A quadratic in the knob position fits only the top of the range: at the
+	// factory default of stored 22 it reads 1.50 cents of half-span against the
+	// reference's 3.239, and the linear law before it read 4.331.
+	//
+	// `unison_detune` holds the full span, which the symmetric -0.5..+0.5 layer
+	// layout in voice.odin halves.
+	detune_position := f32(resolved_position(75, p.values[75]))
+	e.unison_detune = 2.0 * 7.83036 * (math.pow(f32(2.0), detune_position / 44.0306) - 1.0)
 	// Displays "-64".."63".
 	e.unison_pan_spread = dsp.clamp32(display_number(84, p.values[84], 0) / 64.0, -1, 1)
 	// Displays "-24".."+24": semitones.
