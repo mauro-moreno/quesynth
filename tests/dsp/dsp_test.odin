@@ -801,6 +801,88 @@ test_unison_switch_collapses_voice_count :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.bind_patch(p).unison_voices, 8)
 }
 
+// Signed unison readings from the reference probe. At stored 127, the four
+// voices land at -50, -16.67, +16.67 and +50 cents; the knob is quadratic,
+// so stored 64 reaches 25.4 cents of total half-span before that layout.
+@(test)
+test_unison_detune_uses_the_reference_quadratic_cents_law :: proc(t: ^testing.T) {
+	for reading in ([][2]f32{
+		{0, 0.0000},
+        {64, 25.3940},
+		{127, 100.0000},
+	}) {
+		p := default_patch()
+		p.values[75] = int(reading[0])
+		got := engine.bind_patch(p).unison_detune
+		testing.expectf(t, abs(got - reading[1]) < 0.01,
+			"stored %.0f detune bound to %.4f cents; reference reads %.4f",
+			reading[0], got, reading[1])
+	}
+}
+
+// `s1probe` finds two pitch groups at every non-zero parameter-85 setting:
+// even layers stay on the note and odd layers move by the displayed interval.
+// This signed wiring test prevents the old global transpose from returning.
+@(test)
+test_unison_pitch_alternates_the_reference_voice_groups :: proc(t: ^testing.T) {
+	testing.expect_value(t, engine.unison_layer_pitch(0, 12), 0.0)
+	testing.expect_value(t, engine.unison_layer_pitch(1, 12), 12.0)
+	testing.expect_value(t, engine.unison_layer_pitch(2, -12), 0.0)
+	testing.expect_value(t, engine.unison_layer_pitch(3, -12), -12.0)
+}
+
+// `phaseabsolute` plus the signed unison sweep reads these layer offsets at
+// stored 127. The values are kept signed rather than reduced to magnitudes;
+// cancellation alone could not distinguish the mirror assignments.
+@(test)
+test_unison_phase_spread_uses_signed_reference_offsets :: proc(t: ^testing.T) {
+	for reading in ([][2]f32{
+		{1, 0.174481},
+		{2, 0.988523},
+		{3, 0.166238},
+		{4, 0.875969},
+		{5, 0.779655},
+		{6, 0.375859},
+		{7, 0.837608},
+	}) {
+		got := engine.unison_phase_offset(int(reading[0]), 1.0)
+		testing.expectf(t, abs(got - reading[1]) < 0.000001,
+			"layer %.0f phase factor %.6f; reference reads %.6f",
+			reading[0], got, reading[1])
+	}
+    got := engine.unison_phase_offset(1, 64.0 / 127.0)
+    testing.expectf(t, abs(got - 0.0879) < 0.0002,
+        "stored 64 phase offset %.6f; reference reads about 0.0879", got)
+}
+
+// The reference's layer amplitudes are summed at unity. This is deliberately
+// a signed external law, not a trim chosen to close one corpus row.
+@(test)
+test_unison_stack_has_no_count_trim :: proc(t: ^testing.T) {
+	for count in ([]int{1, 2, 4, 8}) {
+		testing.expect_value(t, engine.unison_stack_scale(count), 1.0)
+	}
+}
+
+// Parameters 84 and 85 keep their measured controller ranges. Their use in the
+// layer layout is tested above; this pins the state bindings independently.
+@(test)
+test_unison_pan_and_pitch_bindings_keep_reference_ranges :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[84] = 0
+	p.values[85] = 0
+	bound := engine.bind_patch(p)
+	testing.expectf(t, abs(bound.unison_pan_spread + 1.0) < 0.000001,
+		"pan state 0 bound to %.6f; reference reads -1", bound.unison_pan_spread)
+	testing.expect_value(t, bound.unison_pitch, -24.0)
+	p.values[84] = 64
+	p.values[85] = 24
+	bound = engine.bind_patch(p)
+	testing.expectf(t, abs(bound.unison_pan_spread) < 0.000001,
+		"pan state 64 bound to %.6f; reference reads 0", bound.unison_pan_spread)
+	testing.expect_value(t, bound.unison_pitch, 0.0)
+}
+
 // Polyphony comes from parameter 94 and sizes the pool.
 @(test)
 test_polyphony_binding_and_pool_size :: proc(t: ^testing.T) {

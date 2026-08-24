@@ -116,12 +116,46 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	return cutoff
 }
 
-// Lay out the unison stack: detune, pan and, when requested, start phase.
+// Lay out the unison stack: measured pitch, pan and phase laws. The stack
+// keeps one oscillator pair per layer; its level is the reference's sum, not
+// an equal-power normalisation.
 //
-// The detune spread is symmetric about the note, so a stack never shifts the
-// perceived pitch of the note it is thickening. With one voice the spread is
-// zero and the voice sits dead centre, which is why unison off is expressed as
-// a count of 1 rather than as a separate code path.
+// The reference gives every layer the same nominal oscillator level. Its
+// free-running start phases are stable for a fresh voice, and the phase knob
+// scales those same signed offsets when oscillator phase is fixed.
+//
+// The detune and pan spreads stay symmetric about the note. A single voice has
+// no spread and sits dead centre.
+
+unison_phase_offset :: proc(index: int, amount: f32) -> f32 {
+	i := clamp_int(index, 0, MAX_UNISON - 1)
+	factor: f32
+	switch i {
+	case 0: factor = 0.000000
+	case 1: factor = 0.174481
+	case 2: factor = 0.988523
+	case 3: factor = 0.166238
+	case 4: factor = 0.875969
+	case 5: factor = 0.779655
+	case 6: factor = 0.375859
+	case: factor = 0.837608
+	}
+	return amount * factor
+}
+
+unison_layer_pitch :: proc(index: int, pitch: f32) -> f32 {
+	// The reference's unison-pitch control alternates two pitch groups. At a
+	// non-zero setting half the layers remain at the note and the other half
+	// move by the displayed interval.
+	return pitch if index % 2 == 1 else 0
+}
+
+unison_stack_scale :: proc(count: int) -> f32 {
+	// Synth1 sums the layers at unity. Keep the argument so the call site makes
+	// the count-dependent intent explicit and so this law has a signed test.
+	_ = count
+	return 1.0
+}
 voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_phase: bool) {
 	count := clamp_int(p.unison_voices, 1, MAX_UNISON)
 	old_count := v.unison_count
@@ -181,13 +215,9 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			// the common start nor the sign of the relationship.
 			if p.osc_phase_fixed {
 				base_phase := p.osc_phase_shift
-				// Parameter 92 spreads the stack, and the manual notes it "is not
-				// effective unless the phase is fixed in the oscillator section",
-				// so it lives inside this branch.
-				stack_phase := p.unison_phase_shift * f32(i) / f32(MAX_UNISON)
+				// Parameter 92 scales a measured, signed per-layer spread.
+				stack_phase := unison_phase_offset(i, p.unison_phase_shift)
 				dsp.oscillator_set_phase(&u.osc1, stack_phase + OSC_PHASE_FIXED_START_TURNS)
-				// Only oscillator 2 carries the relationship; both main oscillators
-				// carry the separately measured engaged origin. The sub does not.
 				dsp.oscillator_set_phase(&u.osc2,
 					stack_phase + OSC_PHASE_FIXED_START_TURNS + base_phase)
 				dsp.oscillator_set_phase(&u.sub, stack_phase)
@@ -197,43 +227,12 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				dsp.oscillator_set_phase(&u.osc2, osc2_phase)
 				dsp.oscillator_set_phase(&u.sub, sub_phase)
 			} else {
-				// A voice with no history, and parameter 91 not fixing anything. The
-				// reference is not silent about this case even though it is nominally
-				// free-running: oscillator 2 sits a fixed distance behind oscillator
-				// 1, and the reading does not move with pitch or with sample rate.
-				//
-				// Each of these three phases is now an absolute reading against
-				// note-on rather than a difference between renders, which is what
-				// makes the *assignment* readable at all. Oscillator 1 reads
-				// 0.000 +/- 0.002 turns for all four shapes, so the zero below is
-				// measured and not a convention; oscillator 2 reads +0.5627 for saw,
-				// triangle and pulse alike, so there is one constant here and not a
-				// per-shape law; and the offset is 0.562334 +/- 0.000012 with the
-				// three shapes agreeing to 1e-5. See OSC_PHASE_FREE_TURNS in
-				// params.odin for the method and the alternatives it excludes.
-				//
-				// The sub oscillator's zero is measured the hardest way of the three.
-				// With parameter 97 at "0oct" the sub runs at oscillator 1's own
-				// frequency, so the reference's normalised mix returns exactly the
-				// carrier -- switching a full-gain sub in and out of the reference
-				// changes its render by -142 dB, which is float rounding. That holds
-				// for a sine, a saw and a triangle, so all four sub shapes start
-				// where oscillator 1 starts. At "-1oct" the sub's own fundamental
-				// reads 0.000 +/- 0.002 turns against oscillator 1's in the same
-				// render, for all four shapes.
-				//
-				// It used to be fitted from how far each harmonic is pulled down,
-				// which gave the right magnitude and the wrong sign, because
-				// attenuation between two same-pitch oscillators is an even function
-				// of the offset and cannot distinguish one from the other.
-				//
-				// The caveat is recorded rather than hidden: this is the offset after a
-				// fresh load and a fixed silence, which is the condition the null test
-				// renders under. A host that has had the plugin running for minutes
-				// would find genuinely free-running oscillators somewhere else.
-				dsp.oscillator_set_phase(&u.osc1, 0)
-				dsp.oscillator_set_phase(&u.osc2, OSC_PHASE_FREE_TURNS)
-				dsp.oscillator_set_phase(&u.sub, 0)
+				// A fresh layer uses the measured offsets reached at maximum
+				// unison phase spread. Oscillator 2 keeps its intra-pair offset.
+				stack_phase := unison_phase_offset(i, 1.0)
+				dsp.oscillator_set_phase(&u.osc1, stack_phase)
+				dsp.oscillator_set_phase(&u.osc2, stack_phase + OSC_PHASE_FREE_TURNS)
+				dsp.oscillator_set_phase(&u.sub, stack_phase)
 			}
 		}
 	}
@@ -515,10 +514,8 @@ voice_process :: proc(
 	base_note :=
 		v.current_note +
 		p.key_shift +
-		p.unison_pitch +
 		pitch_bend * p.pitch_bend_range +
 		p.fine_tune_cents / CENTS_PER_SEMITONE
-
 	pulse_width := dsp.clamp32(p.pulse_width + mod_pulse_width, 0.02, 0.98)
 
 	// -- filter cutoff -------------------------------------------------------
@@ -602,9 +599,8 @@ voice_process :: proc(
 	velocity_gain := math.pow(f32(10.0), -velocity_attenuation_db / 20.0)
 	gain := amp_env * p.amp_gain * velocity_gain * mod_amplitude
 
-	// The stack is summed, so without this a unison of eight would be eight
-	// times louder than a single voice.
-	stack_scale := f32(1.0) / math.sqrt(f32(v.unison_count))
+	// Synth1 sums the unison layers at unity; there is no count trim.
+	stack_scale := unison_stack_scale(v.unison_count)
 
 	fm_position := dsp.clamp32(p.osc1_fm + mod_fm, 0, 1)
 
@@ -613,24 +609,25 @@ voice_process :: proc(
 	for i in 0 ..< v.unison_count {
 		u := &v.unison[i]
 
-		note1 := base_note + (u.detune + u.osc1_trim) / CENTS_PER_SEMITONE + mod_osc1_semitones
+		layer_pitch := unison_layer_pitch(i, p.unison_pitch)
+		note1 := base_note + layer_pitch +
+			(u.detune + u.osc1_trim) / CENTS_PER_SEMITONE + mod_osc1_semitones
 		osc1_hz := dsp.note_to_hz(note1)
 
 		osc2_hz: f32
 		if p.osc2_key_track {
 			note2 :=
-				base_note +
+				base_note + layer_pitch +
 				u.detune / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones
 			osc2_hz = dsp.note_to_hz(note2)
 		} else {
-			// Tracking off: "sound is output at a uniform frequency". The pitch
-			// offset still applies, it is just measured from a fixed middle C
-			// instead of from the note played.
+			// Tracking off fixes oscillator 2's base note, but unison pitch
+			// still separates the alternating layers.
 			note2 :=
-				60.0 +
+				60.0 + layer_pitch +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones

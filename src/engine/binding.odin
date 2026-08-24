@@ -588,10 +588,11 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 			e.osc_phase_shift = OSC_PHASE_MAX_TURNS * f32(position - 1) / 126.0
 		}
 	}
-	// Parameter 92 spreads the unison stack. The same changelog entry notes it "is
-	// not effective unless the phase is fixed in the oscillator section", which is
-	// enforced at the use site in voice.odin rather than here.
-	e.unison_phase_shift = f32(resolved_position(92, p.values[92])) / 128.0
+	// Parameter 92 scales the measured per-layer phase offsets. The reference
+	// reaches the signed offsets at stored 127; zero leaves every fixed-phase
+	// layer aligned. It is only effective when parameter 91 fixes the oscillator
+	// relationship, enforced at the use site in voice.odin.
+	e.unison_phase_shift = f32(resolved_position(92, p.values[92])) / 127.0
 
 	// Parameter 96 has four states; the sub oscillator reuses oscillator 1's
 	// documented shape order.
@@ -897,8 +898,11 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.unison_voices = 1
 	}
 
-	// Parameter 75 is a bare 0..127, read as cents across the whole stack.
-	e.unison_detune = 50.0 * unit_position(75, p.values[75])
+	// Parameter 75 is the unison detune amount. The measured spread is symmetric
+	// and quadratic in the knob position: stored 127 reaches +/-50 cents on an
+	// eight-voice stack, so the full span before the symmetric layout is 100 cents.
+	detune_position := unit_position(75, p.values[75])
+	e.unison_detune = 100.0 * detune_position * detune_position
 	// Displays "-64".."63".
 	e.unison_pan_spread = dsp.clamp32(display_number(84, p.values[84], 0) / 64.0, -1, 1)
 	// Displays "-24".."+24": semitones.
