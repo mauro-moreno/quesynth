@@ -3032,6 +3032,79 @@ test_fm_modulates_oscillator_one_from_oscillator_two :: proc(t: ^testing.T) {
 	testing.expectf(t, peak > 0.0001, "oscillator 2 render was silent: peak %v", peak)
 }
 
+// Synth1 v1.11's changelog says FM reaches the sub oscillator. The controlled
+// `s1probe fmsubprobe --values 16,24,32` measurements distinguish three laws at
+// -1oct: equal absolute displacement (slope 1), equal fractional deviation
+// scaled by the sub increment (slope 0.5), and no modulation (slope 0). The
+// reference reads 0.4956, 0.4859 and 0.4685 at FM states 16, 24 and 32; the
+// high-state bias is the phase projection's sideband distortion. At 0oct the
+// reference's full-sub and sub-off renders differ by at most 1.49e-7. Ring on
+// makes FM 43 and 77 bit-identical to FM off in both octave states.
+@(test)
+test_fm_reaches_sub_at_its_measured_increment :: proc(t: ^testing.T) {
+	fmsub_patch :: proc(octave, fm: int, ring: bool) -> patch.Patch {
+		p := fm_test_patch()
+		p.values[0] = 0 // oscillator 1: sine
+		p.values[1] = 1 // oscillator 2: triangle, a visible modulator
+		p.values[5] = 0 // oscillator 1 and sub alone
+		p.values[45] = fm
+		p.values[95] = 127 // full sub, with the measured normalisation
+		p.values[96] = 0 // sub: sine
+		p.values[97] = octave
+		p.values[7] = ring ? 1 : 0
+		p.values[91] = 1 // fixed, equal start phase for the comparison
+		return p
+	}
+
+	phase_step :: proc(before, after: f32) -> f32 {
+		d := after - before
+		for d >= 0.5 {d -= 1.0}
+		for d < -0.5 {d += 1.0}
+		return d
+	}
+
+	read_steps :: proc(p: patch.Patch) -> (osc1, sub, increment_ratio, before_osc1, before_sub: f32) {
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		defer engine.engine_destroy(&e)
+		engine.engine_note_on(&e, 60, 1.0)
+		u := &e.voices[0].unison[0]
+		before_osc1 = u.osc1.phase
+		before_sub = u.sub.phase
+		block := make([]f32, 1)
+		defer delete(block)
+		other := make([]f32, 1)
+		defer delete(other)
+		engine.engine_process(&e, block, other)
+		increment_ratio = u.sub.increment / u.osc1.increment
+		osc1 = phase_step(before_osc1, u.osc1.phase) - u.osc1.increment
+		sub = phase_step(before_sub, u.sub.phase) - u.sub.increment
+		return
+	}
+
+	for pair in ([][2]f32{{0, 1.0}, {1, 0.5}}) {
+		octave := int(pair[0])
+		want := pair[1]
+		on1, onsub, off_ratio, _, _ := read_steps(fmsub_patch(octave, 24, false))
+		carrier_offset := on1
+		sub_offset := onsub
+		testing.expectf(t, abs(carrier_offset) > 1.0e-6,
+			"FM state 24 did not move oscillator 1 at octave state %d", octave)
+		testing.expectf(t, abs(off_ratio - want) < 0.003,
+			"octave state %d has sub/carrier increments %.6f; reference reads %.1f",
+			octave, off_ratio, want)
+		testing.expectf(t, abs(sub_offset / carrier_offset - off_ratio) < 0.002,
+			"FM state 24 moved the sub/carrier by %.6f at octave state %d; it must use the sub increment %.6f",
+			sub_offset / carrier_offset, octave, off_ratio)
+
+		ring_off1, ring_offsub, _, _, _ := read_steps(fmsub_patch(octave, 0, true))
+		ring_on1, ring_onsub, _, _, _ := read_steps(fmsub_patch(octave, 77, true))
+		testing.expectf(t, abs(ring_off1) < 1.0e-6, "FM-off ring path moved oscillator 1 by %v", ring_off1)
+		testing.expectf(t, abs(ring_offsub) < 1.0e-6, "FM-off ring path moved the sub by %v", ring_offsub)
+		testing.expectf(t, abs(ring_on1) < 1.0e-6, "ring suppression left oscillator 1 FM offset %v", ring_on1)
+		testing.expectf(t, abs(ring_onsub) < 1.0e-6, "ring suppression left sub FM offset %v", ring_onsub)
+	}
+}
 // The other direction-sensitive fact: with oscillator 1 alone in the mix and FM
 // running, oscillator 2's own shape has to reach the output, because it is the
 // modulator shaping the carrier. If oscillator 2 were the carrier instead, its

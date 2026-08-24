@@ -5199,14 +5199,93 @@ four had no spectrum left at sustain. They are byte-identical, SHA-256
 `49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`:
 **0 of 123 patches moved, so there are no per-patch regressions to name.**
 
+### FM reaches the sub oscillator
+
+The v1.11 changelog says that FM influences the sub as well as OSC1. The
+controlled probe is now checked in as `s1probe fmsubprobe`. It uses one sine
+carrier, a triangle OSC2 modulator at −24 semitones, note 48, OSC1-only mix,
+full-gain sine sub, open filter, flat envelopes, no LFOs, no sync, and no
+unison. Run it against the reference with:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe fmsubprobe --values 16,24,32 --note 48
+```
+
+At `−1oct`, the measured sub/OSC1 phase-displacement slopes were **0.4956,
+0.4859, 0.4685** at FM states 16, 24 and 32 (the last two digits drift as
+sidebands broaden the projection window). The candidates are 1.0 for the same
+absolute displacement, 0.5 for the same fractional deviation scaled by the sub
+increment, and 0 for an unmodulated sub. The result selects the second law:
+
+```
+sub_phase += sub_increment + osc2_value * fm_depth(fm_position) * sub_increment
+```
+
+At `0oct`, the full-sub and sub-off reference renders differ by at most
+**1.49e−7** sample value (RMS **1.63e−8**) at FM states 0, 16, 24, 32 and 43.
+This is the same-pitch control: both oscillators receive the same fractional
+deviation. Ring is a separate control: with ring on, FM 43 and 77 are exactly
+identical to FM off in both octave states (max and RMS **0**). The engine uses
+one ring gate for both phase advances, so FM-off, sub-off, and ring-on paths keep
+their old advances.
+
+The signed engine test `test_fm_reaches_sub_at_its_measured_increment` pins both
+octave states and the ring control to those external readings. It does not test
+sub level or unison.
+
+### FM + sub shared-bank gate
+
+The real-patch gate selects shared-bank records with **95 ≥ 32**, **45 > 0**,
+and excludes unison, sync, ring, and modulation sources targeting FM. It is
+deduplicated by patch record and sorted by bank then filename. It renders three
+matched cases: the original patch, the same patch with FM and sub both disabled
+in both engines, and the same patch with only FM disabled in both engines. The
+last two controls separate FM-to-sub movement from the pre-existing sub and FM
+errors. The reproducible command is:
+
+```
+./build/s1probe.exe compare <shared-bank-root> --csv build/fmsub-shared.csv --note 48
+./build/s1probe.exe summarise build/fmsub-shared.csv
+```
+
+Record row count, invalid spectra, reference crashes, silence, spectral,
+envelope, level, null, and correlation means/medians, plus better/worse counts
+at 0.05 dB. External banks and the reference DLL are not tracked in this
+checkout; the gate is therefore a recorded local command rather than a fabricated
+aggregate. Its disabled-feature controls remain required whenever the corpus is
+available.
+
+### Factory-bank no-movement gate
+
+The Synth1 factory bank has **123 comparable rows** and parameter 95 is zero in
+all of them, so this FM-to-sub path is unreachable there. Rebuild the two source
+endpoints independently, run the factory compare command against each executable,
+and byte-compare the CSVs:
+
+```powershell
+$before = Join-Path $env:TEMP "quesynth-fmsub-integration"
+$after  = Join-Path $env:TEMP "quesynth-fmsub-head"
+New-Item -ItemType Directory -Force $before, $after | Out-Null
+git archive open-defects/integration | tar -xf - -C $before
+git archive HEAD | tar -xf - -C $after
+odin build "$before/tools/s1probe" -out:build/s1probe-fmsub-before.exe
+odin build "$after/tools/s1probe" -out:build/s1probe-fmsub-after.exe
+./build/s1probe-fmsub-before.exe compare ext/synth1/Synth1/soundbank00 --csv build/fmsub-factory-before.csv
+./build/s1probe-fmsub-after.exe compare ext/synth1/Synth1/soundbank00 --csv build/fmsub-factory-after.csv
+cmp build/fmsub-factory-before.csv build/fmsub-factory-after.csv
+```
+
+The expected gate is **123 rows, 0 moved patches**, with the same reference
+crashes and silent rows. The existing factory result remains spectral
+**6.6537 / 5.9766**, envelope **2.0957 / 1.7701**, absolute level **1.6529**,
+null **−6.6564 / −6.0802**, and correlation **0.7607**; no FM-to-sub change can
+move it while parameter 95 stays at zero.
+
 ### Still open on the sub
 
 - **Unison**, above, which is now the leading defect on the corpus patches that
   use the sub.
-- **FM does not reach the sub here.** The v1.11 changelog says *"FM modulation
-  also influences the sub-oscillator as well as OSC1"* and *"the sub-oscillator
-  doesn't influence the AM modulation"*. `voice.odin` sets the sub's frequency
-  from the note alone. Not measured.
 - **The 0.36 dB of level the corpus gate gains**, above.
 - **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
   renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
