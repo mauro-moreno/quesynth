@@ -87,10 +87,19 @@ test("prepare selects, deduplicates, and changes only declared records", () => {
     const indexHash = createHash("sha256").update(fs.readFileSync(result.indexPath)).digest("hex");
     assert.equal(indexHash, "cdea92745ee5f19ee32647480d017da51aec4ac0b0c617238e34d832a5425c15");
     assert.equal(index[0].semantic_sha256, undefined, "identity has one canonical column");
+    assert.equal(fs.readFileSync(result.indexPath, "utf8").split("\n")[0],
+      "name,gain95,mix5,shape96,octave97,version,source,identity_sha256,source_sha256,variant_sha256");
+    assert.deepEqual(index[0].variant_sha256.split(";").map(token => token.split(":")[0]), [
+      "on", "off", "on-eq-flat", "off-eq-flat", "on-delay-off", "off-delay-off",
+      "on-chorus-off", "off-chorus-off", "on-effect-off", "off-effect-off",
+      "on-post-off", "off-post-off", "on-filter-open", "off-filter-open",
+    ]);
+    assert.equal(index[0].identity_sha256, "5eb9221f0f618ebc218d6fe82fc08b34edd6939be442fc1bc528d28e1afc33cb");
+    assert.equal(index[0].source_sha256, "3be190464c117dd68f9a73ff3f245833272b1056c4968d415c988f64939309ee");
     assert.notEqual(index[0].identity_sha256, index[0].source_sha256);
     assert.match(index[0].variant_sha256, /on:[0-9a-f]{64};off:[0-9a-f]{64}/);
     assert.equal(verifyIndex(result.indexPath, "cdea92745ee5f19ee32647480d017da51aec4ac0b0c617238e34d832a5425c15"), indexHash);
-    assert.throws(() => verifyIndex(result.indexPath), /expected 8b2ec1aa/);
+    assert.throws(() => verifyIndex(result.indexPath), /expected bf3227a7/);
     assert.throws(() => verifyIndex(result.indexPath, "0".repeat(64)), /index SHA-256/);
   });
 });

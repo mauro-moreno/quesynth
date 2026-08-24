@@ -5235,11 +5235,10 @@ contrasts by identity. A hash belonging to another valid variant is rejected;
 membership in the row's aggregate set of hashes is not enough. Missing, extra,
 duplicate, stale and relabelled rows also fail.
 
-From a checkout whose licensed corpus is at `build/tmp/corpus`, these commands
-produce the pinned pair and the names whose hashes are reported below:
+From a checkout whose licensed corpus is at `build/tmp/corpus`, this command sequence creates a new cohort, verifies its complete index pin, renders the base pair and all six named controls, and checks every pair by its exact variant label:
 
 ```powershell
-$prefix = "build/hash-corpus"
+$prefix = "build/corpus-level-97"
 node tools/corpus-level.mjs prepare build/tmp/corpus $prefix
 node tools/corpus-level.mjs verify-index "$prefix-index.csv"
 
@@ -5250,86 +5249,76 @@ if ($referenceHash -ne "51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569b
 }
 
 odin build tools/s1probe -out:build/s1probe-current.exe
-Remove-Item build/hash-on.csv, build/hash-off.csv,
-  build/hash-on-repeat.csv, build/hash-off-repeat.csv -ErrorAction Ignore
-./build/s1probe-current.exe compare $reference "$prefix-on" --no-floor --csv build/hash-on.csv
-./build/s1probe-current.exe compare $reference "$prefix-off" --no-floor --csv build/hash-off.csv
-./build/s1probe-current.exe compare $reference "$prefix-on" --no-floor --csv build/hash-on-repeat.csv
-./build/s1probe-current.exe compare $reference "$prefix-off" --no-floor --csv build/hash-off-repeat.csv
+$variants = @("on", "off", "on-eq-flat", "off-eq-flat",
+  "on-delay-off", "off-delay-off", "on-chorus-off", "off-chorus-off",
+  "on-effect-off", "off-effect-off", "on-post-off", "off-post-off",
+  "on-filter-open", "off-filter-open")
+foreach ($variant in $variants) {
+  ./build/s1probe-current.exe compare $reference "$prefix-$variant" --no-floor `
+    --csv "build/corpus-level-97-$variant.csv"
+}
 
-if ((Get-FileHash build/hash-on.csv).Hash -ne (Get-FileHash build/hash-on-repeat.csv).Hash) {
-  throw "sub-on render is not deterministic"
+node tools/corpus-level.mjs analyse build/corpus-level-97-on.csv `
+  build/corpus-level-97-off.csv "$prefix-index.csv"
+foreach ($control in @("eq-flat", "delay-off", "chorus-off", "effect-off", "post-off", "filter-open")) {
+  node tools/corpus-level.mjs analyse "build/corpus-level-97-on-$control.csv" `
+    "build/corpus-level-97-off-$control.csv" "$prefix-index.csv" `
+    "on-$control" "off-$control"
+  node tools/corpus-level.mjs contrast build/corpus-level-97-on.csv `
+    build/corpus-level-97-off.csv "build/corpus-level-97-on-$control.csv" `
+    "build/corpus-level-97-off-$control.csv" "$prefix-index.csv" $control
 }
-if ((Get-FileHash build/hash-off.csv).Hash -ne (Get-FileHash build/hash-off-repeat.csv).Hash) {
-  throw "sub-off render is not deterministic"
-}
-node tools/corpus-level.mjs analyse build/hash-on.csv build/hash-off.csv "$prefix-index.csv"
 ```
 
-`prepare` reports **16698 files, 98 candidates and 97 unique patch
-identities**. The index SHA-256 is
-`8b2ec1aa825fd68ede2ce9c227d8f44ea9f0e89040db1f50d16c6dc05f115ec3`.
-The base on/off CSV SHA-256 values are
-`102e0d4bc1f4118422917932e3f5d9f1f0fc4ac0e13768a91f616423857939c9`
-and `13e50dc3900e296d2301ee80306817396ed4920fb5607e35518df432d9f6fdfa`.
-Fresh repeat renders made by the commands above are byte-identical and have the
-same two hashes. The DLL and corpus stay external because their licences do not
-allow redistribution; `verify-index` stops a different selected cohort or index
-before rendering.
+The fresh run reports **16698 files, 98 candidates and 97 unique patch
+identities**. Its exact index layout is
+`name,gain95,mix5,shape96,octave97,version,source,identity_sha256,source_sha256,variant_sha256`;
+the index SHA-256 is
+`bf3227a7f5b3dfd7095283ecdbf1962e4dc6738a63b67b6bbdc976edbc8b72e2`.
+The writer's on/off and control hashes are recorded below; these are hashes of
+the newly rendered CSVs, not pinned build outputs:
 
-Both pinned CSVs contain all 97 identities. The 92 completed reference renders
-report zero state mismatches. The reference crashes on `s022`, `s034`, `s040`,
-`s053` and `s087`; the probe retains them as marked rows without claiming a
-completed state read-back, leaving 92 matched non-silent level measurements.
-Analysis reproduces:
+| pair | on CSV SHA-256 | off CSV SHA-256 |
+|---|---|---|
+| base | `102e0d4bc1f4118422917932e3f5d9f1f0fc4ac0e13768a91f616423857939c9` | `13e50dc3900e296d2301ee80306817396ed4920fb5607e35518df432d9f6fdfa` |
+| eq-flat | `7f7068ca9213faf617a5174860d181e1de43f7301974e4df5cb2bf0411d12021` | `afd483a5b8275f0d8dc21b2acb8055559ab80fb9aab81f143bc804601fb3f340` |
+| delay-off | `5de0534c1bd0e28c3754192bfce9762c517547c123f580bf853159dc0773475a` | `d2659b39d378e7e41c8efc0dad5c3cda88fde635ee0df698842d41e6230eaa80` |
+| chorus-off | `d9d65e3a60adc3e9eea847bfb626cb18394ab4b5b46dd8034fc21c3926dca76b` | `a8e19f035dd209dba84e83ff2875dbeebeca81e4305553486fb31e9f0bac3a90` |
+| effect-off | `38bbcaeba51832e2398dce700f85af3c542e39cbc96e3e45188aedebc1908ae0` | `45da8f5c1065459f349641912355dc4323670c3b168567490d0cf9d3fc00baad` |
+| post-off | `96d750f2b64e1d4bd93e88b379a88572156d2d21ced804ea893149490dfd30b5` | `23863f71861db7efd79713dcadfd9aa160b3307bb59efac21d1856681b8bf1de` |
+| filter-open | `09fc47d7c54d8d312d42bacd10b6c732f57c010a0a7f6be8827e8a96ce4d3e4b` | `ec96def7b0f00053e0d9da5455fef7db8635c42aabf4eb3bc5d184dee80ddb1f` |
 
-| metric | sub on in both | sub off in both |
-|---|--:|--:|
-| level, mean absolute (92 rows) | 4.830002 dB | 4.549775 dB |
-| level error, mean / median | −3.42 / −2.27 dB | −3.39 / −1.43 dB |
-| spectral mean / median (84 valid) | 8.89 / 7.80 dB | 9.24 / 8.06 dB |
-| envelope mean / median (92 rows) | 4.04 / 2.91 dB | 4.02 / 3.15 dB |
-| null depth mean / median (92 rows) | −2.87 / −0.87 dB | −2.69 / −0.85 dB |
+Every CSV has all 97 indexed names, exact `on`, `off`, `on-$control` or
+`off-$control` patch hashes, and zero reference parameter mismatches. Every
+run marks the same five reference crashes, `s022`, `s034`, `s040`, `s053` and
+`s087`; the remaining 92 rows are the matched, non-silent measurements. The
+CSV files therefore cannot pass by swapping a valid hash between variant
+columns or by silently dropping a crash row.
 
-Enabling the sub costs **+0.280227 dB** of mean absolute level error. That is
-the unresolved number. The signed mean moves only −0.032388 dB, the on and off
-level errors correlate at `r = 0.949979`, and the change has no measured linear
-trend against sub weight: slope `+0.001224 dB/step` and `r = 0.015924` against
-stored 95, `r = 0.035723` against effective `stored95 * (1 - mix)`. Those fits
-do not explain the mean absolute change or prove a further sub law.
+The fresh analyses and matched contrasts are:
 
-The per-row change in absolute level error has median **+0.0123 dB**. Its net
-sum is +25.7809 dB. The six largest worsening rows sum to **+29.8913 dB**; the
-other 86 net to **−4.1104 dB**:
+| control | on MAE | off MAE | on-minus-off | six carrier sum, base → control |
+|---|---:|---:|---:|---:|
+| base | 4.830002 | 4.549775 | +0.280227 | — |
+| eq-flat | 4.706117 | 4.207164 | +0.498953 | +29.8913 → +26.4175 |
+| delay-off | 3.941513 | 3.807621 | +0.133892 | +29.8913 → +26.7825 |
+| chorus-off | 4.785167 | 4.515771 | +0.269397 | +29.8913 → +26.7155 |
+| effect-off | 3.050801 | 2.936023 | +0.114778 | +29.8913 → +3.2886 |
+| post-off | 1.900345 | 1.906760 | −0.006415 | +29.8913 → +0.6441 |
+| filter-open | 4.553076 | 4.220172 | +0.332904 | +29.8913 → +26.3622 |
 
-| row | change in \|level error\| | sub on | sub off |
-|---|--:|--:|--:|
-| `s016` | +7.6720 dB | −11.732 dB | −4.059 dB |
-| `s075` | +6.5104 dB | −24.431 dB | −17.921 dB |
-| `s013` | +4.6802 dB | +4.881 dB | −0.201 dB |
-| `s020` | +3.9105 dB | −11.774 dB | −7.864 dB |
-| `s077` | +3.8494 dB | −26.495 dB | −22.646 dB |
-| `s019` | +3.2688 dB | −4.245 dB | −0.977 dB |
+The controls are matched interventions, not causal proof. `post-off` removes
+most of the six-row carrier sum, but it changes five settings at once and the
+remaining rows move in both directions. The single-stage controls do not
+isolate one law, and `filter-open` does not reproduce the result. No control
+therefore proves an output stage interaction or a new sub law.
 
-#### Why the cause remains blocked
-
-The prior control table is withdrawn. Its twelve control CSVs came from a
-different `sNNN` assignment: for example, their `s000` hash is `a2a30fe8…`,
-while the pinned index assigns `s000` the base hash `4982377d…`. Their crash
-rows also differ. They cannot support the claim that all fourteen runs cover the
-pinned cohort, and the hardened analyser rejects every control pair before
-computing an aggregate.
-
-Even if those old values had shared the pinned cohort, the broad `post-off`
-aggregate changing from +0.280227 to −0.006415 dB would be cancellation under a
-five-setting intervention, not a cause. It names no stage, models no interaction,
-and does not measure a new sub law. The independent probe still supports only
-`a = 4 * stored95 / 127`, normalised by `1 + a * (1 - mix)`.
-
-Therefore the selection-effect explanation remains withdrawn, but no output
-stage or interaction replaces it. The literal **+0.280227 dB corpus-level
-residual remains unexplained and blocked**. No amp trim, global output fit, or
-engine change is justified. No engine or DSP source changed in this repair.
+Enabling the sub still costs **+0.280227 dB** of mean absolute level error;
+the signed mean is −0.032388 dB, with `r = 0.949979` between on/off errors.
+The independent probe still supports only
+`a = 4 * stored95 / 127`, normalised by `1 + a * (1 - mix)`. The literal
+residual remains unresolved and blocked. No amp trim, global output fit, or
+engine/DSP change is justified.
 The factory-bank evidence remains the byte-identical 123-row run, SHA-256
 `49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`,
 with level MAE 1.652847 dB and no factory patch setting parameter 95.

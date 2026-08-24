@@ -38,7 +38,7 @@ const PARAMETER_COUNT = 99;
 // The committed identity of the measured cohort. The index includes each
 // selected source path, patch version, stable semantic identity, source-byte
 // hash and every generated variant hash.
-export const CORPUS_INDEX_SHA256 = "8b2ec1aa825fd68ede2ce9c227d8f44ea9f0e89040db1f50d16c6dc05f115ec3";
+export const CORPUS_INDEX_SHA256 = "bf3227a7f5b3dfd7095283ecdbf1962e4dc6738a63b67b6bbdc976edbc8b72e2";
 
 // Section controls, each neutralising one architectural section by setting the
 // records that switch it off or flat. `post-off` is the union of the four
