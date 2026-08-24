@@ -33,6 +33,8 @@
 // itself and should report zero on every metric; anything else means the
 // harness is measuring itself rather than the engine.
 package s1probe
+import "core:crypto/sha2"
+import "core:encoding/hex"
 
 import "core:fmt"
 import "core:math"
@@ -87,6 +89,7 @@ COMPARE_VELOCITY :: f32(100.0) / 127.0
 
 Row :: struct {
 	name:             string,
+	patch_sha256:     string,
 	c:                Comparison,
 	// The reference compared against a second render of itself, through the
 	// identical path. This is the measurement's own noise floor, and it is
@@ -103,6 +106,19 @@ Row :: struct {
 	floor:            Comparison,
 	has_floor:        bool,
 	param_mismatches: int,
+}
+
+sha256_hex :: proc(data: []byte) -> string {
+	ctx: sha2.Context_256
+	sha2.init_256(&ctx)
+	sha2.update(&ctx, data)
+	digest: [sha2.DIGEST_SIZE_256]byte
+	sha2.final(&ctx, digest[:])
+	encoded, err := hex.encode(digest[:])
+	if err != nil { return "" }
+	result := strings.clone(string(encoded))
+	delete(encoded)
+	return result
 }
 
 // Every reference render gets a freshly loaded plugin, and the library is
@@ -665,7 +681,7 @@ print_summary :: proc(rows: []Row) {
 	fmt.println("=========================================================================")
 }
 
-CSV_HEADER :: "patch,spectral_valid,spectral_db,spectral_worst_db,spectral_worst_hz,envelope_db,level_db,null_db,correlation,lag,ref_centroid_hz,our_centroid_hz,ref_f0_hz,our_f0_hz,pitch_cents,pitch_confidence,ref_attack_ms,our_attack_ms,ref_release_ms,our_release_ms,ref_width,our_width,ref_peak,our_peak,ref_steady_rms,our_steady_rms,param_mismatches,ref_silent,our_silent,has_floor,floor_spectral_valid,floor_spectral_db,floor_envelope_db,floor_level_db"
+CSV_HEADER :: "patch,patch_sha256,spectral_valid,spectral_db,spectral_worst_db,spectral_worst_hz,envelope_db,level_db,null_db,correlation,lag,ref_centroid_hz,our_centroid_hz,ref_f0_hz,our_f0_hz,pitch_cents,pitch_confidence,ref_attack_ms,our_attack_ms,ref_release_ms,our_release_ms,ref_width,our_width,ref_peak,our_peak,ref_steady_rms,our_steady_rms,param_mismatches,ref_silent,our_silent,has_floor,floor_spectral_valid,floor_spectral_db,floor_envelope_db,floor_level_db"
 
 skip_patch :: proc(list, name: string) -> bool {
 	if list == "" {
@@ -713,6 +729,18 @@ csv_append_row :: proc(path: string, row: Row) -> bool {
 	return write_err == nil
 }
 
+csv_append_crash :: proc(path, name, patch_sha256: string) -> bool {
+	row := Row {
+		name = strings.clone(name),
+		patch_sha256 = strings.clone(patch_sha256),
+		c = {ref_silent = true},
+	}
+	ok := csv_append_row(path, row)
+	delete(row.name)
+	delete(row.patch_sha256)
+	return ok
+}
+
 csv_row_text :: proc(row: Row) -> string {
 	b := strings.builder_make()
 	{
@@ -720,11 +748,11 @@ csv_row_text :: proc(row: Row) -> string {
 		c := r.c
 		fmt.sbprintf(
 			&b,
-			"%v,%v,%.4f,%.4f,%.1f,%.4f,%.4f,%.4f,%.6f,%v," +
+			"%v,%v,%v,%.4f,%.4f,%.1f,%.4f,%.4f,%.4f,%.6f,%v," +
 			"%.1f,%.1f,%.3f,%.3f,%.2f,%.4f,%.1f,%.1f,%.1f,%.1f," +
 			"%.4f,%.4f,%.6f,%.6f,%.8f,%.8f,%v,%v,%v,%v," +
 			"%v,%.4f,%.4f,%.4f\n",
-			r.name, c.spectral_valid, c.spectral_db, c.spectral_worst_db, c.spectral_worst_hz,
+			r.name, r.patch_sha256, c.spectral_valid, c.spectral_db, c.spectral_worst_db, c.spectral_worst_hz,
 			c.envelope_db, c.level_db, c.null_db, c.correlation, c.best_lag,
 			c.ref_centroid_hz, c.our_centroid_hz, c.ref_fundamental_hz, c.our_fundamental_hz,
 			c.pitch_cents, c.pitch_confidence,
@@ -782,6 +810,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 	}
 
 	i_name := column(headers, "patch")
+	i_hash := column(headers, "patch_sha256")
 	i_sv := column(headers, "spectral_valid")
 	i_sd := column(headers, "spectral_db")
 	i_swd := column(headers, "spectral_worst_db")
@@ -823,6 +852,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 
 		r: Row
 		r.name = strings.clone(fields[i_name])
+		if i_hash >= 0 && i_hash < len(fields) { r.patch_sha256 = strings.clone(fields[i_hash]) }
 		r.c.spectral_valid = flag(fields, i_sv)
 		r.c.spectral_db = num(fields, i_sd)
 		r.c.spectral_worst_db = num(fields, i_swd)
@@ -864,6 +894,7 @@ cmd_summarise :: proc(path: string) {
 	defer {
 		for r in rows {
 			delete(r.name)
+			delete(r.patch_sha256)
 		}
 		delete(rows)
 	}
@@ -1050,6 +1081,14 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 			if code != 0 {
 				fmt.printfln("%-16v %v", name, exit_reason(code))
 				append(&crashed, name)
+				if opt.csv != "" {
+					data, err := os.read_entire_file(path, context.allocator)
+					if err == nil {
+						patch_hash := sha256_hex(data)
+						csv_append_crash(opt.csv, name, patch_hash)
+						delete(data, context.allocator)
+					}
+				}
 			}
 		}
 
@@ -1092,6 +1131,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 	defer {
 		for r in rows {
 			delete(r.name)
+			delete(r.patch_sha256)
 		}
 		delete(rows)
 	}
@@ -1115,6 +1155,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 			fmt.eprintfln("%v: cannot read: %v", name, read_err)
 			continue
 		}
+		patch_sha256 := sha256_hex(data)
 		// parse_sy1 borrows out of `data`, so the buffer has to outlive the patch.
 		parsed, parse_err := cpatch.parse_sy1(data)
 		if parse_err != .None {
@@ -1169,6 +1210,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 		row := Row {
 			name             = strings.clone(name),
+			patch_sha256     = patch_sha256,
 			c                = c,
 			param_mismatches = mismatches,
 		}

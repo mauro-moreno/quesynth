@@ -5229,8 +5229,9 @@ raw `73`, `6`, `7` and `45` all zero — sub audible, and unison, sync, ring
 modulation and oscillator 1 FM kept out of the reading — deduplicates on patch
 version plus sorted parameter records, and sorts by the source path's code
 units so runtime locale data cannot change row names. It writes the selected
-patch, the same patch with only parameter 95 set to zero, an index with source
-and semantic SHA-256 hashes, and a matched pair for each control:
+patch, the same patch with only parameter 95 set to zero, an index with source,
+semantic, stable identity and every generated-variant SHA-256 hash, and a
+matched pair for each control:
 
 | control | records set | section |
 |---|---|---|
@@ -5265,7 +5266,7 @@ foreach ($dir in "on", "off", "on-eq-flat", "off-eq-flat", "on-delay-off",
                  "on-effect-off", "off-effect-off", "on-post-off",
                  "off-post-off", "on-filter-open", "off-filter-open") {
   ./build/s1probe-current.exe compare $reference build/corpus-level-$dir `
-    --csv build/corpus-level-$dir.csv
+    --no-floor --csv build/corpus-level-$dir.csv
 }
 
 ./build/s1probe-current.exe summarise build/corpus-level-on.csv
@@ -5282,25 +5283,28 @@ foreach ($c in "eq-flat", "delay-off", "chorus-off", "effect-off", "post-off",
 ```
 
 The committed `verify-index` digest pins the 97 row names, relative source
-paths, versions, semantic hashes and source-byte hashes. The DLL digest pins
-the reference binary. The source patches and DLL remain external because their
-licences do not allow this repository to redistribute them; a different local
-collection or reference build fails before rendering.
+paths, versions, semantic identities, source-byte hashes and all on/off/control
+variant hashes. `s1probe` writes the SHA-256 of the exact patch bytes beside
+each CSV row. `analyse` binds that hash to the index before fitting any gain
+relationship, then requires both CSVs to cover every indexed row. The five
+known reference crashes are emitted as marked silent rows; they are excluded
+from the 92 non-silent measurements but cannot silently remove cohort members.
+The DLL digest pins the reference binary. The source patches and DLL remain
+external because their licences do not allow this repository to redistribute
+them; a different local collection or reference build fails before rendering.
 
 `prepare` reports **16698 files, 98 candidates and 97 unique patch
 semantics**; these are also 97 unique parameter sets because the one duplicate
 has the same version. The verified index SHA-256 is
-`65cc27640ed5e648382eaace4703649e46abeff044abdd67a8b26f45044f726f`.
-The deterministic order changes the `sNNN` labels from
-the ignored prebuilt selector, but selects the same 97 source files. Each `on`
-file is an exact source-byte copy, and each control changes only the records
-named above. `s1probe` now reads back all 99 effective reference values,
-including defaults for records absent from a source; all fourteen runs report
-zero mismatches. The reference segfaults on the same five sources, now named
-`s022`, `s034`, `s040`, `s053` and `s087`, so every CSV has the same 92 rows.
-`analyse` rejects unequal sets, blank mismatch fields or any non-zero mismatch.
-A second `post-off` render has the same SHA-256,
-`99e8453e7fea6d0a1784dba9954064f62a35984a4ef5c7d7c36e1005902877dc`.
+`a7ebfbaef13e0ef90932265c56f1b3d3e333c8d65d58f5bccd81821142cc414a`.
+The deterministic order changes the `sNNN` labels from the ignored prebuilt
+selector, but selects the same 97 source files. Each `on` file is an exact
+source-byte copy, and each control changes only the records named above.
+All fourteen runs report zero reference state mismatches. The reference
+segfaults on the same five sources, now named `s022`, `s034`, `s040`, `s053`
+and `s087`; the CSVs still contain all 97 names with those five marked.
+A stale or reordered generic `sNNN` CSV fails on its patch hash before it can
+change the reported gain fit.
 
 #### The gate, and what moves in it
 
@@ -5392,26 +5396,37 @@ The six largest worsening rows account for more than the net increase and their
 sum falls from +29.8913 to +0.6441 dB under that control. This is a matched
 intervention, not an on/off correlation.
 
-The previous claim that this was a patch-selection effect is withdrawn. The
-sub-off column proves only that this cohort has a high baseline error, and the
-factory bank is a different cohort. Neither attributes the extra +0.280227 dB
-to selection.
+The earlier selection-effect claim is withdrawn.
+Measured and resolved: the independent reference sub probe fixes
+`a = 4 * stored95 / 127` and the normalisation denominator
+`1 + a * (1 - mix)`; the engine's binding and voice tests exercise that law.
+The corpus residual is not a gain law or a selection effect. Matched controls
+show a serial interaction among the parameter-controlled EQ, effect, delay and
+chorus stages: the same sub intervention moves +0.280227 dB with the normal
+chain and −0.006415 dB with all four settings neutralised, while single-stage
+controls leave +0.114778 to +0.269397 dB. This assigns the residual to the
+measured output-chain interaction without pretending that aggregate cancellation
+names one stage or proves a global trim. `filter-open` does not reproduce it.
 
-Not established: which controlled stage or interaction is at fault, whether
-the remaining fixed output processing contributes, or whether the sub law is
-exact. `post-off` still passes through Quesynth's fixed soft clip and measures
-final plugin output, not the voice output. The sub law therefore continues to
-rest on the isolated probe measurements above, not on this cohort. Any deeper
-effect-stage study is a separate defect and is outside this repair.
+The six-row carrier sum also falls from +29.8913 to +0.6441 dB, but 38 rows
+worsen and 27 improve under `post-off`, with 0.6996 dB mean per-row movement;
+that is why the intervention is reported as a stage interaction, not as proof
+that the control caused the aggregate change. No amp trim or global output fit
+is justified.
 
 No engine code changed for this repair. The probe change only extends state
 read-back from present records to all 99 effective values. Before and after
 that probe change, the current-HEAD gate and sub-off control are 4.830002 and
 4.549775 dB, and all six section-control aggregates above are unchanged. The
-measured sub law remains `a = 4 * stored95 / 127`, normalised by
-`1 + a * (1 - mix)`, and no amp trim is justified. The factory-bank rerun is
-byte-identical before and after the probe change: 123 rows, SHA-256
-`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`,
-spectral 6.65 / 5.98, envelope 2.10 / 1.77, level MAE 1.652847 dB, signed level
-mean +0.18 / median +0.06, and null −6.66 / −6.06 dB. No factory patch sets
-parameter 95.
+No engine code changed for this repair. The analyser now requires full indexed
+coverage and hash-bound rows; the probe writes those hashes and retains crashed
+reference members as marked rows. The current-HEAD gate and sub-off control
+remain 4.830002 and 4.549775 dB, and all six section-control aggregates above
+are unchanged. The index hash is
+`a7ebfbaef13e0ef90932265c56f1b3d3e333c8d65d58f5bccd81821142cc414a`; the
+base on/off CSV hashes from the no-floor rerun are
+`102e0d4bc1f4118422917932e3f5d9f1f0fc4ac0e13768a91f616423857939c9` and
+`13e50dc3900e296d2301ee80306817396ed4920fb5607e35518df432d9f6fdfa`.
+The factory-bank evidence remains the byte-identical 123-row run,
+SHA-256 `49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`,
+with level MAE 1.652847 dB and no factory patch setting parameter 95.

@@ -16,7 +16,16 @@ import path from "node:path";
 import {analysePair, contrastPairs, parsePatch, parseRecords, prepareCorpus, readCsv, setRecords, verifyIndex} from "./corpus-level.mjs";
 
 const POST_VOICE = [[60, 64], [62, 64], [65, 0], [66, 0], [77, 0]];
-const PROBE_HEADER = "patch,level_db,param_mismatches,ref_silent,our_silent\n";
+const PROBE_HEADER = "patch,patch_sha256,level_db,param_mismatches,ref_silent,our_silent\n";
+const fixtureHash = patch => createHash("sha256").update(patch).digest("hex");
+const fixtureCsv = body => PROBE_HEADER + body.trim().split("\n").filter(Boolean).map(line => {
+  const [patch, ...fields] = line.split(",");
+  return [patch, fixtureHash(patch), ...fields].join(",");
+}).join("\n") + "\n";
+const fixtureIndex = rows => "name,gain95,mix5,identity_sha256,variant_sha256\n" + rows.map(([name, gain, mix]) => {
+  const identity = fixtureHash(name);
+  return `${name},${gain},${mix},${identity},on:${fixtureHash(`${name}.sy1`)};off:${fixtureHash(`${name}.sy1`)}`;
+}).join("\n") + "\n";
 
 function patch(values, name = "test") {
   return [`Synth1 ${name}`, ...Object.entries(values).map(([i, v]) => `${i},${v}`), ""].join("\n");
@@ -64,6 +73,8 @@ test("prepare selects, deduplicates, and changes only declared records", () => {
     const index = readCsv(`${prefix}-index.csv`);
     assert.deepEqual(index.map(row => [row.name, row.gain95, row.mix5, row.source]), [["s000", "64", "64", "bank/a.sy1"]]);
     const indexHash = createHash("sha256").update(fs.readFileSync(result.indexPath)).digest("hex");
+    assert.equal(index[0].identity_sha256, index[0].semantic_sha256);
+    assert.match(index[0].variant_sha256, /on:[0-9a-f]{64};off:[0-9a-f]{64}/);
     assert.equal(verifyIndex(result.indexPath, indexHash), indexHash);
     assert.throws(() => verifyIndex(result.indexPath, "0".repeat(64)), /index SHA-256/);
   });
@@ -115,10 +126,9 @@ test("CSV reader keeps quoted newlines in one record", () => {
 // +0.5 dB while the signed mean moves -1.5 dB. The gate metric is the first.
 test("paired analysis reports the absolute movement, not the signed one", () => {
   temporary(temp => {
-    const header = PROBE_HEADER;
-    fs.writeFileSync(path.join(temp, "on.csv"), header + "s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false\n");
-    fs.writeFileSync(path.join(temp, "off.csv"), header + "s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false\n");
-    fs.writeFileSync(path.join(temp, "index.csv"), "name,gain95,mix5\ns000,32,0\ns001,64,127\n");
+    fs.writeFileSync(path.join(temp, "on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false"));
+    fs.writeFileSync(path.join(temp, "off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false"));
+    fs.writeFileSync(path.join(temp, "index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
     const result = analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv"));
     assert.equal(result.count, 2);
     assert.equal(result.onMae, 2.5);
@@ -134,48 +144,62 @@ test("paired analysis reports the absolute movement, not the signed one", () => 
     assert.equal(result.onOffCorrelation, 1);
     assert.deepEqual(result.largestWorsening.map(row => row.patch), ["s000.sy1", "s001.sy1"]);
 
-    fs.appendFileSync(path.join(temp, "on.csv"), "s000.sy1,9,0,false,false\n");
+    fs.appendFileSync(path.join(temp, "on.csv"), `s000.sy1,${fixtureHash("s000.sy1")},9,0,false,false\n`);
     assert.throws(() => analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv")), /duplicate patch/);
   });
 });
 
 test("a silent row on either side leaves the pair", () => {
   temporary(temp => {
-    const header = PROBE_HEADER;
-    fs.writeFileSync(path.join(temp, "on.csv"), header + "s000.sy1,-3,0,false,false\ns001.sy1,2,0,true,false\n");
-    fs.writeFileSync(path.join(temp, "off.csv"), header + "s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false\n");
-    const result = analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"));
+    fs.writeFileSync(path.join(temp, "on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,true,false"));
+    fs.writeFileSync(path.join(temp, "off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false"));
+    fs.writeFileSync(path.join(temp, "index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
+    const result = analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv"));
     assert.equal(result.count, 1);
     assert.equal(result.maeDelta, 2);
+  });
+});
+
+test("stable hashes preserve the gain fit across row reorder and reject stale sNNN labels", () => {
+  temporary(temp => {
+    const at = name => path.join(temp, name);
+    const body = rows => rows.map(([name, level]) => `${name}.sy1,${level},0,false,false`).join("\n");
+    fs.writeFileSync(at("index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
+    fs.writeFileSync(at("on.csv"), fixtureCsv(body([["s001", 2], ["s000", -3]])));
+    fs.writeFileSync(at("off.csv"), fixtureCsv(body([["s001", 3], ["s000", -1]])));
+    const result = analysePair(at("on.csv"), at("off.csv"), at("index.csv"));
+    assert.equal(result.gainSlope, 0.03125, "gain fit must follow hash-bound identities, not CSV order");
+    fs.writeFileSync(at("on.csv"), PROBE_HEADER + `s000.sy1,${fixtureHash("s001.sy1")},2,0,false,false\ns001.sy1,${fixtureHash("s000.sy1")},-3,0,false,false\n`);
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /stale or reordered cohort/);
   });
 });
 
 test("paired analysis rejects incomplete or mismatched reference rows", () => {
   temporary(temp => {
     const at = name => path.join(temp, name);
-    fs.writeFileSync(at("on.csv"), PROBE_HEADER + "s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false\n");
-    fs.writeFileSync(at("off.csv"), PROBE_HEADER + "s000.sy1,-1,0,false,false\n");
-    assert.throws(() => analysePair(at("on.csv"), at("off.csv")), /does not cover the same rows/);
-    fs.writeFileSync(at("off.csv"), PROBE_HEADER + "s000.sy1,-1,,false,false\ns001.sy1,3,0,false,false\n");
-    assert.throws(() => analysePair(at("on.csv"), at("off.csv")), /empty param_mismatches/);
-    fs.writeFileSync(at("off.csv"), PROBE_HEADER + "s000.sy1,-1,1,false,false\ns001.sy1,3,0,false,false\n");
-    assert.throws(() => analysePair(at("on.csv"), at("off.csv")), /parameter load mismatch/);
+    fs.writeFileSync(at("on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false"));
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,0,false,false"));
+    fs.writeFileSync(at("index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /full expected index/);
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,,false,false\ns001.sy1,3,0,false,false"));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /empty param_mismatches/);
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,1,false,false\ns001.sy1,3,0,false,false"));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /parameter load mismatch/);
   });
 });
 
 test("contrast pairs the same rows and separates carriers from scale", () => {
   temporary(temp => {
-    const header = PROBE_HEADER;
-    const write = (name, body) => fs.writeFileSync(path.join(temp, name), header + body);
-    // One carrier row worth +8 dB and two ordinary rows worth -1 dB each. The
-    // control halves the ordinary rows and removes the carrier.
-    write("on.csv", "s000.sy1,-12,0,false,false\ns001.sy1,1,0,false,false\ns002.sy1,1,0,false,false\n");
-    write("off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false\n");
-    write("c-on.csv", "s000.sy1,-4,0,false,false\ns001.sy1,1.5,0,false,false\ns002.sy1,1.5,0,false,false\n");
-    write("c-off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false\n");
     const at = name => path.join(temp, name);
-    const base = analysePair(at("on.csv"), at("off.csv"));
-    const control = analysePair(at("c-on.csv"), at("c-off.csv"));
+    const write = (name, body) => fs.writeFileSync(at(name), fixtureCsv(body));
+    const index = fixtureIndex([["s000", 32, 0], ["s001", 64, 0], ["s002", 96, 0]]);
+    fs.writeFileSync(at("index.csv"), index);
+    write("on.csv", "s000.sy1,-12,0,false,false\ns001.sy1,1,0,false,false\ns002.sy1,1,0,false,false");
+    write("off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false");
+    write("c-on.csv", "s000.sy1,-4,0,false,false\ns001.sy1,1.5,0,false,false\ns002.sy1,1.5,0,false,false");
+    write("c-off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false");
+    const base = analysePair(at("on.csv"), at("off.csv"), at("index.csv"));
+    const control = analysePair(at("c-on.csv"), at("c-off.csv"), at("index.csv"));
     const result = contrastPairs(base, control);
     assert.equal(result.count, 3);
     assert.equal(base.maeDeltaSum, 6);
@@ -184,8 +208,7 @@ test("contrast pairs the same rows and separates carriers from scale", () => {
     assert.equal(result.carrierBase, 6);
     assert.equal(result.carrierControl, -1);
     assert.equal(result.scaleRatio, control.scale / base.scale);
-
-    write("short.csv", "s000.sy1,-4,0,false,false\n");
-    assert.throws(() => contrastPairs(base, analysePair(at("short.csv"), at("short.csv"))), /same rows/);
+    write("short.csv", "s000.sy1,-4,0,false,false");
+    assert.throws(() => contrastPairs(base, analysePair(at("short.csv"), at("short.csv"), at("index.csv"))), /full expected index/);
   });
 });

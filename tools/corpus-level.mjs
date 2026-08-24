@@ -36,8 +36,9 @@ const SELECT_MIN_GAIN = 32;
 const SELECT_ZERO = [73, 6, 7, 45];
 const PARAMETER_COUNT = 99;
 // The committed identity of the measured cohort. The index includes each
-// selected source path, patch version, semantic hash and source-byte hash.
-export const CORPUS_INDEX_SHA256 = "65cc27640ed5e648382eaace4703649e46abeff044abdd67a8b26f45044f726f";
+// selected source path, patch version, stable semantic identity, source-byte
+// hash and every generated variant hash.
+export const CORPUS_INDEX_SHA256 = "a7ebfbaef13e0ef90932265c56f1b3d3e333c8d65d58f5bccd81821142cc414a";
 
 // Section controls, each neutralising one architectural section by setting the
 // records that switch it off or flat. `post-off` is the union of the four
@@ -188,17 +189,25 @@ export function prepareCorpus(root, prefix, controls = CONTROLS) {
   }
   Object.values(dirs).forEach(resetDirectory);
 
-  const index = ["name,gain95,mix5,shape96,octave97,version,source,semantic_sha256,source_sha256"];
+  const index = ["name,gain95,mix5,shape96,octave97,version,source,semantic_sha256,source_sha256,identity_sha256,variant_sha256"];
   selected.forEach((item, i) => {
     const name = `s${String(i).padStart(3, "0")}`;
     const filename = `${name}.sy1`;
     const off = setRecords(item.text, new Map([[95, 0]]));
+    const variants = new Map([["on", item.text], ["off", off]]);
     fs.writeFileSync(path.join(dirs.on, filename), item.text, ENCODING);
     fs.writeFileSync(path.join(dirs.off, filename), off, ENCODING);
     for (const [control, changes] of controls) {
-      fs.writeFileSync(path.join(dirs[`on-${control}`], filename), setRecords(item.text, changes), ENCODING);
-      fs.writeFileSync(path.join(dirs[`off-${control}`], filename), setRecords(off, changes), ENCODING);
+      const onText = setRecords(item.text, changes);
+      const offText = setRecords(off, changes);
+      variants.set(`on-${control}`, onText);
+      variants.set(`off-${control}`, offText);
+      fs.writeFileSync(path.join(dirs[`on-${control}`], filename), onText, ENCODING);
+      fs.writeFileSync(path.join(dirs[`off-${control}`], filename), offText, ENCODING);
     }
+    const variantHashes = [...variants].map(([variant, text]) =>
+      `${variant}:${createHash("sha256").update(text, ENCODING).digest("hex")}`).join(";");
+    const identity = createHash("sha256").update(item.key).digest("hex");
     index.push([
       name,
       item.records.get(95) ?? 0,
@@ -207,8 +216,10 @@ export function prepareCorpus(root, prefix, controls = CONTROLS) {
       item.records.get(97) ?? 0,
       item.version,
       path.relative(root, item.source).replaceAll("\\", "/"),
-      createHash("sha256").update(item.key).digest("hex"),
+      identity,
       createHash("sha256").update(item.text, ENCODING).digest("hex"),
+      identity,
+      variantHashes,
     ].map(csvCell).join(","));
   });
   const indexPath = `${prefix}-index.csv`;
@@ -264,8 +275,8 @@ function linear(x, y) {
 }
 
 const TOP_ROWS = 6;
-
 export function analysePair(onFile, offFile, indexFile, threshold = 0.05) {
+  if (!indexFile) throw new Error("an index file is required for stable cohort identity");
   const keyed = (data, key, file) => {
     const result = new Map();
     for (const row of data) {
@@ -277,28 +288,52 @@ export function analysePair(onFile, offFile, indexFile, threshold = 0.05) {
     return result;
   };
   const onRows = readCsv(onFile), offRows = readCsv(offFile);
-  const required = ["patch", "level_db", "param_mismatches", "ref_silent", "our_silent"];
+  const required = ["patch", "patch_sha256", "level_db", "param_mismatches", "ref_silent", "our_silent"];
   if (!onRows.length || !required.every(column => column in onRows[0])) throw new Error(`${onFile}: expected ${required.join(", ")} columns`);
   if (!offRows.length || !required.every(column => column in offRows[0])) throw new Error(`${offFile}: expected ${required.join(", ")} columns`);
   const on = keyed(onRows, "patch", onFile);
   const off = keyed(offRows, "patch", offFile);
+  const indexRows = readCsv(indexFile);
+  const indexRequired = ["name", "gain95", "mix5", "identity_sha256", "variant_sha256"];
+  if (!indexRows.length || !indexRequired.every(column => column in indexRows[0])) {
+    throw new Error(`${indexFile}: expected ${indexRequired.join(", ")} columns`);
+  }
+  const index = keyed(indexRows, "name", indexFile);
+  const identities = new Map();
+  for (const meta of index.values()) {
+    if (!/^[0-9a-f]{64}$/i.test(meta.identity_sha256.trim())) throw new Error(`${indexFile}: invalid identity_sha256 for ${meta.name}`);
+    if (identities.has(meta.identity_sha256)) throw new Error(`${indexFile}: duplicate identity_sha256 ${meta.identity_sha256}`);
+    identities.set(meta.identity_sha256, meta.name);
+  }
+  const expected = new Set(index.keys());
+  const missing = rows => [...expected].filter(name => !rows.has(`${name}.sy1`));
+  const extra = rows => [...rows.keys()].filter(patch => !expected.has(patch.replace(/\.sy1$/i, "")));
+  const missingOn = missing(on), missingOff = missing(off), extraOn = extra(on), extraOff = extra(off);
+  if (missingOn.length || missingOff.length || extraOn.length || extraOff.length) {
+    throw new Error(`${indexFile}: CSVs do not cover the full expected index (missing on: ${missingOn.slice(0, 5).join(", ") || "none"}; missing off: ${missingOff.slice(0, 5).join(", ") || "none"}; extra on: ${extraOn.slice(0, 5).join(", ") || "none"}; extra off: ${extraOff.slice(0, 5).join(", ") || "none"})`);
+  }
   const onlyOn = [...on.keys()].filter(patch => !off.has(patch));
   const onlyOff = [...off.keys()].filter(patch => !on.has(patch));
   if (onlyOn.length || onlyOff.length) {
     throw new Error(`the pair does not cover the same rows (only on: ${onlyOn.slice(0, 5).join(", ") || "none"}; only off: ${onlyOff.slice(0, 5).join(", ") || "none"})`);
   }
-  let index = new Map();
-  if (indexFile) {
-    const indexRows = readCsv(indexFile);
-    if (!indexRows.length || !["name", "gain95", "mix5"].every(column => column in indexRows[0])) {
-      throw new Error(`${indexFile}: expected name, gain95 and mix5 columns`);
-    }
-    index = keyed(indexRows, "name", indexFile);
+  const hash = (row, file) => {
+    if (!/^[0-9a-f]{64}$/i.test(row.patch_sha256.trim())) throw new Error(`${file}: invalid patch_sha256 for ${row.patch}`);
+    return row.patch_sha256.trim().toLowerCase();
+  };
+  const variantHashes = (meta, patch, file) => {
+    const hashes = meta.variant_sha256.split(";").map(value => value.split(":")[1]).filter(Boolean).map(value => value.toLowerCase());
+    if (!hashes.includes(hash(patch, file))) throw new Error(`${file}: stale or reordered cohort row ${patch.patch} has an unrecognised patch hash`);
+  };
+  for (const patch of on.keys()) {
+    const meta = index.get(patch.replace(/\.sy1$/i, ""));
+    variantHashes(meta, on.get(patch), onFile);
+    variantHashes(meta, off.get(patch), offFile);
   }
-
   const rows = [];
   for (const [patch, a] of on) {
     const b = off.get(patch);
+    const meta = index.get(patch.replace(/\.sy1$/i, ""));
     if (a.param_mismatches.trim() === "" || b.param_mismatches.trim() === "") {
       throw new Error(`${patch}: empty param_mismatches`);
     }
@@ -310,16 +345,14 @@ export function analysePair(onFile, offFile, indexFile, threshold = 0.05) {
     if (a.level_db.trim() === "" || b.level_db.trim() === "") throw new Error(`${patch}: empty level_db`);
     const onLevel = Number(a.level_db), offLevel = Number(b.level_db);
     if (!Number.isFinite(onLevel) || !Number.isFinite(offLevel)) throw new Error(`${patch}: non-finite level_db`);
-    const meta = indexFile ? index.get(patch.replace(/\.sy1$/i, "")) : undefined;
-    if (indexFile && !meta) throw new Error(`${indexFile}: no metadata for ${patch}`);
-    const gain = meta ? Number(meta.gain95) : 0;
-    const mix = meta ? Number(meta.mix5) : 0;
-    if (meta && (meta.gain95.trim() === "" || meta.mix5.trim() === "" || !Number.isFinite(gain) || !Number.isFinite(mix))) {
+    const gain = Number(meta.gain95);
+    const mix = Number(meta.mix5);
+    if (meta.gain95.trim() === "" || meta.mix5.trim() === "" || !Number.isFinite(gain) || !Number.isFinite(mix)) {
       throw new Error(`${indexFile}: invalid metadata for ${patch}`);
     }
     // The gate metric is the mean of |level error|, so the quantity that moves
     // it is the change in that absolute value -- not the change in the error.
-    rows.push({patch, onLevel, offLevel, signedDelta: onLevel - offLevel,
+    rows.push({patch, identity: meta.identity_sha256, onLevel, offLevel, signedDelta: onLevel - offLevel,
       absoluteDelta: Math.abs(onLevel) - Math.abs(offLevel),
       gain, weight: gain * (1 - mix / 127)});
   }
