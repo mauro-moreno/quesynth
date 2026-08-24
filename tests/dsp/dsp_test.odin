@@ -2178,6 +2178,20 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 		u := &e.voices[0].unison[0]
 		return u.osc1.phase, u.osc2.phase, u.sub.phase
 	}
+	read_shift := proc(phase_shift: f32, note: int) -> (osc1, osc2: f32) {
+		p := default_patch()
+		p.values[73] = 0
+		p.values[91] = 1 // engage fixed phase without asking binding for a shift
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		defer engine.engine_destroy(&e)
+		// Drive the separately measured relationship directly, so this wiring
+		// check does not also test the parameter-91 binding law above.
+		e.params.osc_phase_shift = phase_shift
+		engine.engine_note_on(&e, note, 1.0)
+		u := &e.voices[0].unison[0]
+		return u.osc1.phase, u.osc2.phase
+	}
 	signed := proc(v: f32) -> f32 {return v >= 0.5 ? v - 1.0 : v}
 
 	free1, free2, free_sub := read(0, 60)
@@ -2195,22 +2209,23 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 			stored, signed(osc1))
 	}
 
-	// These are oscillator 2's own signed absolute readings from the same
-	// reference command, not values reconstructed with the engine's phase law.
-	// They distinguish +base_phase from the phase-even -base_phase alternative.
-	for reading in ([][2]f32{
-		{1, -0.00125},
-		{16, 0.05827},
-		{32, 0.12177},
-		{48, 0.18526},
-		{64, 0.24875},
-		{96, 0.37573},
-		{127, 0.49875},
+	// Both the relationship and oscillator 2 start are signed absolute readings
+	// from the same reference command. Driving the relationship directly keeps
+	// this wiring check independent from the binding law tested above, while the
+	// start still distinguishes +base_phase from the phase-even alternative.
+	for reading in ([][3]f32{
+		{1, 0.000000, -0.00125},
+		{16, 0.059524, 0.05827},
+		{32, 0.123016, 0.12177},
+		{48, 0.186508, 0.18526},
+		{64, 0.250000, 0.24875},
+		{96, 0.376984, 0.37573},
+		{127, 0.500000, 0.49875},
 	}) {
-		_, osc2, _ := read(int(reading[0]), 60)
-		testing.expectf(t, abs(signed(osc2) - reading[1]) < 5.0e-6,
+		_, osc2 := read_shift(reading[1], 60)
+		testing.expectf(t, abs(signed(osc2) - reading[2]) < 5.0e-6,
 			"stored %.0f put oscillator 2 at %.5f turns; the reference reads %.5f",
-			reading[0], signed(osc2), reading[1])
+			reading[0], signed(osc2), reading[2])
 	}
 
 	for note in ([]int{36, 48, 72, 84}) {

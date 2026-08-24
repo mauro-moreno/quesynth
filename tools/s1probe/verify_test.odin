@@ -76,3 +76,15 @@ test_expected_norm_disagrees_with_display_echo :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(states), 7)
 	testing.expect(t, states[0].norm != norm, "state 0 must not be what 46,0 selects")
 }
+
+// The usage promises that an explicit DLL can stand alone before a probe's
+// default options. Keep the caller's path byte-for-byte: a custom installation
+// may include spaces or uppercase characters even though only the suffix is
+// inspected.
+@(test)
+test_phaseabsolute_accepts_a_lone_explicit_dll :: proc(t: ^testing.T) {
+	want := `C:\Custom Synth1\Synth1 VST64.DLL`
+	dll, rest := parse_dll_arg("phaseabsolute", []string{want})
+	testing.expect_value(t, dll, want)
+	testing.expect_value(t, len(rest), 0)
+}
