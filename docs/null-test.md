@@ -5207,8 +5207,60 @@ four had no spectrum left at sustain. They are byte-identical, SHA-256
   also influences the sub-oscillator as well as OSC1"* and *"the sub-oscillator
   doesn't influence the AM modulation"*. `voice.odin` sets the sub's frequency
   from the note alone. Not measured.
-- **The 0.36 dB of level the corpus gate gains**, above.
+- **The level residual**, below: it is a patch-selection effect, not a sub law.
 - **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
   renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
   0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
   across shapes, widths and notes.
+### The level residual is selection, not another sub-normalization law
+
+The gate was re-run from the current HEAD after the mix and parameter-91 fixes.
+The deterministic selector recursively reads the 16698 corpus files, keeps raw
+records with `95 >= 32`, raw `73`, `6`, `7` and `45` all zero, hashes the sorted
+parameter records to remove duplicates, sorts by source bank and filename, and
+writes 97 files as `s000` through `s096`. The control copies those same files
+and rewrites parameter 95 to zero. There are 97 selected patches. The reference
+crashes on five arpeggiator patches, leaving 92 measured rows; the same five are
+absent from the control. The commands below re-render those prepared, indexed
+directories; the selection rule above is part of the input definition, not a
+metric-based choice.
+
+The reproducible reference-plugin commands are:
+
+```powershell
+odin build tools/s1probe -out:build/s1probe-current.exe
+build/s1probe-current.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" build/corpus-level-current --csv build/corpus-level-current.csv
+build/s1probe-current.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" build/corpus-level-current-off --csv build/corpus-level-current-off.csv
+build/s1probe-current.exe summarise build/corpus-level-current.csv
+build/s1probe-current.exe summarise build/corpus-level-current-off.csv
+```
+
+The current-HEAD numbers are:
+
+| metric | sub on in both | sub off in both |
+|---|--:|--:|
+| level, mean absolute (92 rows) | 4.8300 dB | 4.5498 dB |
+| level, signed mean (92 rows) | −3.4178 dB | −3.3854 dB |
+| spectral mean / median (84 valid) | 8.89 / 7.80 dB | 9.24 / 8.06 dB |
+| envelope mean / median (92 rows) | 4.04 / 2.91 dB | 4.02 / 3.15 dB |
+| null depth mean / median (92 rows) | −2.87 / −0.87 dB | −2.69 / −0.85 dB |
+
+Only 29 rows improve in absolute level by more than 0.05 dB when the sub is
+enabled, 42 worsen, and 21 stay within 0.05 dB. The on-minus-off level change
+has mean −0.0324 dB. Against stored sub gain, its fitted slope is only
+`+0.00122 dB/step`, with Pearson `r = 0.016`; against the effective measured
+weight `stored95 * (1 - mix)`, the correlation is still only `r = 0.036`. A
+normalization error would move with one of those weights. The on/off level
+errors instead correlate at `r = 0.950`, so the same patch-specific level error
+remains when the sub is removed. The sub-off column therefore measures the
+selected cohort's baseline: it is already 4.5498 dB, close to the 4.8300 dB with
+the sub on, while the factory bank is 1.6529 dB (123 rows). This resolves the
+gate residual as selection-correlated error rather than a sub normalization
+factor; it does not claim that one other parameter is the sole source of that
+cohort's baseline. No amp-level trim is justified.
+
+No engine code changed for this residual. The measured sub law remains the
+probe-backed `a = 4 * stored95 / 127` with normalization by
+`1 + a * (1 - mix)`. The factory-bank result stays unchanged because no factory
+patch sets parameter 95: current HEAD reads 123 rows at spectral 6.65 / 5.98,
+envelope 2.10 / 1.77, level mean absolute 1.6529 dB, and null −6.66 / −6.06 dB.
