@@ -17,15 +17,27 @@ import {analysePair, contrastPairs, parsePatch, parseRecords, prepareCorpus, rea
 
 const POST_VOICE = [[60, 64], [62, 64], [65, 0], [66, 0], [77, 0]];
 const PROBE_HEADER = "patch,patch_sha256,level_db,param_mismatches,ref_silent,our_silent\n";
-const fixtureHash = patch => createHash("sha256").update(patch).digest("hex");
-const fixtureCsv = body => PROBE_HEADER + body.trim().split("\n").filter(Boolean).map(line => {
+const fixtureHash = bytes => createHash("sha256").update(bytes).digest("hex");
+const fixtureValues = name => ({gain: 32 + 32 * Number(name.slice(1)), mix: 17 * Number(name.slice(1))});
+const fixtureBytes = (name, variant) => {
+  const {gain, mix} = fixtureValues(name);
+  const off = variant.startsWith("off"), postOff = variant.endsWith("post-off");
+  return `Synth1 fixture ${name}\nver=112\n5,${mix}\n77,${postOff ? 0 : 1}\n95,${off ? 0 : gain}\n`;
+};
+const fixtureIdentity = name => {
+  const {gain, mix} = fixtureValues(name);
+  return fixtureHash(`ver=112\n5,${mix}\n77,1\n95,${gain}`);
+};
+const fixtureCsv = (body, variant = "on") => PROBE_HEADER + body.trim().split("\n").filter(Boolean).map(line => {
   const [patch, ...fields] = line.split(",");
-  return [patch, fixtureHash(patch), ...fields].join(",");
+  const name = patch.replace(/\.sy1$/, "");
+  return [patch, fixtureHash(fixtureBytes(name, variant)), ...fields].join(",");
 }).join("\n") + "\n";
-const fixtureIndex = rows => "name,gain95,mix5,identity_sha256,variant_sha256\n" + rows.map(([name, gain, mix]) => {
-  const identity = fixtureHash(name);
-  return `${name},${gain},${mix},${identity},on:${fixtureHash(`${name}.sy1`)};off:${fixtureHash(`${name}.sy1`)}`;
-}).join("\n") + "\n";
+const fixtureIndex = (rows, variants = ["on", "off", "on-post-off", "off-post-off"]) =>
+  "name,gain95,mix5,identity_sha256,variant_sha256\n" + rows.map(([name, gain, mix]) => {
+    const hashes = variants.map(variant => `${variant}:${fixtureHash(fixtureBytes(name, variant))}`).join(";");
+    return `${name},${gain},${mix},${fixtureIdentity(name)},${hashes}`;
+  }).join("\n") + "\n";
 
 function patch(values, name = "test") {
   return [`Synth1 ${name}`, ...Object.entries(values).map(([i, v]) => `${i},${v}`), ""].join("\n");
@@ -73,9 +85,12 @@ test("prepare selects, deduplicates, and changes only declared records", () => {
     const index = readCsv(`${prefix}-index.csv`);
     assert.deepEqual(index.map(row => [row.name, row.gain95, row.mix5, row.source]), [["s000", "64", "64", "bank/a.sy1"]]);
     const indexHash = createHash("sha256").update(fs.readFileSync(result.indexPath)).digest("hex");
-    assert.equal(index[0].identity_sha256, index[0].semantic_sha256);
+    assert.equal(indexHash, "cdea92745ee5f19ee32647480d017da51aec4ac0b0c617238e34d832a5425c15");
+    assert.equal(index[0].semantic_sha256, undefined, "identity has one canonical column");
+    assert.notEqual(index[0].identity_sha256, index[0].source_sha256);
     assert.match(index[0].variant_sha256, /on:[0-9a-f]{64};off:[0-9a-f]{64}/);
-    assert.equal(verifyIndex(result.indexPath, indexHash), indexHash);
+    assert.equal(verifyIndex(result.indexPath, "cdea92745ee5f19ee32647480d017da51aec4ac0b0c617238e34d832a5425c15"), indexHash);
+    assert.throws(() => verifyIndex(result.indexPath), /expected 8b2ec1aa/);
     assert.throws(() => verifyIndex(result.indexPath, "0".repeat(64)), /index SHA-256/);
   });
 });
@@ -127,7 +142,7 @@ test("CSV reader keeps quoted newlines in one record", () => {
 test("paired analysis reports the absolute movement, not the signed one", () => {
   temporary(temp => {
     fs.writeFileSync(path.join(temp, "on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false"));
-    fs.writeFileSync(path.join(temp, "off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false"));
+    fs.writeFileSync(path.join(temp, "off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false", "off"));
     fs.writeFileSync(path.join(temp, "index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
     const result = analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv"));
     assert.equal(result.count, 2);
@@ -144,15 +159,15 @@ test("paired analysis reports the absolute movement, not the signed one", () => 
     assert.equal(result.onOffCorrelation, 1);
     assert.deepEqual(result.largestWorsening.map(row => row.patch), ["s000.sy1", "s001.sy1"]);
 
-    fs.appendFileSync(path.join(temp, "on.csv"), `s000.sy1,${fixtureHash("s000.sy1")},9,0,false,false\n`);
-    assert.throws(() => analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv")), /duplicate patch/);
+    fs.appendFileSync(path.join(temp, "on.csv"), `s000.sy1,${fixtureHash(fixtureBytes("s000", "on"))},9,0,false,false\n`);
+    assert.throws(() => analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv")), /duplicate identity_sha256/);
   });
 });
 
 test("a silent row on either side leaves the pair", () => {
   temporary(temp => {
     fs.writeFileSync(path.join(temp, "on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,true,false"));
-    fs.writeFileSync(path.join(temp, "off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false"));
+    fs.writeFileSync(path.join(temp, "off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false", "off"));
     fs.writeFileSync(path.join(temp, "index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
     const result = analysePair(path.join(temp, "on.csv"), path.join(temp, "off.csv"), path.join(temp, "index.csv"));
     assert.equal(result.count, 1);
@@ -160,17 +175,47 @@ test("a silent row on either side leaves the pair", () => {
   });
 });
 
-test("stable hashes preserve the gain fit across row reorder and reject stale sNNN labels", () => {
+test("exact variant hashes bind gain metadata and reject stale or reordered rows", () => {
   temporary(temp => {
     const at = name => path.join(temp, name);
     const body = rows => rows.map(([name, level]) => `${name}.sy1,${level},0,false,false`).join("\n");
-    fs.writeFileSync(at("index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
+    const indexText = fixtureIndex([["s001", 64, 127], ["s000", 32, 0]]);
+    fs.writeFileSync(at("index.csv"), indexText);
     fs.writeFileSync(at("on.csv"), fixtureCsv(body([["s001", 2], ["s000", -3]])));
-    fs.writeFileSync(at("off.csv"), fixtureCsv(body([["s001", 3], ["s000", -1]])));
+    fs.writeFileSync(at("off.csv"), fixtureCsv(body([["s000", -1], ["s001", 3]]), "off"));
     const result = analysePair(at("on.csv"), at("off.csv"), at("index.csv"));
-    assert.equal(result.gainSlope, 0.03125, "gain fit must follow hash-bound identities, not CSV order");
-    fs.writeFileSync(at("on.csv"), PROBE_HEADER + `s000.sy1,${fixtureHash("s001.sy1")},2,0,false,false\ns001.sy1,${fixtureHash("s000.sy1")},-3,0,false,false\n`);
+    assert.equal(result.gainSlope, 0.03125);
+    assert.deepEqual(new Set(result.rows.map(row => row.identity)), new Set(readCsv(at("index.csv")).map(row => row.identity_sha256)));
+
+    fs.writeFileSync(at("on.csv"), fixtureCsv(body([["s001", 2], ["s000", -3]]), "on-post-off"));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /wrong-variant/);
+
+    fs.writeFileSync(at("on.csv"), PROBE_HEADER +
+      `s000.sy1,${fixtureHash(fixtureBytes("s001", "on"))},2,0,false,false\n` +
+      `s001.sy1,${fixtureHash(fixtureBytes("s000", "on"))},-3,0,false,false\n`);
     assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /stale or reordered cohort/);
+  });
+});
+
+test("index rejects malformed, duplicate, missing, and ambiguous variant bindings", () => {
+  temporary(temp => {
+    const at = name => path.join(temp, name);
+    fs.writeFileSync(at("on.csv"), fixtureCsv("s000.sy1,-3,0,false,false"));
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,0,false,false", "off"));
+    const base = fixtureIndex([["s000", 32, 0]]);
+    fs.writeFileSync(at("index.csv"), base.replace(/on:[0-9a-f]{64}/, "on:not-a-hash"));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /malformed variant_sha256/);
+    fs.writeFileSync(at("index.csv"), base.replace(/;off:/, ";on:"));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /duplicate variant on/);
+    fs.writeFileSync(at("index.csv"), fixtureIndex([["s000", 32, 0]], ["on"]));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /missing variant off/);
+    assert.throws(() => analysePair(at("on.csv"), at("on.csv"), at("index.csv"), "on", "on"), /distinct variants/);
+    const ambiguous = fixtureIndex([["s000", 32, 0], ["s001", 64, 0]])
+      .replace(fixtureHash(fixtureBytes("s001", "on")), fixtureHash(fixtureBytes("s000", "on")));
+    fs.writeFileSync(at("index.csv"), ambiguous);
+    fs.writeFileSync(at("on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false"));
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,0,false,false\ns001.sy1,3,0,false,false", "off"));
+    assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /variant on hash is ambiguous/);
   });
 });
 
@@ -178,12 +223,12 @@ test("paired analysis rejects incomplete or mismatched reference rows", () => {
   temporary(temp => {
     const at = name => path.join(temp, name);
     fs.writeFileSync(at("on.csv"), fixtureCsv("s000.sy1,-3,0,false,false\ns001.sy1,2,0,false,false"));
-    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,0,false,false"));
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,0,false,false", "off"));
     fs.writeFileSync(at("index.csv"), fixtureIndex([["s000", 32, 0], ["s001", 64, 127]]));
     assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /full expected index/);
-    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,,false,false\ns001.sy1,3,0,false,false"));
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,,false,false\ns001.sy1,3,0,false,false", "off"));
     assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /empty param_mismatches/);
-    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,1,false,false\ns001.sy1,3,0,false,false"));
+    fs.writeFileSync(at("off.csv"), fixtureCsv("s000.sy1,-1,1,false,false\ns001.sy1,3,0,false,false", "off"));
     assert.throws(() => analysePair(at("on.csv"), at("off.csv"), at("index.csv")), /parameter load mismatch/);
   });
 });
@@ -191,15 +236,16 @@ test("paired analysis rejects incomplete or mismatched reference rows", () => {
 test("contrast pairs the same rows and separates carriers from scale", () => {
   temporary(temp => {
     const at = name => path.join(temp, name);
-    const write = (name, body) => fs.writeFileSync(at(name), fixtureCsv(body));
+    const write = (name, body, variant) => fs.writeFileSync(at(name), fixtureCsv(body, variant));
     const index = fixtureIndex([["s000", 32, 0], ["s001", 64, 0], ["s002", 96, 0]]);
     fs.writeFileSync(at("index.csv"), index);
-    write("on.csv", "s000.sy1,-12,0,false,false\ns001.sy1,1,0,false,false\ns002.sy1,1,0,false,false");
-    write("off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false");
-    write("c-on.csv", "s000.sy1,-4,0,false,false\ns001.sy1,1.5,0,false,false\ns002.sy1,1.5,0,false,false");
-    write("c-off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false");
+    write("on.csv", "s000.sy1,-12,0,false,false\ns001.sy1,1,0,false,false\ns002.sy1,1,0,false,false", "on");
+    write("off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false", "off");
+    write("c-on.csv", "s000.sy1,-4,0,false,false\ns001.sy1,1.5,0,false,false\ns002.sy1,1.5,0,false,false", "on-post-off");
+    write("c-off.csv", "s000.sy1,-4,0,false,false\ns001.sy1,2,0,false,false\ns002.sy1,2,0,false,false", "off-post-off");
     const base = analysePair(at("on.csv"), at("off.csv"), at("index.csv"));
-    const control = analysePair(at("c-on.csv"), at("c-off.csv"), at("index.csv"));
+    const control = analysePair(at("c-on.csv"), at("c-off.csv"), at("index.csv"), "on-post-off", "off-post-off");
+    for (const row of control.rows) row.patch = `display-only-${row.patch}`;
     const result = contrastPairs(base, control);
     assert.equal(result.count, 3);
     assert.equal(base.maeDeltaSum, 6);
@@ -208,7 +254,7 @@ test("contrast pairs the same rows and separates carriers from scale", () => {
     assert.equal(result.carrierBase, 6);
     assert.equal(result.carrierControl, -1);
     assert.equal(result.scaleRatio, control.scale / base.scale);
-    write("short.csv", "s000.sy1,-4,0,false,false");
-    assert.throws(() => contrastPairs(base, analysePair(at("short.csv"), at("short.csv"), at("index.csv"))), /full expected index/);
+    const missingIdentity = {...control, rows: control.rows.slice(1), count: control.count - 1};
+    assert.throws(() => contrastPairs(base, missingIdentity), /same identities/);
   });
 });
