@@ -5091,8 +5091,8 @@ s059 +0.54, s020 +0.52, s015 +0.50, s087 +0.40, s043 +0.39. The largest of them,
 s089's envelope 2.82 → 17.85, reads **19.84** with the sub switched off in both
 engines — the broken sub was masking a larger error underneath it, and that is
 what the control column is for. **Level is the one aggregate that does not
-improve** (4.4652 → 4.8243, against 4.5485 with the sub off), and it is not
-explained here.
+improve** (4.4652 → 4.8243, against 4.5485 with the sub off). The current-HEAD
+matched controls isolate that result below.
 
 **A first gate that could not adjudicate, recorded so it is not repeated.** The
 obvious selection — every corpus patch with `95 >= 32`, nothing else — gives 76
@@ -5207,60 +5207,211 @@ four had no spectrum left at sustain. They are byte-identical, SHA-256
   also influences the sub-oscillator as well as OSC1"* and *"the sub-oscillator
   doesn't influence the AM modulation"*. `voice.odin` sets the sub's frequency
   from the note alone. Not measured.
-- **The level residual**, below: it is a patch-selection effect, not a sub law.
+- **The level residual**, below: not a selection effect. It depends on one or
+  more of the four parameter-controlled output stages.
 - **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
   renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
   0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
   across shapes, widths and notes.
-### The level residual is selection, not another sub-normalization law
 
-The gate was re-run from the current HEAD after the mix and parameter-91 fixes.
-The deterministic selector recursively reads the 16698 corpus files, keeps raw
-records with `95 >= 32`, raw `73`, `6`, `7` and `45` all zero, hashes the sorted
-parameter records to remove duplicates, sorts by source bank and filename, and
-writes 97 files as `s000` through `s096`. The control copies those same files
-and rewrites parameter 95 to zero. There are 97 selected patches. The reference
-crashes on five arpeggiator patches, leaving 92 measured rows; the same five are
-absent from the control. The commands below re-render those prepared, indexed
-directories; the selection rule above is part of the input definition, not a
-metric-based choice.
+### The level residual depends on the controlled output stages
 
-The reproducible reference-plugin commands are:
+The gate was re-run from the current HEAD after the mix and parameter-91 fixes,
+and every number in this section comes from `tools/corpus-level.mjs`, which is
+committed with its fixtures in `tools/corpus-level.test.mjs`. The scripts that
+first produced these figures lived in an ignored directory, which made the
+conclusion unreviewable: a mean absolute error is not a signed mean and not a
+correlation, and a reader has no way to tell which one an uncommitted script
+computed.
+
+`prepare` recursively reads the corpus, keeps raw records with `95 >= 32` and
+raw `73`, `6`, `7` and `45` all zero — sub audible, and unison, sync, ring
+modulation and oscillator 1 FM kept out of the reading — deduplicates on patch
+version plus sorted parameter records, and sorts by the source path's code
+units so runtime locale data cannot change row names. It writes the selected
+patch, the same patch with only parameter 95 set to zero, an index with source
+and semantic SHA-256 hashes, and a matched pair for each control:
+
+| control | records set | section |
+|---|---|---|
+| `eq-flat` | 60, 62 → 64 | equalizer tone and level flat |
+| `delay-off` | 65 → 0 | delay |
+| `chorus-off` | 66 → 0 | chorus |
+| `effect-off` | 77 → 0 | effect unit |
+| `post-off` | all five above | all four parameter-controlled output stages |
+| `filter-open` | 10, 14, 20, 22, 23, 24 → 0; 19 → 127; 21 → 63 | filter, envelope and tracking: a voice-stage control |
+
+Every control is applied to both members of the pair, so the sub change under
+test is identical in each column and only the named settings move. Nothing in
+the oscillator, sub, envelope or voice settings is touched except by
+`filter-open`, which tests whether neutralising any large section would have
+the same effect. `post-off` does not bypass Quesynth's fixed output soft clip,
+and it is not a voice-output tap.
+
+From a checkout whose corpus is at `build/tmp/corpus`:
 
 ```powershell
+node tools/corpus-level.mjs prepare build/tmp/corpus build/corpus-level
+node tools/corpus-level.mjs verify-index build/corpus-level-index.csv
+$reference = "ext/synth1/Synth1/Synth1 VST64.dll"
+$referenceHash = (Get-FileHash $reference -Algorithm SHA256).Hash.ToLower()
+if ($referenceHash -ne "51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569ba22f32c7") {
+  throw "wrong reference DLL: $referenceHash"
+}
 odin build tools/s1probe -out:build/s1probe-current.exe
-build/s1probe-current.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" build/corpus-level-current --csv build/corpus-level-current.csv
-build/s1probe-current.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" build/corpus-level-current-off --csv build/corpus-level-current-off.csv
-build/s1probe-current.exe summarise build/corpus-level-current.csv
-build/s1probe-current.exe summarise build/corpus-level-current-off.csv
+
+foreach ($dir in "on", "off", "on-eq-flat", "off-eq-flat", "on-delay-off",
+                 "off-delay-off", "on-chorus-off", "off-chorus-off",
+                 "on-effect-off", "off-effect-off", "on-post-off",
+                 "off-post-off", "on-filter-open", "off-filter-open") {
+  ./build/s1probe-current.exe compare $reference build/corpus-level-$dir `
+    --csv build/corpus-level-$dir.csv
+}
+
+./build/s1probe-current.exe summarise build/corpus-level-on.csv
+./build/s1probe-current.exe summarise build/corpus-level-off.csv
+node tools/corpus-level.mjs analyse build/corpus-level-on.csv build/corpus-level-off.csv build/corpus-level-index.csv
+
+foreach ($c in "eq-flat", "delay-off", "chorus-off", "effect-off", "post-off",
+                "filter-open") {
+  node tools/corpus-level.mjs analyse build/corpus-level-on-$c.csv `
+    build/corpus-level-off-$c.csv build/corpus-level-index.csv
+  node tools/corpus-level.mjs contrast build/corpus-level-on.csv build/corpus-level-off.csv `
+    build/corpus-level-on-$c.csv build/corpus-level-off-$c.csv build/corpus-level-index.csv
+}
 ```
 
-The current-HEAD numbers are:
+The committed `verify-index` digest pins the 97 row names, relative source
+paths, versions, semantic hashes and source-byte hashes. The DLL digest pins
+the reference binary. The source patches and DLL remain external because their
+licences do not allow this repository to redistribute them; a different local
+collection or reference build fails before rendering.
+
+`prepare` reports **16698 files, 98 candidates and 97 unique patch
+semantics**; these are also 97 unique parameter sets because the one duplicate
+has the same version. The verified index SHA-256 is
+`65cc27640ed5e648382eaace4703649e46abeff044abdd67a8b26f45044f726f`.
+The deterministic order changes the `sNNN` labels from
+the ignored prebuilt selector, but selects the same 97 source files. Each `on`
+file is an exact source-byte copy, and each control changes only the records
+named above. `s1probe` now reads back all 99 effective reference values,
+including defaults for records absent from a source; all fourteen runs report
+zero mismatches. The reference segfaults on the same five sources, now named
+`s022`, `s034`, `s040`, `s053` and `s087`, so every CSV has the same 92 rows.
+`analyse` rejects unequal sets, blank mismatch fields or any non-zero mismatch.
+A second `post-off` render has the same SHA-256,
+`99e8453e7fea6d0a1784dba9954064f62a35984a4ef5c7d7c36e1005902877dc`.
+
+#### The gate, and what moves in it
 
 | metric | sub on in both | sub off in both |
 |---|--:|--:|
-| level, mean absolute (92 rows) | 4.8300 dB | 4.5498 dB |
-| level, signed mean (92 rows) | −3.4178 dB | −3.3854 dB |
+| level, mean absolute (92 rows) | 4.830002 dB | 4.549775 dB |
+| level error, mean / median | −3.42 / −2.27 dB | −3.39 / −1.43 dB |
 | spectral mean / median (84 valid) | 8.89 / 7.80 dB | 9.24 / 8.06 dB |
 | envelope mean / median (92 rows) | 4.04 / 2.91 dB | 4.02 / 3.15 dB |
 | null depth mean / median (92 rows) | −2.87 / −0.87 dB | −2.69 / −0.85 dB |
 
-Only 29 rows improve in absolute level by more than 0.05 dB when the sub is
-enabled, 42 worsen, and 21 stay within 0.05 dB. The on-minus-off level change
-has mean −0.0324 dB. Against stored sub gain, its fitted slope is only
-`+0.00122 dB/step`, with Pearson `r = 0.016`; against the effective measured
-weight `stored95 * (1 - mix)`, the correlation is still only `r = 0.036`. A
-normalization error would move with one of those weights. The on/off level
-errors instead correlate at `r = 0.950`, so the same patch-specific level error
-remains when the sub is removed. The sub-off column therefore measures the
-selected cohort's baseline: it is already 4.5498 dB, close to the 4.8300 dB with
-the sub on, while the factory bank is 1.6529 dB (123 rows). This resolves the
-gate residual as selection-correlated error rather than a sub normalization
-factor; it does not claim that one other parameter is the sole source of that
-cohort's baseline. No amp-level trim is justified.
+Enabling the sub costs **+0.280227 dB** of mean absolute level error. That is
+the number to explain. The signed mean moves only −0.032388 dB, the on and off
+level errors correlate at `r = 0.949979`, and the change has no measured linear
+trend against sub weight — slope `+0.001224 dB/step` and `r = 0.015924` against
+stored 95, `r = 0.035723` against effective `stored95 * (1 - mix)`. A signed
+mean can sit still while absolute errors grow, and correlated columns can still
+differ. The fits report only the lack of a linear cohort trend; they neither
+explain the MAE nor prove the sub law.
 
-No engine code changed for this residual. The measured sub law remains the
-probe-backed `a = 4 * stored95 / 127` with normalization by
-`1 + a * (1 - mix)`. The factory-bank result stays unchanged because no factory
-patch sets parameter 95: current HEAD reads 123 rows at spectral 6.65 / 5.98,
-envelope 2.10 / 1.77, level mean absolute 1.6529 dB, and null −6.66 / −6.06 dB.
+What `analyse` computes instead is the per-row change in |level error|, which
+is what the gate metric averages. Its median is **+0.0123 dB**. The net sum
+over 92 rows is +25.7809 dB. The six largest worsening rows sum to **+29.8913
+dB**, more than the full increase, while the other 86 net to **−4.1104 dB**.
+
+| row | change in \|level error\| | sub on | sub off |
+|---|--:|--:|--:|
+| `s016` | +7.6720 dB | −11.732 dB | −4.059 dB |
+| `s075` | +6.5104 dB | −24.431 dB | −17.921 dB |
+| `s013` | +4.6802 dB | +4.881 dB | −0.201 dB |
+| `s020` | +3.9105 dB | −11.774 dB | −7.864 dB |
+| `s077` | +3.8494 dB | −26.495 dB | −22.646 dB |
+| `s019` | +3.2688 dB | −4.245 dB | −0.977 dB |
+
+These are not the only worsening rows: 42 worsen, 29 improve and 21 stay within
+0.05 dB. They are the six largest. Their 3.3 to 7.7 dB changes dominate the
+mean; four start from an off-control error already between 4 and 23 dB.
+
+#### Which settings the result depends on
+
+Each row below measures the same 92 patches after the named parameter change
+is applied to both sides of the pair:
+
+| control | sub-on MAE | sub-off MAE | on − off |
+|---|--:|--:|--:|
+| none (the gate) | 4.830002 dB | 4.549775 dB | **+0.280227 dB** |
+| `eq-flat` | 4.706117 dB | 4.207164 dB | +0.498953 dB |
+| `delay-off` | 3.941513 dB | 3.807621 dB | +0.133892 dB |
+| `chorus-off` | 4.785167 dB | 4.515771 dB | +0.269397 dB |
+| `effect-off` | 3.050801 dB | 2.936023 dB | +0.114778 dB |
+| `post-off` | 1.900345 dB | 1.906760 dB | **−0.006415 dB** |
+| `filter-open` | 4.553076 dB | 4.220172 dB | +0.332904 dB |
+
+Neutralising all four controlled output stages removes the aggregate
+regression: +0.280227 becomes −0.006415 dB. No single control does. Disabling
+delay changes it to +0.133892 dB, disabling the effect unit changes it to
++0.114778 dB, chorus barely moves it, and flat EQ makes it larger. These
+interventions isolate the extra gate error to an interaction involving one or
+more of those settings. They do not assign it to one stage; the stages are in
+series and their changes are not additive.
+
+`contrast` puts the same rows side by side. For `s016`, the sub-on/off change
+at final plugin output is −7.67 dB with the patch settings and −0.02 dB after
+the four controlled output stages are neutralised:
+
+| row | \|change\| gate → `post-off` | signed gate → `post-off` |
+|---|--:|--:|
+| `s016` | +7.6720 → +0.0209 dB | −7.6720 → −0.0209 dB |
+| `s075` | +6.5104 → +0.4007 dB | −6.5104 → +0.4007 dB |
+| `s013` | +4.6802 → −3.4166 dB | +5.0828 → −4.9188 dB |
+| `s020` | +3.9105 → +0.3616 dB | −3.9105 → −0.3616 dB |
+| `s077` | +3.8494 → +2.7714 dB | −3.8494 → −2.7714 dB |
+| `s019` | +3.2688 → +0.5061 dB | −3.2688 → +0.5061 dB |
+| those six, summed | +29.8913 → +0.6441 dB, ×0.0215 | — |
+
+A control that shrinks every error also shrinks every difference, so scale must
+be ruled out. Here the six-row sum falls by ×0.0215 while the mean magnitude of
+all per-row changes falls by ×0.5870 and sub-on MAE falls by ×0.3934. A separate
+voice-stage control does not repeat the result: `filter-open` moves sub-on MAE
+by ×0.9427, leaves the aggregate regression at +0.332904 dB, and leaves the
+same six-row sum at ×0.8819 of its gate value.
+
+#### What this does and does not establish
+
+Measured: the +0.280227 dB aggregate penalty is contingent on the four
+parameter-controlled output settings as a group. With the identical sub change
+still present and only those settings neutralised, it becomes −0.006415 dB.
+The six largest worsening rows account for more than the net increase and their
+sum falls from +29.8913 to +0.6441 dB under that control. This is a matched
+intervention, not an on/off correlation.
+
+The previous claim that this was a patch-selection effect is withdrawn. The
+sub-off column proves only that this cohort has a high baseline error, and the
+factory bank is a different cohort. Neither attributes the extra +0.280227 dB
+to selection.
+
+Not established: which controlled stage or interaction is at fault, whether
+the remaining fixed output processing contributes, or whether the sub law is
+exact. `post-off` still passes through Quesynth's fixed soft clip and measures
+final plugin output, not the voice output. The sub law therefore continues to
+rest on the isolated probe measurements above, not on this cohort. Any deeper
+effect-stage study is a separate defect and is outside this repair.
+
+No engine code changed for this repair. The probe change only extends state
+read-back from present records to all 99 effective values. Before and after
+that probe change, the current-HEAD gate and sub-off control are 4.830002 and
+4.549775 dB, and all six section-control aggregates above are unchanged. The
+measured sub law remains `a = 4 * stored95 / 127`, normalised by
+`1 + a * (1 - mix)`, and no amp trim is justified. The factory-bank rerun is
+byte-identical before and after the probe change: 123 rows, SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`,
+spectral 6.65 / 5.98, envelope 2.10 / 1.77, level MAE 1.652847 dB, signed level
+mean +0.18 / median +0.06, and null −6.66 / −6.06 dB. No factory patch sets
+parameter 95.

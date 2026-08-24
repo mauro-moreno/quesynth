@@ -86,6 +86,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$($_.Name) does not parse" }
           }
 
+      # The measurement tool behind the sub-oscillator level section of
+      # docs/null-test.md. It cannot run its own measurement here -- that needs
+      # the reference plugin and a patch corpus, neither of which is in the
+      # repository -- but its selection rule, its patch rewriting and its
+      # statistics are what the documented conclusion rests on, and those are
+      # checkable against fixtures. This section reached an unsupported
+      # conclusion once already, from scripts that were never committed.
+      - name: The corpus level tool agrees with its fixtures
+        shell: pwsh
+        run: node --test tools/corpus-level.test.mjs
+
+      - name: The reference measurement probe builds
+        shell: pwsh
+        run: odin build tools/s1probe -out:build/s1probe-ci.exe
+
       # And the VST3 plugin answered the way a host asks.
       #
       # Headless: this path loads the plugin, renders, and asks the questions a

@@ -175,14 +175,15 @@ close_reference :: proc(p: ^Plugin) {
 // no longer the only thing standing between a bank run and a dead process.
 g_instantiations: int
 
-// Push a parsed patch into the reference through its own state chunk, and
-// report how many parameters did not read back as expected.
+// Push all 99 effective values into the reference through its own state chunk,
+// and report how many did not read back as expected. This includes defaults for
+// records absent from the source: those defaults are part of the rendered state
+// too, and skipping them would let an unverified value affect the comparison.
 //
 // This is the same path `verify` uses and for the same reason: setParameter
 // saturates at 1.0 while the loader genuinely reports values above it. The
 // read-back count is carried into the comparison so an audio difference caused
-// by the patch not loading is never mistaken for an audio difference caused by
-// the engine.
+// by the patch not loading is never mistaken for an engine difference.
 load_reference_patch :: proc(p: ^Plugin, parsed: ^cpatch.Patch, pristine, work: []byte) -> int {
 	e := p.eff
 	copy(work, pristine)
@@ -193,9 +194,6 @@ load_reference_patch :: proc(p: ^Plugin, parsed: ^cpatch.Patch, pristine, work: 
 
 	mismatches := 0
 	for i in 0 ..< cpatch.PARAMETER_COUNT {
-		if !parsed.present[i] {
-			continue
-		}
 		expected, resolved := cpatch.parameter_norm(i, parsed.values[i])
 		if !resolved || expected != e.get_parameter(e, i32(i)) {
 			mismatches += 1
