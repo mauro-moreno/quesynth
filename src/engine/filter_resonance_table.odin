@@ -132,11 +132,16 @@ FILTER_DAMPING_24 := [FILTER_RESONANCE_TABLE_SIZE]f32{
 // It is independent of the cutoff too, checked at three settings four octaves
 // apart, which is what a normalisation of the filter's own noise gain has to be.
 //
+// State zero is the neutral multiplier. The absolute amp-gain table already
+// includes the reference's open-filter output level; retaining the old 0.982168
+// here applied that base correction twice and made amp gain 100 0.156 dB quiet.
+// The resonance-dependent entries remain the measured corrections.
+//
 // It replaces a k^0.25 on the band-pass output alone, fitted with a saw -- an
 // instrument that under-reads a narrowing resonance because its partials fall
 // out of the peak as it sharpens.
 FILTER_OUTPUT_GAIN := [FILTER_RESONANCE_TABLE_SIZE]f32{
-	0.982168, 0.976835, 0.971497, 0.966160,
+	1.000000, 0.976835, 0.971497, 0.966160,
 	0.960819, 0.955482, 0.950148, 0.944815,
 	0.939481, 0.934148, 0.928812, 0.923478,
 	0.918140, 0.912804, 0.907466, 0.902130,

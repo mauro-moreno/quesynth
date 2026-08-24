@@ -5212,3 +5212,99 @@ four had no spectrum left at sustain. They are byte-identical, SHA-256
   renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
   0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
   across shapes, widths and notes.
+
+## Amp gain 100 residual (2026-08-24)
+
+The remaining level defect was isolated to the zero-resonance output trim. It
+was not an amp table, oscillator, anti-aliasing, envelope, or probe-window
+error.
+
+The controls are separable in one neutral patch: oscillator 1 alone, low-pass
+12, cutoff 127, resonance 0, filter and amp envelopes flat, velocity scaling
+off, saturation and effects off. `gainprobe` reads the reference amp table at
+state 100 as **0.48695**; the checked-in `AMP_GAIN_AMPLITUDE[100]` is **0.486947**.
+Thus the amp table already owns the reference's absolute open-filter level.
+
+The reproducible level probe was:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+build/s1probe.exe filtersaturation ext/synth1/Synth1/Synth1 VST64.dll --type 0 --cutoff 127 --res 0 --note 60 --values 0 --gains 100
+```
+
+Before the change, the neutral sine read:
+
+```
+                 ref       ours
+fundamental dB   29.9      29.7
+RMS              0.3348    0.3288
+peak             0.4870    0.4783
+```
+
+The ratio is `0.4783 / 0.4870 = 0.98217`, the old
+`FILTER_OUTPUT_GAIN[0] = 0.982168`, or **-0.156 dB**. This is the same
+factor in the quoted saw and pulse readings: saw **0.3099 -> 0.3045** and
+pulse (stored width 29) **0.1085 -> 0.1069**. After changing only entry zero
+to 1.0, the sine reads RMS **0.3348**, peak **0.4870**, and fundamental **29.9
+dB** in both renders. The non-self-referential DSP test anchors the three
+reference fundamentals at 0.48695, 0.3099, and 0.1085 and projects a fresh
+engine render; it does not read the amp table to set its expected values.
+
+This also separates the other candidates. The neutral patch reaches a flat
+amp envelope (attack 0, decay 0, sustain 127), and the correction changes the
+steady RMS and peak by the same scalar, not the envelope contour. The
+filtersaturation THD stays **-66.8 dB reference / -67.9 dB ours** before and
+after, so oscillator amplitude and anti-aliasing did not change. A scalar after
+the filter is the only changed operation.
+
+### Zero resonance across filter modes
+
+`qlevel` was run at cutoff 48 with states `0,1,32,127` for all five bound
+filter types. The engine RMS pairs (before -> after) were:
+
+```
+                 state 0       state 1       state 32      state 127
+LP12             .01455->.01481 .01452->.01452 .01380->.01380 .09157->.09157
+LP24             .00794->.00809 .00808->.00808 .00916->.00916 .20377->.20377
+HP12             .11010->.11210 .10951->.10951 .09137->.09137 .09994->.09994
+BP12             .01316->.01340 .01314->.01314 .01256->.01256 .11353->.11353
+LPDL             .00794->.00809 .00808->.00808 .00916->.00916 .20377->.20377
+```
+
+The state-zero changes are the expected ~0.156 dB correction in every mode;
+every higher state is byte-for-byte unchanged in the table and in the probe.
+The larger mode-specific residuals at cutoff 48 are existing filter-topology
+errors, not introduced regressions. `filtersaturation` at cutoff 127 also
+closes the LP12 and LP24 neutral sine to 0.0 dB; high-pass and band-pass are
+not used as an open-filter level control because their cutoff response is not
+flat at that note.
+
+### Factory-bank gate
+
+The full isolated factory-bank command was run before and after:
+
+```
+build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-before.csv
+build/s1probe.exe summarise build/level-before.csv
+build/s1probe-after.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-after.csv
+build/s1probe-after.exe summarise build/level-after.csv
+```
+
+Both runs rendered **123 patches**, with the same five known reference crashes
+(095, 098, 100, 101, 106), zero reference-silent, zero engine-silent, zero
+non-finite, and four engine renders silent by sustain. The complete summary was:
+
+```
+metric              before       after
+spectral mean/med   6.65/5.98    6.65/5.98 dB
+envelope mean/med   2.10/1.77    2.10/1.77 dB
+level mean/med      +0.18/+0.06  +0.22/+0.10 dB
+null mean/med       -6.66/-6.06  -6.66/-6.06 dB
+```
+
+Exactly 30 patches changed, all by +0.156 dB in level and all because their
+resonance state is zero: 002, 003, 004, 005, 006, 009, 010, 011, 012, 013,
+014, 018, 033, 034, 052, 075, 078, 080, 085, 089, 090, 097, 103, 109, 111,
+113, 114, 118, 126, and 127. The other 93 rows are unchanged. No spectral,
+envelope, null, centroid, tuning, width, crash, silence, or finite-sample
+regression occurred; the level movement is the measured correction itself.
