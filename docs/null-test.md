@@ -5215,96 +5215,142 @@ four had no spectrum left at sustain. They are byte-identical, SHA-256
 
 ## Amp gain 100 residual (2026-08-24)
 
-The remaining level defect was isolated to the zero-resonance output trim. It
-was not an amp table, oscillator, anti-aliasing, envelope, or probe-window
-error.
+The residual is a scale ownership error, not a special case at resonance zero.
+`AMP_GAIN_AMPLITUDE` is absolute: `gainprobe` reads **0.48695** at state 100,
+and the table stores **0.486947**. `FILTER_OUTPUT_GAIN` must therefore be a
+relative resonance-level law whose state zero is one. The old generated curve
+started at **0.982168**. Changing only entry zero to one fixed the neutral
+render but left state one at **0.976835**, creating a false step at the start of
+the knob.
 
-The controls are separable in one neutral patch: oscillator 1 alone, low-pass
-12, cutoff 127, resonance 0, filter and amp envelopes flat, velocity scaling
-off, saturation and effects off. `gainprobe` reads the reference amp table at
-state 100 as **0.48695**; the checked-in `AMP_GAIN_AMPLITUDE[100]` is **0.486947**.
-Thus the amp table already owns the reference's absolute open-filter level.
+The fixed law divides every measured output-gain entry by its measured neutral
+entry. Its first values are now `1.000000, 0.994570, 0.989136, 0.983702`.
+`qtable` performs that normalisation itself, requires a valid state-zero
+measurement, and writes state zero as exactly one. Thus the generated source and
+the engine agree; this is not a hand edit to generated code.
 
-The reproducible level probe was:
+### Direct reference anchors
 
-```
+The probe patch is oscillator 1 alone, low-pass 12, cutoff 127, flat filter and
+amp envelopes, velocity scaling off, and saturation and effects off. The DLL
+path must be quoted. `filtersaturation` accepts oscillator shape and pulse width
+and prints a linear fundamental amplitude, so all checked-in anchors come from
+the same reproducible command:
+
+```powershell
 odin build tools/s1probe -out:build/s1probe.exe
-build/s1probe.exe filtersaturation ext/synth1/Synth1/Synth1 VST64.dll --type 0 --cutoff 127 --res 0 --note 60 --values 0 --gains 100
+$dll = "ext/synth1/Synth1/Synth1 VST64.dll"
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 0 --note 60 --shape 0 --width 64 --values 0 --gains 100
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 1 --note 60 --shape 0 --width 64 --values 0 --gains 100
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 0 --note 60 --shape 1 --width 64 --values 0 --gains 100
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 0 --note 60 --shape 2 --width 29 --values 0 --gains 100
 ```
 
-Before the change, the neutral sine read:
+The repaired sine results are:
 
-```
-                 ref       ours
-fundamental dB   29.9      29.7
-RMS              0.3348    0.3288
-peak             0.4870    0.4783
-```
+| resonance | ref/ours fundamental | ref/ours RMS | ref/ours peak |
+|---:|---:|---:|---:|
+| 0 | 0.48695 / 0.48697 | 0.3348 / 0.3348 | 0.4870 / 0.4870 |
+| 1 | 0.48427 / 0.48432 | 0.3329 / 0.3330 | 0.4843 / 0.4843 |
 
-The ratio is `0.4783 / 0.4870 = 0.98217`, the old
-`FILTER_OUTPUT_GAIN[0] = 0.982168`, or **-0.156 dB**. This is the same
-factor in the quoted saw and pulse readings: saw **0.3099 -> 0.3045** and
-pulse (stored width 29) **0.1085 -> 0.1069**. After changing only entry zero
-to 1.0, the sine reads RMS **0.3348**, peak **0.4870**, and fundamental **29.9
-dB** in both renders. The non-self-referential DSP test anchors the three
-reference fundamentals at 0.48695, 0.3099, and 0.1085 and projects a fresh
-engine render; it does not read the amp table to set its expected values.
+Before the whole-law repair, state one read RMS **0.3270** and peak **0.4757**,
+or about **-0.155 dB**, despite state zero matching. The engine's zero-to-one
+drop was about **-0.204 dB** against the reference's **-0.048 dB**. The repaired
+table removes that discontinuity. At state zero, saw and pulse fundamentals are
+reference/ours **0.30994/0.30998** and **0.10846/0.10882** (pulse width 29).
+THD remains unchanged; the sine reads **-66.8 dB** reference and **-67.9 dB**
+ours.
 
-This also separates the other candidates. The neutral patch reaches a flat
-amp envelope (attack 0, decay 0, sustain 127), and the correction changes the
-steady RMS and peak by the same scalar, not the envelope contour. The
-filtersaturation THD stays **-66.8 dB reference / -67.9 dB ours** before and
-after, so oscillator amplitude and anti-aliasing did not change. A scalar after
-the filter is the only changed operation.
+The DSP tests keep these DLL readings as constants and project fresh public
+engine renders. They do not read either generated gain table to form an
+expectation. One test covers the three state-zero waveform fundamentals; a
+second covers sine fundamental and peak at resonance states zero and one.
 
-### Zero resonance across filter modes
+### Generator fixed point
 
-`qlevel` was run at cutoff 48 with states `0,1,32,127` for all five bound
-filter types. The engine RMS pairs (before -> after) were:
+The generator was run twice from the repaired engine. The second output was
+byte-identical to the checked-in file:
 
-```
-                 state 0       state 1       state 32      state 127
-LP12             .01455->.01481 .01452->.01452 .01380->.01380 .09157->.09157
-LP24             .00794->.00809 .00808->.00808 .00916->.00916 .20377->.20377
-HP12             .11010->.11210 .10951->.10951 .09137->.09137 .09994->.09994
-BP12             .01316->.01340 .01314->.01314 .01256->.01256 .11353->.11353
-LPDL             .00794->.00809 .00808->.00808 .00916->.00916 .20377->.20377
+```powershell
+$dll = "ext/synth1/Synth1/Synth1 VST64.dll"
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe qtable $dll build/filter-resonance-1.odin
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe qtable $dll build/filter-resonance-2.odin
+$source = (Get-FileHash src/engine/filter_resonance_table.odin -Algorithm SHA256).Hash
+$regen = (Get-FileHash build/filter-resonance-2.odin -Algorithm SHA256).Hash
+if ($source -ne $regen) { throw "qtable output differs from source" }
 ```
 
-The state-zero changes are the expected ~0.156 dB correction in every mode;
-every higher state is byte-for-byte unchanged in the table and in the probe.
-The larger mode-specific residuals at cutoff 48 are existing filter-topology
-errors, not introduced regressions. `filtersaturation` at cutoff 127 also
-closes the LP12 and LP24 neutral sine to 0.0 dB; high-pass and band-pass are
-not used as an open-filter level control because their cutoff response is not
-flat at that note.
+Both hashes are
+`cf5fdd63bf9efcb248a16c7e216f8f064966528a539b385064e3d02053582390`.
+Both sweeps resolved all 128 output-gain states and skipped none for clipping.
 
 ### Factory-bank gate
 
-The full isolated factory-bank command was run before and after:
+The bank evidence uses three pinned source endpoints: integration before this
+work (`8e6c3b47c33b012da213f1bf96289c4d4f822069`), the incomplete state-zero
+change (`afeba3cc6a0e106bf8c891d113d56cecb75506c2`), and the whole-law code
+(`967f4b9f331e1417c394aa50911067c73c5bf531`). Each executable is built from a
+separate `git archive`; no ignored binary can silently stand for both sides:
 
-```
-build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-before.csv
-build/s1probe.exe summarise build/level-before.csv
-build/s1probe-after.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-after.csv
-build/s1probe-after.exe summarise build/level-after.csv
+```powershell
+$before = Join-Path $env:TEMP "quesynth-level-8e6c3b4"
+$faulty = Join-Path $env:TEMP "quesynth-level-afeba3c"
+$after  = Join-Path $env:TEMP "quesynth-level-967f4b9"
+Remove-Item -Recurse -Force $before, $faulty, $after -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $before, $faulty, $after | Out-Null
+git archive 8e6c3b47c33b012da213f1bf96289c4d4f822069 | tar -xf - -C $before
+git archive afeba3cc6a0e106bf8c891d113d56cecb75506c2 | tar -xf - -C $faulty
+git archive 967f4b9f331e1417c394aa50911067c73c5bf531 | tar -xf - -C $after
+odin build "$before/tools/s1probe" -out:build/s1probe-8e6c3b4.exe
+odin build "$faulty/tools/s1probe" -out:build/s1probe-afeba3c.exe
+odin build "$after/tools/s1probe"  -out:build/s1probe-967f4b9.exe
+./build/s1probe-8e6c3b4.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-8e6c3b4.csv
+./build/s1probe-afeba3c.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-afeba3c.csv
+./build/s1probe-967f4b9.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-967f4b9.csv
+./build/s1probe-967f4b9.exe summarise build/level-8e6c3b4.csv
+./build/s1probe-967f4b9.exe summarise build/level-afeba3c.csv
+./build/s1probe-967f4b9.exe summarise build/level-967f4b9.csv
 ```
 
-Both runs rendered **123 patches**, with the same five known reference crashes
-(095, 098, 100, 101, 106), zero reference-silent, zero engine-silent, zero
-non-finite, and four engine renders silent by sustain. The complete summary was:
+| metric | integration | state-zero only | whole law |
+|---|---:|---:|---:|
+| spectral mean / median | 6.65 / 5.98 | 6.65 / 5.98 | 6.65 / 5.98 dB |
+| envelope mean / median | 2.10 / 1.77 | 2.10 / 1.77 | 2.10 / 1.77 dB |
+| signed level mean / median | +0.18 / +0.06 | +0.22 / +0.10 | +0.33 / +0.22 dB |
+| absolute level mean / median | 1.6528 / 1.1099 | 1.6447 / 1.1099 | 1.6767 / 1.1156 dB |
+| null mean / median | -6.66 / -6.06 | -6.66 / -6.06 | -6.66 / -6.06 dB |
 
-```
-metric              before       after
-spectral mean/med   6.65/5.98    6.65/5.98 dB
-envelope mean/med   2.10/1.77    2.10/1.77 dB
-level mean/med      +0.18/+0.06  +0.22/+0.10 dB
-null mean/med       -6.66/-6.06  -6.66/-6.06 dB
-```
+All three runs contain 123 rows, the same five reference crashes (095, 098,
+100, 101, 106), no reference-silent, engine-silent, non-finite, or load-failed
+rows, and the same four engine renders silent by sustain. CSV SHA-256 values,
+in table order, are:
 
-Exactly 30 patches changed, all by +0.156 dB in level and all because their
-resonance state is zero: 002, 003, 004, 005, 006, 009, 010, 011, 012, 013,
-014, 018, 033, 034, 052, 075, 078, 080, 085, 089, 090, 097, 103, 109, 111,
-113, 114, 118, 126, and 127. The other 93 rows are unchanged. No spectral,
-envelope, null, centroid, tuning, width, crash, silence, or finite-sample
-regression occurred; the level movement is the measured correction itself.
+- `49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`
+- `d3422df7a33c635cc4fbf8f1efa2579672975036eab196c99f879d6d073ce66d`
+- `c88f367e01e5893fd26f605f010cf7598fe32d213938d0c3a9811fc4ddb4987b`
+
+The state-zero-only commit moved 30 patches. Eighteen improved in absolute level
+error; these 12 regressed: **005, 006, 010, 012, 013, 014, 018, 034, 075, 103,
+109, 118**. The whole-law repair retains those measured state-zero results and
+moves the other 93 patches. Of those, 34 improve: **001, 017, 020, 026, 027,
+028, 030, 032, 037, 049, 050, 055, 059, 060, 063, 067, 074, 076, 079, 081,
+082, 083, 086, 087, 093, 094, 102, 104, 105, 110, 119, 120, 122, 128**. The
+other 59 regress in absolute level error: **007, 008, 015, 016, 019, 021, 022,
+023, 024, 025, 029, 031, 035, 036, 038, 039, 040, 041, 042, 043, 044, 045,
+046, 047, 048, 051, 053, 054, 056, 057, 058, 061, 062, 064, 065, 066, 068,
+069, 070, 071, 072, 073, 077, 084, 088, 091, 092, 096, 099, 107, 108, 112,
+115, 116, 117, 121, 123, 124, 125**. Relative to integration, the final count
+is therefore 52 improved and 71 regressed, with none unchanged.
+
+Those regressions are expected and bounded, not omitted evidence. The measured
+law raises every resonance state by `1 / 0.982168`, or **+0.156284 dB**. A patch
+that was already loud must worsen in absolute level error even though this
+specific amp-gain ownership error is fixed; the factory bank also contains
+other level defects and was not used to fit this constant. Every row moves by
+0.1562 or 0.1563 dB except 123, whose peak is already about 1.88 and enters the
+measured output limiter; it moves by 0.1492 dB and its scale-sensitive envelope
+score changes by 0.0367 dB. Spectral, envelope, and null aggregates remain
+unchanged at the report's precision. No crash, silence, or finite-sample status
+regresses.
