@@ -2121,34 +2121,90 @@ render_phase_patch :: proc(p: patch.Patch, out: []f32) {
 
 @(test)
 test_oscillator_phase_law_is_the_measured_one :: proc(t: ^testing.T) {
-	// This test previously asserted 127/128 of a turn at the top of parameter 91,
-	// which was the guess, and it also asserted that the top step must render
-	// differently from zero -- true, but for the wrong reason, since the old code
-	// moved both oscillators together and so only changed a common start phase.
-	//
-	// `s1probe phaseprobe` measured the real law against two same-pitch pulses in
-	// the reference: the third harmonic cancels at stored 48, the second at 64, and
-	// the first and third together at 127. Those are a sixth, a quarter and a half
-	// of a cycle, on one line through the origin.
-	for pair in ([][2]f32{{0, 0.0}, {48, 0.189}, {64, 0.252}, {127, 0.500}}) {
+	// `s1probe phaseabsolute --values 0,1,16,32,48,64,96,127` projects each
+	// reference oscillator alone against note-on at five notes. Unlike the old
+	// same-pitch cancellation test, these signed readings can see the offset of
+	// the law. They give 0.5*(v-1)/126, exact to 5e-6; 0.5*v/127 agrees at both
+	// ends and misses the middle by up to 0.002 turns.
+	for pair in ([][2]f32{
+		{1, 0.000000},
+		{16, 0.059524},
+		{32, 0.123016},
+		{48, 0.186508},
+		{64, 0.250000},
+		{96, 0.376984},
+		{127, 0.500000},
+	}) {
 		p := default_patch()
 		p.values[91] = int(pair[0])
 		got := engine.bind_patch(p).osc_phase_shift
-		testing.expect(
-			t,
-			abs(got - pair[1]) < 0.005,
-			fmt.tprintf("stored %.0f gave %.4f turns, measured %.3f", pair[0], got, pair[1]),
-		)
+		testing.expectf(t, abs(got - pair[1]) < 5.0e-6,
+			"stored %.0f gave %.6f turns; the reference reads %.6f",
+			pair[0], got, pair[1])
 	}
 
-	// And stored zero is not a phase of zero, it is no phase fixing at all. The
-	// changelog entry that introduced the knob says so, and the probe agrees.
+	// Stored zero is not another point on the line: the vendor changelog says
+	// turned fully left the phase is not fixed, and the absolute probe reads the
+	// separately measured free-running relationship there.
 	p0 := default_patch()
 	p0.values[91] = 0
-	testing.expect(t, !engine.bind_patch(p0).osc_phase_fixed, "stored 0 should leave the phase unfixed")
+	testing.expect(t, !engine.bind_patch(p0).osc_phase_fixed,
+		"stored 0 should leave the phase unfixed")
 	p1 := default_patch()
 	p1.values[91] = 1
-	testing.expect(t, engine.bind_patch(p1).osc_phase_fixed, "stored 1 should fix the phase")
+	testing.expect(t, engine.bind_patch(p1).osc_phase_fixed,
+		"stored 1 should fix the phase")
+}
+
+// The engaged start is a signed position, not only a relationship.
+//
+// The same `s1probe phaseabsolute` command reads oscillator 1 at -0.00125
+// turns for every engaged setting at notes 36, 48, 60, 72 and 84. It projects
+// one oscillator at a time against note-on and fits phase against frequency, so
+// output latency is the slope and start phase is the intercept. Cancellation
+// depth could not see this common shift at all. The reference's free-running
+// oscillator 1 and the sub remain at zero; oscillator 2 keeps the separately
+// measured OSC_PHASE_FREE_TURNS only in that free-running state.
+@(test)
+test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^testing.T) {
+	read := proc(stored, note: int) -> (osc1, osc2, sub: f32) {
+		p := default_patch()
+		p.values[73] = 0 // one unison voice, so parameter 92 cannot add a spread
+		p.values[91] = stored
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		defer engine.engine_destroy(&e)
+		engine.engine_note_on(&e, note, 1.0)
+		u := &e.voices[0].unison[0]
+		return u.osc1.phase, u.osc2.phase, u.sub.phase
+	}
+	signed := proc(v: f32) -> f32 {return v >= 0.5 ? v - 1.0 : v}
+
+	free1, free2, free_sub := read(0, 60)
+	testing.expectf(t, abs(signed(free1)) < 1.0e-7,
+		"free-running oscillator 1 moved from zero to %.7f", signed(free1))
+	testing.expectf(t, abs(free2 - engine.OSC_PHASE_FREE_TURNS) < 1.0e-7,
+		"free-running oscillator 2 moved from OSC_PHASE_FREE_TURNS: %.7f", free2)
+	testing.expectf(t, abs(signed(free_sub)) < 1.0e-7,
+		"the free-running sub moved from zero to %.7f", signed(free_sub))
+
+	for stored in 1 ..= 127 {
+		osc1, _, sub := read(stored, 60)
+		testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
+			"stored %d put oscillator 1 at %.7f turns; the reference reads -0.00125",
+			stored, signed(osc1))
+		testing.expectf(t, abs(signed(sub)) < 1.0e-7,
+			"stored %d moved the sub from its measured zero to %.7f", stored, signed(sub))
+	}
+
+	for note in ([]int{36, 48, 72, 84}) {
+		for stored in ([]int{1, 64, 127}) {
+			osc1, _, _ := read(stored, note)
+			testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
+				"note %d stored %d put oscillator 1 at %.7f turns, not -0.00125",
+				note, stored, signed(osc1))
+		}
+	}
 }
 
 @(test)

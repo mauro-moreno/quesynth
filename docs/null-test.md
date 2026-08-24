@@ -5112,6 +5112,76 @@ As it must be, since no factory patch sets parameter 95: 123 rows, spectral
 largest per-patch movement 0.004 dB and that from the phase constant's last
 digit rather than the sub.
 
+### Parameter 91: the engaged phase is offset by one step
+
+The old law, `0.5·v/127`, came from the three nulls printed by `phaseprobe`.
+Those nulls establish useful magnitudes, but cancellation is an even function of
+phase: it cannot establish a sign, an absolute origin, or whether the line is
+offset by one stored step. The absolute reading is now a separate command:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe phaseabsolute --values 0,1,16,32,48,64,96,127
+```
+
+It renders one descending saw at a time, never a two-oscillator cancellation,
+and projects its fundamental with sample zero as note-on. The apparent phase is
+read at notes 36, 48, 60, 72 and 84; fitting phase against frequency puts the
+fixed output latency in the slope and the start phase in the intercept. A
+descending saw's fundamental convention comes from the waveform itself, not
+this engine. The reference's own free-running oscillator 1 then defines zero,
+removing the common probe-path phase without using this engine as an oracle.
+
+The command printed:
+
+| stored 91 | reference osc1 start | reference osc2 start | osc2 − osc1 | `0.5·(v−1)/126` |
+|--:|--:|--:|--:|--:|
+| 0 | +0.00000 | −0.43766 | 0.56233 | free-running |
+| 1 | **−0.00125** | −0.00125 | 0.00000 | 0.000000 |
+| 16 | **−0.00125** | +0.05827 | **0.05952** | 0.059524 |
+| 32 | **−0.00125** | +0.12177 | **0.12302** | 0.123016 |
+| 48 | **−0.00125** | +0.18526 | **0.18651** | 0.186508 |
+| 64 | **−0.00125** | +0.24875 | **0.25000** | 0.250000 |
+| 96 | **−0.00125** | +0.37573 | **0.37698** | 0.376984 |
+| 127 | **−0.00125** | +0.49875 | **0.50000** | 0.500000 |
+
+The relationship residual was at most 0.8×10⁻⁶ turns, inside the 5×10⁻⁶
+precision of the reading. Thus stored 16 → 0.05952, 32 → 0.12302, 48 →
+0.18651, 64 → 0.25000, 96 → 0.37698, 127 → 0.50000. The two candidate laws
+agree at the engaged endpoints, but the absolute reading excludes
+`0.5·v/127` by up to 0.002 turns in the middle. Oscillator 1 reads the same
+**−0.00125 turns for every engaged `v >= 1`**, note-independent; that excludes
+pinning both main oscillators to the free-run zero. Stored zero remains
+free-running, `OSC_PHASE_FREE_TURNS` remains 0.56233, and the sub remains at its
+measured zero. The engaged origin is not a replacement for either free-run
+constant.
+
+Every `ver=105` factory patch omits parameter 91, so both changes are unreachable
+from this bank. That prediction was checked rather than assumed, before and after
+with the same commands:
+
+```
+./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-before.csv
+./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-after.csv
+./build/s1probe.exe summarise build/phase91-before.csv
+./build/s1probe.exe summarise build/phase91-after.csv
+cmp build/phase91-before.csv build/phase91-after.csv
+```
+
+| metric | before | after |
+|---|--:|--:|
+| spectral mean / median (119 valid) | 6.6510 / 5.9766 | 6.6510 / 5.9766 |
+| envelope mean / median | 2.0969 / 1.7701 | 2.0969 / 1.7701 |
+| level, mean absolute / signed median | 1.6528 / +0.0646 | 1.6528 / +0.0646 |
+| null depth mean / median | −6.6582 / −6.0558 | −6.6582 / −6.0558 |
+| correlation mean | 0.7607 | 0.7607 |
+
+Both CSVs contain 123 rows, 0 reference-silent and 0 ours-silent; the same five
+patches (095, 098, 100, 101 and 106) crashed inside the reference, and the same
+four had no spectrum left at sustain. They are byte-identical, SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`:
+**0 of 123 patches moved, so there are no per-patch regressions to name.**
+
 ### Still open on the sub
 
 - **Unison**, above, which is now the leading defect on the corpus patches that
@@ -5125,13 +5195,3 @@ digit rather than the sub.
   renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
   0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
   across shapes, widths and notes.
-- **Parameter 91's law is `0.5·(v−1)/126`, not `0.5·v/127`.** Measured absolutely
-  at seven settings, exact to 5×10⁻⁶: stored 16 → 0.05952, 32 → 0.12302,
-  48 → 0.18651, 64 → 0.25000, 96 → 0.37698, 127 → 0.50000, against our 0.06299,
-  0.12598, 0.18898, 0.25197, 0.37795, 0.50000 — the two agree at both ends and
-  differ by up to 0.002 turns in between. And when parameter 91 is engaged the
-  reference's oscillator 1 does not sit at the free-run zero but at −0.00125
-  turns, note-independent, for every `v >= 1`. Every `ver=105` factory patch
-  omits parameter 91, so no bank aggregate can move on either; both need the
-  reading and a test. Left out of this change because it is a different law from
-  the free-run offset, and recorded here so it is not lost.

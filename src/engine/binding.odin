@@ -565,31 +565,28 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// as a detune stack stays musical.
 	e.osc1_detune = 50.0 * unit_position(76, p.values[76])
 
-	// Parameters 91 and 92 are bare 0..127 phase steps. Divide by the 128-state
-	// count, not the top index, so the top step lands at 127/128 of a turn rather
-	// than wrapping onto the same phase as zero.
-	// Parameter 91, the phase relationship between the two oscillators at note on.
+	// Parameter 91 is the phase relationship between the two oscillators at note
+	// on. Stored zero leaves the phase free; the v1.07 alpha changelog says that
+	// turned fully left "the phase is not fixed (as before)".
 	//
-	// Measured. `s1probe phaseprobe` drives two pulses at the same pitch through the
-	// reference and sweeps this knob: the third harmonic cancels at stored 48, the
-	// second at 64, and the first and third together at 127. Those are offsets of a
-	// sixth, a quarter and a half of a cycle, and they sit on one line through the
-	// origin -- so the offset is half a turn across the knob, not the full turn this
-	// previously assumed.
+	// The rest was read absolutely, not from cancellation depth. `s1probe
+	// phaseabsolute --values 0,1,16,32,48,64,96,127` projects each oscillator
+	// alone against note-on at five notes and separates fixed output latency by
+	// its frequency slope. It reads 16 -> 0.05952, 32 -> 0.12302, 48 -> 0.18651,
+	// 64 -> 0.25000, 96 -> 0.37698 and 127 -> 0.50000 turns, exact to 5e-6:
+	// half a turn over the 126 engaged intervals. The old 0.5*v/127 agrees at the
+	// ends but misses the middle by up to 0.002 turns. Harmonic cancellation is
+	// even in phase and could not reveal that offset.
 	//
-	// Stored zero is not part of that line and is not a phase at all. The changelog
-	// for v1.07 alpha, which added the knob, says that turned fully left "the phase
-	// is not fixed (as before)", and the probe agrees: at zero the reference returns
-	// a spectrum with the fundamental suppressed, which a reset to a common phase
-	// cannot produce and free-running oscillators can.
-	//
-	// This matters for the whole factory bank, not a corner of it: every `ver=105`
-	// patch omits parameter 91 entirely and so takes this default.
+	// Every `ver=105` factory patch omits parameter 91 and takes stored zero, so
+	// the bank cannot select this law; the absolute reading and its signed test do.
 	OSC_PHASE_MAX_TURNS :: f32(0.5)
 	{
 		position := resolved_position(91, p.values[91])
 		e.osc_phase_fixed = position != 0
-		e.osc_phase_shift = OSC_PHASE_MAX_TURNS * f32(position) / 127.0
+		if e.osc_phase_fixed {
+			e.osc_phase_shift = OSC_PHASE_MAX_TURNS * f32(position - 1) / 126.0
+		}
 	}
 	// Parameter 92 spreads the unison stack. The same changelog entry notes it "is
 	// not effective unless the phase is fixed in the oscillator section", which is

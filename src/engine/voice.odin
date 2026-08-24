@@ -63,6 +63,14 @@ Voice :: struct {
 FM_FREQUENCY_DEPTH_MAX :: f32(96.0)
 FM_FREQUENCY_DEPTH_EXPONENT :: f32(5.5)
 
+// Parameter 91's engaged oscillator-1 origin. `s1probe phaseabsolute --values
+// 0,1,16,32,48,64,96,127` projects one oscillator at a time against note-on at
+// five notes, then separates the reference's fixed output latency by its
+// frequency slope. Oscillator 1 reads -0.00125 turns for every engaged value;
+// cancellation depth cannot see this common signed shift. This is deliberately
+// separate from OSC_PHASE_FREE_TURNS, and the sub remains at its measured zero.
+OSC_PHASE_FIXED_START_TURNS :: f32(-0.00125)
+
 fm_frequency_depth :: proc(position: f32) -> f32 {
 	u := dsp.clamp32(position, 0, 1)
 	return FM_FREQUENCY_DEPTH_MAX * math.pow(u, FM_FREQUENCY_DEPTH_EXPONENT)
@@ -165,21 +173,22 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			// duty. Only cancellation between the oscillators reaches it.
 			//
 			// The manual is explicit about zero: "turned fully left, the phase is
-			// not fixed (as before)". And the offset for the rest of the range is
-			// measured -- `s1probe phaseprobe` sweeps it against two same-pitch
-			// pulses and finds three nulls that fall on one line through the
-			// origin, the third harmonic cancelling at stored 48, the second at 64
-			// and the first at 127.
+			// not fixed (as before)". For engaged values, `s1probe phaseabsolute`
+			// reads oscillator 1 itself at -0.00125 turns and oscillator 2 ahead by
+			// 0.5*(v-1)/126. Reading each alone against note-on makes both signs
+			// visible; the earlier same-pitch cancellation probe could see neither
+			// the common start nor the sign of the relationship.
 			if p.osc_phase_fixed {
 				base_phase := p.osc_phase_shift
 				// Parameter 92 spreads the stack, and the manual notes it "is not
 				// effective unless the phase is fixed in the oscillator section",
 				// so it lives inside this branch.
 				stack_phase := p.unison_phase_shift * f32(i) / f32(MAX_UNISON)
-				dsp.oscillator_set_phase(&u.osc1, stack_phase)
-				// Only oscillator 2 carries the offset, because the parameter is a
-				// relationship and not a position.
-				dsp.oscillator_set_phase(&u.osc2, stack_phase + base_phase)
+				dsp.oscillator_set_phase(&u.osc1, stack_phase + OSC_PHASE_FIXED_START_TURNS)
+				// Only oscillator 2 carries the relationship; both main oscillators
+				// carry the separately measured engaged origin. The sub does not.
+				dsp.oscillator_set_phase(&u.osc2,
+					stack_phase + OSC_PHASE_FIXED_START_TURNS + base_phase)
 				dsp.oscillator_set_phase(&u.sub, stack_phase)
 			} else if !fresh {
 				// Free-running: pick up where the previous note left off.
