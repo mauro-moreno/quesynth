@@ -643,6 +643,7 @@ usage :: proc() {
 	fmt.eprintln("                          -- FM spectrum before and through a moving filter")
 	fmt.eprintln("  s1probe filtersaturation [dll] [--values <list>] [--gains <list>]")
 	fmt.eprintln("                          [--type <n>] [--cutoff <n>] [--res <n>] [--note <n>]")
+	fmt.eprintln("                          [--shape <0..3>] [--width <0..127>]")
 	fmt.eprintln("  -- the extra effect unit, parameters 77..81 --")
 	fmt.eprintln("  s1probe fxprobe   [dll] [--config <name>] [--note <n>] [--dump]")
 	fmt.eprintln("  s1probe fxsweep   [dll] [--type <0..9>] [--ctl <1|2|3>] [--values <list>]")
@@ -1900,6 +1901,8 @@ main :: proc() {
 		fscutoff := 127
 		fsres := 0
 		fsnote := 60
+		fsshape := 0
+		fswidth := 64
 		fsvalues := "0,16,32,48,64,80,96,109,112,122,127"
 		fsgains := "32,64,96,127"
 		{
@@ -1918,6 +1921,12 @@ main :: proc() {
 				case "--note":
 					if !parse_probe_int(rest, i + 1, &fsnote) {usage()}
 					i += 2
+				case "--shape":
+					if !parse_probe_int(rest, i + 1, &fsshape) {usage()}
+					i += 2
+				case "--width":
+					if !parse_probe_int(rest, i + 1, &fswidth) {usage()}
+					i += 2
 				case "--values":
 					if i + 1 >= len(rest) {usage()}
 					fsvalues = rest[i + 1]
@@ -1931,7 +1940,10 @@ main :: proc() {
 				}
 			}
 		}
-		cmd_filtersaturation(dll, fstype, fscutoff, fsres, u8(clamp(fsnote, 0, 127)), fsvalues, fsgains)
+		cmd_filtersaturation(
+			dll, fstype, fscutoff, fsres, clamp(fsshape, 0, 3), clamp(fswidth, 0, 127),
+			u8(clamp(fsnote, 0, 127)), fsvalues, fsgains,
+		)
 	case "oscspectrum":
 		if len(rest) < 1 {usage()}
 		ospath := rest[0]

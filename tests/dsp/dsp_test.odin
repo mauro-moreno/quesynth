@@ -1672,62 +1672,89 @@ test_effects_stay_finite_at_their_extremes :: proc(t: ^testing.T) {
 // Measured amplitude curves
 // ---------------------------------------------------------------------------
 
-// A direct reference render fixes the level at the gain state under test. This
-// is deliberately not derived from AMP_GAIN_AMPLITUDE: that table was measured
-// from the same reference and cannot catch a second downstream multiplier.
-// Reproduce the constants with:
-//
-//   s1probe filtersaturation Synth1 VST64.dll --type 0 --cutoff 127 --res 0 --note 60 --values 0 --gains 100
-//
-// The reference fundamentals are 0.48695 (sine), 0.3099 (saw), and 0.1085
-// (pulse, stored width 29). The projection below reads the same steady voice
-// path without involving the reference at test time.
+gain_100_probe_patch :: proc(shape, resonance, width: int) -> patch.Patch {
+	p := default_patch()
+	p.values[0] = shape
+	p.values[5] = 0 // oscillator 1 alone
+	p.values[8] = width
+	p.values[14] = 0 // low pass 12
+	p.values[19] = 127 // filter open
+	p.values[20] = resonance
+	p.values[21] = 63 // filter envelope amount zero
+	p.values[22] = 0 // keyboard tracking off
+	p.values[23] = 0 // saturation off
+	p.values[25] = 0 // instant attack
+	p.values[26] = 0 // no decay
+	p.values[27] = 127 // full sustain
+	p.values[28] = 0 // instant release
+	p.values[29] = 100
+	p.values[30] = 0 // velocity scaling off
+	p.values[66] = 0 // chorus off
+	p.values[37] = 0 // delay dry/wet zero
+	p.values[65] = 0 // delay off
+	p.values[60] = 64 // equalizer tone flat
+	p.values[62] = 64 // equalizer gain zero
+	p.values[63] = 64 // equalizer Q neutral
+	p.values[77] = 0 // extra effect off
+	return p
+}
+
+render_gain_100_probe :: proc(shape, resonance, width: int) -> []f32 {
+	N :: 48000
+	audio := make([]f32, N)
+	discard := make([]f32, N)
+	e: engine.Engine
+	engine.engine_load_patch(&e, gain_100_probe_patch(shape, resonance, width), SR)
+	engine.engine_note_on(&e, 60, 1.0)
+	engine.engine_process(&e, audio, discard)
+	engine.engine_destroy(&e)
+	delete(discard)
+	return audio
+}
+
+// Direct reference renders fix the levels under test. These values do not come
+// from AMP_GAIN_AMPLITUDE or FILTER_OUTPUT_GAIN, so they catch a second output
+// multiplier and a wrong resonance-level law. Reproduce them with the quoted
+// filtersaturation commands in docs/null-test.md.
 @(test)
 test_gain_100_neutral_fundamentals_match_reference :: proc(t: ^testing.T) {
 	expected := [3]f64{0.48695, 0.3099, 0.1085}
 	shapes := [3]int{0, 1, 2}
 
 	for shape, i in shapes {
-		p := default_patch()
-		p.values[0] = shape
-		p.values[5] = 0 // oscillator 1 alone
-		p.values[8] = shape == 2 ? 29 : 64
-		p.values[14] = 0 // low pass 12
-		p.values[19] = 127 // filter open
-		p.values[20] = 0 // resonance off
-		p.values[21] = 63 // filter envelope amount zero
-		p.values[22] = 0 // keyboard tracking off
-		p.values[23] = 0 // saturation off
-		p.values[25] = 0 // instant attack
-		p.values[26] = 0 // no decay
-		p.values[27] = 127 // full sustain
-		p.values[28] = 0 // instant release
-		p.values[29] = 100
-		p.values[30] = 0 // velocity scaling off
-		p.values[66] = 0 // chorus off
-		p.values[37] = 0 // delay dry/wet zero
-		p.values[65] = 0 // delay off
-		p.values[60] = 64 // equalizer tone flat
-		p.values[62] = 64 // equalizer gain zero
-		p.values[63] = 64 // equalizer Q neutral
-		p.values[77] = 0 // extra effect off
-
-		N :: 48000
-		audio := make([]f32, N)
-		discard := make([]f32, N)
-		e: engine.Engine
-		engine.engine_load_patch(&e, p, SR)
-		engine.engine_note_on(&e, 60, 1.0)
-		engine.engine_process(&e, audio, discard)
-		engine.engine_destroy(&e)
-		delete(discard)
-
+		width := shape == 2 ? 29 : 64
+		audio := render_gain_100_probe(shape, 0, width)
 		f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
 		mag, _ := fundamental_phase(audio[12000:], f0, f64(SR))
 		amplitude := 4.0 * mag
 		testing.expectf(t, abs(amplitude - expected[i]) < 0.001,
 			"shape %d at amp gain 100 measured %.5f; reference is %.5f",
 			shape, amplitude, expected[i])
+		delete(audio)
+	}
+}
+
+@(test)
+test_gain_100_first_resonance_step_matches_reference :: proc(t: ^testing.T) {
+	resonances := [2]int{0, 1}
+	expected_amplitude := [2]f64{0.48695, 0.48427}
+	expected_peak := [2]f64{0.4870, 0.4843}
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+
+	for resonance, i in resonances {
+		audio := render_gain_100_probe(0, resonance, 64)
+		mag, _ := fundamental_phase(audio[12000:], f0, f64(SR))
+		amplitude := 4.0 * mag
+		peak := 0.0
+		for sample in audio {
+			peak = max(peak, abs(f64(sample)))
+		}
+		testing.expectf(t, abs(amplitude - expected_amplitude[i]) < 0.001,
+			"resonance %d at amp gain 100 has fundamental %.5f; reference is %.5f",
+			resonance, amplitude, expected_amplitude[i])
+		testing.expectf(t, abs(peak - expected_peak[i]) < 0.0002,
+			"resonance %d at amp gain 100 has peak %.5f; reference is %.5f",
+			resonance, peak, expected_peak[i])
 		delete(audio)
 	}
 }
