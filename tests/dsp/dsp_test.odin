@@ -2162,9 +2162,9 @@ test_oscillator_phase_law_is_the_measured_one :: proc(t: ^testing.T) {
 // turns for every engaged setting at notes 36, 48, 60, 72 and 84. It projects
 // one oscillator at a time against note-on and fits phase against frequency, so
 // output latency is the slope and start phase is the intercept. Cancellation
-// depth could not see this common shift at all. The reference's free-running
-// oscillator 1 and the sub remain at zero; oscillator 2 keeps the separately
-// measured OSC_PHASE_FREE_TURNS only in that free-running state.
+// depth could not see this common shift at all. Oscillator 2's separately read
+// signed starts pin the direction of the relationship. The free-running sub's
+// zero is a separate invariant, checked below.
 @(test)
 test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^testing.T) {
 	read := proc(stored, note: int) -> (osc1, osc2, sub: f32) {
@@ -2189,12 +2189,28 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 		"the free-running sub moved from zero to %.7f", signed(free_sub))
 
 	for stored in 1 ..= 127 {
-		osc1, _, sub := read(stored, 60)
+		osc1, _, _ := read(stored, 60)
 		testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
 			"stored %d put oscillator 1 at %.7f turns; the reference reads -0.00125",
 			stored, signed(osc1))
-		testing.expectf(t, abs(signed(sub)) < 1.0e-7,
-			"stored %d moved the sub from its measured zero to %.7f", stored, signed(sub))
+	}
+
+	// These are oscillator 2's own signed absolute readings from the same
+	// reference command, not values reconstructed with the engine's phase law.
+	// They distinguish +base_phase from the phase-even -base_phase alternative.
+	for reading in ([][2]f32{
+		{1, -0.00125},
+		{16, 0.05827},
+		{32, 0.12177},
+		{48, 0.18526},
+		{64, 0.24875},
+		{96, 0.37573},
+		{127, 0.49875},
+	}) {
+		_, osc2, _ := read(int(reading[0]), 60)
+		testing.expectf(t, abs(signed(osc2) - reading[1]) < 5.0e-6,
+			"stored %.0f put oscillator 2 at %.5f turns; the reference reads %.5f",
+			reading[0], signed(osc2), reading[1])
 	}
 
 	for note in ([]int{36, 48, 72, 84}) {

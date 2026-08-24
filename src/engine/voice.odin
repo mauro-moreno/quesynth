@@ -67,8 +67,9 @@ FM_FREQUENCY_DEPTH_EXPONENT :: f32(5.5)
 // 0,1,16,32,48,64,96,127` projects one oscillator at a time against note-on at
 // five notes, then separates the reference's fixed output latency by its
 // frequency slope. Oscillator 1 reads -0.00125 turns for every engaged value;
-// cancellation depth cannot see this common signed shift. This is deliberately
-// separate from OSC_PHASE_FREE_TURNS, and the sub remains at its measured zero.
+// cancellation depth cannot see this common signed shift. This origin is
+// deliberately separate from the free-running OSC_PHASE_FREE_TURNS
+// relationship.
 OSC_PHASE_FIXED_START_TURNS :: f32(-0.00125)
 
 fm_frequency_depth :: proc(position: f32) -> f32 {

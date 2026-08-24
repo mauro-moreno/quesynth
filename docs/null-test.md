@@ -5152,19 +5152,36 @@ agree at the engaged endpoints, but the absolute reading excludes
 `0.5·v/127` by up to 0.002 turns in the middle. Oscillator 1 reads the same
 **−0.00125 turns for every engaged `v >= 1`**, note-independent; that excludes
 pinning both main oscillators to the free-run zero. Stored zero remains
-free-running, `OSC_PHASE_FREE_TURNS` remains 0.56233, and the sub remains at its
-measured zero. The engaged origin is not a replacement for either free-run
+free-running, `OSC_PHASE_FREE_TURNS` remains 0.56233, and the sub's
+**free-running** zero is unchanged. That qualifier matters: the evidence audit's
+isolated −1-octave sub read found engaged-minus-free at **−0.0006256 turns**
+across all four shapes, two gains, and three notes. It temporarily extended the
+same absolute-phase isolation used by `phaseabsolute`, rendering the sub alone
+in the free-running and engaged states; the temporary probe was then removed.
+That excludes the previous engaged-zero claim, so the signed engine test pins
+only the measured main oscillators and keeps a separate free-running-sub check.
+The engaged main-oscillator origin is not a replacement for either free-run
 constant.
 
 Every `ver=105` factory patch omits parameter 91, so both changes are unreachable
-from this bank. That prediction was checked rather than assumed, before and after
-with the same commands:
+from this bank. That prediction was checked rather than assumed at exact source
+endpoints: parent `36d1cb7b3aaa10403b92e070b63f5cd73a7890f2` and phase-law commit
+`f729e3140081d6869556e160ce392b9711318b6f`. Each executable was built from its
+own `git archive` extraction, so neither comparison can silently reuse the other
+engine:
 
-```
-./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-before.csv
-./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-after.csv
-./build/s1probe.exe summarise build/phase91-before.csv
-./build/s1probe.exe summarise build/phase91-after.csv
+```powershell
+$before = Join-Path $env:TEMP "quesynth-phase91-36d1cb7"
+$after  = Join-Path $env:TEMP "quesynth-phase91-f729e31"
+New-Item -ItemType Directory -Force $before, $after | Out-Null
+git archive 36d1cb7b3aaa10403b92e070b63f5cd73a7890f2 | tar -xf - -C $before
+git archive f729e3140081d6869556e160ce392b9711318b6f | tar -xf - -C $after
+odin build "$before/tools/s1probe" -out:build/s1probe-36d1cb7.exe
+odin build "$after/tools/s1probe" -out:build/s1probe-f729e31.exe
+./build/s1probe-36d1cb7.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-before.csv
+./build/s1probe-f729e31.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-after.csv
+./build/s1probe-f729e31.exe summarise build/phase91-before.csv
+./build/s1probe-f729e31.exe summarise build/phase91-after.csv
 cmp build/phase91-before.csv build/phase91-after.csv
 ```
 
