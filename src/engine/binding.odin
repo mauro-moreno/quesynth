@@ -516,11 +516,14 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	e.osc2_cents = display_number(3, p.values[3], 0)
 	e.osc2_key_track = resolved_position(4, p.values[4]) != 0
 
-	// Parameter 5 displays "100 : 0".."0 : 100" as oscillator 1's share, so the
-	// oscillator 2 share this struct stores is the complement of the number the
-	// display leads with.
-	osc1_percent := display_number(5, p.values[5], 50)
-	e.osc_mix = dsp.clamp32(1.0 - osc1_percent / 100.0, 0, 1)
+	// Parameter 5's display rounds the underlying gain and is not the audio law.
+	// `s1probe mixprobe --values 0,32,64,96,127`, with each curve anchored at
+	// both unity endpoints, reads oscillator 2 at 0.25197, 0.50394 and 0.75591.
+	// Those are stored/127 (and oscillator 1 is its complement), above the
+	// display's 0.25 and 0.50 but below its 0.76. The gains sum to 1.00000 at
+	// every setting; mean equal-power error is 0.3104, excluding both the rounded
+	// display percentage and an equal-power crossfade.
+	e.osc_mix = dsp.clamp32(f32(p.values[5]) / 127.0, 0, 1)
 
 	e.osc_sync = resolved_position(6, p.values[6]) != 0
 	e.osc_ring = resolved_position(7, p.values[7]) != 0
@@ -557,41 +560,39 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// where the carrier increment is known.
 	e.osc1_fm = unit_position(45, p.values[45])
 
-	// Parameter 76 is a bare 0..127. Read as cents of detune across the
-	// oscillator 1 stack; 50 cents at full is a quarter tone, which is as wide
-	// as a detune stack stays musical.
-	e.osc1_detune = 50.0 * unit_position(76, p.values[76])
+	// Parameter 76 creates nine components inside OSC1 (and its sub), even with
+	// outer unison disabled. Its measured base step is 20*stored/127 cents; the
+	// audio path applies the signed factors {-7,-5,-3,-1,0,+1,+3,+5,+7}.
+	e.osc1_detune = 20.0 * unit_position(76, p.values[76])
 
-	// Parameters 91 and 92 are bare 0..127 phase steps. Divide by the 128-state
-	// count, not the top index, so the top step lands at 127/128 of a turn rather
-	// than wrapping onto the same phase as zero.
-	// Parameter 91, the phase relationship between the two oscillators at note on.
+	// Parameter 91 is the phase relationship between the two oscillators at note
+	// on. Stored zero leaves the phase free; the v1.07 alpha changelog says that
+	// turned fully left "the phase is not fixed (as before)".
 	//
-	// Measured. `s1probe phaseprobe` drives two pulses at the same pitch through the
-	// reference and sweeps this knob: the third harmonic cancels at stored 48, the
-	// second at 64, and the first and third together at 127. Those are offsets of a
-	// sixth, a quarter and a half of a cycle, and they sit on one line through the
-	// origin -- so the offset is half a turn across the knob, not the full turn this
-	// previously assumed.
+	// The rest was read absolutely, not from cancellation depth. `s1probe
+	// phaseabsolute --values 0,1,16,32,48,64,96,127` projects each oscillator
+	// alone against note-on at five notes and separates fixed output latency by
+	// its frequency slope. It reads 16 -> 0.05952, 32 -> 0.12302, 48 -> 0.18651,
+	// 64 -> 0.25000, 96 -> 0.37698 and 127 -> 0.50000 turns, exact to 5e-6:
+	// half a turn over the 126 engaged intervals. The old 0.5*v/127 agrees at the
+	// ends but misses the middle by up to 0.002 turns. Harmonic cancellation is
+	// even in phase and could not reveal that offset.
 	//
-	// Stored zero is not part of that line and is not a phase at all. The changelog
-	// for v1.07 alpha, which added the knob, says that turned fully left "the phase
-	// is not fixed (as before)", and the probe agrees: at zero the reference returns
-	// a spectrum with the fundamental suppressed, which a reset to a common phase
-	// cannot produce and free-running oscillators can.
-	//
-	// This matters for the whole factory bank, not a corner of it: every `ver=105`
-	// patch omits parameter 91 entirely and so takes this default.
+	// Every `ver=105` factory patch omits parameter 91 and takes stored zero, so
+	// the bank cannot select this law; the absolute reading and its signed test do.
 	OSC_PHASE_MAX_TURNS :: f32(0.5)
 	{
 		position := resolved_position(91, p.values[91])
 		e.osc_phase_fixed = position != 0
-		e.osc_phase_shift = OSC_PHASE_MAX_TURNS * f32(position) / 127.0
+		if e.osc_phase_fixed {
+			e.osc_phase_shift = OSC_PHASE_MAX_TURNS * f32(position - 1) / 126.0
+		}
 	}
-	// Parameter 92 spreads the unison stack. The same changelog entry notes it "is
-	// not effective unless the phase is fixed in the oscillator section", which is
-	// enforced at the use site in voice.odin rather than here.
-	e.unison_phase_shift = f32(resolved_position(92, p.values[92])) / 128.0
+	// Parameter 92 scales the measured per-layer phase offsets. The reference
+	// reaches the signed offsets at stored 127; zero leaves every fixed-phase
+	// layer aligned. It is only effective when parameter 91 fixes the oscillator
+	// relationship, enforced at the use site in voice.odin.
+	e.unison_phase_shift = f32(resolved_position(92, p.values[92])) / 127.0
 
 	// Parameter 96 has four states; the sub oscillator reuses oscillator 1's
 	// documented shape order.
@@ -654,10 +655,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	//   normalised by its own weights returns the carrier exactly like that;
 	//   holding the carrier and adding the sub cannot.
 	//
-	// * the `(1-m)`, at seven mix settings with two saws four semitones apart so
-	//   that no partial of the sub lands on oscillator 2. Oscillator 2's own
-	//   partial is pulled down by 0.28455, 0.37046, 0.54307, 0.71031, 1.00000 at
-	//   stored mix 32, 64, 96, 112, 127, against this law's 0.27843, 0.36783,
+	// * the `(1-m)`, re-read by `s1probe mixprobe` at five mix settings with two
+	//   saws four semitones apart so no sub partial lands on oscillator 2. Its
+	//   own partial is pulled down by 0.27838, 0.36768, 0.54173, 0.70962, 1.00000
+	//   at stored mix 32, 64, 96, 112, 127, against this law's 0.27843, 0.36783,
 	//   0.54181, 0.70962, 1.00000. A denominator of `1 + a` alone predicts a flat
 	//   0.22399 and is excluded. At mix "0 : 100" the sub vanishes entirely and
 	//   the reference's render is bit-identical with the sub at full gain.
@@ -897,8 +898,22 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.unison_voices = 1
 	}
 
-	// Parameter 75 is a bare 0..127, read as cents across the whole stack.
-	e.unison_detune = 50.0 * unit_position(75, p.values[75])
+	// Parameter 75's outer half-span is one exponential in the stored value.
+	//
+	// The constants are a fit to 36 layout-verified readings from
+	// `s1probe unisonprobe` -- stored 6..127 at note 84 and 2..96 at note 108 --
+	// and not an endpoint anchor. Worst relative error 0.22%, RMS 0.066%, which
+	// is the precision the two notes agree to (0.13% where they overlap), so the
+	// residual is the probe's and not the law's.
+	//
+	// A quadratic in the knob position fits only the top of the range: at the
+	// factory default of stored 22 it reads 1.50 cents of half-span against the
+	// reference's 3.239, and the linear law before it read 4.331.
+	//
+	// `unison_detune` holds the full span, which the symmetric -0.5..+0.5 layer
+	// layout in voice.odin halves.
+	detune_position := f32(resolved_position(75, p.values[75]))
+	e.unison_detune = 2.0 * 7.83036 * (math.pow(f32(2.0), detune_position / 44.0306) - 1.0)
 	// Displays "-64".."63".
 	e.unison_pan_spread = dsp.clamp32(display_number(84, p.values[84], 0) / 64.0, -1, 1)
 	// Displays "-24".."+24": semitones.

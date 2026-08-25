@@ -867,29 +867,112 @@ from the one this section is about.
 ## The oscillator mix, and what the harmonic-balance error really was
 
 The mix was the suspect for the 3 to 13 dB of harmonic-balance error on
-two-oscillator patches. It is not the cause: **the mix law is already correct**, and
-measuring it says so unambiguously.
+two-oscillator patches. The crossfade shape was right, but this document called
+its rounded display the law. That was wrong by up to 0.07 dB.
 
-Parameter 5's display states the ratio, but not what the ratio does to the signal —
-a linear crossfade in amplitude, an equal-power crossfade and two independent gains
-all honour the same numbers. Making oscillator 1 a **sine** settles it, because a
-sine has exactly one partial: with oscillator 2 an octave above, the two
-contributions occupy different frequencies entirely and each gain reads off its own
-fundamental.
+Parameter 5's display states a rounded ratio, but not what that ratio does to
+the signal — a linear crossfade in amplitude, an equal-power crossfade and two
+independent gains all honour the same displayed numbers. Making oscillator 1
+a **sine** settles it, because a sine has exactly one partial: with oscillator
+2 an octave above, the two contributions occupy different frequencies entirely
+and each gain reads off its own fundamental.
+
+This run includes both endpoints. The candidate laws agree there, so normalising
+each curve to its own endpoint is an absolute reading, not a fit to how far a
+harmonic moved:
 
 ```
- stored  display   osc1 gain  osc2 gain    sum
-     0   100 : 0     1.000      0.000     1.000
-    32    75 : 25    0.748      0.252     1.000
-    64    50 : 50    0.496      0.504     1.000
-    96    24 : 76    0.244      0.756     1.000
-   127     0 : 100   0.000      1.000     1.000
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe mixprobe --values 0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,127
+
+ stored  display   osc1 gain  osc2 gain      sum
+     0   100 : 0      1.00000    0.00000  1.00000
+    32    75 : 25     0.74803    0.25197  1.00000
+    64    50 : 50     0.49606    0.50394  1.00000
+    96    24 : 76     0.24409    0.75591  1.00000
+   127     0 : 100    0.00000    1.00000  1.00000
 ```
 
-`sum` is 1.000 at all seventeen settings, mean deviation 0.0000, and each gain
-equals the displayed percentage. Equal-power is out by 0.31 on the same test. So it
-is a linear amplitude crossfade reading the percentage directly, which is what the
-binding already did.
+The oscillator 2 readings are `stored/127`: 0.25197 and 0.50394 sit above
+the display's 0.25 and 0.50, while 0.75591 sits below its 0.76. That change of
+residual sign excludes the rounded display law rather than merely finding a
+small offset. `sum` is 1.00000 at all seventeen settings, mean deviation 0.0000;
+the mean equal-power error is 0.3104. So this is a unity-sum linear amplitude
+crossfade, not equal-power or independent non-unity gains, but its exact law is
+`osc2 = stored/127`, `osc1 = 1 - stored/127`.
+
+### The sub's `(1-m)` survives the unrounded reading
+
+Parameter 95's normalised sub mix uses oscillator 1's weight. `mixprobe` repeats
+the earlier check with two saws four semitones apart, a saw sub at `-1oct` and
+stored sub gain 110; no sub partial lands on oscillator 2, so its own partial
+reads the normalising denominator. With `a = 4*110/127`:
+
+| stored mix | 32 | 64 | 96 | 112 | 127 |
+|---|--:|--:|--:|--:|--:|
+| reference, sub on / sub off at oscillator 2 | 0.27838 | 0.36768 | 0.54173 | 0.70962 | 1.00000 |
+| `1/(1+a*(1-stored/127))` | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
+| denominator `1+a` alone | 0.22399 | 0.22399 | 0.22399 | 0.22399 | 0.22399 |
+
+The unrounded `(1-m)` prediction agrees within 0.00015 across the sweep. The
+flat alternative misses by 0.05439 already at stored 32 and cannot reach unity
+when oscillator 1 and its sub vanish at 127.
+
+### Factory-bank result
+
+The full bank was read before and after with the same 123 comparable rows:
+
+```
+./build/s1probe.exe compare patches/incoming/soundbank00 --csv build/mix-before.csv
+./build/s1probe.exe compare patches/incoming/soundbank00 --csv build/mix-after.csv
+./build/s1probe.exe summarise build/mix-before.csv
+./build/s1probe.exe summarise build/mix-after.csv
+```
+
+| metric | rounded display | `stored/127` |
+|---|--:|--:|
+| spectral mean / median | 6.6537 / 5.9766 | **6.6510 / 5.9766** |
+| envelope mean / median | 2.0957 / 1.7701 | *2.0969 / 1.7701* |
+| level, mean absolute | 1.6529 | **1.6528** |
+| level, signed mean / median | +0.1749 / +0.0464 | *+0.1787 / +0.0646* |
+| null depth mean / median | -6.6564 / -6.0802 | **-6.6582** / *-6.0558* |
+| correlation mean / median | 0.76067304 / 0.875526 | *0.76065424 / 0.874448* |
+
+The spectral mean, absolute level and mean null depth improve. Signed level does
+not: its mean rises 0.003803 dB and its median rises 0.0182 dB. Patch 066 leads
+the arithmetic rise at -0.0587 -> +0.0150 dB (delta +0.0737). Its stored mix 120
+raises oscillator 2 from the displayed 0.94 to 0.94488. More generally the
+measured unrounded law raises it at the low-to-middle readings 32 and 64, from
+0.25 and 0.50 to 0.25197 and 0.50394, and lowers it at 96 from 0.76 to 0.75591.
+Of these 123 rows, 105 store a mix below 96; those rows contribute +0.3039 dB
+to the total +0.4678 dB signed level change. The small positive bank mean is
+therefore a measured output shift from redistributing gain on a bank weighted
+toward low-to-middle mixes, not an improvement hidden by absolute level.
+
+The other named regressions are the envelope mean, up 0.00124 dB and led by 033
+at 5.9888 -> 6.0602 (the only envelope regression above 0.05 dB); the null
+median, row 063 at -6.0802 -> -6.0558, while the null mean deepens by 0.00180 dB
+and no patch's null becomes 0.05 dB shallower; and correlation, whose mean falls
+0.00001880, led by 033 at 0.436125 -> 0.432172, and whose median is row 063 at
+0.875526 -> 0.874448.
+
+At CSV precision, the remaining summary movers are also accounted for.
+Brightness mean moves -0.110135 -> -0.110312 octaves (delta -0.000177), led in
+signed movement by 111 at +0.223054 -> +0.213531, while its median improves.
+Tuning mean moves +5.719009 -> +5.719279 cents (delta +0.000270), with the
+largest signed move 053 at -0.57 -> -0.50 cents, while its median also improves.
+Those leaders move toward zero even though cancellation makes each signed mean
+slightly farther from zero. Stereo-width mean improves by 0.00000244; its median
+and both release-length and time-to-peak aggregates do not move. The directly
+measured gain law is not chosen by these interactions with the bank's other open
+defects; the numbers explain rather than hide the small aggregate regressions.
+
+### A correction to this document's own record
+
+The former text said each gain equalled the displayed percentage and that the
+binding was already correct. Its three quoted non-endpoint readings already
+contained the contrary result, rounded to three decimals. Printing five decimals
+and checking the residual on both sides of the rounded display exposes it.
 
 ### The cause was the oscillator phase, and it was wrong three ways
 
@@ -4044,6 +4127,31 @@ breaks the independently measured open-filter transfer. This is the nonlinear
 four-pole topology gap documented in the earlier ladder investigation, not a
 reason to distort the now-measured knob law to fit one operating point.
 
+**Second boundary: two tones.** The transfer above was fitted by driving one
+sine through a non-moving filter, and low cutoff was its only recorded limit.
+The tracked substage factorial recorded further down this file is the first
+two-tone test of it, and it opens a second limit with the filter fully open.
+The probe's THD reading is the energy in the `f0` harmonic bins relative to
+`f0`. With OSC1 sine plus OSC2 triangle four semitones up (`p5=96`), `p95=0`
+and stored 23 = 64, the reference reads `-17.032`, `-17.175` and `-17.080 dB`
+at notes 60, 48 and 72, while this engine reads `-36.147`, `-36.470` and
+`-36.172 dB`. That is a note-stable gap of about 19 dB.
+
+The single-tone cell of the same run still reproduces the fit exactly:
+reference `-13.918`, `-13.912` and `-13.943 dB` against ours `-13.900`,
+`-13.900` and `-13.899 dB`, which is the -13.9 dB knot tabulated above. The
+matched `p23=0` control shows no comparable gap: reference `-41.969`,
+`-41.245` and `-45.999 dB` against ours `-40.991`, `-40.992` and
+`-41.737 dB`, a spread of 1.0 to 4.3 dB in a floor roughly 25 dB below the
+saturated reading. The break therefore belongs to the shaper, not to the
+oscillator pair or the measurement.
+
+So a peak-normalised memoryless tanh matches the knob on one tone and puts far
+too little energy into those bins on two. This is a named defect in the
+implemented law. A candidate replacement was measured and is reported with the
+substage factorial below; it was rejected by the corpus and factory gates, so
+the shaper is unchanged and this boundary stays open.
+
 **Bank verdict: kept.** The isolated 123-patch run, against the immediately
 preceding ping-pong baseline:
 
@@ -4933,14 +5041,14 @@ the sub sits at f₀/2 and the carrier at f₀ so they are separate bins, note 4
 — `4·stored/127` to 3×10⁻⁵ across the knob, and the same render gives `1 + a` a
 second way, as the carrier with the sub off over the carrier with it on, agreeing
 to five decimals. The **division** by `1 + a` rather than merely holding the
-carrier is what the −142.5 dB null says. And the `(1−m)` is read at seven mix
-settings, two saws four semitones apart so no partial of the sub lands on
-oscillator 2:
+carrier is what the −142.5 dB null says. `s1probe mixprobe` re-reads the `(1−m)`
+at five mix settings, with two saws four semitones apart so no partial of the sub
+lands on oscillator 2:
 
 | stored mix | 32 | 64 | 96 | 112 | 127 |
 |---|--:|--:|--:|--:|--:|
-| oscillator 2's partial, sub on / sub off | 0.28455 | 0.37046 | 0.54307 | 0.71031 | 1.00000 |
-| this law | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
+| oscillator 2's partial, sub on / sub off | 0.27838 | 0.36768 | 0.54173 | 0.70962 | 1.00000 |
+| `1/(1+a*(1-stored/127))` | 0.27843 | 0.36783 | 0.54181 | 0.70962 | 1.00000 |
 | a denominator of `1 + a` alone | 0.22399 | 0.22399 | 0.22399 | 0.22399 | 0.22399 |
 
 At mix "0 : 100" the sub **vanishes with oscillator 1**: the reference's render is
@@ -5008,8 +5116,8 @@ s059 +0.54, s020 +0.52, s015 +0.50, s087 +0.40, s043 +0.39. The largest of them,
 s089's envelope 2.82 → 17.85, reads **19.84** with the sub switched off in both
 engines — the broken sub was masking a larger error underneath it, and that is
 what the control column is for. **Level is the one aggregate that does not
-improve** (4.4652 → 4.8243, against 4.5485 with the sub off), and it is not
-explained here.
+improve** (4.4652 → 4.8243, against 4.5485 with the sub off). The audit below
+reproduces that residual but does not establish its cause.
 
 **A first gate that could not adjudicate, recorded so it is not repeated.** The
 obvious selection — every corpus patch with `95 >= 32`, nothing else — gives 76
@@ -5029,34 +5137,854 @@ As it must be, since no factory patch sets parameter 95: 123 rows, spectral
 largest per-patch movement 0.004 dB and that from the phase constant's last
 digit rather than the sub.
 
+### Parameter 91: the engaged phase is offset by one step
+
+The old law, `0.5·v/127`, came from the three nulls printed by `phaseprobe`.
+Those nulls establish useful magnitudes, but cancellation is an even function of
+phase: it cannot establish a sign, an absolute origin, or whether the line is
+offset by one stored step. The absolute reading is now a separate command:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe phaseabsolute --values 0,1,16,32,48,64,96,127
+```
+
+It renders one descending saw at a time, never a two-oscillator cancellation,
+and projects its fundamental with sample zero as note-on. The apparent phase is
+read at notes 36, 48, 60, 72 and 84; fitting phase against frequency puts the
+fixed output latency in the slope and the start phase in the intercept. A
+descending saw's fundamental convention comes from the waveform itself, not
+this engine. The reference's own free-running oscillator 1 then defines zero,
+removing the common probe-path phase without using this engine as an oracle.
+
+The command printed:
+
+| stored 91 | reference osc1 start | reference osc2 start | osc2 − osc1 | `0.5·(v−1)/126` |
+|--:|--:|--:|--:|--:|
+| 0 | +0.00000 | −0.43766 | 0.56233 | free-running |
+| 1 | **−0.00125** | −0.00125 | 0.00000 | 0.000000 |
+| 16 | **−0.00125** | +0.05827 | **0.05952** | 0.059524 |
+| 32 | **−0.00125** | +0.12177 | **0.12302** | 0.123016 |
+| 48 | **−0.00125** | +0.18526 | **0.18651** | 0.186508 |
+| 64 | **−0.00125** | +0.24875 | **0.25000** | 0.250000 |
+| 96 | **−0.00125** | +0.37573 | **0.37698** | 0.376984 |
+| 127 | **−0.00125** | +0.49875 | **0.50000** | 0.500000 |
+
+The relationship residual was at most 0.8×10⁻⁶ turns, inside the 5×10⁻⁶
+precision of the reading. Thus stored 16 → 0.05952, 32 → 0.12302, 48 →
+0.18651, 64 → 0.25000, 96 → 0.37698, 127 → 0.50000. The two candidate laws
+agree at the engaged endpoints, but the absolute reading excludes
+`0.5·v/127` by up to 0.002 turns in the middle. Oscillator 1 reads the same
+**−0.00125 turns for every engaged `v >= 1`**, note-independent; that excludes
+pinning both main oscillators to the free-run zero. Stored zero remains
+free-running, `OSC_PHASE_FREE_TURNS` remains 0.56233, and the sub's
+**free-running** zero is unchanged. That qualifier matters: the evidence audit's
+isolated −1-octave sub read found engaged-minus-free at **−0.0006256 turns**
+across all four shapes, two gains, and three notes. It temporarily extended the
+same absolute-phase isolation used by `phaseabsolute`, rendering the sub alone
+in the free-running and engaged states; the temporary probe was then removed.
+That excludes the previous engaged-zero claim, so the signed engine test pins
+only the measured main oscillators and keeps a separate free-running-sub check.
+The engaged main-oscillator origin is not a replacement for either free-run
+constant.
+
+Every `ver=105` factory patch omits parameter 91, so both changes are unreachable
+from this bank. That prediction was checked rather than assumed at exact source
+endpoints: parent `36d1cb7b3aaa10403b92e070b63f5cd73a7890f2` and phase-law commit
+`f729e3140081d6869556e160ce392b9711318b6f`. Each executable was built from its
+own `git archive` extraction, so neither comparison can silently reuse the other
+engine:
+
+```powershell
+$before = Join-Path $env:TEMP "quesynth-phase91-36d1cb7"
+$after  = Join-Path $env:TEMP "quesynth-phase91-f729e31"
+New-Item -ItemType Directory -Force $before, $after | Out-Null
+git archive 36d1cb7b3aaa10403b92e070b63f5cd73a7890f2 | tar -xf - -C $before
+git archive f729e3140081d6869556e160ce392b9711318b6f | tar -xf - -C $after
+odin build "$before/tools/s1probe" -out:build/s1probe-36d1cb7.exe
+odin build "$after/tools/s1probe" -out:build/s1probe-f729e31.exe
+./build/s1probe-36d1cb7.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-before.csv
+./build/s1probe-f729e31.exe compare ext/synth1/Synth1/soundbank00 --csv build/phase91-after.csv
+./build/s1probe-f729e31.exe summarise build/phase91-before.csv
+./build/s1probe-f729e31.exe summarise build/phase91-after.csv
+cmp build/phase91-before.csv build/phase91-after.csv
+```
+
+| metric | before | after |
+|---|--:|--:|
+| spectral mean / median (119 valid) | 6.6510 / 5.9766 | 6.6510 / 5.9766 |
+| envelope mean / median | 2.0969 / 1.7701 | 2.0969 / 1.7701 |
+| level, mean absolute / signed median | 1.6528 / +0.0646 | 1.6528 / +0.0646 |
+| null depth mean / median | −6.6582 / −6.0558 | −6.6582 / −6.0558 |
+| correlation mean | 0.7607 | 0.7607 |
+
+Both CSVs contain 123 rows, 0 reference-silent and 0 ours-silent; the same five
+patches (095, 098, 100, 101 and 106) crashed inside the reference, and the same
+four had no spectrum left at sustain. They are byte-identical, SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`:
+**0 of 123 patches moved, so there are no per-patch regressions to name.**
+
+### FM reaches the sub oscillator
+
+The v1.11 changelog says that FM influences the sub as well as OSC1. The
+controlled reference command is:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe fmsubprobe --values 0,16,24,32,43 --note 48
+```
+
+The first checked-in analyser did not reproduce the numbers recorded here. It
+smoothed each oscillator over its own period, so the `−1oct` sub was smoothed
+over twice as much time as OSC1, then wrapped the two accumulated phase deltas
+separately. Both operations changed the ratio being measured. `fmsubprobe` now
+forms each signal's analytic phase with one Hilbert transform, keeps the phase
+deltas unwrapped, and fits their signed covariance with a free intercept. The
+same binary and command now reproduce:
+
+| stored FM | `−1oct` sub/OSC1 slope | windows | nearest candidate | `0oct` max | `0oct` RMS |
+|---:|---:|---:|---|---:|---:|
+| 0 | 0 (control) | 0 | control | 2.38e−7 | 3.3e−8 |
+| 16 | +0.473336 | 26 | fractional | 2.38e−7 | 3.3e−8 |
+| 24 | +0.470593 | 26 | fractional | 2.68e−7 | 3.3e−8 |
+| 32 | +0.454299 | 26 | fractional | 2.38e−7 | 3.3e−8 |
+| 43 | +0.500492 | 26 | fractional | 2.09e−7 | 3.3e−8 |
+
+At `−1oct`, the candidates are 1 for equal absolute displacement, 0.5 for
+equal fractional deviation, and 0 for no FM at the sub. All four non-zero rows
+select the 0.5 law. The implemented advance is therefore:
+
+```
+sub_phase += sub_increment + osc2_value * fm_depth(fm_position) * sub_increment
+```
+
+The `0oct` rows are the same-pitch control: a full-gain sine sub and the
+sub-off carrier differ only at float noise. The probe also measures the ring
+control rather than just stating it: FM 43 and 77 against FM off have max and
+RMS **0** at both `0oct` and `−1oct`.
+
+The engine test is
+`test_fm_reaches_sub_with_reference_measured_displacement`. Its expected table
+contains the four reference slopes above; it no longer computes its expected
+ratio from the engine's increments. It renders the carrier and the normalized
+carrier-plus-sub paths, isolates the audible sub, applies the same analytic
+phase fit, checks the independent `0oct` reading, and keeps ring-on output at
+FM-off. `odin test tests/dsp` passes all 85 tests. Sub-off no-movement is also
+covered by the matched shared-bank control and the factory endpoint gate below.
+
+### FM + sub shared-bank gate
+
+`compare --fmsub-gate <case>` implements this gate. It walks the bank root
+recursively, sorts paths, keeps source records with **95 ≥ 32** and **45 > 0**,
+excludes unison, sync, ring, enabled modulation-envelope-to-FM, and enabled
+LFO-to-FM records, then deduplicates the complete 99-parameter record before
+applying a case. Selection always uses the unchanged source record. The three
+cases alter both the reference and this engine in the same way:
+
+- `original`: no parameter change;
+- `fm-off`: parameter 45 set to zero;
+- `fm-sub-off`: parameters 45 and 95 set to zero.
+
+The reproducible commands are:
+
+```
+./build/s1probe.exe compare <shared-bank-root> --fmsub-gate original \
+  --no-floor --csv build/fmsub-shared-original.csv --note 48
+./build/s1probe.exe compare <shared-bank-root> --fmsub-gate fm-off \
+  --no-floor --csv build/fmsub-shared-fm-off.csv --note 48
+./build/s1probe.exe compare <shared-bank-root> --fmsub-gate fm-sub-off \
+  --no-floor --csv build/fmsub-shared-fm-sub-off.csv --note 48
+./build/s1probe.exe summarise build/fmsub-shared-original.csv
+./build/s1probe.exe summarise build/fmsub-shared-fm-off.csv
+./build/s1probe.exe summarise build/fmsub-shared-fm-sub-off.csv
+```
+
+Run on the local shared-bank extraction used by the prior sub gate
+(`build/rp3/sub` in the main worktree), selection found **71 unique records out
+of 4284**, with 4211 excluded, 2 duplicates removed, and 0 unreadable. The same
+eight arpeggiator records killed the reference in all three cases, leaving the
+same **63 matched rows** each time. All three have 0 invalid spectra, 0 silent
+renders on either side, 0 non-finite renders, and 0 parameter-load failures.
+
+| case | spectral mean / median | envelope mean / median | `|level|` mean / median | null mean / median | correlation mean / median |
+|---|---:|---:|---:|---:|---:|
+| original | 10.7378 / 9.4623 | 4.7885 / 3.6700 | 4.6664 / 3.2248 | −1.5204 / −0.4016 | 0.3787 / 0.3608 |
+| FM off | 9.2946 / 7.7017 | 4.6363 / 3.7129 | 5.0926 / 3.6865 | −2.9599 / −0.8598 | 0.4778 / 0.4899 |
+| FM + sub off | 9.1117 / 7.2983 | 4.5458 / 3.7260 | 4.9746 / 3.6474 | −3.1398 / −0.5637 | 0.4668 / 0.4072 |
+
+At a 0.05 threshold, original versus FM-off is better/worse on spectral
+**15/35**, envelope **21/25**, absolute level **22/18**, null depth **6/29**,
+and correlation **4/26**. Original versus FM+sub-off is **15/39**, **19/36**,
+**24/31**, **11/32**, and **11/30** in the same order. These controls do not
+choose the displacement law—the direct signed probe does that. They show that
+the gate now measures the intended active feature set while keeping the known
+broader FM and sub errors visible rather than assigning them to this law.
+
+### Factory-bank no-movement gate
+
+The Synth1 factory bank has **123 comparable rows** and parameter 95 is zero in
+all of them, so this FM-to-sub path is unreachable there. Rebuild the two source
+endpoints independently, run the factory compare command against each executable,
+and byte-compare the CSVs:
+
+```powershell
+$before = Join-Path $env:TEMP "quesynth-fmsub-integration"
+$after  = Join-Path $env:TEMP "quesynth-fmsub-head"
+New-Item -ItemType Directory -Force $before, $after | Out-Null
+git archive 8e6c3b4 | tar -xf - -C $before
+git archive HEAD | tar -xf - -C $after
+odin build "$before/tools/s1probe" -out:build/s1probe-fmsub-before.exe
+odin build "$after/tools/s1probe" -out:build/s1probe-fmsub-after.exe
+./build/s1probe-fmsub-before.exe compare ext/synth1/Synth1/soundbank00 --csv build/fmsub-factory-before.csv
+./build/s1probe-fmsub-after.exe compare ext/synth1/Synth1/soundbank00 --csv build/fmsub-factory-after.csv
+cmp build/fmsub-factory-before.csv build/fmsub-factory-after.csv
+```
+
+The independent archive builds produce byte-identical 123-row CSVs with SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`.
+Both read spectral **6.6510 / 5.9766**, envelope **2.0969 / 1.7701**,
+`|level|` mean **1.6528**, null **−6.6582 / −6.0558**, and correlation mean
+**0.7607**. Thus **0 of 123 factory patches moved**.
+
+### Unison stack measurement and gate
+
+The committed fixture and command reproduce the external readings directly:
+
+```powershell
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 16,22,32,64,96,127 --note 84
+```
+
+The fixture is one sine oscillator, an open static filter, no sub, effects or
+modulation, and four unison voices. The command opens a fresh reference instance
+for every render. Its zero-detune RMS ratios for voice counts 1..8 are
+**1.0000 / 1.7123 / 2.5910 / 3.4068 / 3.8003 / 3.8554 / 3.2229 /
+3.6704**. Those agree with the committed phase constants' predicted coherent
+sums within 0.16%, so the layers sum at unity; there is no `1/sqrt(N)` trim.
+
+Parameter 75 was measured over 36 layout-checked rows at notes 84 and 108. Six
+of them, including the factory default and endpoint, are:
+
+| stored 75 | reference outer half-span | fitted half-span | after level / null |
+|--:|--:|--:|--:|
+| 16 | 2.244 cents | 2.243 | −0.216 / −32.24 dB |
+| 22 | 3.239 cents | 3.241 | −0.201 / −32.07 dB |
+| 32 | 5.129 cents | 5.128 | −0.213 / −32.45 dB |
+| 64 | 13.614 cents | 13.615 | −0.209 / −32.27 dB |
+| 96 | 27.662 cents | 27.661 | −0.185 / −32.52 dB |
+| 127 | 49.999 cents | 49.987 | −0.226 / −27.29 dB |
+
+The four layers read the signed `−0.5, −1/6, +1/6, +0.5` layout. The fit across
+all 36 rows is `7.83036*(2^(stored/44.0306)-1)` cents of outer half-span,
+implemented as twice that value before the symmetric layout. Its worst relative
+error is 0.22% and its RMS relative error is 0.066%. These commands produce all
+36 fit rows:
+
+```powershell
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 6,8,12,16,20,22,26,32,40,48,56,64,72,80,88,96,104,112,120,127 --note 84
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 2,3,4,5,6,8,10,12,16,20,24,32,48,64,80,96 --note 108
+```
+
+The old quadratic read only 1.50 cents at the default stored value 22, against
+the reference's 3.239; the linear law before it read 4.331. The fitted law takes
+the default controlled null from **−0.30 dB to −32.07 dB**, so detune no longer
+takes that null to about zero.
+
+The same command checks the other unison controls. With oscillator phase fixed,
+the four-voice RMS ratios at parameter 92 = 0/64/127 are **4.0000 / 2.0079 /
+3.4068**. It prints each directional layer phase at 64 and 127; the cumulative
+projection resolves about 0.0004 turns and revalidates the committed constants,
+while the detuned projection independently ties the first four phases to their
+pitch slots. Parameter 85 at stored 12 and 36 reads the pitch groups **−12/0**
+and **0/+12 semitones**. The fixture at zero detune reads **−0.3293 dB** level
+and **−32.6465 dB** null; with parameter 73 off it reads **−0.1406 dB** and
+**−38.1387 dB**. These are probe outputs, not values copied from the engine.
+
+### Parameter 76: measured OSC1 component field
+
+The original detuned reproduction changes parameter **76** from 0 to 20 while
+75 remains 22. Parameter 76 is not another outer unison spread. It creates
+OSC1's centre plus four signed pairs even when parameter 73 is off:
+
+```text
+d76 = 20 * stored76 / 127 cents
+inner = {-7, -5, -3, -1, 0, +1, +3, +5, +7} * d76
+```
+
+At stored 20 the reference reads **−22.049, −15.761, −9.448, −3.146,
+−0.008, +3.149, +9.466, +15.730 and +22.055 cents**. Stored 127 reads
+**−140.012, −99.993, −59.987, −20.013, −0.010, +19.990, +60.007,
++99.993 and +140.007 cents**. Sweeps at stored 8, 16, 32, 64 and 96 and at
+notes 60, 84 and 108 follow the same signed law. The engine now binds the base
+step directly and renders all nine components inside every outer layer; it no
+longer multiplies parameter 76 by parameter 93's symmetric spread.
+
+Parameter 75 composes outside that field. With two voices, p75=64 and p76=127,
+the probe resolves all **18** Cartesian frequencies, from −153.617 to +153.607
+cents. The p76 voice-count control asks for 9, 18 and 36 peaks at counts 1, 2
+and 4 and gets exactly those counts; the first/last readings are
+−140.012/+140.007, −153.617/+153.607 and −153.622/+153.611 cents. Thus the
+inner field stays nine components per outer layer rather than taking its size
+from parameter 93.
+
+The free phases are signed and are not an additive inner-plus-outer table. The
+probe prints all 36 separately resolved phases at p75=64/p76=127. A second
+controlled field at p75=22/p76=20 reproduces each of the first four outer-layer
+rows within 0.018 turns, which is the matrix used by the engine. Parameter 91 is
+also explicit now: at p76=127, p91=0 prints the non-symmetric OSC1 phases
+`+0.7420,+0.8907,+0.4712,+0.8070,0,+0.1927,+0.5815,+0.3503,+0.8183`
+against the centre, while p91=1 puts every reading within 0.0075 turns of zero.
+
+The sub was isolated rather than copied from OSC1. With a sine sub at `97=1`,
+sub gain 110, one outer voice and oscillator 1 held at its own octave, p76=0
+leaves one component at the sub frequency. At p76=127 the reference reads nine
+sub components at −140/−100/−60/−20/0/+20/+60/+100/+140 cents. Each isolated
+component reads **4402.9--4409.8** against the p76=0 centre at **14703.3**:
+the gain is **0.3 per component**, not `1/9`. Its separately measured free
+phases are
+`+0.3728,+0.4481,+0.2350,+0.3992,0,+0.0920,+0.2871,+0.1751,+0.4059`.
+
+Reproduce the signed values, the p75 Cartesian field, p91 alignment and the
+three voice counts at note 60. The note-108 run also resolves the controlled
+four-voice field; below note 96 its closest pair is narrower than one FFT bin.
+
+```powershell
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe unisonprobe "ext/synth1/Synth1/Synth1 VST64.dll" `
+  --fixture tools/s1probe/fixtures/unison-four.sy1 --values 22 --note 60
+./build/s1probe.exe unisonprobe "ext/synth1/Synth1/Synth1 VST64.dll" `
+  --fixture tools/s1probe/fixtures/unison-four.sy1 --values 22 --note 108
+```
+
+The DSP suite pins the two external signed frequency rows, the public one-voice
+nine-component render, both signed phase sets and fixed alignment, and the
+sub's signed frequencies and 0.3 gain. These tests do not derive their expected
+values from the engine helpers and reject the former symmetric guess.
+
+The one-voice phase values are reported only to the probe's finite precision
+(0.0001 turns); closely spaced multi-voice peaks can fall below one FFT bin.
+The **0.3** value is an isolated one-voice component gain, not a fitted global
+trim for every outer layer. Those phase and component-gain limits stay open
+outside the signed rows and controls above.
+
+The committed p76-on fixture is the stop gate:
+
+```powershell
+./build/s1probe.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" `
+  tools/s1probe/fixtures/unison-four-p76-20.sy1 --limit 1 --note 60
+```
+
+The former engine read **3.26 dB spectral, +3.61 dB level and −0.40 dB null**.
+The measured field reads **3.95 dB spectral, 0.78 dB envelope, +0.35 dB level
+and −16.82 dB null**. Spectral error does not improve on this one fixture, so it
+is not used as a broad pass claim; the load-bearing stop condition is that the
+original detuned fixture no longer nulls near 0 dB.
+
+The frozen shared subset has 48 p76-nonzero patches among the 67 selected
+unison-on files. The same names were used before and after; the unison-off
+control has 40 non-silent reference rows:
+
+| metric, mean / median | before on | after on | before off | after off |
+|---|--:|--:|--:|--:|
+| spectral dB | 9.98 / 8.78 | 8.83 / 7.46 | 10.88 / 9.41 | 9.39 / 8.17 |
+| envelope dB | 4.91 / 4.48 | 5.18 / 4.48 | 4.65 / 3.71 | 5.01 / 3.92 |
+| signed level dB | −8.82 / −7.40 | −9.32 / −7.89 | −8.01 / −7.35 | −8.59 / −7.77 |
+| null dB | −0.22 / −0.09 | −0.36 / −0.13 | −0.33 / −0.19 | −0.72 / −0.25 |
+
+The spectral and null aggregates improve both with unison on and off, as they
+must: parameter 76 is an OSC1 construction and remains active when parameter 73
+is off. Envelope mean and signed level regress and are recorded rather than
+hidden. This does **not** claim all parameter-76 or unison behavior is fixed.
+The p76 phase rows for outer layers 4--7, its outer-layer sub phase composition,
+and its FM and hard-sync interactions remain unmeasured; the engine retains the
+separately measured component and outer offsets in those paths rather than
+fitting a trim to this corpus.
+
+The shared-bank gate keeps the original selection (`95 >= 32` and unison on),
+flattens recursive input into numbered files, clears stale output, works with a
+single selected patch under strict mode, writes `on.csv` and `unison-off.csv`,
+and throws on any non-zero native probe exit:
+
+```powershell
+git archive --format=tar --output=build/unison-before.tar 8e6c3b4
+Remove-Item build/unison-before-src -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force build/unison-before-src | Out-Null
+tar -xf build/unison-before.tar -C build/unison-before-src
+odin build build/unison-before-src/tools/s1probe -out:build/s1probe-before.exe
+odin build tools/s1probe -out:build/s1probe.exe
+$shared = 'path/to/the/frozen/shared-gate'
+pwsh tools/unison-gate.ps1 -SharedBank $shared `
+  -S1Probe build/s1probe-before.exe -Out build/unison-gate-before
+pwsh tools/unison-gate.ps1 -SharedBank $shared `
+  -S1Probe build/s1probe.exe -Out build/unison-gate-after
+```
+
+The reported frozen set has 79 files, 76 distinct parameter-record sets and 67
+patches with unison enabled; those same 67 rows ran before and after. The full
+unison-on aggregate is:
+
+| metric, mean / median | parent `8e6c3b4` | repaired |
+|---|--:|--:|
+| spectral error | 12.3807 / 12.2725 | 9.7101 / 8.4670 |
+| envelope error | 5.2059 / 4.6858 | 4.7638 / 4.1809 |
+| signed level error | −11.0633 / −9.2135 dB | −7.1529 / −6.4072 dB |
+| null depth | −0.4549 / −0.0417 dB | −0.6354 / −0.1138 dB |
+
+Turning parameter 73 off killed the reference on the same 14 patches in both
+runs, so the matched control has 53 rows. On that exact set:
+
+| metric, mean / median | before on | after on | before off | after off |
+|---|--:|--:|--:|--:|
+| spectral | 12.3492 / 12.2725 | 9.6225 / 8.4670 | 13.7553 / 13.5947 | 10.3723 / 9.1411 |
+| envelope | 4.9196 / 4.4619 | 4.6171 / 4.1809 | 4.4425 / 3.5207 | 4.3470 / 3.5705 |
+| signed level dB | −10.0540 / −8.4668 | −6.1726 / −5.5544 | −6.2337 / −6.0828 | −6.6567 / −5.1165 |
+| null dB | −0.4202 / −0.0458 | −0.6174 / −0.1520 | −0.7879 / −0.0839 | −0.9616 / −0.2257 |
+
+The off control changes because parent `8e6c3b4` applied parameter 85 as a
+global transpose even after unison collapsed to one layer. The repaired
+alternating-layer law makes the unison pitch control inert in that state.
+
+The factory no-change gate compared executables built from `8e6c3b4` and this
+repair against all 123 loadable patches. The CSVs are byte-identical, SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`.
+No factory patch contains a 73, 75, 84, 85 or 92 record, which is the actual
+reason this unison change cannot reach the bank. The unchanged summary is
+spectral **6.6510 / 5.9766**, envelope **2.0969 / 1.7701**, absolute level
+**1.6528 dB**, and null **−6.6582 / −6.0558 dB**.
+
+```powershell
+./build/s1probe-before.exe compare ext/synth1/Synth1/soundbank00 --csv build/unison-factory-before.csv
+./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/unison-factory-after.csv
+```
+
+
 ### Still open on the sub
 
 - **Unison**, above, which is now the leading defect on the corpus patches that
   use the sub.
-- **FM does not reach the sub here.** The v1.11 changelog says *"FM modulation
-  also influences the sub-oscillator as well as OSC1"* and *"the sub-oscillator
-  doesn't influence the AM modulation"*. `voice.odin` sets the sub's frequency
-  from the note alone. Not measured.
-- **The 0.36 dB of level the corpus gate gains**, above.
-- **The oscillator mix is `stored/127`, not the displayed percentage.** From the
-  superposition fits the reference's gains are exactly `osc2 = stored/127`:
-  32 → 0.2520, 64 → 0.5040, 96 → 0.7560, against our 0.25, 0.50, 0.76. Up to
-  0.07 dB on every two-oscillator patch, and it now also scales the sub through
-  the `(1−m)` above. [The oscillator
-  mix](#the-oscillator-mix-and-what-the-harmonic-balance-error-really-was)
-  states the law as "equals the displayed percentage", which is the rounding of
-  the real one.
+- **The corpus-level residual**, below: the integrated HEAD pair measures
+  `4.585238 / 4.569491 dB`, delta **+0.015747 dB**. The earlier accepted
+  result was from a stale pre-integration measurement.
+- **The corpus gate excludes FM and related controls**, so it does not add a
+  second FM/sub measurement; the FM-to-sub law and its controls are measured
+  above.
 - **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
-  renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
-  0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
-  across shapes, widths and notes.
-- **Parameter 91's law is `0.5·(v−1)/126`, not `0.5·v/127`.** Measured absolutely
-  at seven settings, exact to 5×10⁻⁶: stored 16 → 0.05952, 32 → 0.12302,
-  48 → 0.18651, 64 → 0.25000, 96 → 0.37698, 127 → 0.50000, against our 0.06299,
-  0.12598, 0.18898, 0.25197, 0.37795, 0.50000 — the two agree at both ends and
-  differ by up to 0.002 turns in between. And when parameter 91 is engaged the
-  reference's oscillator 1 does not sit at the free-run zero but at −0.00125
-  turns, note-independent, for every `v >= 1`. Every `ver=105` factory patch
-  omits parameter 91, so no bank aggregate can move on either; both need the
-  reading and a test. Left out of this change because it is a different law from
-  the free-run offset, and recorded here so it is not lost.
+  renders read a reference fundamental of `0.3099` against our `0.3045` for the
+  saw, `0.1085` against `0.1069` for the pulse at width 29 — 1.3 to 1.8 %,
+  consistent across shapes, widths and notes.
+
+## Amp gain 100 residual (2026-08-24)
+
+The residual is a scale ownership error, not a special case at resonance zero.
+`AMP_GAIN_AMPLITUDE` is absolute: `gainprobe` reads **0.48695** at state 100,
+and the table stores **0.486947**. `FILTER_OUTPUT_GAIN` must therefore be a
+relative resonance-level law whose state zero is one. The old generated curve
+started at **0.982168**. Changing only entry zero to one fixed the neutral
+render but left state one at **0.976835**, creating a false step at the start of
+the knob.
+
+The fixed law divides every measured output-gain entry by its measured neutral
+entry. Its first values are now `1.000000, 0.994570, 0.989136, 0.983702`.
+`qtable` performs that normalisation itself, requires a valid state-zero
+measurement, and writes state zero as exactly one. Thus the generated source and
+the engine agree; this is not a hand edit to generated code.
+
+### Direct reference anchors
+
+The probe patch is oscillator 1 alone, low-pass 12, cutoff 127, flat filter and
+amp envelopes, velocity scaling off, and saturation and effects off. The DLL
+path must be quoted. `filtersaturation` accepts oscillator shape and pulse width
+and prints a linear fundamental amplitude, so all checked-in anchors come from
+the same reproducible command:
+
+```powershell
+odin build tools/s1probe -out:build/s1probe.exe
+$dll = "ext/synth1/Synth1/Synth1 VST64.dll"
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 0 --note 60 --shape 0 --width 64 --values 0 --gains 100
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 1 --note 60 --shape 0 --width 64 --values 0 --gains 100
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 0 --note 60 --shape 1 --width 64 --values 0 --gains 100
+./build/s1probe.exe filtersaturation $dll --type 0 --cutoff 127 --res 0 --note 60 --shape 2 --width 29 --values 0 --gains 100
+```
+
+The repaired sine results are:
+
+| resonance | ref/ours fundamental | ref/ours RMS | ref/ours peak |
+|---:|---:|---:|---:|
+| 0 | 0.48695 / 0.48697 | 0.3348 / 0.3348 | 0.4870 / 0.4870 |
+| 1 | 0.48427 / 0.48432 | 0.3329 / 0.3330 | 0.4843 / 0.4843 |
+
+### Q-level residual outside the neutral anchor
+
+The retained `qlevel` check at cutoff 48 covers states `0,1,32,127` for all
+five bound filter types. Only state zero changes under the level repair; the
+higher states remain byte-identical. The state-zero RMS pairs (before → after)
+are:
+
+```text
+             state 0       state 1       state 32      state 127
+LP12         .01455→.01481 .01452→.01452 .01380→.01380 .09157→.09157
+LP24         .00794→.00809 .00808→.00808 .00916→.00916 .20377→.20377
+HP12         .11010→.11210 .10951→.10951 .09137→.09137 .09994→.09994
+BP12         .01316→.01340 .01314→.01314 .01256→.01256 .11353→.11353
+LPDL         .00794→.00809 .00808→.00808 .00916→.00916 .20377→.20377
+```
+
+The larger mode-specific residuals at cutoff 48 are existing filter-topology
+errors, not regressions from this repair. High-pass and band-pass are not used
+as open-filter level controls because their response is not flat at that note.
+
+Before the whole-law repair, state one read RMS **0.3270** and peak **0.4757**,
+or about **-0.155 dB**, despite state zero matching. The engine's zero-to-one
+drop was about **-0.204 dB** against the reference's **-0.048 dB**. The repaired
+table removes that discontinuity. At state zero, saw and pulse fundamentals are
+reference/ours **0.30994/0.30998** and **0.10846/0.10882** (pulse width 29).
+THD remains unchanged; the sine reads **-66.8 dB** reference and **-67.9 dB**
+ours.
+
+The DSP tests keep these DLL readings as constants and project fresh public
+engine renders. They do not read either generated gain table to form an
+expectation. One test covers the three state-zero waveform fundamentals; a
+second covers sine fundamental and peak at resonance states zero and one.
+
+### Generator fixed point
+
+The generator was run twice from the repaired engine. The second output was
+byte-identical to the checked-in file:
+
+```powershell
+$dll = "ext/synth1/Synth1/Synth1 VST64.dll"
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe qtable $dll build/filter-resonance-1.odin
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe qtable $dll build/filter-resonance-2.odin
+$source = (Get-FileHash src/engine/filter_resonance_table.odin -Algorithm SHA256).Hash
+$regen = (Get-FileHash build/filter-resonance-2.odin -Algorithm SHA256).Hash
+if ($source -ne $regen) { throw "qtable output differs from source" }
+```
+
+Both hashes are
+`cf5fdd63bf9efcb248a16c7e216f8f064966528a539b385064e3d02053582390`.
+Both sweeps resolved all 128 output-gain states and skipped none for clipping.
+
+### Factory-bank gate
+
+The bank evidence uses three pinned source endpoints: integration before this
+work (`8e6c3b47c33b012da213f1bf96289c4d4f822069`), the incomplete state-zero
+change (`afeba3cc6a0e106bf8c891d113d56cecb75506c2`), and the whole-law code
+(`967f4b9f331e1417c394aa50911067c73c5bf531`). Each executable is built from a
+separate `git archive`; no ignored binary can silently stand for both sides:
+
+```powershell
+$before = Join-Path $env:TEMP "quesynth-level-8e6c3b4"
+$faulty = Join-Path $env:TEMP "quesynth-level-afeba3c"
+$after  = Join-Path $env:TEMP "quesynth-level-967f4b9"
+Remove-Item -Recurse -Force $before, $faulty, $after -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $before, $faulty, $after | Out-Null
+git archive 8e6c3b47c33b012da213f1bf96289c4d4f822069 | tar -xf - -C $before
+git archive afeba3cc6a0e106bf8c891d113d56cecb75506c2 | tar -xf - -C $faulty
+git archive 967f4b9f331e1417c394aa50911067c73c5bf531 | tar -xf - -C $after
+odin build "$before/tools/s1probe" -out:build/s1probe-8e6c3b4.exe
+odin build "$faulty/tools/s1probe" -out:build/s1probe-afeba3c.exe
+odin build "$after/tools/s1probe"  -out:build/s1probe-967f4b9.exe
+./build/s1probe-8e6c3b4.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-8e6c3b4.csv
+./build/s1probe-afeba3c.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-afeba3c.csv
+./build/s1probe-967f4b9.exe compare ext/synth1/Synth1/soundbank00 --csv build/level-967f4b9.csv
+./build/s1probe-967f4b9.exe summarise build/level-8e6c3b4.csv
+./build/s1probe-967f4b9.exe summarise build/level-afeba3c.csv
+./build/s1probe-967f4b9.exe summarise build/level-967f4b9.csv
+```
+
+| metric | integration | state-zero only | whole law |
+|---|---:|---:|---:|
+| spectral mean / median | 6.65 / 5.98 | 6.65 / 5.98 | 6.65 / 5.98 dB |
+| envelope mean / median | 2.10 / 1.77 | 2.10 / 1.77 | 2.10 / 1.77 dB |
+| signed level mean / median | +0.18 / +0.06 | +0.22 / +0.10 | +0.33 / +0.22 dB |
+| absolute level mean / median | 1.6528 / 1.1099 | 1.6447 / 1.1099 | 1.6767 / 1.1156 dB |
+| null mean / median | -6.66 / -6.06 | -6.66 / -6.06 | -6.66 / -6.06 dB |
+
+All three runs contain 123 rows, the same five reference crashes (095, 098,
+100, 101, 106), no reference-silent, engine-silent, non-finite, or load-failed
+rows, and the same four engine renders silent by sustain. CSV SHA-256 values,
+in table order, are:
+
+- `49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`
+- `d3422df7a33c635cc4fbf8f1efa2579672975036eab196c99f879d6d073ce66d`
+- `c88f367e01e5893fd26f605f010cf7598fe32d213938d0c3a9811fc4ddb4987b`
+
+The state-zero-only commit moved 30 patches. Eighteen improved in absolute level
+error; these 12 regressed: **005, 006, 010, 012, 013, 014, 018, 034, 075, 103,
+109, 118**. The whole-law repair retains those measured state-zero results and
+moves the other 93 patches. Of those, 34 improve: **001, 017, 020, 026, 027,
+028, 030, 032, 037, 049, 050, 055, 059, 060, 063, 067, 074, 076, 079, 081,
+082, 083, 086, 087, 093, 094, 102, 104, 105, 110, 119, 120, 122, 128**. The
+other 59 regress in absolute level error: **007, 008, 015, 016, 019, 021, 022,
+023, 024, 025, 029, 031, 035, 036, 038, 039, 040, 041, 042, 043, 044, 045,
+046, 047, 048, 051, 053, 054, 056, 057, 058, 061, 062, 064, 065, 066, 068,
+069, 070, 071, 072, 073, 077, 084, 088, 091, 092, 096, 099, 107, 108, 112,
+115, 116, 117, 121, 123, 124, 125**. Relative to integration, the final count
+is therefore 52 improved and 71 regressed, with none unchanged.
+
+Those regressions are expected and bounded, not omitted evidence. The measured
+law raises every resonance state by `1 / 0.982168`, or **+0.156284 dB**. A patch
+that was already loud must worsen in absolute level error even though this
+specific amp-gain ownership error is fixed; the factory bank also contains
+other level defects and was not used to fit this constant. Every row moves by
+0.1562 or 0.1563 dB except 123, whose peak is already about 1.88 and enters the
+measured output limiter; it moves by 0.1492 dB and its scale-sensitive envelope
+score changes by 0.0367 dB. Spectral, envelope, and null aggregates remain
+unchanged at the report's precision. No crash, silence, or finite-sample status
+regresses.
+### The integrated corpus residual remains open (2026-08-25)
+
+The earlier accepted result is stale. The integrated HEAD was measured first,
+using the pinned reference DLL and index:
+
+- HEAD: `8ad672d3dfeb1eda9210cf8501a0b53b53897a9d`
+- reference SHA-256: `51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569ba22f32c7`
+- index SHA-256: `bf3227a7f5b3dfd7095283ecdbf1962e4dc6738a63b67b6bbdc976edbc8b72e2`
+- 97 identities, 92 matched rows, and the same crashes: `s022`, `s034`,
+  `s040`, `s053`, `s087`
+- base CSV SHA-256: on `0ffb2b7a140c2734db67bda5408a9c0658a98fb82312c1fed05e49f0bb04a6c8`,
+  off `c79ef79d39ea956b0e0112706e7963703aec13e51a2529e961f95f1882940c65`
+
+The exact measurement is:
+
+| pair | on MAE | off MAE | delta |
+|---|---:|---:|---:|
+| integrated HEAD base | 4.585238 | 4.569491 | **+0.015747 dB** |
+
+The earlier `+0.280227 dB` is superseded, not unexplained. It was measured on
+the pre-merge line at `ab9f679`, before the level, FM, unison and parameter-76
+work was integrated. The stored pre-parameter-76 integration CSVs
+(`build/pre76-on.csv`, `build/pre76-off.csv`) read `4.699363 / 4.486818`, or
+`+0.212545 dB`, on the same 92 rows. Integration moved the figure; the cohort
+did not change and nothing was refitted.
+
+The MAE delta hides large row motion: mean absolute change in the gate metric
+is `1.1016 dB`, mean absolute raw signed-error movement is `1.265414 dB`, and
+the signed on-minus-off mean is `+0.127855 dB` (`30 / 38 / 24` better, worse,
+same at a 0.05 dB threshold). These are distinct metrics; neither is a trim
+target.
+
+The six exact-variant controls are matched evidence, not causal proof. Their
+labels are the parameter interventions, not the old swapped labels:
+
+| control | on MAE | off MAE | delta | gate movement |
+|---|---:|---:|---:|---:|
+| EQ flat | 4.186843 | 4.111374 | +0.075470 | 0.8907 |
+| delay off | 3.808040 | 3.822808 | −0.014767 | 1.0436 |
+| chorus off (`p66=0`) | 4.547145 | 4.453549 | +0.093596 | 1.0214 |
+| effect off (`p77=0`) | 2.891026 | 2.958730 | −0.067704 | 0.8142 |
+| post off | 1.755282 | 1.763351 | −0.008070 | 0.4936 |
+| filter open | 4.215401 | 4.068007 | +0.147395 | 0.8504 |
+
+`post-off` changes five settings and still leaves mixed row movement. The
+single-stage controls do not isolate a law. There is, however, a useful
+parameter-23 lead on the 92 matched base rows: `p23=0` has `n=24`, on/off MAE
+`3.860583 / 4.068900 dB`, delta `-0.208317 dB`; `p23>0` has `n=68`, on/off MAE
+`4.840999 / 4.746171 dB`, delta `+0.094828 dB`. This split motivated the direct
+saturation experiment below; it is a lead, not row-level causal proof. The
+historical 586-row reference-only sweep was temporary and untracked, so its
+executable source is not reviewable and it is not causal evidence.
+
+The licensed 16,698-file source corpus is not present in this checkout, so the
+original selection cannot currently be rerun. The pinned index and all 14
+generated variant directories were hash-verified. With the source corpus
+available, the reproducible gate is:
+
+```powershell
+node tools/corpus-level.mjs prepare build/tmp/corpus build/corpus-level-97
+node tools/corpus-level.mjs verify-index build/corpus-level-97-index.csv
+$reference = "ext/synth1/Synth1/Synth1 VST64.dll"
+odin build tools/s1probe -out:build/s1probe-final-head.exe
+$variants = @("on", "off", "on-eq-flat", "off-eq-flat", "on-delay-off",
+  "off-delay-off", "on-chorus-off", "off-chorus-off", "on-effect-off",
+  "off-effect-off", "on-post-off", "off-post-off", "on-filter-open",
+  "off-filter-open")
+foreach ($variant in $variants) {
+  ./build/s1probe-final-head.exe compare $reference "build/corpus-level-97-$variant" --no-floor `
+    --csv "build/final-head-corpus-$variant.csv"
+}
+node tools/corpus-level.mjs analyse build/final-head-corpus-on.csv `
+  build/final-head-corpus-off.csv build/corpus-level-97-index.csv
+```
+
+### Tracked substage factorial
+
+`substageprobe` is the decisive matched reference/engine measurement. It is
+implemented in `tools/s1probe/substageprobe.odin`, registered in
+`tools/s1probe/main.odin`, and enforced by `odin test tools/s1probe`. Every
+cell loads a fresh reference instance and uses the comparator's 48 kHz, 512
+frame blocks, MIDI velocity 100, and 1.5 second hold. The fixed patch has
+OSC1 sine, OSC2 triangle at stored `p2=68` (+4 semitones), sub sine at `p97=1`,
+`p76=0`, open LP12, flat EQ, effects off, fixed phase, and gain 64. It measures
+mid-channel Hann-projected amplitudes at `f0/2`, `f0`, and OSC2's `f2`, plus
+THD, RMS, peak, parameter mismatches, and non-finite samples.
+
+The corrected default is the continuous stored-95 sweep
+`0,16,32,48,64,80,96,112,127`, not the former two selected nonzero points.
+Metric calculation preserves the render/mismatch `row_ok` result. Ordinary
+amplitude observables must be above `1e-5` of each render's own peak (-100 dB)
+and have explicit CSV validity columns; therefore noise-only bins are not
+printed as measurements. The separate leakage control deliberately measures
+lower, relative to an audible isolated OSC2 fundamental, at every requested
+note and at the selected gain.
+
+```powershell
+odin test tools/s1probe
+odin build tools/s1probe -out:build/s1probe-substage-corrected.exe
+./build/s1probe-substage-corrected.exe substageprobe $reference `
+  --notes 60 --mix 0,96 --saturation 0,64 --gain 64 `
+  --csv build/substage-corrected-note60.csv
+./build/s1probe-substage-corrected.exe substageprobe $reference `
+  --notes 48,72 --mix 0,96 --saturation 0,64 --gain 64 `
+  --csv build/substage-corrected-notes48-72.csv
+```
+
+The two CSVs are the reproducible pins:
+
+- note 60 CSV: `6390a29d1aff3a87d25bade9c616c307b928a2dc5aa8698337dcb6b809424ba6`;
+- notes 48 and 72 CSV: `328209975fd6509f4235ec18a363d57c09077e3254a8b208052df3bb10112aaa`.
+
+Both reproduce byte for byte from a fresh `odin build tools/s1probe` at this
+commit against the pinned reference DLL
+`51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569ba22f32c7`. The probe
+executable itself is not pinned: its PE header carries a link timestamp, so two
+builds of identical source differ in hash while their CSV output does not. Only
+hashes that a reader can regenerate are recorded here.
+
+The signed formula is `E = 20 log10(ours / reference)`, so positive means
+ours is high. `R` is the sub/carrier ratio residual. All 48 valid `R` cells at
+`p23=0` (eight nonzero p95 values, two mixes, three notes) are negative, from
+`-0.003111` through `-0.000199 dB`; the former “no stable sign” statement was
+wrong. Their magnitude still passes the +/-0.10 dB sub-coefficient band.
+
+`C` is the carrier on/off denominator residual. The table reports every
+nonzero-p95 C condition. Each cell gives note 60 exactly followed by the full
+notes 48/60/72 range in brackets:
+
+| p95 | mix | C, p23=0 dB | C, p23=64 dB |
+|---:|---:|---:|---:|
+| 16 | 0 | -0.000001 [-0.000002,+0.000006] | +0.013470 [+0.013380,+0.013840] |
+| 16 | 96 | -0.000002 [-0.000002,+0.000006] | +0.060752 [+0.060394,+0.060752] |
+| 32 | 0 | -0.000003 [-0.000004,+0.000012] | -0.209952 [-0.210111,-0.209254] |
+| 32 | 96 | -0.000003 [-0.000004,+0.000012] | +0.033038 [+0.032392,+0.033038] |
+| 48 | 0 | -0.000004 [-0.000006,+0.000018] | +0.182076 [+0.181914,+0.182938] |
+| 48 | 96 | -0.000004 [-0.000006,+0.000018] | -0.064619 [-0.065569,-0.064619] |
+| 64 | 0 | -0.000006 [-0.000008,+0.000024] | +0.741073 [+0.740953,+0.741974] |
+| 64 | 96 | -0.000006 [-0.000008,+0.000024] | -0.192038 [-0.193143,-0.191615] |
+| 80 | 0 | -0.000007 [-0.000010,+0.000030] | +0.901385 [+0.901318,+0.902298] |
+| 80 | 96 | -0.000008 [-0.000010,+0.000030] | -0.290752 [-0.292044,-0.289019] |
+| 96 | 0 | -0.000009 [-0.000012,+0.000036] | +0.883081 [+0.883061,+0.884008] |
+| 96 | 96 | -0.000009 [-0.000012,+0.000036] | -0.295471 [-0.296846,-0.292351] |
+| 112 | 0 | -0.000010 [-0.000014,+0.000042] | +0.807426 [+0.807426,+0.808368] |
+| 112 | 96 | -0.000010 [-0.000014,+0.000042] | -0.208121 [-0.209138,-0.203101] |
+| 127 | 0 | -0.000012 [-0.000016,+0.000047] | +0.722489 [+0.722489,+0.723447] |
+| 127 | 96 | -0.000012 [-0.000016,+0.000047] | -0.080129 [-0.081266,-0.074223] |
+
+Thus only the `p23=0` denominator control passes +/-0.05 dB. Many `p23=64`
+cells fail it; omitting them was selective reporting.
+
+### Continuous saturation interaction and candidate law
+
+At note 60, mix zero, the p23=64 raw `E_carrier` curve for p95
+`0,16,32,48,64,80,96,112,127` is respectively `+0.172305, +0.185775,
+-0.037647, +0.354381, +0.913378, +1.073691, +1.055387, +0.979731,
++0.894794 dB`. After the matched p23=0 and p95=0 controls, `I_carrier` at the
+eight nonzero points is `+0.013471, -0.209949, +0.182080, +0.741078,
++0.901393, +0.883090, +0.807436, +0.722500 dB`; `I_R` is `+0.182809,
++0.480515, -0.123956, -0.759514, -0.893852, -0.845904, -0.750454,
+-0.654299 dB`. Notes 48 and 72 reproduce the curve: across all notes and both
+mixes, maximum magnitudes are `0.902308 dB` for `I_carrier` and `0.894095 dB`
+for `I_R`. This is one note-stable, drive-dependent curve with a zero crossing,
+not absence of a stable law. The old same-sign test at only p95 32 and 96
+straddled that curve and was mis-specified.
+
+Saturation engagement remains valid: reference THD movement at p95=0, mix=0
+is `+90.444556`, `+106.438957`, and `+119.892771 dB` at notes 48, 60, and 72;
+ours is `+89.071423`, `+104.574490`, and `+106.170373 dB`. At the p5=127
+endpoint, OSC2 and RMS on-minus-off are `+0.000000 dB` in both the reference
+and engine at all three notes. Leakage is checked at all three notes and gain
+64 (worst reported f0/f2 is below -119 dB); every factorial row has zero
+mismatches, zero non-finite samples, and peak below 0.8.
+
+The same run also breaks the single-tone saturation transfer. At `p95=0`,
+mix 96 and `p23=64` the reference THD is `-17.032`, `-17.175` and
+`-17.080 dB` at notes 60, 48 and 72 while this engine reads `-36.147`,
+`-36.470` and `-36.172 dB`, and the matched `p23=0` control has no comparable
+gap. The single-tone cell of the same run still lands on the tabulated
+-13.9 dB knot. This is recorded with the transfer itself under "Filter
+saturation, measured and implemented" above; it is the direct waveform-domain
+statement of the interaction curve measured here.
+
+Matched reference waveform analysis names a candidate transfer for p23:
+
+\[
+y = \frac{x(1+d)}{1+d|x|}
+\]
+
+This is a peak-normalised softsign, rather than the currently implemented
+peak-normalised tanh derived from one sine. At stored p23=64 the direct
+reference fit gives `d=2.831889409` and about `-68.9 dB` waveform residual.
+A temporary implementation using reference-fitted softsign drive knots reduced
+the full three-note direct interaction to maximum `|I_carrier|=0.007389 dB`
+and `|I_R|=0.007277 dB`; its probe CSV SHA-256 was
+`425822b214e87ece46c44efaa96301d28c13a30b63853dc87d70bb43d689bb06`.
+
+The waveform fitter, fitted knot table, and temporary mutation were exploratory
+build artifacts and are not tracked. They are a bounded lead, not accepted
+proof or a basis for an engine change. The tracked, pinned evidence is the
+two-tone interaction curve above; that measured law remains open.
+
+The candidate was nevertheless rejected by the required 92-row closure gate:
+
+| engine | on MAE | off MAE | delta |
+|---|---:|---:|---:|
+| integrated baseline | 4.585238 | 4.569491 | +0.015747 dB |
+| temporary softsign | 4.590173 | 4.499079 | +0.091093 dB |
+
+The candidate on/off CSV SHA-256 values were
+`548ab76a1df2a2dff5b9dd1998df4744e8b95876eecc84d59e06186be0152167`
+and `993f9df5727e23c0d7795a5f54b07439370b95b76e50c0cbcd400144870d31a2`.
+Coverage remained 92 rows with the same five crashes. All 24 p23=0 rows were
+byte-identical. Among 68 p23>0 rows, absolute error improved/worsened `42/26`
+for sub-on and `46/22` for sub-off. Most importantly, sub-on worsened from its
+baseline and remained above sub-off, so the repair acceptance gate failed.
+
+The full factory candidate also failed the row-prediction gate even though its
+aggregate absolute level MAE improved from `1.676711` to `1.637975 dB`: only
+five of 123 matched rows changed, with two better and three worse, and no
+independent prediction supplied every changed row's error direction. Its CSV
+SHA-256 was `d6b82008d2fc2de72dbc83bb2fa7b86718a5d1ebfe55358b019777810fdc3447`;
+the same five reference crashes remained. Aggregate improvement cannot replace
+the required row-level prediction.
+
+The temporary DSP/engine mutation was reverted. No trim was fitted, and this
+repair changes no DSP or engine file. The peak-normalised softsign remains a
+named two-tone candidate, but its implementation is blocked by the corpus and
+factory gates.
+
+**This is not a pass.** The preregistered stop condition for leaving the engine
+unchanged was that no stable signed `R`, `C` or `I` remains. `R` passes its
+band. `C` and `I` do not: `C` at `p23=64` reaches `+0.901` dB against a
+±0.05 dB band, `I_carrier` reaches `0.902` dB and `I_R` reaches `0.894` dB
+against a ±0.10 dB band, raw `E_carrier` reaches `+1.074` dB, and all of them
+hold their sign across notes 48, 60 and 72 to within about 0.003 dB. A
+note-stable, drive-dependent saturation law of up to roughly 1.07 dB is
+therefore measured, named, and left open. The engine is unchanged because the
+only candidate replacement failed the corpus and factory row gates, not because
+the residual was shown to be absent.
+
+### Full factory baseline
+
+The integrated executable was run against all 128 factory patches. The CSV
+SHA-256 is `dd13c651be53eaaa1a6496f701cccb9f825b22fc960bc738b8759168285b7319`.
+There are 123 matched rows and the same five reference crashes (`095`, `098`,
+`100`, `101`, `106`), with zero parameter mismatches, zero engine non-finite
+rows, and four engine-silent-by-sustain rows. Absolute level MAE is
+`1.676711 dB`; signed level mean/median are `+0.33 / +0.22 dB`. No factory
+patch has nonzero parameter 95, so this bank is regression evidence only and
+cannot prove the sub law.

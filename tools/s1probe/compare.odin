@@ -20,6 +20,9 @@
 //     --self          control run: compare the reference against itself
 //     --no-floor      skip the second reference render
 //     --verbose       full per-patch detail instead of one line each
+//     --fmsub-gate <case> recursively select and deduplicate unconfounded
+//                     FM + sub records, then render original, fm-off, or
+//                     fm-sub-off on both sides
 //     --isolate       render in a child process even for a single patch; this
 //                     is already the default for a run of more than one, so a
 //                     patch that crashes the reference costs one row, not the run
@@ -33,6 +36,8 @@
 // itself and should report zero on every metric; anything else means the
 // harness is measuring itself rather than the engine.
 package s1probe
+import "core:crypto/sha2"
+import "core:encoding/hex"
 
 import "core:fmt"
 import "core:math"
@@ -87,6 +92,7 @@ COMPARE_VELOCITY :: f32(100.0) / 127.0
 
 Row :: struct {
 	name:             string,
+	patch_sha256:     string,
 	c:                Comparison,
 	// The reference compared against a second render of itself, through the
 	// identical path. This is the measurement's own noise floor, and it is
@@ -103,6 +109,19 @@ Row :: struct {
 	floor:            Comparison,
 	has_floor:        bool,
 	param_mismatches: int,
+}
+
+sha256_hex :: proc(data: []byte) -> string {
+	ctx: sha2.Context_256
+	sha2.init_256(&ctx)
+	sha2.update(&ctx, data)
+	digest: [sha2.DIGEST_SIZE_256]byte
+	sha2.final(&ctx, digest[:])
+	encoded, err := hex.encode(digest[:])
+	if err != nil { return "" }
+	result := strings.clone(string(encoded))
+	delete(encoded)
+	return result
 }
 
 // Every reference render gets a freshly loaded plugin, and the library is
@@ -175,14 +194,15 @@ close_reference :: proc(p: ^Plugin) {
 // no longer the only thing standing between a bank run and a dead process.
 g_instantiations: int
 
-// Push a parsed patch into the reference through its own state chunk, and
-// report how many parameters did not read back as expected.
+// Push all 99 effective values into the reference through its own state chunk,
+// and report how many did not read back as expected. This includes defaults for
+// records absent from the source: those defaults are part of the rendered state
+// too, and skipping them would let an unverified value affect the comparison.
 //
 // This is the same path `verify` uses and for the same reason: setParameter
 // saturates at 1.0 while the loader genuinely reports values above it. The
 // read-back count is carried into the comparison so an audio difference caused
-// by the patch not loading is never mistaken for an audio difference caused by
-// the engine.
+// by the patch not loading is never mistaken for an engine difference.
 load_reference_patch :: proc(p: ^Plugin, parsed: ^cpatch.Patch, pristine, work: []byte) -> int {
 	e := p.eff
 	copy(work, pristine)
@@ -193,9 +213,6 @@ load_reference_patch :: proc(p: ^Plugin, parsed: ^cpatch.Patch, pristine, work: 
 
 	mismatches := 0
 	for i in 0 ..< cpatch.PARAMETER_COUNT {
-		if !parsed.present[i] {
-			continue
-		}
 		expected, resolved := cpatch.parameter_norm(i, parsed.values[i])
 		if !resolved || expected != e.get_parameter(e, i32(i)) {
 			mismatches += 1
@@ -472,6 +489,7 @@ print_summary :: proc(rows: []Row) {
 	envelope: [dynamic]f64;   defer delete(envelope)
 	level: [dynamic]f64;      defer delete(level)
 	nulls: [dynamic]f64;      defer delete(nulls)
+	correlation: [dynamic]f64; defer delete(correlation)
 	floor_spectral: [dynamic]f64; defer delete(floor_spectral)
 	floor_envelope: [dynamic]f64; defer delete(floor_envelope)
 	floor_level: [dynamic]f64;    defer delete(floor_level)
@@ -521,6 +539,7 @@ print_summary :: proc(rows: []Row) {
 		append(&envelope, c.envelope_db)
 		append(&level, c.level_db)
 		append(&nulls, c.null_db)
+		append(&correlation, c.correlation)
 		append(&width_delta, c.our_width - c.ref_width)
 
 		if row.has_floor && !row.floor.ref_silent && !row.floor.our_silent && row.floor.spectral_valid {
@@ -581,6 +600,8 @@ print_summary :: proc(rows: []Row) {
 		sdec2(mean(level[:]), 6), sdec2(median(level[:]), 6))
 	fmt.printfln("null depth       mean %v dB   median %v dB   (0 = no cancellation)",
 		dec2(mean(nulls[:]), 6), dec2(median(nulls[:]), 6))
+	fmt.printfln("correlation     mean %v      median %v   (1 = identical waveform)",
+		dec4(mean(correlation[:]), 6), dec4(median(correlation[:]), 6))
 	fmt.println()
 
 	if len(floor_spectral) > 0 {
@@ -667,7 +688,7 @@ print_summary :: proc(rows: []Row) {
 	fmt.println("=========================================================================")
 }
 
-CSV_HEADER :: "patch,spectral_valid,spectral_db,spectral_worst_db,spectral_worst_hz,envelope_db,level_db,null_db,correlation,lag,ref_centroid_hz,our_centroid_hz,ref_f0_hz,our_f0_hz,pitch_cents,pitch_confidence,ref_attack_ms,our_attack_ms,ref_release_ms,our_release_ms,ref_width,our_width,ref_peak,our_peak,ref_steady_rms,our_steady_rms,param_mismatches,ref_silent,our_silent,has_floor,floor_spectral_valid,floor_spectral_db,floor_envelope_db,floor_level_db"
+CSV_HEADER :: "patch,patch_sha256,spectral_valid,spectral_db,spectral_worst_db,spectral_worst_hz,envelope_db,level_db,null_db,correlation,lag,ref_centroid_hz,our_centroid_hz,ref_f0_hz,our_f0_hz,pitch_cents,pitch_confidence,ref_attack_ms,our_attack_ms,ref_release_ms,our_release_ms,ref_width,our_width,ref_peak,our_peak,ref_steady_rms,our_steady_rms,param_mismatches,ref_silent,our_silent,has_floor,floor_spectral_valid,floor_spectral_db,floor_envelope_db,floor_level_db"
 
 skip_patch :: proc(list, name: string) -> bool {
 	if list == "" {
@@ -715,6 +736,18 @@ csv_append_row :: proc(path: string, row: Row) -> bool {
 	return write_err == nil
 }
 
+csv_append_crash :: proc(path, name, patch_sha256: string) -> bool {
+	row := Row {
+		name = strings.clone(name),
+		patch_sha256 = strings.clone(patch_sha256),
+		c = {ref_silent = true},
+	}
+	ok := csv_append_row(path, row)
+	delete(row.name)
+	delete(row.patch_sha256)
+	return ok
+}
+
 csv_row_text :: proc(row: Row) -> string {
 	b := strings.builder_make()
 	{
@@ -722,11 +755,11 @@ csv_row_text :: proc(row: Row) -> string {
 		c := r.c
 		fmt.sbprintf(
 			&b,
-			"%v,%v,%.4f,%.4f,%.1f,%.4f,%.4f,%.4f,%.6f,%v," +
+			"%v,%v,%v,%.4f,%.4f,%.1f,%.4f,%.4f,%.4f,%.6f,%v," +
 			"%.1f,%.1f,%.3f,%.3f,%.2f,%.4f,%.1f,%.1f,%.1f,%.1f," +
 			"%.4f,%.4f,%.6f,%.6f,%.8f,%.8f,%v,%v,%v,%v," +
 			"%v,%.4f,%.4f,%.4f\n",
-			r.name, c.spectral_valid, c.spectral_db, c.spectral_worst_db, c.spectral_worst_hz,
+			r.name, r.patch_sha256, c.spectral_valid, c.spectral_db, c.spectral_worst_db, c.spectral_worst_hz,
 			c.envelope_db, c.level_db, c.null_db, c.correlation, c.best_lag,
 			c.ref_centroid_hz, c.our_centroid_hz, c.ref_fundamental_hz, c.our_fundamental_hz,
 			c.pitch_cents, c.pitch_confidence,
@@ -784,6 +817,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 	}
 
 	i_name := column(headers, "patch")
+	i_hash := column(headers, "patch_sha256")
 	i_sv := column(headers, "spectral_valid")
 	i_sd := column(headers, "spectral_db")
 	i_swd := column(headers, "spectral_worst_db")
@@ -791,6 +825,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 	i_env := column(headers, "envelope_db")
 	i_lvl := column(headers, "level_db")
 	i_null := column(headers, "null_db")
+	i_corr := column(headers, "correlation")
 	i_rc := column(headers, "ref_centroid_hz")
 	i_oc := column(headers, "our_centroid_hz")
 	i_rf := column(headers, "ref_f0_hz")
@@ -825,6 +860,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 
 		r: Row
 		r.name = strings.clone(fields[i_name])
+		if i_hash >= 0 && i_hash < len(fields) { r.patch_sha256 = strings.clone(fields[i_hash]) }
 		r.c.spectral_valid = flag(fields, i_sv)
 		r.c.spectral_db = num(fields, i_sd)
 		r.c.spectral_worst_db = num(fields, i_swd)
@@ -832,6 +868,7 @@ read_csv :: proc(path: string) -> (rows: [dynamic]Row, ok: bool) {
 		r.c.envelope_db = num(fields, i_env)
 		r.c.level_db = num(fields, i_lvl)
 		r.c.null_db = num(fields, i_null)
+		r.c.correlation = num(fields, i_corr)
 		r.c.ref_centroid_hz = num(fields, i_rc)
 		r.c.our_centroid_hz = num(fields, i_oc)
 		r.c.ref_fundamental_hz = num(fields, i_rf)
@@ -866,11 +903,94 @@ cmd_summarise :: proc(path: string) {
 	defer {
 		for r in rows {
 			delete(r.name)
+			delete(r.patch_sha256)
 		}
 		delete(rows)
 	}
 	fmt.printfln("summarising %v patch(es) from %v", len(rows), path)
 	print_summary(rows[:])
+}
+
+FMSUB_CASE_ORIGINAL :: "original"
+FMSUB_CASE_FM_OFF :: "fm-off"
+FMSUB_CASE_ALL_OFF :: "fm-sub-off"
+
+fmsub_gate_case_valid :: proc(value: string) -> bool {
+	return value == FMSUB_CASE_ORIGINAL || value == FMSUB_CASE_FM_OFF || value == FMSUB_CASE_ALL_OFF
+}
+
+fmsub_gate_selected :: proc(parsed: ^cpatch.Patch) -> bool {
+	if parsed.values[95] < 32 || parsed.values[45] <= 0 {return false}
+	p := sengine.bind_patch(parsed^)
+	if p.unison_voices > 1 || p.osc_sync || p.osc_ring {return false}
+	if p.mod_env_on && p.mod_env_dest == .Fm {return false}
+	for lfo in p.lfo {
+		if lfo.enabled && lfo.destination == .Fm {return false}
+	}
+	return true
+}
+
+fmsub_same_record :: proc(a, b: ^cpatch.Patch) -> bool {
+	for i in 0 ..< cpatch.PARAMETER_COUNT {
+		if a.values[i] != b.values[i] {return false}
+	}
+	return true
+}
+
+fmsub_filter_paths :: proc(paths: ^[dynamic]string) -> (excluded, duplicates, malformed: int) {
+	records: [dynamic]cpatch.Patch
+	defer delete(records)
+	write := 0
+	for i in 0 ..< len(paths^) {
+		path := paths^[i]
+		data, read_err := os.read_entire_file(path, context.allocator)
+		if read_err != nil {
+			delete(path)
+			malformed += 1
+			continue
+		}
+		parsed, parse_err := cpatch.parse_sy1(data)
+		if parse_err != .None {
+			delete(data, context.allocator)
+			delete(path)
+			malformed += 1
+			continue
+		}
+		selected := fmsub_gate_selected(&parsed)
+		duplicate := false
+		if selected {
+			for &prior in records {
+				if fmsub_same_record(&parsed, &prior) {
+					duplicate = true
+					break
+				}
+			}
+		}
+		delete(data, context.allocator)
+		if !selected || duplicate {
+			delete(path)
+			if duplicate {duplicates += 1} else {excluded += 1}
+			continue
+		}
+		append(&records, parsed)
+		paths^[write] = path
+		write += 1
+	}
+	resize(paths, write)
+	return
+}
+
+fmsub_apply_case :: proc(parsed: ^cpatch.Patch, which: string) {
+	switch which {
+	case FMSUB_CASE_FM_OFF:
+		parsed.values[45] = 0
+		parsed.present[45] = true
+	case FMSUB_CASE_ALL_OFF:
+		parsed.values[45] = 0
+		parsed.values[95] = 0
+		parsed.present[45] = true
+		parsed.present[95] = true
+	}
 }
 
 // ------------------------------------------------------------------- command
@@ -910,6 +1030,9 @@ Compare_Options :: struct {
 	// in every design decision. Without it there is no way to tell a 16 dB
 	// spectral error caused by the engine from one caused by the measurement.
 	self:    bool,
+	// Shared-bank FM-to-sub gate. Selection and deduplication use the source
+	// record; this chooses the matched transform rendered on both sides.
+	fmsub_case: string,
 }
 
 cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
@@ -961,6 +1084,18 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 	if strings.has_suffix(strings.to_lower(target), ".sy1") {
 		append(&paths, strings.clone(target))
+	} else if opt.fmsub_case != "" {
+		walker := os.walker_create(target)
+		defer os.walker_destroy(&walker)
+		for info in os.walker_walk(&walker) {
+			if strings.has_suffix(strings.to_lower(info.name), ".sy1") {
+				append(&paths, strings.clone(info.fullpath))
+			}
+		}
+		if path, walk_err := os.walker_error(&walker); walk_err != nil {
+			fmt.eprintfln("compare: cannot walk %q at %q: %v", target, path, walk_err)
+			os.exit(1)
+		}
 	} else {
 		entries, dir_err := os.read_directory_by_path(target, -1, context.allocator)
 		if dir_err != nil {
@@ -969,11 +1104,19 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 		}
 		defer os.file_info_slice_delete(entries, context.allocator)
 		for info in entries {
-			if strings.has_suffix(info.name, ".sy1") {
+			if strings.has_suffix(strings.to_lower(info.name), ".sy1") {
 				append(&paths, strings.clone(info.fullpath))
 			}
 		}
-		slice.sort(paths[:])
+	}
+	slice.sort(paths[:])
+	if opt.fmsub_case != "" {
+		before := len(paths)
+		excluded, duplicates, malformed := fmsub_filter_paths(&paths)
+		if !opt.child {
+			fmt.printfln("FM-to-sub %v gate: %v unique records selected from %v (%v excluded, %v duplicates, %v unreadable)",
+				opt.fmsub_case, len(paths), before, excluded, duplicates, malformed)
+		}
 	}
 
 	if len(paths) == 0 {
@@ -1052,6 +1195,14 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 			if code != 0 {
 				fmt.printfln("%-16v %v", name, exit_reason(code))
 				append(&crashed, name)
+				if opt.csv != "" {
+					data, err := os.read_entire_file(path, context.allocator)
+					if err == nil {
+						patch_hash := sha256_hex(data)
+						csv_append_crash(opt.csv, name, patch_hash)
+						delete(data, context.allocator)
+					}
+				}
 			}
 		}
 
@@ -1094,6 +1245,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 	defer {
 		for r in rows {
 			delete(r.name)
+			delete(r.patch_sha256)
 		}
 		delete(rows)
 	}
@@ -1103,8 +1255,10 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 	for path, patch_index in paths {
 		name := path
-		if idx := strings.last_index_any(path, "/\\"); idx >= 0 {
-			name = path[idx + 1:]
+		if opt.fmsub_case == "" {
+			if idx := strings.last_index_any(path, "/\\"); idx >= 0 {
+				name = path[idx + 1:]
+			}
 		}
 
 		if skip_patch(opt.skip, name) {
@@ -1117,6 +1271,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 			fmt.eprintfln("%v: cannot read: %v", name, read_err)
 			continue
 		}
+		patch_sha256 := sha256_hex(data)
 		// parse_sy1 borrows out of `data`, so the buffer has to outlive the patch.
 		parsed, parse_err := cpatch.parse_sy1(data)
 		if parse_err != .None {
@@ -1124,6 +1279,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 			delete(data, context.allocator)
 			continue
 		}
+		if opt.fmsub_case != "" {fmsub_apply_case(&parsed, opt.fmsub_case)}
 
 		ref_audio, mismatches, ref_ok := render_reference_fresh(dll, &parsed, pristine, work, opt.note)
 		if !ref_ok {
@@ -1171,6 +1327,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 
 		row := Row {
 			name             = strings.clone(name),
+			patch_sha256     = patch_sha256,
 			c                = c,
 			param_mismatches = mismatches,
 		}
@@ -1323,6 +1480,10 @@ parse_compare_args :: proc(args: []string) -> (target: string, opt: Compare_Opti
 		case "--skip":
 			if i + 1 >= len(args) {return "", opt, false}
 			opt.skip = args[i + 1]
+			i += 2
+		case "--fmsub-gate":
+			if i + 1 >= len(args) || !fmsub_gate_case_valid(args[i + 1]) {return "", opt, false}
+			opt.fmsub_case = args[i + 1]
 			i += 2
 		case:
 			if target != "" {

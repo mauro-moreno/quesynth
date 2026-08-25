@@ -121,7 +121,10 @@ cmd_mixprobe :: proc(dll: string, values: []int) {
 	}
 
 	fmt.println()
-	fmt.println(" stored  display     osc1 dB   osc2 dB    osc1 gain  osc2 gain   sum   sum of squares")
+	// Five decimals are needed here: the stored/127 law differs from the rounded
+	// display by only 0.00197 at stored 32 and 64, and three decimals would hide
+	// the sign of that difference.
+	fmt.println(" stored  display     osc1 dB   osc2 dB     osc1 gain  osc2 gain     sum   sum of squares")
 	for r in readings {
 		g1 := math.pow(10.0, (r.osc1_db - peak1) / 20.0)
 		g2 := math.pow(10.0, (r.osc2_db - peak2) / 20.0)
@@ -131,10 +134,10 @@ cmd_mixprobe :: proc(dll: string, values: []int) {
 			pad_left(r.display, 9),
 			pad_left(dec1(r.osc1_db - peak1), 8),
 			pad_left(dec1(r.osc2_db - peak2), 8),
-			pad_left(dec3(g1), 9),
-			pad_left(dec3(g2), 9),
-			pad_left(dec3(g1 + g2), 6),
-			pad_left(dec3(g1 * g1 + g2 * g2), 8),
+			pad_left(dec5(g1), 10),
+			pad_left(dec5(g2), 10),
+			pad_left(dec5(g1 + g2), 7),
+			pad_left(dec5(g1 * g1 + g2 * g2), 8),
 		)
 	}
 
@@ -158,6 +161,68 @@ cmd_mixprobe :: proc(dll: string, values: []int) {
 		"  mean |sum of squares - 1| %.4f   (0 means an equal-power crossfade)",
 		power_error / f64(counted),
 	)
+	cmd_sub_mix_recheck(dll, pristine, work, &dumped)
+}
+
+sub_mix_probe_patch :: proc(stored: int, sub_on: bool) -> cpatch.Patch {
+	p := neutral_probe_patch()
+	set_param(&p, 0, 1) // oscillator 1: saw
+	set_param(&p, 1, 1) // oscillator 2: saw
+	set_param(&p, 2, 69) // oscillator 2 four semitones above oscillator 1
+	set_param(&p, 3, 66) // no fine tune
+	set_param(&p, 4, 1) // oscillator 2 tracks the keyboard
+	set_param(&p, 5, stored)
+	set_param(&p, 19, 127) // filter wide open
+	set_param(&p, 29, 100) // fixed drive, short of full scale
+	set_param(&p, 72, 64) // no global fine tune
+	set_param(&p, 95, sub_on ? 110 : 0)
+	set_param(&p, 96, 2) // sub: saw
+	set_param(&p, 97, 1) // sub one octave below oscillator 1
+	return p
+}
+
+cmd_sub_mix_recheck :: proc(
+	dll: string,
+	pristine, work: []u8,
+	dumped: ^bool,
+) {
+	MIXES := []int{32, 64, 96, 112, 127}
+	NOTE :: u8(48)
+	f2 := 440.0 * math.pow(2.0, (f64(NOTE + 4) - 69.0) / 12.0)
+	a := 4.0 * 110.0 / 127.0
+
+	fmt.println()
+	fmt.println("sub (1-m) re-check: two saws four semitones apart, sub gain 110")
+	fmt.println(" stored   sub on/off at osc2   1/(1+a*(1-stored/127))   1/(1+a)")
+	for stored in MIXES {
+		powers: [2]f64
+		for on in 0 ..< 2 {
+			p := sub_mix_probe_patch(stored, on == 1)
+			audio := probe_render(dll, &p, pristine, work, NOTE, 1.5, dumped, nil)
+			defer delete(audio)
+			if audio == nil {continue}
+			mid, side := split_mid_side(audio, 2)
+			defer delete(mid)
+			defer delete(side)
+			held := min(g_hold_frames, len(mid))
+			from := min(int(0.1 * f64(SAMPLE_RATE)), held / 4)
+			power := welch_power(mid, from, held)
+			defer delete(power)
+			if power == nil {continue}
+			bin_hz := f64(SAMPLE_RATE) / f64(FFT_SIZE)
+			powers[on] = power_at_hz(power, bin_hz, f2)
+		}
+		measured := math.sqrt(powers[1] / powers[0])
+		m := f64(stored) / 127.0
+		predicted := 1.0 / (1.0 + a * (1.0 - m))
+		flat := 1.0 / (1.0 + a)
+		fmt.printfln("  %s          %s                   %s        %s",
+			pad_left(fmt.tprintf("%d", stored), 4),
+			dec5(measured),
+			dec5(predicted),
+			dec5(flat),
+		)
+	}
 }
 
 // Parameter 5's display for a stored value.

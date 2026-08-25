@@ -742,6 +742,26 @@ test_signed_and_suffixed_displays_bind_to_units :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.bind_patch(p).pitch_bend_range, 24.0)
 }
 
+// `s1probe mixprobe --values 0,32,64,96,127` anchors each curve at both
+// endpoints and reads the reference's separate oscillator fundamentals. The
+// oscillator 2 gains are 0.2520, 0.5040 and 0.7560; the tolerance excludes the
+// display's rounded 0.25, 0.50 and 0.76.
+@(test)
+test_oscillator_mix_uses_the_reference_stored_ratio :: proc(t: ^testing.T) {
+	for reading in ([]struct {stored: int, gain: f32} {
+		{32, 0.2520},
+		{64, 0.5040},
+		{96, 0.7560},
+	}) {
+		p := default_patch()
+		p.values[5] = reading.stored
+		got := engine.bind_patch(p).osc_mix
+		testing.expectf(t, abs(got - reading.gain) < 0.00015,
+			"stored mix %d bound to %.6f; the reference reads %.4f",
+			reading.stored, got, reading.gain)
+	}
+}
+
 // Parameter 21's own reference default, stored 128, selects no state in a
 // 128-state table. The plugin walks off the grid for it; an engine parameter
 // has to stay bounded, so the binding clamps. This is the case that makes the
@@ -779,6 +799,302 @@ test_unison_switch_collapses_voice_count :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.bind_patch(p).unison_voices, 1)
 	p.values[73] = 1
 	testing.expect_value(t, engine.bind_patch(p).unison_voices, 8)
+}
+
+// Outer-layer half-spans read off the reference by
+//
+//     s1probe unisonprobe --values 6,8,12,16,20,22,26,32,40,48,56,64,72,80,88,96,104,112,120,127 --note 84
+//     s1probe unisonprobe --values 2,3,4,5,6,8,10,12,16,20,24,32,48,64,80,96 --note 108
+//
+// Both sweeps print the four signed layer cents and check them against the
+// reference's own -1/2, -1/6, +1/6, +1/2 layout before reporting a half-span,
+// so a row the transform could not separate cannot become a number here. The
+// two notes agree to 0.13% where they overlap. The bound allows 0.3% plus a
+// small floor for rounded low-span readings, yet stays tight enough to reject
+// both prior laws. At the factory default of stored 22 the reference reads
+// 3.239 cents; the quadratic before this read 1.500 and the linear before that
+// 4.331.
+@(test)
+test_unison_detune_matches_the_reference_cents_sweep :: proc(t: ^testing.T) {
+	for reading in ([][2]f32{
+		{2, 0.251},
+		{4, 0.509},
+		{8, 1.051},
+		{16, 2.244},
+		{22, 3.239},
+		{32, 5.129},
+		{64, 13.614},
+		{96, 27.662},
+		{127, 49.999},
+	}) {
+		stored, reference := reading[0], reading[1]
+		bound := 0.003 * reference + 0.001
+		p := default_patch()
+		p.values[75] = int(stored)
+		full_span := engine.bind_patch(p).unison_detune
+		// The layout halves the span, so the outer layers sit at +/- half of it.
+		for outer in ([]f32{-0.5 * full_span, 0.5 * full_span}) {
+			expected := outer < 0 ? -reference : reference
+			testing.expectf(t, abs(outer - expected) < bound,
+				"stored %.0f outer layer %.4f cents; reference reads %+.3f (bound %.4f)",
+				stored, outer, expected, bound)
+		}
+	}
+}
+
+// Parameter 76 is an OSC1-internal construction, measured with outer unison
+// disabled. The nine signed frequencies at stored 20 and 127 come from Synth1
+// itself; they are not derived from the engine helper under test. Keeping every
+// sign rejects the former parameter-93-dependent symmetric spread, which gives
+// one centre component when the outer voice count is one.
+@(test)
+test_osc1_inner_detune_matches_the_signed_reference_components :: proc(t: ^testing.T) {
+	for sweep in ([]struct {
+		stored: int,
+		reference: [9]f32,
+		bound: f32,
+	}{
+		{20, {-22.049, -15.761, -9.448, -3.146, -0.008, 3.149, 9.466, 15.730, 22.055}, 0.03},
+		{127, {-140.012, -99.993, -59.987, -20.013, -0.010, 19.990, 60.007, 99.993, 140.007}, 0.03},
+	}) {
+		p := default_patch()
+		p.values[73] = 0
+		p.values[93] = 1
+		p.values[76] = sweep.stored
+		step := engine.bind_patch(p).osc1_detune
+		for expected, i in sweep.reference {
+			got := engine.osc1_component_cents(i, step)
+			testing.expectf(t, abs(got - expected) < sweep.bound,
+				"stored %d component %d read %+.3f cents; reference reads %+.3f",
+				sweep.stored, i, got, expected)
+		}
+	}
+}
+
+// Exercise the public engine path with one outer voice. The old symmetric
+// guess made parameter 76 inert here because its only outer spread was zero.
+@(test)
+test_osc1_inner_detune_renders_nine_components_with_unison_off :: proc(t: ^testing.T) {
+	N :: 48000
+	single := make([]f32, N)
+	defer delete(single)
+	inner := make([]f32, N)
+	defer delete(inner)
+	p := phase_probe_patch()
+	p.values[0] = 0 // sine OSC1: each projected frequency is unambiguous
+	p.values[5] = 0 // OSC1 only
+	p.values[73] = 0
+	p.values[93] = 1
+	p.values[76] = 0
+	render_phase_patch(p, single)
+	p.values[76] = 127
+	render_phase_patch(p, inner)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+	single_magnitude, _ := fundamental_phase(single, f0, f64(SR))
+	testing.expect(t, single_magnitude > 0.005, "the p76=0 singleton was silent")
+	for cents, i in ([9]f64{-140, -100, -60, -20, 0, 20, 60, 100, 140}) {
+		hz := f0 * math.pow(2.0, cents / 1200.0)
+		magnitude, _ := fundamental_phase(inner, hz, f64(SR))
+		ratio := magnitude / single_magnitude
+		testing.expectf(t, abs(ratio - 0.3) < 0.02,
+			"component %d at %+.0f cents was %.4f of the singleton; reference reads 0.3",
+			i, cents, ratio)
+	}
+}
+
+// The external projection reads signed, non-symmetric free phase sets. An RMS
+// or null depth could accept their mirrors, so inspect the note-on state and pin
+// each sign. Engaging parameter 91 is a separate measured state: it aligns all
+// nine components rather than retaining either free set.
+@(test)
+test_osc1_inner_components_use_signed_free_phases_and_fixed_alignment :: proc(t: ^testing.T) {
+	free_osc1 := [9]f32{0.7485, 0.8978, 0.4838, 0.8087, 0, 0.1927, 0.5867, 0.3539, 0.8215}
+	free_sub := [9]f32{0.3728, 0.4481, 0.2350, 0.3992, 0, 0.0920, 0.2871, 0.1751, 0.4059}
+	for fixed in ([]bool{false, true}) {
+		p := phase_probe_patch()
+		p.values[73] = 0
+		p.values[93] = 1
+		p.values[76] = 127
+		p.values[91] = fixed ? 1 : 0
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		engine.engine_note_on(&e, 60, 1.0)
+		u := &e.voices[0].unison[0]
+		osc1_centre := engine.osc1_component(u, 4).phase
+		sub_centre := engine.sub_component(u, 4).phase
+		for component in 0 ..< 9 {
+			osc1 := engine.osc1_component(u, component).phase - osc1_centre
+			sub := engine.sub_component(u, component).phase - sub_centre
+			for osc1 < 0 {osc1 += 1}
+			for sub < 0 {sub += 1}
+			want_osc1 := fixed ? f32(0) : free_osc1[component]
+			want_sub := fixed ? f32(0) : free_sub[component]
+			testing.expectf(t, abs(osc1 - want_osc1) < 0.00011,
+				"fixed=%v OSC1 component %d phase %.4f; reference reads %.4f",
+				fixed, component, osc1, want_osc1)
+			testing.expectf(t, abs(sub - want_sub) < 0.00011,
+				"fixed=%v sub component %d phase %.4f; reference reads %.4f",
+				fixed, component, sub, want_sub)
+		}
+		engine.engine_destroy(&e)
+	}
+}
+
+// The sub was isolated in the reference at -1 octave. Each of its nine signed
+// components is 0.3 of the p76=0 centre; a 1/9 trim would fail this render test.
+@(test)
+test_parameter_76_sub_components_keep_the_measured_signed_gain :: proc(t: ^testing.T) {
+	N :: 192000 // four seconds resolves the closest +/-20-cent sub pair
+	single := make([]f32, N)
+	defer delete(single)
+	inner := make([]f32, N)
+	defer delete(inner)
+	p := phase_probe_patch()
+	p.values[0] = 0
+	p.values[5] = 0
+	p.values[73] = 0
+	p.values[93] = 1
+	p.values[95] = 110
+	p.values[96] = 0
+	p.values[97] = 1
+	p.values[76] = 0
+	render_phase_patch(p, single)
+	p.values[76] = 127
+	render_phase_patch(p, inner)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0) * 0.5
+	single_magnitude, _ := fundamental_phase(single, f0, f64(SR))
+	testing.expect(t, single_magnitude > 0.005, "the isolated sub singleton was silent")
+	for cents, i in ([9]f64{-140, -100, -60, -20, 0, 20, 60, 100, 140}) {
+		hz := f0 * math.pow(2.0, cents / 1200.0)
+		magnitude, _ := fundamental_phase(inner, hz, f64(SR))
+		ratio := magnitude / single_magnitude
+		testing.expectf(t, abs(ratio - 0.3) < 0.02,
+			"sub component %d at %+.0f cents was %.4f of the singleton; reference reads 0.3",
+			i, cents, ratio)
+	}
+}
+
+// `s1probe` finds two pitch groups at every non-zero parameter-85 setting:
+// even layers stay on the note and odd layers move by the displayed interval.
+// This signed wiring test prevents the old global transpose from returning.
+@(test)
+test_unison_pitch_alternates_the_reference_voice_groups :: proc(t: ^testing.T) {
+	testing.expect_value(t, engine.unison_layer_pitch(0, 12), 0.0)
+	testing.expect_value(t, engine.unison_layer_pitch(1, 12), 12.0)
+	testing.expect_value(t, engine.unison_layer_pitch(2, -12), 0.0)
+	testing.expect_value(t, engine.unison_layer_pitch(3, -12), -12.0)
+}
+
+// The signed per-layer start phases, in turns, from
+//
+//     s1probe unisonprobe --values 32,64,96,127 --note 84
+//
+// which reads them twice by different constructions. The digits asserted here
+// are the cumulative projection with oscillator phase fixed and parameter 92 at
+// its top, which resolves about 0.0004 turns. The same command's detuned rows
+// project the four layers simultaneously and against the lowest of them, with
+// no subtraction and with parameter 91 at zero, and read layers 1..3 at +0.174,
+// +0.988 and +0.166 -- the second block below, at that method's own coarser
+// resolution.
+//
+// They are kept signed rather than reduced to magnitudes: cancellation is an
+// even function of an offset, so a magnitude cannot tell a layout from its
+// mirror. The second reading is also the only one that pins a phase to a detune
+// slot, since any permutation of one phase set has the same stack RMS.
+@(test)
+test_unison_phase_spread_uses_signed_reference_offsets :: proc(t: ^testing.T) {
+	for reading in ([][2]f32{
+		{1, 0.174683},
+		{2, 0.988525},
+		{3, 0.166234},
+		{4, 0.875973},
+		{5, 0.779656},
+		{6, 0.375866},
+		{7, 0.837611},
+	}) {
+		got := engine.unison_phase_offset(int(reading[0]), 1.0)
+		testing.expectf(t, abs(got - reading[1]) < 0.0004,
+			"layer %.0f phase factor %.6f; reference reads %.6f",
+			reading[0], got, reading[1])
+	}
+	// The independent detuned reading, at its own resolution.
+	for reading in ([][2]f32{
+		{1, 0.174},
+		{2, 0.988},
+		{3, 0.166},
+	}) {
+		got := engine.unison_phase_offset(int(reading[0]), 1.0)
+		testing.expectf(t, abs(got - reading[1]) < 0.007,
+			"layer %.0f phase factor %.6f; the detuned projection reads %.3f",
+			reading[0], got, reading[1])
+	}
+	// The patch binding scales those offsets rather than replacing them.
+	p := default_patch()
+	p.values[92] = 64
+	got := engine.unison_phase_offset(1, engine.bind_patch(p).unison_phase_shift)
+	testing.expectf(t, abs(got - 0.088276) < 0.0004,
+		"stored 64 phase offset %.6f; reference reads %.6f", got, 0.088276)
+}
+
+// The reference's layer amplitudes are summed at unity. This is deliberately
+// a signed external law, not a trim chosen to close one corpus row.
+@(test)
+test_unison_stack_has_no_count_trim :: proc(t: ^testing.T) {
+	for count in ([]int{1, 2, 4, 8}) {
+		testing.expect_value(t, engine.unison_stack_scale(count), 1.0)
+	}
+}
+
+// What says the stack is summed at unity is that its level for 1..8 layers is
+// already accounted for without a trim. `s1probe unisonprobe` reads the
+// reference's steady RMS at zero detune, and the ratios are far from both
+// 1/sqrt(N) and N:
+//
+//     voices  1       2       3       4       5       6       7       8
+//     ratio   1.0000  1.7123  2.5910  3.4068  3.8003  3.8554  3.2229  3.6704
+//
+// They are the coherent sum of the start phases, and they fall at seven layers,
+// which no monotonic count law of any shape can do. This test takes the phase
+// constants, sums them as unit phasors and checks the magnitudes against those
+// readings -- so the phase law and the gain law are tied to one measurement and
+// neither can be adjusted alone.
+@(test)
+test_unison_stack_level_is_the_coherent_sum_of_the_phases :: proc(t: ^testing.T) {
+	reference := [8]f32{1.0000, 1.7123, 2.5910, 3.4068, 3.8003, 3.8554, 3.2229, 3.6704}
+	re, im, one: f32
+	for count in 1 ..= 8 {
+		turns := engine.unison_phase_offset(count - 1, 1.0)
+		re += math.cos(2.0 * math.PI * turns)
+		im += math.sin(2.0 * math.PI * turns)
+		magnitude := math.sqrt(re * re + im * im) * engine.unison_stack_scale(count)
+		if count == 1 {one = magnitude}
+		ratio := magnitude / one
+		expected := reference[count - 1]
+		testing.expectf(t, abs(ratio / expected - 1.0) < 0.006,
+			"%d layers sum to %.4f of one layer; the reference's RMS ratio is %.4f",
+			count, ratio, expected)
+	}
+}
+
+// Parameters 84 and 85 keep their measured controller ranges. Their use in the
+// layer layout is tested above; this pins the state bindings independently.
+@(test)
+test_unison_pan_and_pitch_bindings_keep_reference_ranges :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[84] = 0
+	p.values[85] = 0
+	bound := engine.bind_patch(p)
+	testing.expectf(t, abs(bound.unison_pan_spread + 1.0) < 0.000001,
+		"pan state 0 bound to %.6f; reference reads -1", bound.unison_pan_spread)
+	testing.expect_value(t, bound.unison_pitch, -24.0)
+	p.values[84] = 64
+	p.values[85] = 24
+	bound = engine.bind_patch(p)
+	testing.expectf(t, abs(bound.unison_pan_spread) < 0.000001,
+		"pan state 64 bound to %.6f; reference reads 0", bound.unison_pan_spread)
+	testing.expect_value(t, bound.unison_pitch, 0.0)
 }
 
 // Polyphony comes from parameter 94 and sizes the pool.
@@ -1652,6 +1968,93 @@ test_effects_stay_finite_at_their_extremes :: proc(t: ^testing.T) {
 // Measured amplitude curves
 // ---------------------------------------------------------------------------
 
+gain_100_probe_patch :: proc(shape, resonance, width: int) -> patch.Patch {
+	p := default_patch()
+	p.values[0] = shape
+	p.values[5] = 0 // oscillator 1 alone
+	p.values[8] = width
+	p.values[14] = 0 // low pass 12
+	p.values[19] = 127 // filter open
+	p.values[20] = resonance
+	p.values[21] = 63 // filter envelope amount zero
+	p.values[22] = 0 // keyboard tracking off
+	p.values[23] = 0 // saturation off
+	p.values[25] = 0 // instant attack
+	p.values[26] = 0 // no decay
+	p.values[27] = 127 // full sustain
+	p.values[28] = 0 // instant release
+	p.values[29] = 100
+	p.values[30] = 0 // velocity scaling off
+	p.values[66] = 0 // chorus off
+	p.values[37] = 0 // delay dry/wet zero
+	p.values[65] = 0 // delay off
+	p.values[60] = 64 // equalizer tone flat
+	p.values[62] = 64 // equalizer gain zero
+	p.values[63] = 64 // equalizer Q neutral
+	p.values[77] = 0 // extra effect off
+	return p
+}
+
+render_gain_100_probe :: proc(shape, resonance, width: int) -> []f32 {
+	N :: 48000
+	audio := make([]f32, N)
+	discard := make([]f32, N)
+	e: engine.Engine
+	engine.engine_load_patch(&e, gain_100_probe_patch(shape, resonance, width), SR)
+	engine.engine_note_on(&e, 60, 1.0)
+	engine.engine_process(&e, audio, discard)
+	engine.engine_destroy(&e)
+	delete(discard)
+	return audio
+}
+
+// Direct reference renders fix the levels under test. These values do not come
+// from AMP_GAIN_AMPLITUDE or FILTER_OUTPUT_GAIN, so they catch a second output
+// multiplier and a wrong resonance-level law. Reproduce them with the quoted
+// filtersaturation commands in docs/null-test.md.
+@(test)
+test_gain_100_neutral_fundamentals_match_reference :: proc(t: ^testing.T) {
+	expected := [3]f64{0.48695, 0.3099, 0.1085}
+	shapes := [3]int{0, 1, 2}
+
+	for shape, i in shapes {
+		width := shape == 2 ? 29 : 64
+		audio := render_gain_100_probe(shape, 0, width)
+		f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+		mag, _ := fundamental_phase(audio[12000:], f0, f64(SR))
+		amplitude := 4.0 * mag
+		testing.expectf(t, abs(amplitude - expected[i]) < 0.001,
+			"shape %d at amp gain 100 measured %.5f; reference is %.5f",
+			shape, amplitude, expected[i])
+		delete(audio)
+	}
+}
+
+@(test)
+test_gain_100_first_resonance_step_matches_reference :: proc(t: ^testing.T) {
+	resonances := [2]int{0, 1}
+	expected_amplitude := [2]f64{0.48695, 0.48427}
+	expected_peak := [2]f64{0.4870, 0.4843}
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+
+	for resonance, i in resonances {
+		audio := render_gain_100_probe(0, resonance, 64)
+		mag, _ := fundamental_phase(audio[12000:], f0, f64(SR))
+		amplitude := 4.0 * mag
+		peak := 0.0
+		for sample in audio {
+			peak = max(peak, abs(f64(sample)))
+		}
+		testing.expectf(t, abs(amplitude - expected_amplitude[i]) < 0.001,
+			"resonance %d at amp gain 100 has fundamental %.5f; reference is %.5f",
+			resonance, amplitude, expected_amplitude[i])
+		testing.expectf(t, abs(peak - expected_peak[i]) < 0.0002,
+			"resonance %d at amp gain 100 has peak %.5f; reference is %.5f",
+			resonance, peak, expected_peak[i])
+		delete(audio)
+	}
+}
+
 // The generated gain and sustain tables have to stay a plausible amplitude
 // curve. Same reasoning as the envelope tables: they are machine-written from a
 // sweep of a binary that is not checked in, so nothing else here would notice a
@@ -2101,34 +2504,121 @@ render_phase_patch :: proc(p: patch.Patch, out: []f32) {
 
 @(test)
 test_oscillator_phase_law_is_the_measured_one :: proc(t: ^testing.T) {
-	// This test previously asserted 127/128 of a turn at the top of parameter 91,
-	// which was the guess, and it also asserted that the top step must render
-	// differently from zero -- true, but for the wrong reason, since the old code
-	// moved both oscillators together and so only changed a common start phase.
-	//
-	// `s1probe phaseprobe` measured the real law against two same-pitch pulses in
-	// the reference: the third harmonic cancels at stored 48, the second at 64, and
-	// the first and third together at 127. Those are a sixth, a quarter and a half
-	// of a cycle, on one line through the origin.
-	for pair in ([][2]f32{{0, 0.0}, {48, 0.189}, {64, 0.252}, {127, 0.500}}) {
+	// `s1probe phaseabsolute --values 0,1,16,32,48,64,96,127` projects each
+	// reference oscillator alone against note-on at five notes. Unlike the old
+	// same-pitch cancellation test, these signed readings can see the offset of
+	// the law. They give 0.5*(v-1)/126, exact to 5e-6; 0.5*v/127 agrees at both
+	// ends and misses the middle by up to 0.002 turns.
+	for pair in ([][2]f32{
+		{1, 0.000000},
+		{16, 0.059524},
+		{32, 0.123016},
+		{48, 0.186508},
+		{64, 0.250000},
+		{96, 0.376984},
+		{127, 0.500000},
+	}) {
 		p := default_patch()
 		p.values[91] = int(pair[0])
 		got := engine.bind_patch(p).osc_phase_shift
-		testing.expect(
-			t,
-			abs(got - pair[1]) < 0.005,
-			fmt.tprintf("stored %.0f gave %.4f turns, measured %.3f", pair[0], got, pair[1]),
-		)
+		testing.expectf(t, abs(got - pair[1]) < 5.0e-6,
+			"stored %.0f gave %.6f turns; the reference reads %.6f",
+			pair[0], got, pair[1])
 	}
 
-	// And stored zero is not a phase of zero, it is no phase fixing at all. The
-	// changelog entry that introduced the knob says so, and the probe agrees.
+	// Stored zero is not another point on the line: the vendor changelog says
+	// turned fully left the phase is not fixed, and the absolute probe reads the
+	// separately measured free-running relationship there.
 	p0 := default_patch()
 	p0.values[91] = 0
-	testing.expect(t, !engine.bind_patch(p0).osc_phase_fixed, "stored 0 should leave the phase unfixed")
+	testing.expect(t, !engine.bind_patch(p0).osc_phase_fixed,
+		"stored 0 should leave the phase unfixed")
 	p1 := default_patch()
 	p1.values[91] = 1
-	testing.expect(t, engine.bind_patch(p1).osc_phase_fixed, "stored 1 should fix the phase")
+	testing.expect(t, engine.bind_patch(p1).osc_phase_fixed,
+		"stored 1 should fix the phase")
+}
+
+// The engaged start is a signed position, not only a relationship.
+//
+// The same `s1probe phaseabsolute` command reads oscillator 1 at -0.00125
+// turns for every engaged setting at notes 36, 48, 60, 72 and 84. It projects
+// one oscillator at a time against note-on and fits phase against frequency, so
+// output latency is the slope and start phase is the intercept. Cancellation
+// depth could not see this common shift at all. Oscillator 2's separately read
+// signed starts pin the direction of the relationship. The free-running sub's
+// zero is a separate invariant, checked below.
+@(test)
+test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^testing.T) {
+	read := proc(stored, note: int) -> (osc1, osc2, sub: f32) {
+		p := default_patch()
+		p.values[73] = 0 // one unison voice, so parameter 92 cannot add a spread
+		p.values[91] = stored
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		defer engine.engine_destroy(&e)
+		engine.engine_note_on(&e, note, 1.0)
+		u := &e.voices[0].unison[0]
+		return u.osc1.phase, u.osc2.phase, u.sub.phase
+	}
+	read_shift := proc(phase_shift: f32, note: int) -> (osc1, osc2: f32) {
+		p := default_patch()
+		p.values[73] = 0
+		p.values[91] = 1 // engage fixed phase without asking binding for a shift
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		defer engine.engine_destroy(&e)
+		// Drive the separately measured relationship directly, so this wiring
+		// check does not also test the parameter-91 binding law above.
+		e.params.osc_phase_shift = phase_shift
+		engine.engine_note_on(&e, note, 1.0)
+		u := &e.voices[0].unison[0]
+		return u.osc1.phase, u.osc2.phase
+	}
+	signed := proc(v: f32) -> f32 {return v >= 0.5 ? v - 1.0 : v}
+
+	free1, free2, free_sub := read(0, 60)
+	testing.expectf(t, abs(signed(free1)) < 1.0e-7,
+		"free-running oscillator 1 moved from zero to %.7f", signed(free1))
+	testing.expectf(t, abs(free2 - engine.OSC_PHASE_FREE_TURNS) < 1.0e-7,
+		"free-running oscillator 2 moved from OSC_PHASE_FREE_TURNS: %.7f", free2)
+	testing.expectf(t, abs(signed(free_sub)) < 1.0e-7,
+		"the free-running sub moved from zero to %.7f", signed(free_sub))
+
+	for stored in 1 ..= 127 {
+		osc1, _, _ := read(stored, 60)
+		testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
+			"stored %d put oscillator 1 at %.7f turns; the reference reads -0.00125",
+			stored, signed(osc1))
+	}
+
+	// Both the relationship and oscillator 2 start are signed absolute readings
+	// from the same reference command. Driving the relationship directly keeps
+	// this wiring check independent from the binding law tested above, while the
+	// start still distinguishes +base_phase from the phase-even alternative.
+	for reading in ([][3]f32{
+		{1, 0.000000, -0.00125},
+		{16, 0.059524, 0.05827},
+		{32, 0.123016, 0.12177},
+		{48, 0.186508, 0.18526},
+		{64, 0.250000, 0.24875},
+		{96, 0.376984, 0.37573},
+		{127, 0.500000, 0.49875},
+	}) {
+		_, osc2 := read_shift(reading[1], 60)
+		testing.expectf(t, abs(signed(osc2) - reading[2]) < 5.0e-6,
+			"stored %.0f put oscillator 2 at %.5f turns; the reference reads %.5f",
+			reading[0], signed(osc2), reading[2])
+	}
+
+	for note in ([]int{36, 48, 72, 84}) {
+		for stored in ([]int{1, 64, 127}) {
+			osc1, _, _ := read(stored, note)
+			testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
+				"note %d stored %d put oscillator 1 at %.7f turns, not -0.00125",
+				note, stored, signed(osc1))
+		}
+	}
 }
 
 @(test)
@@ -2695,9 +3185,9 @@ test_sub_oscillator_sits_where_the_reference_puts_it :: proc(t: ^testing.T) {
 // External numbers: `a = 4 * stored95 / 127`, read at mix "100 : 0" and "-1oct"
 // as |sub|/|carrier| = 0.25197, 0.50394, 1.00789, 1.51184, 2.01579, 2.51974,
 // 3.02369 and 4.00010 at stored 8, 16, 32, 48, 64, 80, 96 and 127 -- to 3e-5
-// across the knob. The mix weight `1 - m` is read at seven mix settings, where
-// oscillator 2's own partial is pulled down by 0.28455, 0.37046, 0.54307,
-// 0.71031 and 1.00000 at stored mix 32, 64, 96, 112 and 127.
+// across the knob. `s1probe mixprobe` re-reads the mix weight `1 - m` at five
+// settings: oscillator 2's own partial is pulled down by 0.27838, 0.36768,
+// 0.54173, 0.70962 and 1.00000 at stored mix 32, 64, 96, 112 and 127.
 @(test)
 test_sub_oscillator_level_law_is_the_measured_one :: proc(t: ^testing.T) {
 	// `a` itself, at mix "100 : 0" where the weight is 1.
@@ -2770,7 +3260,7 @@ fm_test_patch :: proc() -> patch.Patch {
 
 // Render one block of the sustained portion, which is enough to compare two
 // signal paths and short enough to run many times.
-fm_render :: proc(p: patch.Patch, out: []f32) {
+fm_render_at_note :: proc(p: patch.Patch, out: []f32, note: int) {
 	e: engine.Engine
 	engine.engine_load_patch(&e, p, SR)
 	defer engine.engine_destroy(&e)
@@ -2778,8 +3268,12 @@ fm_render :: proc(p: patch.Patch, out: []f32) {
 	discard := make([]f32, len(out))
 	defer delete(discard)
 
-	engine.engine_note_on(&e, 60, 1.0)
+	engine.engine_note_on(&e, note, 1.0)
 	engine.engine_process(&e, out, discard)
+}
+
+fm_render :: proc(p: patch.Patch, out: []f32) {
+	fm_render_at_note(p, out, 60)
 }
 
 fm_max_difference :: proc(a, b: []f32) -> f32 {
@@ -2789,6 +3283,111 @@ fm_max_difference :: proc(a, b: []f32) -> f32 {
 		if d > worst {worst = d}
 	}
 	return worst
+}
+
+fm_test_fft_forward :: proc(re, im: []f64) {
+	n := len(re)
+	if n < 2 || len(im) != n || n & (n - 1) != 0 {return}
+	j := 0
+	for i in 1 ..< n {
+		bit := n >> 1
+		for bit != 0 && j & bit != 0 {
+			j ~= bit
+			bit >>= 1
+		}
+		j |= bit
+		if i < j {
+			re[i], re[j] = re[j], re[i]
+			im[i], im[j] = im[j], im[i]
+		}
+	}
+	length := 2
+	for length <= n {
+		half := length / 2
+		angle := -2.0 * math.PI / f64(length)
+		wr, wi := math.cos(angle), math.sin(angle)
+		for start := 0; start < n; start += length {
+			cr, ci := 1.0, 0.0
+			for k in 0 ..< half {
+				a, b := start + k, start + k + half
+				vr := re[b] * cr - im[b] * ci
+				vi := re[b] * ci + im[b] * cr
+				re[b], im[b] = re[a] - vr, im[a] - vi
+				re[a], im[a] = re[a] + vr, im[a] + vi
+				next_cr := cr * wr - ci * wi
+				ci = cr * wi + ci * wr
+				cr = next_cr
+			}
+		}
+		length <<= 1
+	}
+}
+
+fm_analytic_phase :: proc(signal: []f32) -> []f64 {
+	n := len(signal)
+	if n < 2 || n & (n - 1) != 0 {return nil}
+	re, im := make([]f64, n), make([]f64, n)
+	defer delete(im)
+	for value, i in signal {re[i] = f64(value)}
+	fm_test_fft_forward(re, im)
+	for k in 1 ..< n / 2 {
+		re[k], im[k] = 2.0 * re[k], 2.0 * im[k]
+	}
+	for k in n / 2 + 1 ..< n {
+		re[k], im[k] = 0, 0
+	}
+	for i in 0 ..< n {im[i] = -im[i]}
+	fm_test_fft_forward(re, im)
+	for i in 0 ..< n {
+		re[i], im[i] = re[i] / f64(n), -im[i] / f64(n)
+	}
+	phase := make([]f64, n)
+	previous := math.atan2(im[0], re[0])
+	phase[0] = previous
+	for i in 1 ..< n {
+		current := math.atan2(im[i], re[i])
+		delta := current - previous
+		for delta > math.PI {delta -= 2.0 * math.PI}
+		for delta < -math.PI {delta += 2.0 * math.PI}
+		phase[i] = phase[i - 1] + delta
+		previous = current
+	}
+	delete(re)
+	return phase
+}
+
+fm_sub_audio_slope :: proc(base_carrier, base_mix, fm_carrier, fm_mix: []f32) -> f64 {
+	n := min(min(len(base_carrier), len(base_mix)), min(len(fm_carrier), len(fm_mix)))
+	base_sub, fm_sub := make([]f32, n), make([]f32, n)
+	defer delete(base_sub)
+	defer delete(fm_sub)
+	for i in 0 ..< n {
+		base_sub[i] = (5.0 * base_mix[i] - base_carrier[i]) / 4.0
+		fm_sub[i] = (5.0 * fm_mix[i] - fm_carrier[i]) / 4.0
+	}
+	base_carrier_phase := fm_analytic_phase(base_carrier[:n])
+	fm_carrier_phase := fm_analytic_phase(fm_carrier[:n])
+	base_sub_phase := fm_analytic_phase(base_sub)
+	fm_sub_phase := fm_analytic_phase(fm_sub)
+	defer delete(base_carrier_phase)
+	defer delete(fm_carrier_phase)
+	defer delete(base_sub_phase)
+	defer delete(fm_sub_phase)
+	sum_x, sum_y, sum_xx, sum_xy := 0.0, 0.0, 0.0, 0.0
+	points := 0
+	for i := 9600; i < min(n, 62400); i += 2048 {
+		x := fm_carrier_phase[i] - base_carrier_phase[i]
+		y := fm_sub_phase[i] - base_sub_phase[i]
+		if abs(x) < 1.0e-5 {continue}
+		sum_x += x
+		sum_y += y
+		sum_xx += x * x
+		sum_xy += x * y
+		points += 1
+	}
+	if points < 2 {return 0}
+	count := f64(points)
+	return (sum_xy - sum_x * sum_y / count) / (sum_xx - sum_x * sum_x / count)
 }
 
 // With no modulation, the FM-capable advance has to be the plain advance.
@@ -2925,6 +3524,83 @@ test_fm_modulates_oscillator_one_from_oscillator_two :: proc(t: ^testing.T) {
 	testing.expectf(t, peak > 0.0001, "oscillator 2 render was silent: peak %v", peak)
 }
 
+// `s1probe fmsubprobe --values 0,16,24,32,43 --note 48` measures Synth1
+// v1.11 directly. At -1oct its signed sub/OSC1 displacement slopes are
+// 0.473336, 0.470593, 0.454299 and 0.500492 for the four non-zero FM states.
+// Those readings are each nearest the 0.5 fractional-deviation candidate and
+// exclude equal absolute displacement (1) and an unmodulated sub (0).
+@(test)
+test_fm_reaches_sub_with_reference_measured_displacement :: proc(t: ^testing.T) {
+	fmsub_patch :: proc(octave, fm: int, sub_on, ring: bool) -> patch.Patch {
+		p := fm_test_patch()
+		p.values[0] = 0 // oscillator 1: sine
+		p.values[1] = 1 // oscillator 2: triangle
+		p.values[2] = 40 // oscillator 2: -24 semitones
+		p.values[3] = 66 // oscillator 2: 0 cents
+		p.values[4] = 1 // keyboard tracking on
+		p.values[5] = 0 // oscillator 1 and sub alone
+		p.values[45] = fm
+		p.values[95] = sub_on ? 127 : 0
+		p.values[96] = 0 // sub: sine
+		p.values[97] = octave
+		p.values[7] = ring ? 1 : 0
+		p.values[91] = 1 // fixed, equal start phase
+		p.values[19] = 127 // filter open
+		p.values[20] = 0 // no resonance
+		p.values[21] = 63 // no filter-envelope movement
+		p.values[22] = 0 // no filter key tracking
+		p.values[23] = 0 // no filter saturation
+		p.values[25] = 0 // instant amplifier attack
+		p.values[26] = 0 // no amplifier decay
+		p.values[27] = 127 // full sustain
+		p.values[28] = 0 // instant release
+		p.values[29] = 100 // headroom
+		p.values[30] = 0 // no velocity scaling
+		p.values[37] = 0 // delay dry
+		p.values[66] = 0 // chorus off
+		p.values[77] = 0 // extra effect off
+		return p
+	}
+
+	N :: 65536
+	base_carrier, base_mix := make([]f32, N), make([]f32, N)
+	fm_carrier, fm_mix := make([]f32, N), make([]f32, N)
+	defer delete(base_carrier)
+	defer delete(base_mix)
+	defer delete(fm_carrier)
+	defer delete(fm_mix)
+
+	readings := []struct {fm: int, reference_slope: f64} {
+		{16, 0.473336},
+		{24, 0.470593},
+		{32, 0.454299},
+		{43, 0.500492},
+	}
+	for octave in 0 ..< 2 {
+		fm_render_at_note(fmsub_patch(octave, 0, false, false), base_carrier, 48)
+		fm_render_at_note(fmsub_patch(octave, 0, true, false), base_mix, 48)
+		for reading in readings {
+			fm_render_at_note(fmsub_patch(octave, reading.fm, false, false), fm_carrier, 48)
+			fm_render_at_note(fmsub_patch(octave, reading.fm, true, false), fm_mix, 48)
+			slope := fm_sub_audio_slope(base_carrier, base_mix, fm_carrier, fm_mix)
+			want := octave == 0 ? 1.0 : reading.reference_slope
+			tolerance := octave == 0 ? 0.02 : 0.065
+			testing.expectf(t, abs(slope - want) < tolerance,
+				"audio at FM state %d and octave %d gives sub/OSC1 slope %.6f; reference %.6f",
+				reading.fm, octave, slope, want)
+		}
+	}
+
+	// Ring suppresses FM in observable output at both octave settings.
+	for octave in 0 ..< 2 {
+		fm_render_at_note(fmsub_patch(octave, 0, true, true), base_mix, 48)
+		for fm in ([]int{43, 77}) {
+			fm_render_at_note(fmsub_patch(octave, fm, true, true), fm_mix, 48)
+			testing.expectf(t, fm_max_difference(base_mix, fm_mix) == 0,
+				"ring output changed with FM state %d at octave %d", fm, octave)
+		}
+	}
+}
 // The other direction-sensitive fact: with oscillator 1 alone in the mix and FM
 // running, oscillator 2's own shape has to reach the output, because it is the
 // modulator shaping the carrier. If oscillator 2 were the carrier instead, its

@@ -617,6 +617,7 @@ usage :: proc() {
 	fmt.eprintln("  s1probe compare [dll] <patch.sy1 | directory> [--wav <dir>] [--csv <path>]")
 	fmt.eprintln("                        [--note <n>] [--limit <n>] [--offset <n>] [--block <n>]")
 	fmt.eprintln("                        [--verbose] [--self] [--no-floor]")
+	fmt.eprintln("                        [--fmsub-gate <original|fm-off|fm-sub-off>]")
 	fmt.eprintln("  s1probe summarise <compare.csv>")
 	fmt.eprintln("  s1probe envprobe [dll] <attack|decay|release> [--values <list|all>]")
 	fmt.eprintln("                        [--hold <ms>] [--tail <ms>] [--note <n>]")
@@ -633,7 +634,10 @@ usage :: proc() {
 	fmt.eprintln("                        [--notes <list>] [--rate <n>] [--dest <1|2>] [--dump]")
 	fmt.eprintln("  s1probe mapping [dll]")
 	fmt.eprintln("  s1probe mixprobe [dll] [--values <list>]")
+	fmt.eprintln("  s1probe fmsubprobe [dll] [--values <list>] [--note <n>]")
 	fmt.eprintln("  s1probe phaseprobe [dll] [--values <list>]")
+	fmt.eprintln("  s1probe phaseabsolute [dll] [--values <list>]")
+	fmt.eprintln("  s1probe unisonprobe [dll] [--fixture <patch.sy1>] [--values <list>] [--note <n>]")
 	fmt.eprintln("  s1probe choruspatch [dll] [--dir <bank>] [--note <n>] [--bands] <patch.sy1>...")
 	fmt.eprintln("  s1probe patchdiag   [dll] <patch.sy1> [--note <n>]")
 	fmt.eprintln("                          -- peak/RMS of one patch, ref vs. ours, with a fixed")
@@ -642,6 +646,9 @@ usage :: proc() {
 	fmt.eprintln("                          -- FM spectrum before and through a moving filter")
 	fmt.eprintln("  s1probe filtersaturation [dll] [--values <list>] [--gains <list>]")
 	fmt.eprintln("                          [--type <n>] [--cutoff <n>] [--res <n>] [--note <n>]")
+    fmt.eprintln("  s1probe substageprobe [dll] [--notes <list>] [--p95 <list>] [--mix <list>]")
+    fmt.eprintln("                          [--saturation <list>] [--gain <n>] [--csv <path>]")
+	fmt.eprintln("                          [--shape <0..3>] [--width <0..127>]")
 	fmt.eprintln("  -- the extra effect unit, parameters 77..81 --")
 	fmt.eprintln("  s1probe fxprobe   [dll] [--config <name>] [--note <n>] [--dump]")
 	fmt.eprintln("  s1probe fxsweep   [dll] [--type <0..9>] [--ctl <1|2|3>] [--values <list>]")
@@ -670,8 +677,8 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" {
-		if len(rest) >= 1 && (cmd == "fmfilter" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" {
+        if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
 		}
@@ -798,6 +805,47 @@ main :: proc() {
 			}
 		}
 		cmd_phaseprobe(dll, parse_env_values(phvals), phnote)
+	case "phaseabsolute":
+		pavals := "0,1,16,32,48,64,96,127"
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					pavals = rest[i + 1]
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_phaseabsolute(dll, parse_env_values(pavals))
+	case "unisonprobe":
+		upfixture := UNISON_FIXTURE_DEFAULT
+		upvalues := "16,22,32,64,96,127"
+		upnote := 84
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--fixture":
+					if i + 1 >= len(rest) {usage()}
+					upfixture = rest[i + 1]
+					i += 2
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					upvalues = rest[i + 1]
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &upnote) {usage()}
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_unisonprobe(dll, upfixture, parse_env_values(upvalues), u8(clamp(upnote, 0, 127)))
 	case "mixprobe":
 		mvals := "0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,127"
 		{
@@ -814,6 +862,74 @@ main :: proc() {
 			}
 		}
 		cmd_mixprobe(dll, parse_env_values(mvals))
+	case "fmsubprobe":
+		fsv := "0,16,24,32,43"
+		fsnote := int(FMSUB_NOTE)
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					fsv = rest[i + 1]
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &fsnote) {usage()}
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_fmsubprobe(dll, parse_env_values(fsv), u8(clamp(fsnote, 0, 127)))
+    case "substageprobe":
+        ssnotes := "60"
+        ssp95 := SUBSTAGE_P95_DEFAULT
+        ssmix := "0,96"
+        sssaturation := "0,64"
+        ssgain := 64
+        sscsv := ""
+        {
+            i := 0
+            for i < len(rest) {
+                switch rest[i] {
+                case "--notes":
+                    if i + 1 >= len(rest) {usage()}
+                    ssnotes = rest[i + 1]
+                    i += 2
+                case "--p95":
+                    if i + 1 >= len(rest) {usage()}
+                    ssp95 = rest[i + 1]
+                    i += 2
+                case "--mix":
+                    if i + 1 >= len(rest) {usage()}
+                    ssmix = rest[i + 1]
+                    i += 2
+                case "--saturation":
+                    if i + 1 >= len(rest) {usage()}
+                    sssaturation = rest[i + 1]
+                    i += 2
+                case "--gain":
+                    if !parse_probe_int(rest, i + 1, &ssgain) {usage()}
+                    i += 2
+                case "--csv":
+                    if i + 1 >= len(rest) {usage()}
+                    sscsv = rest[i + 1]
+                    i += 2
+                case:
+                    usage()
+                }
+            }
+        }
+        ssnotes_values := parse_env_values(ssnotes)
+        defer delete(ssnotes_values)
+        ssp95_values := parse_env_values(ssp95)
+        defer delete(ssp95_values)
+        ssmix_values := parse_env_values(ssmix)
+        defer delete(ssmix_values)
+        sssaturation_values := parse_env_values(sssaturation)
+        defer delete(sssaturation_values)
+        cmd_substageprobe(dll, sscsv, ssnotes_values, ssp95_values, ssmix_values, sssaturation_values, clamp(ssgain, 0, 127))
 	case "tuningcheck":
 		tcnote := 60
 		tcpath := ""
@@ -1883,6 +1999,8 @@ main :: proc() {
 		fscutoff := 127
 		fsres := 0
 		fsnote := 60
+		fsshape := 0
+		fswidth := 64
 		fsvalues := "0,16,32,48,64,80,96,109,112,122,127"
 		fsgains := "32,64,96,127"
 		{
@@ -1901,6 +2019,12 @@ main :: proc() {
 				case "--note":
 					if !parse_probe_int(rest, i + 1, &fsnote) {usage()}
 					i += 2
+				case "--shape":
+					if !parse_probe_int(rest, i + 1, &fsshape) {usage()}
+					i += 2
+				case "--width":
+					if !parse_probe_int(rest, i + 1, &fswidth) {usage()}
+					i += 2
 				case "--values":
 					if i + 1 >= len(rest) {usage()}
 					fsvalues = rest[i + 1]
@@ -1914,7 +2038,10 @@ main :: proc() {
 				}
 			}
 		}
-		cmd_filtersaturation(dll, fstype, fscutoff, fsres, u8(clamp(fsnote, 0, 127)), fsvalues, fsgains)
+		cmd_filtersaturation(
+			dll, fstype, fscutoff, fsres, clamp(fsshape, 0, 3), clamp(fswidth, 0, 127),
+			u8(clamp(fsnote, 0, 127)), fsvalues, fsgains,
+		)
 	case "oscspectrum":
 		if len(rest) < 1 {usage()}
 		ospath := rest[0]

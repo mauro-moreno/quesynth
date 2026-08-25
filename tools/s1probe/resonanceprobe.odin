@@ -790,6 +790,7 @@ sweep_output_gain :: proc(
 	dumped := true
 	measured := 0
 	clipped := 0
+	neutral_measured := false
 
 	for v in 0 ..< 128 {
 		gain[v] = f64(sengine.FILTER_OUTPUT_GAIN[v])
@@ -823,11 +824,25 @@ sweep_output_gain :: proc(
 		if ref_rms > 0 && our_rms > 0 && our_peak < 0.95 {
 			gain[v] *= ref_rms / our_rms
 			measured += 1
+			if v == 0 {
+				neutral_measured = true
+			}
 		} else if our_peak >= 0.95 {
 			clipped += 1
 		}
 		free_all(context.temp_allocator)
 	}
+	if !neutral_measured || gain[0] <= 0 {
+		fmt.eprintln("qtable: could not measure the neutral output gain")
+		os.exit(1)
+	}
+	neutral := gain[0]
+	for i in 0 ..< len(gain) {
+		gain[i] /= neutral
+	}
+	// Make the table's ownership split exact rather than leaving state zero at a
+	// rounded value near one: amp gain owns absolute level, resonance owns change.
+	gain[0] = 1.0
 	fmt.printfln("    %v of 128 corrected, %v skipped for clipping", measured, clipped)
 	return gain
 }
@@ -1075,6 +1090,9 @@ FILTER_DAMPING_24 := [FILTER_RESONANCE_TABLE_SIZE]f32{
 // It is independent of the cutoff too, checked at three settings four octaves
 // apart, which is what a normalisation of the filter's own noise gain has to be.
 //
+// State zero is the neutral multiplier. The absolute amp-gain table already
+// includes the reference's open-filter output level, so this curve is normalised
+// by its measured state-zero value and owns only resonance-dependent level.
 // It replaces a k^0.25 on the band-pass output alone, fitted with a saw -- an
 // instrument that under-reads a narrowing resonance because its partials fall
 // out of the peak as it sharpens.
