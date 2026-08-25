@@ -5439,6 +5439,12 @@ nine-component render, both signed phase sets and fixed alignment, and the
 sub's signed frequencies and 0.3 gain. These tests do not derive their expected
 values from the engine helpers and reject the former symmetric guess.
 
+The one-voice phase values are reported only to the probe's finite precision
+(0.0001 turns); closely spaced multi-voice peaks can fall below one FFT bin.
+The **0.3** value is an isolated one-voice component gain, not a fitted global
+trim for every outer layer. Those phase and component-gain limits stay open
+outside the signed rows and controls above.
+
 The committed p76-on fixture is the stop gate:
 
 ```powershell
@@ -5583,6 +5589,26 @@ The repaired sine results are:
 |---:|---:|---:|---:|
 | 0 | 0.48695 / 0.48697 | 0.3348 / 0.3348 | 0.4870 / 0.4870 |
 | 1 | 0.48427 / 0.48432 | 0.3329 / 0.3330 | 0.4843 / 0.4843 |
+
+### Q-level residual outside the neutral anchor
+
+The retained `qlevel` check at cutoff 48 covers states `0,1,32,127` for all
+five bound filter types. Only state zero changes under the level repair; the
+higher states remain byte-identical. The state-zero RMS pairs (before → after)
+are:
+
+```text
+             state 0       state 1       state 32      state 127
+LP12         .01455→.01481 .01452→.01452 .01380→.01380 .09157→.09157
+LP24         .00794→.00809 .00808→.00808 .00916→.00916 .20377→.20377
+HP12         .11010→.11210 .10951→.10951 .09137→.09137 .09994→.09994
+BP12         .01316→.01340 .01314→.01314 .01256→.01256 .11353→.11353
+LPDL         .00794→.00809 .00808→.00808 .00916→.00916 .20377→.20377
+```
+
+The larger mode-specific residuals at cutoff 48 are existing filter-topology
+errors, not regressions from this repair. High-pass and band-pass are not used
+as open-filter level controls because their response is not flat at that note.
 
 Before the whole-law repair, state one read RMS **0.3270** and peak **0.4757**,
 or about **-0.155 dB**, despite state zero matching. The engine's zero-to-one
