@@ -4127,6 +4127,31 @@ breaks the independently measured open-filter transfer. This is the nonlinear
 four-pole topology gap documented in the earlier ladder investigation, not a
 reason to distort the now-measured knob law to fit one operating point.
 
+**Second boundary: two tones.** The transfer above was fitted by driving one
+sine through a non-moving filter, and low cutoff was its only recorded limit.
+The tracked substage factorial recorded further down this file is the first
+two-tone test of it, and it opens a second limit with the filter fully open.
+The probe's THD reading is the energy in the `f0` harmonic bins relative to
+`f0`. With OSC1 sine plus OSC2 triangle four semitones up (`p5=96`), `p95=0`
+and stored 23 = 64, the reference reads `-17.032`, `-17.175` and `-17.080 dB`
+at notes 60, 48 and 72, while this engine reads `-36.147`, `-36.470` and
+`-36.172 dB`. That is a note-stable gap of about 19 dB.
+
+The single-tone cell of the same run still reproduces the fit exactly:
+reference `-13.918`, `-13.912` and `-13.943 dB` against ours `-13.900`,
+`-13.900` and `-13.899 dB`, which is the -13.9 dB knot tabulated above. The
+matched `p23=0` control shows no comparable gap: reference `-41.969`,
+`-41.245` and `-45.999 dB` against ours `-40.991`, `-40.992` and
+`-41.737 dB`, a spread of 1.0 to 4.3 dB in a floor roughly 25 dB below the
+saturated reading. The break therefore belongs to the shaper, not to the
+oscillator pair or the measurement.
+
+So a peak-normalised memoryless tanh matches the knob on one tone and puts far
+too little energy into those bins on two. This is a named defect in the
+implemented law. A candidate replacement was measured and is reported with the
+substage factorial below; it was rejected by the corpus and factory gates, so
+the shaper is unchanged and this boundary stays open.
+
 **Bank verdict: kept.** The isolated 123-patch run, against the immediately
 preceding ping-pong baseline:
 
@@ -5731,6 +5756,13 @@ The exact measurement is:
 |---|---:|---:|---:|
 | integrated HEAD base | 4.585238 | 4.569491 | **+0.015747 dB** |
 
+The earlier `+0.280227 dB` is superseded, not unexplained. It was measured on
+the pre-merge line at `ab9f679`, before the level, FM, unison and parameter-76
+work was integrated. The stored pre-parameter-76 integration CSVs
+(`build/pre76-on.csv`, `build/pre76-off.csv`) read `4.699363 / 4.486818`, or
+`+0.212545 dB`, on the same 92 rows. Integration moved the figure; the cohort
+did not change and nothing was refitted.
+
 The MAE delta hides large row motion: mean absolute change in the gate metric
 is `1.1016 dB`, mean absolute raw signed-error movement is `1.265414 dB`, and
 the signed on-minus-off mean is `+0.127855 dB` (`30 / 38 / 24` better, worse,
@@ -5749,10 +5781,14 @@ labels are the parameter interventions, not the old swapped labels:
 | post off | 1.755282 | 1.763351 | −0.008070 | 0.4936 |
 | filter open | 4.215401 | 4.068007 | +0.147395 | 0.8504 |
 
-`post-off` changes five settings and still leaves mixed row movement. No
-single-stage control predicts the affected rows. The historical 586-row
-reference-only sweep was temporary and untracked; its executable source is not
-reviewable and it is not causal evidence.
+`post-off` changes five settings and still leaves mixed row movement. The
+single-stage controls do not isolate a law. There is, however, a useful
+parameter-23 lead on the 92 matched base rows: `p23=0` has `n=24`, on/off MAE
+`3.860583 / 4.068900 dB`, delta `-0.208317 dB`; `p23>0` has `n=68`, on/off MAE
+`4.840999 / 4.746171 dB`, delta `+0.094828 dB`. This split motivated the direct
+saturation experiment below; it is a lead, not row-level causal proof. The
+historical 586-row reference-only sweep was temporary and untracked, so its
+executable source is not reviewable and it is not causal evidence.
 
 The licensed 16,698-file source corpus is not present in this checkout, so the
 original selection cannot currently be rerun. The pinned index and all 14
@@ -5788,53 +5824,164 @@ OSC1 sine, OSC2 triangle at stored `p2=68` (+4 semitones), sub sine at `p97=1`,
 mid-channel Hann-projected amplitudes at `f0/2`, `f0`, and OSC2's `f2`, plus
 THD, RMS, peak, parameter mismatches, and non-finite samples.
 
+The corrected default is the continuous stored-95 sweep
+`0,16,32,48,64,80,96,112,127`, not the former two selected nonzero points.
+Metric calculation preserves the render/mismatch `row_ok` result. Ordinary
+amplitude observables must be above `1e-5` of each render's own peak (-100 dB)
+and have explicit CSV validity columns; therefore noise-only bins are not
+printed as measurements. The separate leakage control deliberately measures
+lower, relative to an audible isolated OSC2 fundamental, at every requested
+note and at the selected gain.
+
 ```powershell
 odin test tools/s1probe
-odin build tools/s1probe -out:build/s1probe-final-head.exe
-./build/s1probe-final-head.exe substageprobe $reference `
-  --notes 60 --p95 0,32,96 --mix 0,96 --saturation 0,64 --gain 64 `
-  --csv build/substage-head-note60.csv
-./build/s1probe-final-head.exe substageprobe $reference `
-  --notes 48,72 --p95 0,32,96 --mix 0,96 --saturation 0,64 --gain 64 `
-  --csv build/substage-confirm-notes48-72.csv
+odin build tools/s1probe -out:build/s1probe-substage-corrected.exe
+./build/s1probe-substage-corrected.exe substageprobe $reference `
+  --notes 60 --mix 0,96 --saturation 0,64 --gain 64 `
+  --csv build/substage-corrected-note60.csv
+./build/s1probe-substage-corrected.exe substageprobe $reference `
+  --notes 48,72 --mix 0,96 --saturation 0,64 --gain 64 `
+  --csv build/substage-corrected-notes48-72.csv
 ```
+
+The two CSVs are the reproducible pins:
+
+- note 60 CSV: `6390a29d1aff3a87d25bade9c616c307b928a2dc5aa8698337dcb6b809424ba6`;
+- notes 48 and 72 CSV: `328209975fd6509f4235ec18a363d57c09077e3254a8b208052df3bb10112aaa`.
+
+Both reproduce byte for byte from a fresh `odin build tools/s1probe` at this
+commit against the pinned reference DLL
+`51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569ba22f32c7`. The probe
+executable itself is not pinned: its PE header carries a link timestamp, so two
+builds of identical source differ in hash while their CSV output does not. Only
+hashes that a reader can regenerate are recorded here.
 
 The signed formula is `E = 20 log10(ours / reference)`, so positive means
-ours is high. The sub ratio residual `R` is the signed difference of measured
-sub/carrier ratios. At saturation zero, `R` stayed within `0.0032 dB` at notes
-48, 60, and 72 for both nonzero stored-95 values, with no stable sign. The
-carrier denominator residual `C` stayed within `0.00004 dB` at the same
-control (`p23=0`). Saturation engagement was positive in both engines: reference THD
-movement was `+90.4446`, `+106.4390`, and `+119.8928 dB` at notes 48, 60, and
-72; ours was `+89.0714`, `+104.5745`, and `+106.1704 dB`.
+ours is high. `R` is the sub/carrier ratio residual. All 48 valid `R` cells at
+`p23=0` (eight nonzero p95 values, two mixes, three notes) are negative, from
+`-0.003111` through `-0.000199 dB`; the former “no stable sign” statement was
+wrong. Their magnitude still passes the +/-0.10 dB sub-coefficient band.
 
-The named saturation interaction did not retain a sign. At mix zero, `I_R`
-was approximately `+0.48 dB` for stored 95 = 32 and `−0.85 dB` for 96 at all
-three notes; `I_carrier` likewise changed from about `−0.21` to `+0.88 dB`.
-Mix 96 showed the same lack of a two-value stable law. The p5=127 endpoint was
-exactly null (`0.000000 dB` carrier and RMS on-minus-off). The isolated OSC2
-leakage control stayed below −119 dB at all tested notes in both engines, and
-all cells had zero mismatches, zero non-finite samples, and peaks below 0.8.
+`C` is the carrier on/off denominator residual. The table reports every
+nonzero-p95 C condition. Each cell gives note 60 exactly followed by the full
+notes 48/60/72 range in brackets:
 
-The tracked probe therefore passes its controls but proves no reference
-coefficient, placement rule, or named saturation interaction. No engine or DSP
-file changed, and no trim is justified. Probe CSV SHA-256 values are
-`cbccd35d26753c20993ae3d59c45776b8f6ea2d4d3850d0fdc4c8a48560192e` for note
-60 and `69d569ec53c1882e2107480a4e1b9b8ba4dc1921c5e828a1e351efc0a49bf31c`
-for the confirming notes.
+| p95 | mix | C, p23=0 dB | C, p23=64 dB |
+|---:|---:|---:|---:|
+| 16 | 0 | -0.000001 [-0.000002,+0.000006] | +0.013470 [+0.013380,+0.013840] |
+| 16 | 96 | -0.000002 [-0.000002,+0.000006] | +0.060752 [+0.060394,+0.060752] |
+| 32 | 0 | -0.000003 [-0.000004,+0.000012] | -0.209952 [-0.210111,-0.209254] |
+| 32 | 96 | -0.000003 [-0.000004,+0.000012] | +0.033038 [+0.032392,+0.033038] |
+| 48 | 0 | -0.000004 [-0.000006,+0.000018] | +0.182076 [+0.181914,+0.182938] |
+| 48 | 96 | -0.000004 [-0.000006,+0.000018] | -0.064619 [-0.065569,-0.064619] |
+| 64 | 0 | -0.000006 [-0.000008,+0.000024] | +0.741073 [+0.740953,+0.741974] |
+| 64 | 96 | -0.000006 [-0.000008,+0.000024] | -0.192038 [-0.193143,-0.191615] |
+| 80 | 0 | -0.000007 [-0.000010,+0.000030] | +0.901385 [+0.901318,+0.902298] |
+| 80 | 96 | -0.000008 [-0.000010,+0.000030] | -0.290752 [-0.292044,-0.289019] |
+| 96 | 0 | -0.000009 [-0.000012,+0.000036] | +0.883081 [+0.883061,+0.884008] |
+| 96 | 96 | -0.000009 [-0.000012,+0.000036] | -0.295471 [-0.296846,-0.292351] |
+| 112 | 0 | -0.000010 [-0.000014,+0.000042] | +0.807426 [+0.807426,+0.808368] |
+| 112 | 96 | -0.000010 [-0.000014,+0.000042] | -0.208121 [-0.209138,-0.203101] |
+| 127 | 0 | -0.000012 [-0.000016,+0.000047] | +0.722489 [+0.722489,+0.723447] |
+| 127 | 96 | -0.000012 [-0.000016,+0.000047] | -0.080129 [-0.081266,-0.074223] |
 
-### Full factory evidence
+Thus only the `p23=0` denominator control passes +/-0.05 dB. Many `p23=64`
+cells fail it; omitting them was selective reporting.
 
-The same integrated executable was run against all 128 factory patches:
+### Continuous saturation interaction and candidate law
 
-```powershell
-./build/s1probe-final-head.exe compare $reference ext/synth1/Synth1/soundbank00 `
-  --csv build/factory-final-head.csv
-./build/s1probe-final-head.exe summarise build/factory-final-head.csv
-```
+At note 60, mix zero, the p23=64 raw `E_carrier` curve for p95
+`0,16,32,48,64,80,96,112,127` is respectively `+0.172305, +0.185775,
+-0.037647, +0.354381, +0.913378, +1.073691, +1.055387, +0.979731,
++0.894794 dB`. After the matched p23=0 and p95=0 controls, `I_carrier` at the
+eight nonzero points is `+0.013471, -0.209949, +0.182080, +0.741078,
++0.901393, +0.883090, +0.807436, +0.722500 dB`; `I_R` is `+0.182809,
++0.480515, -0.123956, -0.759514, -0.893852, -0.845904, -0.750454,
+-0.654299 dB`. Notes 48 and 72 reproduce the curve: across all notes and both
+mixes, maximum magnitudes are `0.902308 dB` for `I_carrier` and `0.894095 dB`
+for `I_R`. This is one note-stable, drive-dependent curve with a zero crossing,
+not absence of a stable law. The old same-sign test at only p95 32 and 96
+straddled that curve and was mis-specified.
 
-The CSV SHA-256 is
-`dd13c651be53eaaa1a6496f701cccb9f825b22fc960bc738b8759168285b7319`.
+Saturation engagement remains valid: reference THD movement at p95=0, mix=0
+is `+90.444556`, `+106.438957`, and `+119.892771 dB` at notes 48, 60, and 72;
+ours is `+89.071423`, `+104.574490`, and `+106.170373 dB`. At the p5=127
+endpoint, OSC2 and RMS on-minus-off are `+0.000000 dB` in both the reference
+and engine at all three notes. Leakage is checked at all three notes and gain
+64 (worst reported f0/f2 is below -119 dB); every factorial row has zero
+mismatches, zero non-finite samples, and peak below 0.8.
+
+The same run also breaks the single-tone saturation transfer. At `p95=0`,
+mix 96 and `p23=64` the reference THD is `-17.032`, `-17.175` and
+`-17.080 dB` at notes 60, 48 and 72 while this engine reads `-36.147`,
+`-36.470` and `-36.172 dB`, and the matched `p23=0` control has no comparable
+gap. The single-tone cell of the same run still lands on the tabulated
+-13.9 dB knot. This is recorded with the transfer itself under "Filter
+saturation, measured and implemented" above; it is the direct waveform-domain
+statement of the interaction curve measured here.
+
+Matched reference waveform analysis names a candidate transfer for p23:
+
+\[
+y = \frac{x(1+d)}{1+d|x|}
+\]
+
+This is a peak-normalised softsign, rather than the currently implemented
+peak-normalised tanh derived from one sine. At stored p23=64 the direct
+reference fit gives `d=2.831889409` and about `-68.9 dB` waveform residual.
+A temporary implementation using reference-fitted softsign drive knots reduced
+the full three-note direct interaction to maximum `|I_carrier|=0.007389 dB`
+and `|I_R|=0.007277 dB`; its probe CSV SHA-256 was
+`425822b214e87ece46c44efaa96301d28c13a30b63853dc87d70bb43d689bb06`.
+
+The waveform fitter, fitted knot table, and temporary mutation were exploratory
+build artifacts and are not tracked. They are a bounded lead, not accepted
+proof or a basis for an engine change. The tracked, pinned evidence is the
+two-tone interaction curve above; that measured law remains open.
+
+The candidate was nevertheless rejected by the required 92-row closure gate:
+
+| engine | on MAE | off MAE | delta |
+|---|---:|---:|---:|
+| integrated baseline | 4.585238 | 4.569491 | +0.015747 dB |
+| temporary softsign | 4.590173 | 4.499079 | +0.091093 dB |
+
+The candidate on/off CSV SHA-256 values were
+`548ab76a1df2a2dff5b9dd1998df4744e8b95876eecc84d59e06186be0152167`
+and `993f9df5727e23c0d7795a5f54b07439370b95b76e50c0cbcd400144870d31a2`.
+Coverage remained 92 rows with the same five crashes. All 24 p23=0 rows were
+byte-identical. Among 68 p23>0 rows, absolute error improved/worsened `42/26`
+for sub-on and `46/22` for sub-off. Most importantly, sub-on worsened from its
+baseline and remained above sub-off, so the repair acceptance gate failed.
+
+The full factory candidate also failed the row-prediction gate even though its
+aggregate absolute level MAE improved from `1.676711` to `1.637975 dB`: only
+five of 123 matched rows changed, with two better and three worse, and no
+independent prediction supplied every changed row's error direction. Its CSV
+SHA-256 was `d6b82008d2fc2de72dbc83bb2fa7b86718a5d1ebfe55358b019777810fdc3447`;
+the same five reference crashes remained. Aggregate improvement cannot replace
+the required row-level prediction.
+
+The temporary DSP/engine mutation was reverted. No trim was fitted, and this
+repair changes no DSP or engine file. The peak-normalised softsign remains a
+named two-tone candidate, but its implementation is blocked by the corpus and
+factory gates.
+
+**This is not a pass.** The preregistered stop condition for leaving the engine
+unchanged was that no stable signed `R`, `C` or `I` remains. `R` passes its
+band. `C` and `I` do not: `C` at `p23=64` reaches `+0.901` dB against a
+±0.05 dB band, `I_carrier` reaches `0.902` dB and `I_R` reaches `0.894` dB
+against a ±0.10 dB band, raw `E_carrier` reaches `+1.074` dB, and all of them
+hold their sign across notes 48, 60 and 72 to within about 0.003 dB. A
+note-stable, drive-dependent saturation law of up to roughly 1.07 dB is
+therefore measured, named, and left open. The engine is unchanged because the
+only candidate replacement failed the corpus and factory row gates, not because
+the residual was shown to be absent.
+
+### Full factory baseline
+
+The integrated executable was run against all 128 factory patches. The CSV
+SHA-256 is `dd13c651be53eaaa1a6496f701cccb9f825b22fc960bc738b8759168285b7319`.
 There are 123 matched rows and the same five reference crashes (`095`, `098`,
 `100`, `101`, `106`), with zero parameter mismatches, zero engine non-finite
 rows, and four engine-silent-by-sustain rows. Absolute level MAE is

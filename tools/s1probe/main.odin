@@ -884,7 +884,7 @@ main :: proc() {
 		cmd_fmsubprobe(dll, parse_env_values(fsv), u8(clamp(fsnote, 0, 127)))
     case "substageprobe":
         ssnotes := "60"
-        ssp95 := "0,32,96"
+        ssp95 := SUBSTAGE_P95_DEFAULT
         ssmix := "0,96"
         sssaturation := "0,64"
         ssgain := 64
