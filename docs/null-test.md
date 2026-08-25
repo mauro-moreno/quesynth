@@ -5321,6 +5321,215 @@ Both read spectral **6.6510 / 5.9766**, envelope **2.0969 / 1.7701**,
 `|level|` mean **1.6528**, null **−6.6582 / −6.0558**, and correlation mean
 **0.7607**. Thus **0 of 123 factory patches moved**.
 
+### Unison stack measurement and gate
+
+The committed fixture and command reproduce the external readings directly:
+
+```powershell
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 16,22,32,64,96,127 --note 84
+```
+
+The fixture is one sine oscillator, an open static filter, no sub, effects or
+modulation, and four unison voices. The command opens a fresh reference instance
+for every render. Its zero-detune RMS ratios for voice counts 1..8 are
+**1.0000 / 1.7123 / 2.5910 / 3.4068 / 3.8003 / 3.8554 / 3.2229 /
+3.6704**. Those agree with the committed phase constants' predicted coherent
+sums within 0.16%, so the layers sum at unity; there is no `1/sqrt(N)` trim.
+
+Parameter 75 was measured over 36 layout-checked rows at notes 84 and 108. Six
+of them, including the factory default and endpoint, are:
+
+| stored 75 | reference outer half-span | fitted half-span | after level / null |
+|--:|--:|--:|--:|
+| 16 | 2.244 cents | 2.243 | −0.216 / −32.24 dB |
+| 22 | 3.239 cents | 3.241 | −0.201 / −32.07 dB |
+| 32 | 5.129 cents | 5.128 | −0.213 / −32.45 dB |
+| 64 | 13.614 cents | 13.615 | −0.209 / −32.27 dB |
+| 96 | 27.662 cents | 27.661 | −0.185 / −32.52 dB |
+| 127 | 49.999 cents | 49.987 | −0.226 / −27.29 dB |
+
+The four layers read the signed `−0.5, −1/6, +1/6, +0.5` layout. The fit across
+all 36 rows is `7.83036*(2^(stored/44.0306)-1)` cents of outer half-span,
+implemented as twice that value before the symmetric layout. Its worst relative
+error is 0.22% and its RMS relative error is 0.066%. These commands produce all
+36 fit rows:
+
+```powershell
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 6,8,12,16,20,22,26,32,40,48,56,64,72,80,88,96,104,112,120,127 --note 84
+./build/s1probe.exe unisonprobe --fixture tools/s1probe/fixtures/unison-four.sy1 `
+  --values 2,3,4,5,6,8,10,12,16,20,24,32,48,64,80,96 --note 108
+```
+
+The old quadratic read only 1.50 cents at the default stored value 22, against
+the reference's 3.239; the linear law before it read 4.331. The fitted law takes
+the default controlled null from **−0.30 dB to −32.07 dB**, so detune no longer
+takes that null to about zero.
+
+The same command checks the other unison controls. With oscillator phase fixed,
+the four-voice RMS ratios at parameter 92 = 0/64/127 are **4.0000 / 2.0079 /
+3.4068**. It prints each directional layer phase at 64 and 127; the cumulative
+projection resolves about 0.0004 turns and revalidates the committed constants,
+while the detuned projection independently ties the first four phases to their
+pitch slots. Parameter 85 at stored 12 and 36 reads the pitch groups **−12/0**
+and **0/+12 semitones**. The fixture at zero detune reads **−0.3293 dB** level
+and **−32.6465 dB** null; with parameter 73 off it reads **−0.1406 dB** and
+**−38.1387 dB**. These are probe outputs, not values copied from the engine.
+
+### Parameter 76: measured OSC1 component field
+
+The original detuned reproduction changes parameter **76** from 0 to 20 while
+75 remains 22. Parameter 76 is not another outer unison spread. It creates
+OSC1's centre plus four signed pairs even when parameter 73 is off:
+
+```text
+d76 = 20 * stored76 / 127 cents
+inner = {-7, -5, -3, -1, 0, +1, +3, +5, +7} * d76
+```
+
+At stored 20 the reference reads **−22.049, −15.761, −9.448, −3.146,
+−0.008, +3.149, +9.466, +15.730 and +22.055 cents**. Stored 127 reads
+**−140.012, −99.993, −59.987, −20.013, −0.010, +19.990, +60.007,
++99.993 and +140.007 cents**. Sweeps at stored 8, 16, 32, 64 and 96 and at
+notes 60, 84 and 108 follow the same signed law. The engine now binds the base
+step directly and renders all nine components inside every outer layer; it no
+longer multiplies parameter 76 by parameter 93's symmetric spread.
+
+Parameter 75 composes outside that field. With two voices, p75=64 and p76=127,
+the probe resolves all **18** Cartesian frequencies, from −153.617 to +153.607
+cents. The p76 voice-count control asks for 9, 18 and 36 peaks at counts 1, 2
+and 4 and gets exactly those counts; the first/last readings are
+−140.012/+140.007, −153.617/+153.607 and −153.622/+153.611 cents. Thus the
+inner field stays nine components per outer layer rather than taking its size
+from parameter 93.
+
+The free phases are signed and are not an additive inner-plus-outer table. The
+probe prints all 36 separately resolved phases at p75=64/p76=127. A second
+controlled field at p75=22/p76=20 reproduces each of the first four outer-layer
+rows within 0.018 turns, which is the matrix used by the engine. Parameter 91 is
+also explicit now: at p76=127, p91=0 prints the non-symmetric OSC1 phases
+`+0.7420,+0.8907,+0.4712,+0.8070,0,+0.1927,+0.5815,+0.3503,+0.8183`
+against the centre, while p91=1 puts every reading within 0.0075 turns of zero.
+
+The sub was isolated rather than copied from OSC1. With a sine sub at `97=1`,
+sub gain 110, one outer voice and oscillator 1 held at its own octave, p76=0
+leaves one component at the sub frequency. At p76=127 the reference reads nine
+sub components at −140/−100/−60/−20/0/+20/+60/+100/+140 cents. Each isolated
+component reads **4402.9--4409.8** against the p76=0 centre at **14703.3**:
+the gain is **0.3 per component**, not `1/9`. Its separately measured free
+phases are
+`+0.3728,+0.4481,+0.2350,+0.3992,0,+0.0920,+0.2871,+0.1751,+0.4059`.
+
+Reproduce the signed values, the p75 Cartesian field, p91 alignment and the
+three voice counts at note 60. The note-108 run also resolves the controlled
+four-voice field; below note 96 its closest pair is narrower than one FFT bin.
+
+```powershell
+odin build tools/s1probe -out:build/s1probe.exe
+./build/s1probe.exe unisonprobe "ext/synth1/Synth1/Synth1 VST64.dll" `
+  --fixture tools/s1probe/fixtures/unison-four.sy1 --values 22 --note 60
+./build/s1probe.exe unisonprobe "ext/synth1/Synth1/Synth1 VST64.dll" `
+  --fixture tools/s1probe/fixtures/unison-four.sy1 --values 22 --note 108
+```
+
+The DSP suite pins the two external signed frequency rows, the public one-voice
+nine-component render, both signed phase sets and fixed alignment, and the
+sub's signed frequencies and 0.3 gain. These tests do not derive their expected
+values from the engine helpers and reject the former symmetric guess.
+
+The committed p76-on fixture is the stop gate:
+
+```powershell
+./build/s1probe.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" `
+  tools/s1probe/fixtures/unison-four-p76-20.sy1 --limit 1 --note 60
+```
+
+The former engine read **3.26 dB spectral, +3.61 dB level and −0.40 dB null**.
+The measured field reads **3.95 dB spectral, 0.78 dB envelope, +0.35 dB level
+and −16.82 dB null**. Spectral error does not improve on this one fixture, so it
+is not used as a broad pass claim; the load-bearing stop condition is that the
+original detuned fixture no longer nulls near 0 dB.
+
+The frozen shared subset has 48 p76-nonzero patches among the 67 selected
+unison-on files. The same names were used before and after; the unison-off
+control has 40 non-silent reference rows:
+
+| metric, mean / median | before on | after on | before off | after off |
+|---|--:|--:|--:|--:|
+| spectral dB | 9.98 / 8.78 | 8.83 / 7.46 | 10.88 / 9.41 | 9.39 / 8.17 |
+| envelope dB | 4.91 / 4.48 | 5.18 / 4.48 | 4.65 / 3.71 | 5.01 / 3.92 |
+| signed level dB | −8.82 / −7.40 | −9.32 / −7.89 | −8.01 / −7.35 | −8.59 / −7.77 |
+| null dB | −0.22 / −0.09 | −0.36 / −0.13 | −0.33 / −0.19 | −0.72 / −0.25 |
+
+The spectral and null aggregates improve both with unison on and off, as they
+must: parameter 76 is an OSC1 construction and remains active when parameter 73
+is off. Envelope mean and signed level regress and are recorded rather than
+hidden. This does **not** claim all parameter-76 or unison behavior is fixed.
+The p76 phase rows for outer layers 4--7, its outer-layer sub phase composition,
+and its FM and hard-sync interactions remain unmeasured; the engine retains the
+separately measured component and outer offsets in those paths rather than
+fitting a trim to this corpus.
+
+The shared-bank gate keeps the original selection (`95 >= 32` and unison on),
+flattens recursive input into numbered files, clears stale output, works with a
+single selected patch under strict mode, writes `on.csv` and `unison-off.csv`,
+and throws on any non-zero native probe exit:
+
+```powershell
+git archive --format=tar --output=build/unison-before.tar 8e6c3b4
+Remove-Item build/unison-before-src -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force build/unison-before-src | Out-Null
+tar -xf build/unison-before.tar -C build/unison-before-src
+odin build build/unison-before-src/tools/s1probe -out:build/s1probe-before.exe
+odin build tools/s1probe -out:build/s1probe.exe
+$shared = 'path/to/the/frozen/shared-gate'
+pwsh tools/unison-gate.ps1 -SharedBank $shared `
+  -S1Probe build/s1probe-before.exe -Out build/unison-gate-before
+pwsh tools/unison-gate.ps1 -SharedBank $shared `
+  -S1Probe build/s1probe.exe -Out build/unison-gate-after
+```
+
+The reported frozen set has 79 files, 76 distinct parameter-record sets and 67
+patches with unison enabled; those same 67 rows ran before and after. The full
+unison-on aggregate is:
+
+| metric, mean / median | parent `8e6c3b4` | repaired |
+|---|--:|--:|
+| spectral error | 12.3807 / 12.2725 | 9.7101 / 8.4670 |
+| envelope error | 5.2059 / 4.6858 | 4.7638 / 4.1809 |
+| signed level error | −11.0633 / −9.2135 dB | −7.1529 / −6.4072 dB |
+| null depth | −0.4549 / −0.0417 dB | −0.6354 / −0.1138 dB |
+
+Turning parameter 73 off killed the reference on the same 14 patches in both
+runs, so the matched control has 53 rows. On that exact set:
+
+| metric, mean / median | before on | after on | before off | after off |
+|---|--:|--:|--:|--:|
+| spectral | 12.3492 / 12.2725 | 9.6225 / 8.4670 | 13.7553 / 13.5947 | 10.3723 / 9.1411 |
+| envelope | 4.9196 / 4.4619 | 4.6171 / 4.1809 | 4.4425 / 3.5207 | 4.3470 / 3.5705 |
+| signed level dB | −10.0540 / −8.4668 | −6.1726 / −5.5544 | −6.2337 / −6.0828 | −6.6567 / −5.1165 |
+| null dB | −0.4202 / −0.0458 | −0.6174 / −0.1520 | −0.7879 / −0.0839 | −0.9616 / −0.2257 |
+
+The off control changes because parent `8e6c3b4` applied parameter 85 as a
+global transpose even after unison collapsed to one layer. The repaired
+alternating-layer law makes the unison pitch control inert in that state.
+
+The factory no-change gate compared executables built from `8e6c3b4` and this
+repair against all 123 loadable patches. The CSVs are byte-identical, SHA-256
+`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`.
+No factory patch contains a 73, 75, 84, 85 or 92 record, which is the actual
+reason this unison change cannot reach the bank. The unchanged summary is
+spectral **6.6510 / 5.9766**, envelope **2.0969 / 1.7701**, absolute level
+**1.6528 dB**, and null **−6.6582 / −6.0558 dB**.
+
+```powershell
+./build/s1probe-before.exe compare ext/synth1/Synth1/soundbank00 --csv build/unison-factory-before.csv
+./build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv build/unison-factory-after.csv
+```
+
+
 ### Still open on the sub
 
 - **Unison**, above, which is now the leading defect on the corpus patches that

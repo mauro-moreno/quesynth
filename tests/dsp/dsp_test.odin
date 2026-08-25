@@ -801,6 +801,302 @@ test_unison_switch_collapses_voice_count :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.bind_patch(p).unison_voices, 8)
 }
 
+// Outer-layer half-spans read off the reference by
+//
+//     s1probe unisonprobe --values 6,8,12,16,20,22,26,32,40,48,56,64,72,80,88,96,104,112,120,127 --note 84
+//     s1probe unisonprobe --values 2,3,4,5,6,8,10,12,16,20,24,32,48,64,80,96 --note 108
+//
+// Both sweeps print the four signed layer cents and check them against the
+// reference's own -1/2, -1/6, +1/6, +1/2 layout before reporting a half-span,
+// so a row the transform could not separate cannot become a number here. The
+// two notes agree to 0.13% where they overlap. The bound allows 0.3% plus a
+// small floor for rounded low-span readings, yet stays tight enough to reject
+// both prior laws. At the factory default of stored 22 the reference reads
+// 3.239 cents; the quadratic before this read 1.500 and the linear before that
+// 4.331.
+@(test)
+test_unison_detune_matches_the_reference_cents_sweep :: proc(t: ^testing.T) {
+	for reading in ([][2]f32{
+		{2, 0.251},
+		{4, 0.509},
+		{8, 1.051},
+		{16, 2.244},
+		{22, 3.239},
+		{32, 5.129},
+		{64, 13.614},
+		{96, 27.662},
+		{127, 49.999},
+	}) {
+		stored, reference := reading[0], reading[1]
+		bound := 0.003 * reference + 0.001
+		p := default_patch()
+		p.values[75] = int(stored)
+		full_span := engine.bind_patch(p).unison_detune
+		// The layout halves the span, so the outer layers sit at +/- half of it.
+		for outer in ([]f32{-0.5 * full_span, 0.5 * full_span}) {
+			expected := outer < 0 ? -reference : reference
+			testing.expectf(t, abs(outer - expected) < bound,
+				"stored %.0f outer layer %.4f cents; reference reads %+.3f (bound %.4f)",
+				stored, outer, expected, bound)
+		}
+	}
+}
+
+// Parameter 76 is an OSC1-internal construction, measured with outer unison
+// disabled. The nine signed frequencies at stored 20 and 127 come from Synth1
+// itself; they are not derived from the engine helper under test. Keeping every
+// sign rejects the former parameter-93-dependent symmetric spread, which gives
+// one centre component when the outer voice count is one.
+@(test)
+test_osc1_inner_detune_matches_the_signed_reference_components :: proc(t: ^testing.T) {
+	for sweep in ([]struct {
+		stored: int,
+		reference: [9]f32,
+		bound: f32,
+	}{
+		{20, {-22.049, -15.761, -9.448, -3.146, -0.008, 3.149, 9.466, 15.730, 22.055}, 0.03},
+		{127, {-140.012, -99.993, -59.987, -20.013, -0.010, 19.990, 60.007, 99.993, 140.007}, 0.03},
+	}) {
+		p := default_patch()
+		p.values[73] = 0
+		p.values[93] = 1
+		p.values[76] = sweep.stored
+		step := engine.bind_patch(p).osc1_detune
+		for expected, i in sweep.reference {
+			got := engine.osc1_component_cents(i, step)
+			testing.expectf(t, abs(got - expected) < sweep.bound,
+				"stored %d component %d read %+.3f cents; reference reads %+.3f",
+				sweep.stored, i, got, expected)
+		}
+	}
+}
+
+// Exercise the public engine path with one outer voice. The old symmetric
+// guess made parameter 76 inert here because its only outer spread was zero.
+@(test)
+test_osc1_inner_detune_renders_nine_components_with_unison_off :: proc(t: ^testing.T) {
+	N :: 48000
+	single := make([]f32, N)
+	defer delete(single)
+	inner := make([]f32, N)
+	defer delete(inner)
+	p := phase_probe_patch()
+	p.values[0] = 0 // sine OSC1: each projected frequency is unambiguous
+	p.values[5] = 0 // OSC1 only
+	p.values[73] = 0
+	p.values[93] = 1
+	p.values[76] = 0
+	render_phase_patch(p, single)
+	p.values[76] = 127
+	render_phase_patch(p, inner)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0)
+	single_magnitude, _ := fundamental_phase(single, f0, f64(SR))
+	testing.expect(t, single_magnitude > 0.005, "the p76=0 singleton was silent")
+	for cents, i in ([9]f64{-140, -100, -60, -20, 0, 20, 60, 100, 140}) {
+		hz := f0 * math.pow(2.0, cents / 1200.0)
+		magnitude, _ := fundamental_phase(inner, hz, f64(SR))
+		ratio := magnitude / single_magnitude
+		testing.expectf(t, abs(ratio - 0.3) < 0.02,
+			"component %d at %+.0f cents was %.4f of the singleton; reference reads 0.3",
+			i, cents, ratio)
+	}
+}
+
+// The external projection reads signed, non-symmetric free phase sets. An RMS
+// or null depth could accept their mirrors, so inspect the note-on state and pin
+// each sign. Engaging parameter 91 is a separate measured state: it aligns all
+// nine components rather than retaining either free set.
+@(test)
+test_osc1_inner_components_use_signed_free_phases_and_fixed_alignment :: proc(t: ^testing.T) {
+	free_osc1 := [9]f32{0.7485, 0.8978, 0.4838, 0.8087, 0, 0.1927, 0.5867, 0.3539, 0.8215}
+	free_sub := [9]f32{0.3728, 0.4481, 0.2350, 0.3992, 0, 0.0920, 0.2871, 0.1751, 0.4059}
+	for fixed in ([]bool{false, true}) {
+		p := phase_probe_patch()
+		p.values[73] = 0
+		p.values[93] = 1
+		p.values[76] = 127
+		p.values[91] = fixed ? 1 : 0
+		e: engine.Engine
+		engine.engine_load_patch(&e, p, SR)
+		engine.engine_note_on(&e, 60, 1.0)
+		u := &e.voices[0].unison[0]
+		osc1_centre := engine.osc1_component(u, 4).phase
+		sub_centre := engine.sub_component(u, 4).phase
+		for component in 0 ..< 9 {
+			osc1 := engine.osc1_component(u, component).phase - osc1_centre
+			sub := engine.sub_component(u, component).phase - sub_centre
+			for osc1 < 0 {osc1 += 1}
+			for sub < 0 {sub += 1}
+			want_osc1 := fixed ? f32(0) : free_osc1[component]
+			want_sub := fixed ? f32(0) : free_sub[component]
+			testing.expectf(t, abs(osc1 - want_osc1) < 0.00011,
+				"fixed=%v OSC1 component %d phase %.4f; reference reads %.4f",
+				fixed, component, osc1, want_osc1)
+			testing.expectf(t, abs(sub - want_sub) < 0.00011,
+				"fixed=%v sub component %d phase %.4f; reference reads %.4f",
+				fixed, component, sub, want_sub)
+		}
+		engine.engine_destroy(&e)
+	}
+}
+
+// The sub was isolated in the reference at -1 octave. Each of its nine signed
+// components is 0.3 of the p76=0 centre; a 1/9 trim would fail this render test.
+@(test)
+test_parameter_76_sub_components_keep_the_measured_signed_gain :: proc(t: ^testing.T) {
+	N :: 192000 // four seconds resolves the closest +/-20-cent sub pair
+	single := make([]f32, N)
+	defer delete(single)
+	inner := make([]f32, N)
+	defer delete(inner)
+	p := phase_probe_patch()
+	p.values[0] = 0
+	p.values[5] = 0
+	p.values[73] = 0
+	p.values[93] = 1
+	p.values[95] = 110
+	p.values[96] = 0
+	p.values[97] = 1
+	p.values[76] = 0
+	render_phase_patch(p, single)
+	p.values[76] = 127
+	render_phase_patch(p, inner)
+
+	f0 := f64(440.0) * math.pow(f64(2.0), (60.0 - 69.0) / 12.0) * 0.5
+	single_magnitude, _ := fundamental_phase(single, f0, f64(SR))
+	testing.expect(t, single_magnitude > 0.005, "the isolated sub singleton was silent")
+	for cents, i in ([9]f64{-140, -100, -60, -20, 0, 20, 60, 100, 140}) {
+		hz := f0 * math.pow(2.0, cents / 1200.0)
+		magnitude, _ := fundamental_phase(inner, hz, f64(SR))
+		ratio := magnitude / single_magnitude
+		testing.expectf(t, abs(ratio - 0.3) < 0.02,
+			"sub component %d at %+.0f cents was %.4f of the singleton; reference reads 0.3",
+			i, cents, ratio)
+	}
+}
+
+// `s1probe` finds two pitch groups at every non-zero parameter-85 setting:
+// even layers stay on the note and odd layers move by the displayed interval.
+// This signed wiring test prevents the old global transpose from returning.
+@(test)
+test_unison_pitch_alternates_the_reference_voice_groups :: proc(t: ^testing.T) {
+	testing.expect_value(t, engine.unison_layer_pitch(0, 12), 0.0)
+	testing.expect_value(t, engine.unison_layer_pitch(1, 12), 12.0)
+	testing.expect_value(t, engine.unison_layer_pitch(2, -12), 0.0)
+	testing.expect_value(t, engine.unison_layer_pitch(3, -12), -12.0)
+}
+
+// The signed per-layer start phases, in turns, from
+//
+//     s1probe unisonprobe --values 32,64,96,127 --note 84
+//
+// which reads them twice by different constructions. The digits asserted here
+// are the cumulative projection with oscillator phase fixed and parameter 92 at
+// its top, which resolves about 0.0004 turns. The same command's detuned rows
+// project the four layers simultaneously and against the lowest of them, with
+// no subtraction and with parameter 91 at zero, and read layers 1..3 at +0.174,
+// +0.988 and +0.166 -- the second block below, at that method's own coarser
+// resolution.
+//
+// They are kept signed rather than reduced to magnitudes: cancellation is an
+// even function of an offset, so a magnitude cannot tell a layout from its
+// mirror. The second reading is also the only one that pins a phase to a detune
+// slot, since any permutation of one phase set has the same stack RMS.
+@(test)
+test_unison_phase_spread_uses_signed_reference_offsets :: proc(t: ^testing.T) {
+	for reading in ([][2]f32{
+		{1, 0.174683},
+		{2, 0.988525},
+		{3, 0.166234},
+		{4, 0.875973},
+		{5, 0.779656},
+		{6, 0.375866},
+		{7, 0.837611},
+	}) {
+		got := engine.unison_phase_offset(int(reading[0]), 1.0)
+		testing.expectf(t, abs(got - reading[1]) < 0.0004,
+			"layer %.0f phase factor %.6f; reference reads %.6f",
+			reading[0], got, reading[1])
+	}
+	// The independent detuned reading, at its own resolution.
+	for reading in ([][2]f32{
+		{1, 0.174},
+		{2, 0.988},
+		{3, 0.166},
+	}) {
+		got := engine.unison_phase_offset(int(reading[0]), 1.0)
+		testing.expectf(t, abs(got - reading[1]) < 0.007,
+			"layer %.0f phase factor %.6f; the detuned projection reads %.3f",
+			reading[0], got, reading[1])
+	}
+	// The patch binding scales those offsets rather than replacing them.
+	p := default_patch()
+	p.values[92] = 64
+	got := engine.unison_phase_offset(1, engine.bind_patch(p).unison_phase_shift)
+	testing.expectf(t, abs(got - 0.088276) < 0.0004,
+		"stored 64 phase offset %.6f; reference reads %.6f", got, 0.088276)
+}
+
+// The reference's layer amplitudes are summed at unity. This is deliberately
+// a signed external law, not a trim chosen to close one corpus row.
+@(test)
+test_unison_stack_has_no_count_trim :: proc(t: ^testing.T) {
+	for count in ([]int{1, 2, 4, 8}) {
+		testing.expect_value(t, engine.unison_stack_scale(count), 1.0)
+	}
+}
+
+// What says the stack is summed at unity is that its level for 1..8 layers is
+// already accounted for without a trim. `s1probe unisonprobe` reads the
+// reference's steady RMS at zero detune, and the ratios are far from both
+// 1/sqrt(N) and N:
+//
+//     voices  1       2       3       4       5       6       7       8
+//     ratio   1.0000  1.7123  2.5910  3.4068  3.8003  3.8554  3.2229  3.6704
+//
+// They are the coherent sum of the start phases, and they fall at seven layers,
+// which no monotonic count law of any shape can do. This test takes the phase
+// constants, sums them as unit phasors and checks the magnitudes against those
+// readings -- so the phase law and the gain law are tied to one measurement and
+// neither can be adjusted alone.
+@(test)
+test_unison_stack_level_is_the_coherent_sum_of_the_phases :: proc(t: ^testing.T) {
+	reference := [8]f32{1.0000, 1.7123, 2.5910, 3.4068, 3.8003, 3.8554, 3.2229, 3.6704}
+	re, im, one: f32
+	for count in 1 ..= 8 {
+		turns := engine.unison_phase_offset(count - 1, 1.0)
+		re += math.cos(2.0 * math.PI * turns)
+		im += math.sin(2.0 * math.PI * turns)
+		magnitude := math.sqrt(re * re + im * im) * engine.unison_stack_scale(count)
+		if count == 1 {one = magnitude}
+		ratio := magnitude / one
+		expected := reference[count - 1]
+		testing.expectf(t, abs(ratio / expected - 1.0) < 0.006,
+			"%d layers sum to %.4f of one layer; the reference's RMS ratio is %.4f",
+			count, ratio, expected)
+	}
+}
+
+// Parameters 84 and 85 keep their measured controller ranges. Their use in the
+// layer layout is tested above; this pins the state bindings independently.
+@(test)
+test_unison_pan_and_pitch_bindings_keep_reference_ranges :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[84] = 0
+	p.values[85] = 0
+	bound := engine.bind_patch(p)
+	testing.expectf(t, abs(bound.unison_pan_spread + 1.0) < 0.000001,
+		"pan state 0 bound to %.6f; reference reads -1", bound.unison_pan_spread)
+	testing.expect_value(t, bound.unison_pitch, -24.0)
+	p.values[84] = 64
+	p.values[85] = 24
+	bound = engine.bind_patch(p)
+	testing.expectf(t, abs(bound.unison_pan_spread) < 0.000001,
+		"pan state 64 bound to %.6f; reference reads 0", bound.unison_pan_spread)
+	testing.expect_value(t, bound.unison_pitch, 0.0)
+}
+
 // Polyphony comes from parameter 94 and sizes the pool.
 @(test)
 test_polyphony_binding_and_pool_size :: proc(t: ^testing.T) {

@@ -637,6 +637,7 @@ usage :: proc() {
 	fmt.eprintln("  s1probe fmsubprobe [dll] [--values <list>] [--note <n>]")
 	fmt.eprintln("  s1probe phaseprobe [dll] [--values <list>]")
 	fmt.eprintln("  s1probe phaseabsolute [dll] [--values <list>]")
+	fmt.eprintln("  s1probe unisonprobe [dll] [--fixture <patch.sy1>] [--values <list>] [--note <n>]")
 	fmt.eprintln("  s1probe choruspatch [dll] [--dir <bank>] [--note <n>] [--bands] <patch.sy1>...")
 	fmt.eprintln("  s1probe patchdiag   [dll] <patch.sy1> [--note <n>]")
 	fmt.eprintln("                          -- peak/RMS of one patch, ref vs. ours, with a fixed")
@@ -674,8 +675,8 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" {
-		if len(rest) >= 1 && (cmd == "fmfilter" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
+	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" {
+		if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
 		}
@@ -818,6 +819,31 @@ main :: proc() {
 			}
 		}
 		cmd_phaseabsolute(dll, parse_env_values(pavals))
+	case "unisonprobe":
+		upfixture := UNISON_FIXTURE_DEFAULT
+		upvalues := "16,22,32,64,96,127"
+		upnote := 84
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--fixture":
+					if i + 1 >= len(rest) {usage()}
+					upfixture = rest[i + 1]
+					i += 2
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					upvalues = rest[i + 1]
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &upnote) {usage()}
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_unisonprobe(dll, upfixture, parse_env_values(upvalues), u8(clamp(upnote, 0, 127)))
 	case "mixprobe":
 		mvals := "0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,127"
 		{

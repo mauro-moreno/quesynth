@@ -560,10 +560,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// where the carrier increment is known.
 	e.osc1_fm = unit_position(45, p.values[45])
 
-	// Parameter 76 is a bare 0..127. Read as cents of detune across the
-	// oscillator 1 stack; 50 cents at full is a quarter tone, which is as wide
-	// as a detune stack stays musical.
-	e.osc1_detune = 50.0 * unit_position(76, p.values[76])
+	// Parameter 76 creates nine components inside OSC1 (and its sub), even with
+	// outer unison disabled. Its measured base step is 20*stored/127 cents; the
+	// audio path applies the signed factors {-7,-5,-3,-1,0,+1,+3,+5,+7}.
+	e.osc1_detune = 20.0 * unit_position(76, p.values[76])
 
 	// Parameter 91 is the phase relationship between the two oscillators at note
 	// on. Stored zero leaves the phase free; the v1.07 alpha changelog says that
@@ -588,10 +588,11 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 			e.osc_phase_shift = OSC_PHASE_MAX_TURNS * f32(position - 1) / 126.0
 		}
 	}
-	// Parameter 92 spreads the unison stack. The same changelog entry notes it "is
-	// not effective unless the phase is fixed in the oscillator section", which is
-	// enforced at the use site in voice.odin rather than here.
-	e.unison_phase_shift = f32(resolved_position(92, p.values[92])) / 128.0
+	// Parameter 92 scales the measured per-layer phase offsets. The reference
+	// reaches the signed offsets at stored 127; zero leaves every fixed-phase
+	// layer aligned. It is only effective when parameter 91 fixes the oscillator
+	// relationship, enforced at the use site in voice.odin.
+	e.unison_phase_shift = f32(resolved_position(92, p.values[92])) / 127.0
 
 	// Parameter 96 has four states; the sub oscillator reuses oscillator 1's
 	// documented shape order.
@@ -897,8 +898,22 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.unison_voices = 1
 	}
 
-	// Parameter 75 is a bare 0..127, read as cents across the whole stack.
-	e.unison_detune = 50.0 * unit_position(75, p.values[75])
+	// Parameter 75's outer half-span is one exponential in the stored value.
+	//
+	// The constants are a fit to 36 layout-verified readings from
+	// `s1probe unisonprobe` -- stored 6..127 at note 84 and 2..96 at note 108 --
+	// and not an endpoint anchor. Worst relative error 0.22%, RMS 0.066%, which
+	// is the precision the two notes agree to (0.13% where they overlap), so the
+	// residual is the probe's and not the law's.
+	//
+	// A quadratic in the knob position fits only the top of the range: at the
+	// factory default of stored 22 it reads 1.50 cents of half-span against the
+	// reference's 3.239, and the linear law before it read 4.331.
+	//
+	// `unison_detune` holds the full span, which the symmetric -0.5..+0.5 layer
+	// layout in voice.odin halves.
+	detune_position := f32(resolved_position(75, p.values[75]))
+	e.unison_detune = 2.0 * 7.83036 * (math.pow(f32(2.0), detune_position / 44.0306) - 1.0)
 	// Displays "-64".."63".
 	e.unison_pan_spread = dsp.clamp32(display_number(84, p.values[84], 0) / 64.0, -1, 1)
 	// Displays "-24".."+24": semitones.

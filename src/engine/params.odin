@@ -351,7 +351,7 @@ Engine_Params :: struct {
 	// Parameter 45's knob position on 0..1. The audio path converts this through
 	// the measured nonlinear FM depth curve after LFO/mod-envelope movement.
 	osc1_fm:            f32,
-	// Parameter 76, in cents, spread across the oscillator 1 unison stack.
+	// Parameter 76's base step in cents for OSC1's nine inner components.
 	osc1_detune:        f32,
 	// Parameter 91, as the turns oscillator 2 starts ahead of oscillator 1. Only
 	// meaningful when `osc_phase_fixed` is set; at stored zero the reference does not
