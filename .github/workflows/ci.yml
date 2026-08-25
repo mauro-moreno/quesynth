@@ -50,6 +50,7 @@ jobs:
           odin test tests/panel
           odin test tests/vst3
 
+          odin test tools/s1probe
       # Every host, because a change to src/ that breaks one of them is not
       # visible from the suites: the tests link the engine and the patch layer,
       # not the plugin wrappers around them.

@@ -5540,15 +5540,16 @@ spectral **6.6510 / 5.9766**, envelope **2.0969 / 1.7701**, absolute level
 
 - **Unison**, above, which is now the leading defect on the corpus patches that
   use the sub.
-- **The corpus-level residual**, below: the pinned pair measures +0.280227 dB,
-  but no output stage, interaction, or further sub law has been isolated.
+- **The corpus-level residual**, below: the integrated HEAD pair measures
+  `4.585238 / 4.569491 dB`, delta **+0.015747 dB**. The earlier accepted
+  result was from a stale pre-integration measurement.
 - **The corpus gate excludes FM and related controls**, so it does not add a
   second FM/sub measurement; the FM-to-sub law and its controls are measured
   above.
 - **A uniform ~0.15 dB level deficit at amp gain 100**: single-oscillator
-  renders read a reference fundamental of 0.3099 against our 0.3045 for the saw,
-  0.1085 against 0.1069 for the pulse at width 29 — 1.3 to 1.8 %, consistent
-  across shapes, widths and notes.
+  renders read a reference fundamental of `0.3099` against our `0.3045` for the
+  saw, `0.1085` against `0.1069` for the pulse at width 29 — 1.3 to 1.8 %,
+  consistent across shapes, widths and notes.
 
 ## Amp gain 100 residual (2026-08-24)
 
@@ -5711,111 +5712,132 @@ measured output limiter; it moves by 0.1492 dB and its scale-sensitive envelope
 score changes by 0.0367 dB. Spectral, envelope, and null aggregates remain
 unchanged at the report's precision. No crash, silence, or finite-sample status
 regresses.
-### The corpus-level residual remains blocked
+### The integrated corpus residual remains open (2026-08-25)
 
-The gate was re-run from the current HEAD after the mix and parameter-91 fixes.
-`tools/corpus-level.mjs` prepares and analyses the cohort, with fixture tests in
-`tools/corpus-level.test.mjs`. `prepare` recursively reads the corpus, keeps
-effective records with `95 >= 32` and `73`, `6`, `7` and `45` all zero — sub
-audible, and unison, sync, ring modulation and oscillator 1 FM kept out — then
-deduplicates on patch version plus sorted effective parameter records. It writes
-the selected patch, a copy with only parameter 95 set to zero, six matched
-control pairs, and an index. Missing records use the loader's zero default and a
-later duplicate record wins.
+The earlier accepted result is stale. The integrated HEAD was measured first,
+using the pinned reference DLL and index:
 
-The index gives each selected semantic patch one `identity_sha256`, independent
-of its `sNNN` display name, plus the source-byte hash and a labelled hash for
-each exact generated variant. `analyse` requires the requested labels (`on` and
-`off` by default), resolves each CSV patch hash to that identity, checks the
-display name against the resolved row, and keys coverage, metadata fits and
-contrasts by identity. A hash belonging to another valid variant is rejected;
-membership in the row's aggregate set of hashes is not enough. Missing, extra,
-duplicate, stale and relabelled rows also fail.
+- HEAD: `8ad672d3dfeb1eda9210cf8501a0b53b53897a9d`
+- reference SHA-256: `51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569ba22f32c7`
+- index SHA-256: `bf3227a7f5b3dfd7095283ecdbf1962e4dc6738a63b67b6bbdc976edbc8b72e2`
+- 97 identities, 92 matched rows, and the same crashes: `s022`, `s034`,
+  `s040`, `s053`, `s087`
+- base CSV SHA-256: on `0ffb2b7a140c2734db67bda5408a9c0658a98fb82312c1fed05e49f0bb04a6c8`,
+  off `c79ef79d39ea956b0e0112706e7963703aec13e51a2529e961f95f1882940c65`
 
-From a checkout whose licensed corpus is at `build/tmp/corpus`, this command sequence creates a new cohort, verifies its complete index pin, renders the base pair and all six named controls, and checks every pair by its exact variant label:
+The exact measurement is:
+
+| pair | on MAE | off MAE | delta |
+|---|---:|---:|---:|
+| integrated HEAD base | 4.585238 | 4.569491 | **+0.015747 dB** |
+
+The MAE delta hides large row motion: mean absolute change in the gate metric
+is `1.1016 dB`, mean absolute raw signed-error movement is `1.265414 dB`, and
+the signed on-minus-off mean is `+0.127855 dB` (`30 / 38 / 24` better, worse,
+same at a 0.05 dB threshold). These are distinct metrics; neither is a trim
+target.
+
+The six exact-variant controls are matched evidence, not causal proof. Their
+labels are the parameter interventions, not the old swapped labels:
+
+| control | on MAE | off MAE | delta | gate movement |
+|---|---:|---:|---:|---:|
+| EQ flat | 4.186843 | 4.111374 | +0.075470 | 0.8907 |
+| delay off | 3.808040 | 3.822808 | −0.014767 | 1.0436 |
+| chorus off (`p66=0`) | 4.547145 | 4.453549 | +0.093596 | 1.0214 |
+| effect off (`p77=0`) | 2.891026 | 2.958730 | −0.067704 | 0.8142 |
+| post off | 1.755282 | 1.763351 | −0.008070 | 0.4936 |
+| filter open | 4.215401 | 4.068007 | +0.147395 | 0.8504 |
+
+`post-off` changes five settings and still leaves mixed row movement. No
+single-stage control predicts the affected rows. The historical 586-row
+reference-only sweep was temporary and untracked; its executable source is not
+reviewable and it is not causal evidence.
+
+The licensed 16,698-file source corpus is not present in this checkout, so the
+original selection cannot currently be rerun. The pinned index and all 14
+generated variant directories were hash-verified. With the source corpus
+available, the reproducible gate is:
 
 ```powershell
-$prefix = "build/corpus-level-97"
-node tools/corpus-level.mjs prepare build/tmp/corpus $prefix
-node tools/corpus-level.mjs verify-index "$prefix-index.csv"
-
+node tools/corpus-level.mjs prepare build/tmp/corpus build/corpus-level-97
+node tools/corpus-level.mjs verify-index build/corpus-level-97-index.csv
 $reference = "ext/synth1/Synth1/Synth1 VST64.dll"
-$referenceHash = (Get-FileHash $reference -Algorithm SHA256).Hash.ToLower()
-if ($referenceHash -ne "51c6fe60d767c78f5a15b7023173ac5709edbcf03a55cbac9032569ba22f32c7") {
-  throw "wrong reference DLL: $referenceHash"
-}
-
-odin build tools/s1probe -out:build/s1probe-current.exe
-$variants = @("on", "off", "on-eq-flat", "off-eq-flat",
-  "on-delay-off", "off-delay-off", "on-chorus-off", "off-chorus-off",
-  "on-effect-off", "off-effect-off", "on-post-off", "off-post-off",
-  "on-filter-open", "off-filter-open")
+odin build tools/s1probe -out:build/s1probe-final-head.exe
+$variants = @("on", "off", "on-eq-flat", "off-eq-flat", "on-delay-off",
+  "off-delay-off", "on-chorus-off", "off-chorus-off", "on-effect-off",
+  "off-effect-off", "on-post-off", "off-post-off", "on-filter-open",
+  "off-filter-open")
 foreach ($variant in $variants) {
-  ./build/s1probe-current.exe compare $reference "$prefix-$variant" --no-floor `
-    --csv "build/corpus-level-97-$variant.csv"
+  ./build/s1probe-final-head.exe compare $reference "build/corpus-level-97-$variant" --no-floor `
+    --csv "build/final-head-corpus-$variant.csv"
 }
-
-node tools/corpus-level.mjs analyse build/corpus-level-97-on.csv `
-  build/corpus-level-97-off.csv "$prefix-index.csv"
-foreach ($control in @("eq-flat", "delay-off", "chorus-off", "effect-off", "post-off", "filter-open")) {
-  node tools/corpus-level.mjs analyse "build/corpus-level-97-on-$control.csv" `
-    "build/corpus-level-97-off-$control.csv" "$prefix-index.csv" `
-    "on-$control" "off-$control"
-  node tools/corpus-level.mjs contrast build/corpus-level-97-on.csv `
-    build/corpus-level-97-off.csv "build/corpus-level-97-on-$control.csv" `
-    "build/corpus-level-97-off-$control.csv" "$prefix-index.csv" $control
-}
+node tools/corpus-level.mjs analyse build/final-head-corpus-on.csv `
+  build/final-head-corpus-off.csv build/corpus-level-97-index.csv
 ```
 
-The fresh run reports **16698 files, 98 candidates and 97 unique patch
-identities**. Its exact index layout is
-`name,gain95,mix5,shape96,octave97,version,source,identity_sha256,source_sha256,variant_sha256`;
-the index SHA-256 is
-`bf3227a7f5b3dfd7095283ecdbf1962e4dc6738a63b67b6bbdc976edbc8b72e2`.
-The writer's on/off and control hashes are recorded below; these are hashes of
-the newly rendered CSVs, not pinned build outputs:
+### Tracked substage factorial
 
-| pair | on CSV SHA-256 | off CSV SHA-256 |
-|---|---|---|
-| base | `102e0d4bc1f4118422917932e3f5d9f1f0fc4ac0e13768a91f616423857939c9` | `13e50dc3900e296d2301ee80306817396ed4920fb5607e35518df432d9f6fdfa` |
-| eq-flat | `7f7068ca9213faf617a5174860d181e1de43f7301974e4df5cb2bf0411d12021` | `afd483a5b8275f0d8dc21b2acb8055559ab80fb9aab81f143bc804601fb3f340` |
-| delay-off | `5de0534c1bd0e28c3754192bfce9762c517547c123f580bf853159dc0773475a` | `d2659b39d378e7e41c8efc0dad5c3cda88fde635ee0df698842d41e6230eaa80` |
-| chorus-off | `d9d65e3a60adc3e9eea847bfb626cb18394ab4b5b46dd8034fc21c3926dca76b` | `a8e19f035dd209dba84e83ff2875dbeebeca81e4305553486fb31e9f0bac3a90` |
-| effect-off | `38bbcaeba51832e2398dce700f85af3c542e39cbc96e3e45188aedebc1908ae0` | `45da8f5c1065459f349641912355dc4323670c3b168567490d0cf9d3fc00baad` |
-| post-off | `96d750f2b64e1d4bd93e88b379a88572156d2d21ced804ea893149490dfd30b5` | `23863f71861db7efd79713dcadfd9aa160b3307bb59efac21d1856681b8bf1de` |
-| filter-open | `09fc47d7c54d8d312d42bacd10b6c732f57c010a0a7f6be8827e8a96ce4d3e4b` | `ec96def7b0f00053e0d9da5455fef7db8635c42aabf4eb3bc5d184dee80ddb1f` |
+`substageprobe` is the decisive matched reference/engine measurement. It is
+implemented in `tools/s1probe/substageprobe.odin`, registered in
+`tools/s1probe/main.odin`, and enforced by `odin test tools/s1probe`. Every
+cell loads a fresh reference instance and uses the comparator's 48 kHz, 512
+frame blocks, MIDI velocity 100, and 1.5 second hold. The fixed patch has
+OSC1 sine, OSC2 triangle at stored `p2=68` (+4 semitones), sub sine at `p97=1`,
+`p76=0`, open LP12, flat EQ, effects off, fixed phase, and gain 64. It measures
+mid-channel Hann-projected amplitudes at `f0/2`, `f0`, and OSC2's `f2`, plus
+THD, RMS, peak, parameter mismatches, and non-finite samples.
 
-Every CSV has all 97 indexed names, exact `on`, `off`, `on-$control` or
-`off-$control` patch hashes, and zero reference parameter mismatches. Every
-run marks the same five reference crashes, `s022`, `s034`, `s040`, `s053` and
-`s087`; the remaining 92 rows are the matched, non-silent measurements. The
-CSV files therefore cannot pass by swapping a valid hash between variant
-columns or by silently dropping a crash row.
+```powershell
+odin test tools/s1probe
+odin build tools/s1probe -out:build/s1probe-final-head.exe
+./build/s1probe-final-head.exe substageprobe $reference `
+  --notes 60 --p95 0,32,96 --mix 0,96 --saturation 0,64 --gain 64 `
+  --csv build/substage-head-note60.csv
+./build/s1probe-final-head.exe substageprobe $reference `
+  --notes 48,72 --p95 0,32,96 --mix 0,96 --saturation 0,64 --gain 64 `
+  --csv build/substage-confirm-notes48-72.csv
+```
 
-The fresh analyses and matched contrasts are:
+The signed formula is `E = 20 log10(ours / reference)`, so positive means
+ours is high. The sub ratio residual `R` is the signed difference of measured
+sub/carrier ratios. At saturation zero, `R` stayed within `0.0032 dB` at notes
+48, 60, and 72 for both nonzero stored-95 values, with no stable sign. The
+carrier denominator residual `C` stayed within `0.00004 dB` at the same
+control (`p23=0`). Saturation engagement was positive in both engines: reference THD
+movement was `+90.4446`, `+106.4390`, and `+119.8928 dB` at notes 48, 60, and
+72; ours was `+89.0714`, `+104.5745`, and `+106.1704 dB`.
 
-| control | on MAE | off MAE | on-minus-off | six carrier sum, base → control |
-|---|---:|---:|---:|---:|
-| base | 4.830002 | 4.549775 | +0.280227 | — |
-| eq-flat | 4.706117 | 4.207164 | +0.498953 | +29.8913 → +26.4175 |
-| delay-off | 3.941513 | 3.807621 | +0.133892 | +29.8913 → +26.7825 |
-| chorus-off | 4.785167 | 4.515771 | +0.269397 | +29.8913 → +26.7155 |
-| effect-off | 3.050801 | 2.936023 | +0.114778 | +29.8913 → +3.2886 |
-| post-off | 1.900345 | 1.906760 | −0.006415 | +29.8913 → +0.6441 |
-| filter-open | 4.553076 | 4.220172 | +0.332904 | +29.8913 → +26.3622 |
+The named saturation interaction did not retain a sign. At mix zero, `I_R`
+was approximately `+0.48 dB` for stored 95 = 32 and `−0.85 dB` for 96 at all
+three notes; `I_carrier` likewise changed from about `−0.21` to `+0.88 dB`.
+Mix 96 showed the same lack of a two-value stable law. The p5=127 endpoint was
+exactly null (`0.000000 dB` carrier and RMS on-minus-off). The isolated OSC2
+leakage control stayed below −119 dB at all tested notes in both engines, and
+all cells had zero mismatches, zero non-finite samples, and peaks below 0.8.
 
-The controls are matched interventions, not causal proof. `post-off` removes
-most of the six-row carrier sum, but it changes five settings at once and the
-remaining rows move in both directions. The single-stage controls do not
-isolate one law, and `filter-open` does not reproduce the result. No control
-therefore proves an output stage interaction or a new sub law.
+The tracked probe therefore passes its controls but proves no reference
+coefficient, placement rule, or named saturation interaction. No engine or DSP
+file changed, and no trim is justified. Probe CSV SHA-256 values are
+`cbccd35d26753c20993ae3d59c45776b8f6ea2d4d3850d0fdc4c8a48560192e` for note
+60 and `69d569ec53c1882e2107480a4e1b9b8ba4dc1921c5e828a1e351efc0a49bf31c`
+for the confirming notes.
 
-Enabling the sub still costs **+0.280227 dB** of mean absolute level error;
-the signed mean is −0.032388 dB, with `r = 0.949979` between on/off errors.
-The independent probe still supports only
-`a = 4 * stored95 / 127`, normalised by `1 + a * (1 - mix)`. The literal
-residual remains unresolved and blocked. No amp trim, global output fit, or
-engine/DSP change is justified.
-The factory-bank evidence remains the byte-identical 123-row run, SHA-256
-`49cc89afe5dc1468fff0ea1e212ccaef2a21a13ab3ddb036e37f403c190233f9`,
-with level MAE 1.652847 dB and no factory patch setting parameter 95.
+### Full factory evidence
+
+The same integrated executable was run against all 128 factory patches:
+
+```powershell
+./build/s1probe-final-head.exe compare $reference ext/synth1/Synth1/soundbank00 `
+  --csv build/factory-final-head.csv
+./build/s1probe-final-head.exe summarise build/factory-final-head.csv
+```
+
+The CSV SHA-256 is
+`dd13c651be53eaaa1a6496f701cccb9f825b22fc960bc738b8759168285b7319`.
+There are 123 matched rows and the same five reference crashes (`095`, `098`,
+`100`, `101`, `106`), with zero parameter mismatches, zero engine non-finite
+rows, and four engine-silent-by-sustain rows. Absolute level MAE is
+`1.676711 dB`; signed level mean/median are `+0.33 / +0.22 dB`. No factory
+patch has nonzero parameter 95, so this bank is regression evidence only and
+cannot prove the sub law.

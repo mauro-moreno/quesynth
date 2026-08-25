@@ -646,6 +646,8 @@ usage :: proc() {
 	fmt.eprintln("                          -- FM spectrum before and through a moving filter")
 	fmt.eprintln("  s1probe filtersaturation [dll] [--values <list>] [--gains <list>]")
 	fmt.eprintln("                          [--type <n>] [--cutoff <n>] [--res <n>] [--note <n>]")
+    fmt.eprintln("  s1probe substageprobe [dll] [--notes <list>] [--p95 <list>] [--mix <list>]")
+    fmt.eprintln("                          [--saturation <list>] [--gain <n>] [--csv <path>]")
 	fmt.eprintln("                          [--shape <0..3>] [--width <0..127>]")
 	fmt.eprintln("  -- the extra effect unit, parameters 77..81 --")
 	fmt.eprintln("  s1probe fxprobe   [dll] [--config <name>] [--note <n>] [--dump]")
@@ -675,8 +677,8 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-	if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" {
-		if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" {
+        if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
 		}
@@ -880,6 +882,54 @@ main :: proc() {
 			}
 		}
 		cmd_fmsubprobe(dll, parse_env_values(fsv), u8(clamp(fsnote, 0, 127)))
+    case "substageprobe":
+        ssnotes := "60"
+        ssp95 := "0,32,96"
+        ssmix := "0,96"
+        sssaturation := "0,64"
+        ssgain := 64
+        sscsv := ""
+        {
+            i := 0
+            for i < len(rest) {
+                switch rest[i] {
+                case "--notes":
+                    if i + 1 >= len(rest) {usage()}
+                    ssnotes = rest[i + 1]
+                    i += 2
+                case "--p95":
+                    if i + 1 >= len(rest) {usage()}
+                    ssp95 = rest[i + 1]
+                    i += 2
+                case "--mix":
+                    if i + 1 >= len(rest) {usage()}
+                    ssmix = rest[i + 1]
+                    i += 2
+                case "--saturation":
+                    if i + 1 >= len(rest) {usage()}
+                    sssaturation = rest[i + 1]
+                    i += 2
+                case "--gain":
+                    if !parse_probe_int(rest, i + 1, &ssgain) {usage()}
+                    i += 2
+                case "--csv":
+                    if i + 1 >= len(rest) {usage()}
+                    sscsv = rest[i + 1]
+                    i += 2
+                case:
+                    usage()
+                }
+            }
+        }
+        ssnotes_values := parse_env_values(ssnotes)
+        defer delete(ssnotes_values)
+        ssp95_values := parse_env_values(ssp95)
+        defer delete(ssp95_values)
+        ssmix_values := parse_env_values(ssmix)
+        defer delete(ssmix_values)
+        sssaturation_values := parse_env_values(sssaturation)
+        defer delete(sssaturation_values)
+        cmd_substageprobe(dll, sscsv, ssnotes_values, ssp95_values, ssmix_values, sssaturation_values, clamp(ssgain, 0, 127))
 	case "tuningcheck":
 		tcnote := 60
 		tcpath := ""
