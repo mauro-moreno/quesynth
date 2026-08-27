@@ -7416,3 +7416,68 @@ That trade is taken rather than tuned around. The reference's own peaks are
 measured at +19 and +30 dBFS, so a knee at full scale was never faithful; keeping
 it there to hold one factory row steady would be preferring a number to the
 instrument that produced it.
+
+### The remaining error, again (2026-08-27)
+
+With the limiter's knee moved, the phaser's error is no longer spread across the
+control range. It is concentrated at one end of one knob.
+
+**Static settings are exact.** At ctl1 = 0 the four types read 0.00, 0.01, 0.06
+and 0.64 dB of spectral error.
+
+**Swept settings up to ctl2 112 are close.** Held tones through both engines at
+ctl1 64, comparing peak levels note by note:
+
+```
+             1760 Hz      2093      2489      2960      3520
+  ctl2 64   -3.6/-3.9  -0.7/-1.1  +3.2/+2.8  +9.8/+9.1  +25.4/+25.9
+  ctl2 96   -2.7/-4.4  +0.4/-1.7  +4.7/+2.1  +12.3/+8.0 +24.2/+23.4
+  ctl2 112  -4.1/-4.8  -1.3/-2.1  +2.5/+1.5  +8.7/+7.2  +24.1/+21.4
+```
+
+reference first, this engine second. And the swept band itself, measured with the
+comb probe after the start-up transient has passed, at ctl2 40:
+
+```
+  reference   3500 .. 10055 Hz   1.52 octaves
+  ours        3612 ..  9860      1.45
+```
+
+Five per cent narrow, at both ends.
+
+**ctl2 127 is where it goes wrong**, and by a lot: at 2960 Hz the reference reads
++21.39 dB and this engine +5.58. Our sweep does not reach that low, and the
+reference's does.
+
+### Why that setting and not its neighbours
+
+The reference's own reading at 2960 Hz across the rate knob is not monotonic --
++9.80, +12.31, +8.74 and then **+21.39** at ctl2 64, 96, 112 and 127. A faster
+sweep dwells less at any given frequency, so more energy at the top of the knob is
+the opposite of what the rate alone predicts. Something about the sweep changes
+there, and its span reaching lower is the reading that fits.
+
+This is also exactly where nothing is measured. The rate law was fitted from
+ctl2 48 to 112 and extrapolated past it, and at 127 the two instruments that read
+a rate disagree outright -- tracking the resonance's trajectory gives 15.56 Hz and
+autocorrelating the spectrogram gives 5.21, against a law that says 18.6. At
+ctl2 112, inside the measured range, they agree: 8.53 and 8.52 against 7.81.
+
+So the error sits on top of an extrapolation, in a region where the existing
+instruments cannot resolve the thing being extrapolated. Fitting a special case
+there would be fitting to the least reliable numbers in the section.
+
+### What is not wrong
+
+ph4 is the worst type in the A/B and its comb is not the reason. Sweeping it and
+reading every resonance, each of ours falls inside the reference's own swept
+range:
+
+```
+                  1        2        3        4         5         6
+  reference   114-130  235-289  412-475  721-843  1472-1704  8289-8844
+  ours          116      250      428      724      1529       8374
+```
+
+The structure tracks. What is left is where the corner goes at the top of the rate
+knob, and how fast it goes there.
