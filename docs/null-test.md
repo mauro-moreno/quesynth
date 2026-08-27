@@ -6857,6 +6857,8 @@ where the others' reference is -- are not distinguishable from four combs.
   structure     an allpass chain with feedback, sections staggered, one
                 resonance per section pair: 1, 2, 4 and 6 for ph1 to ph4
   feedback      parameter 81:  0.9491 * (level/127)^3.84, within 0.05 dB
+                -- SUPERSEDED: derived from peak = 1/(1-g), which the fitted
+                topology rules out. See the last section.
   comb          rigid, at the measured ratios above
   corner        centre fixed per type; span 0.050 octaves per depth step for
                 ph2 to ph4 and 0.0238 for ph1; triangle in octaves; slewed
@@ -6868,3 +6870,103 @@ Every input the rewrite needs is measured. What remains before writing it is the
 one thing measurement cannot supply: a topology that produces staggered sections
 in these particular ratios, which is a design decision to be gated against the
 combs above rather than a further reading.
+
+### The topology, fitted -- and a level law that has to be re-derived (2026-08-25)
+
+The rewrite needed one thing measurement cannot supply: a circuit. No probe says
+what produced a response, only what the response is. So it was fitted, against
+the measured magnitude curve rather than against the resonance positions, and
+`tools/phaserfit.py` holds the method.
+
+Fitting against positions was tried first and is hopeless: three quite different
+section layouts reproduced ph4's six resonances to within 5 % of each other while
+giving different responses between them. Positions leave the corners wildly
+underdetermined. The curve does not.
+
+### What the curve rules out
+
+**A pure feedback loop cannot notch deep enough.** `x/(1 - g*A)` has its minimum
+where `A = -1`, at `1/(1+g)`, which is -6 dB even as g approaches one. The
+reference notches **-12.15 dB** at 262 Hz. Fitting that form over two signs and
+two to six sections bottoms out at 6.13 dB of error, and the residual sits almost
+entirely at the notch. So a dry path is summed with the wet one.
+
+**The response rises toward DC**, +6.04 dB at 16 Hz and still climbing where the
+notch above it is -12.15, which is a resonance at zero frequency. That is what
+distinguishes positive feedback from negative, which would put a minimum there.
+It is also why the resonance count came out at 1, 2, 4 and 6 rather than one
+more: a peak at DC is not visible to a probe that sweeps a tone.
+
+### What it leaves
+
+```
+  v   = x + g * A(v)
+  out = d * x + w * A(v)
+```
+
+with A a chain of staggered first-order allpass sections. For ph1, over the
+twenty-five measured points from 16 Hz to 8.4 kHz:
+
+```
+  3 sections at 73.5, 1077 and 6735 Hz     g = 0.9469   d = 0.897   w = 1.131
+  worst error 2.21 dB
+```
+
+and that worst error is almost entirely a constant offset: the residual runs
++1.5 to +2.2 dB across nineteen of the twenty-five points, so the *shape* is
+matched to within about half a decibel and the model is a gain trim away.
+
+The check that it is not merely a curve with enough freedom: **the fit recovers
+the feedback**. It was given no knowledge of the level law and returned
+`g = 0.9469` against the `0.9491` measured independently from six settings of the
+level knob -- 0.2 % apart.
+
+### And the finding that stops the rewrite here
+
+That agreement is also the problem. The level law was derived from
+`peak = 1/(1-g)`, which is the pure feedback loop -- the form the notch depth has
+just ruled out. Under the fitted topology the peak is `d + w/(1-g)`, and the two
+disagree:
+
+```
+  level                96      104      112      118      122      127
+  g from 1/(1-g)   0.3200   0.4422   0.5870   0.7156   0.8129   0.9490
+  g from d+w/(1-g) -0.3322  0.0793   0.4255   0.6529   0.7911   0.9491
+```
+
+They agree at the top of the knob, where the feedback dominates and the dry path
+is negligible, which is why the fit reproduced the number: 127 is the setting the
+law was anchored on. They diverge everywhere else, to the point of returning a
+negative feedback at level 96. So `0.9491 * (level/127)^3.84` is an artefact of
+the wrong model over most of its range, and the exponent fitted through those
+points is not a real number about the plugin.
+
+This is recorded rather than patched because the repair is a measurement, not
+arithmetic: `d` and `w` are themselves functions of the level knob -- at level 0
+the response is flat at about -2.5 dB, which is `d` alone with the wet path shut
+off -- so the law has three unknowns per setting where it was fitted with one.
+The level sweep already on record supplies the data; it needs re-fitting under
+this form.
+
+### Where the rewrite stands
+
+It is not written, and writing it now would ship a phaser whose level knob is
+wrong over three quarters of its travel. What is settled is the shape of the
+thing:
+
+```
+  topology     d*x + w*A(v), v = x + g*A(v), staggered first-order sections
+               -- fitted, and cross-validated by recovering the feedback
+  ph1          3 sections at 0.0265, 0.3887 and 2.4306 of the corner
+  comb         rigid, at the measured ratios
+  trajectory   triangle in octaves, centre fixed, span 0.050 per depth step for
+               ph2 to ph4 and 0.0238 for ph1, slewed, parked at rest at depth 0
+  rate         the existing law
+```
+
+What is not: the level law, which needs re-deriving in `d`, `w` and `g` together;
+and the section layout for ph2 to ph4, whose curves are sampled at three
+semitones and fit to only 7.18 dB, with corners at 0.01 Hz that are plainly the
+optimiser exploiting gaps in the data rather than a circuit. Both are measurement
+problems with a known instrument, which is a better place to be than the guess
+this would otherwise have been.
