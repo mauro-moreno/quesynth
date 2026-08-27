@@ -8306,7 +8306,45 @@ Forty decibels apart on the same measured step size. And the reference's is not
 merely larger than ours, it is larger than the arithmetic allows: a quantiser of
 8.55 bits driven by a sine at 82.5 per cent of full scale has a total error 51 dB
 down, and a single harmonic 15 dB above that is not a rounding error of any step
-size. Whatever the decimator does to the signal, quantising it is not all of it.
+size.
+
+The conclusion drawn from that -- that quantising is not all the decimator does --
+was the wrong one. It is all it does; the count was simply not the step. Fitting
+the step to the harmonics it actually produces:
+
+```
+   ctl2       32     48     64     80     96    112    127
+   counted 15.32  14.03  12.35  10.53   8.55   6.99   6.47  bits
+   actual  10.60   8.55   7.35   5.55   3.55   2.10   1.60
+   rms      1.24   1.38   0.64   0.47   0.26   3.15   6.11  dB
+```
+
+Five bits coarser through the middle, and three levels at the top of the knob.
+Something downstream multiplies the distinct values without undoing the
+distortion, which is why counting them reads so much finer. Below ctl2 32 the
+harmonics sit at the render's own floor and the depth is a lower bound rather
+than a reading; the two settings at the top fit worst, which is where a step
+that coarse puts its harmonics past Nyquist -- the same limit d.d. runs into.
+
+```
+   fxcompare, deci.       before      after
+   ctl1 0   ctl2 96       14.85 dB     4.35
+   ctl1 64  ctl2 96       19.40        8.32
+   ctl1 64  ctl2 127      18.71        7.66
+   ctl1 96  ctl2 64       16.69       12.14
+```
+
+### Where the section stands
+
+```
+                    at the start   now
+   a.d.1              6.48 dB      4.46
+   a.d.2              7.36         3.46
+   d.d.              14.27         5.07
+   deci.             19.24         8.32
+   mean, ten types   10.92         3.25
+   worst             19.24         8.32
+```
 
 So three of the four types in this section are now measured well enough to say
 that the model each was written on is the wrong family, and the measurements to

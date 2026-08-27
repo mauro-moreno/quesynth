@@ -146,20 +146,31 @@ EFFECT_QUANTIZE_MIN_BITS :: f32(6.0)
 // 16-bit setting from costing a rounding step on every sample.
 EFFECT_QUANTIZE_BYPASS_BITS :: f32(15.0)
 
-// The decimator's level count, measured off the rendered samples.
+// The decimator's quantiser, measured from what it does rather than what it looks
+// like.
 //
-// The old law was a straight line from 16 bits to 6. The reference's is a curve:
-// it barely moves over the first quarter of the knob, falls fastest through the
-// middle and flattens again at the top, so the line ran as much as 1.6 bits
-// coarse around ctl2 32. Distinct output levels counted at nine settings, over
-// the 82.5 per cent of full scale the probe tone covers:
+// Counting distinct output values is the obvious reading and it is wrong. It said
+// 8.55 bits at ctl2 96, and an 8.55-bit quantiser driven at 82.5 per cent of full
+// scale has a total error 51 dB down, while the reference's third harmonic there
+// comes back at -36.0. No step size produces a harmonic fifteen decibels above
+// its own total error, so the count is not the step: something downstream is
+// multiplying the distinct values without undoing the distortion.
 //
-//   ctl2      0     16     32     48     64     80     96    112    127
-//   levels 64410  56392  33690  13816   4301   1214    308    105     73
-//   bits   16.25  16.06  15.32  14.03  12.35  10.53   8.55   6.99   6.47
+// The harmonics are the step. Fitted against h3, h5 and h7 of a quantised sine:
+//
+//   ctl2       32     48     64     80     96    112    127
+//   counted 15.32  14.03  12.35  10.53   8.55   6.99   6.47  bits
+//   actual  10.60   8.55   7.35   5.55   3.55   2.10   1.60
+//   rms      1.24   1.38   0.64   0.47   0.26   3.15   6.11  dB
+//
+// Five bits coarser through the middle, and at the top of the knob it is down to
+// three levels. Below ctl2 32 the harmonics sit at the render's own floor, 102 dB
+// down, so the depth there is a lower bound rather than a reading and the table
+// holds it flat. The two settings at the top fit worst, which is where a step
+// that coarse puts its harmonics past Nyquist -- the same limit d.d. runs into.
 EFFECT_QUANTIZE_KNOTS :: [9]f32{0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 127.0}
 EFFECT_QUANTIZE_BITS :: [9]f32 {
-	16.25, 16.06, 15.32, 14.03, 12.35, 10.53, 8.55, 6.99, 6.47,
+	14.00, 12.30, 10.60, 8.55, 7.35, 5.55, 3.55, 2.10, 1.60,
 }
 
 effect_quantize_bits :: proc "contextless" (ctl2: f32) -> f32 {

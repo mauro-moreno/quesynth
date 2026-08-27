@@ -4277,3 +4277,28 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+@(test)
+test_effect_quantize_depth_is_what_it_does_not_what_it_looks_like :: proc(t: ^testing.T) {
+	// Counting distinct output values said 8.55 bits at ctl2 96. An 8.55-bit
+	// quantiser driven at 82.5 per cent of full scale has a total error 51 dB
+	// down, and the reference's third harmonic there is -36.0, so the count was
+	// not the step. Fitted to the harmonics instead it is 3.55 bits, and the
+	// depth has to stay that coarse or the distortion goes with it.
+	at96 := dsp.effect_quantize_bits(96.0 / 127.0)
+	testing.expect(
+		t,
+		at96 < 4.5,
+		fmt.tprintf("ctl2 96 quantises to %.2f bits, too fine for the harmonics measured", at96),
+	)
+	top := dsp.effect_quantize_bits(1.0)
+	testing.expect(t, top < 2.5, fmt.tprintf("the top of the knob is %.2f bits, not the few measured", top))
+
+	// Monotone, and never finer than the bypass threshold at the bottom.
+	prev := f32(1e9)
+	for c in 0 ..= 127 {
+		b := dsp.effect_quantize_bits(f32(c) / 127.0)
+		testing.expect(t, b <= prev + 1.0e-4, fmt.tprintf("depth rose at ctl2 %d", c))
+		prev = b
+	}
+}
