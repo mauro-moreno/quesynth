@@ -6468,6 +6468,12 @@ renders holding three full cycles:
   span    0.000  1.209  1.284  1.373  1.468  1.605  1.733  1.896  2.219  2.530  2.870  oct
 ```
 
+> **These spans include a start-up transient** and are superseded by the fit at
+> the end of this document. The corner begins at its 2771 Hz rest point and
+> slews into the sweep's band, which at low depth takes longer than the whole
+> render measured here: the steady-state span at ctl1 16 is 0.376 octaves, not
+> the 1.284 above. The centre and the linearity survive; the numbers do not.
+
 Two things in it are structural rather than incidental. The bottom of the sweep
 sits at the depth-0 rest point and **stays there** to ctl1 80, so the modulation
 is one-sided -- upward from where the corner rests -- and only above that does the
@@ -6533,3 +6539,126 @@ odin build tools/s1probe -out:build/s1probe.exe
 ./build/s1probe.exe phasercomb $reference --type 6 --ctl1 16 --ctl2 40 `
   --seconds 20 --show
 ```
+
+### The trajectory, fitted (2026-08-25)
+
+The per-resonance probe left the sweep's shape open, with the observation that a
+single triangle explains neither the monotone twenty-second rise at ctl1 4 nor
+the large first excursion followed by much smaller oscillations at ctl1 16. Both
+turned out to be the same thing, and it is not part of the waveform at all.
+
+### The rise is a start-up transient, and it happens once
+
+A sixty-second render settles it. The climb from the rest point happens **once**,
+between 0 and 9 seconds, and never recurs: for the remaining fifty seconds the
+corner oscillates steadily between 5281 and 6854 Hz with a period of 5.63 s, and
+every later maximum lands within 30 Hz of the first one.
+
+So every span reported before this -- including the depth table in the section
+above -- measured the transient and the sweep together. The steady state is a
+different and much smaller number: 0.376 octaves at ctl1 16, against the 1.284
+that table gives.
+
+### What the sweep actually is
+
+Measured after the transient has passed, at ctl2 40:
+
+```
+  ctl1        8     16     32     48     64     96    127
+  low      5642   5281   4626   4009   3500   2712   2011  Hz
+  high     6455   6852   7827   8849  10056  12595  14895  Hz
+  span    0.194  0.376  0.759  1.142  1.523  2.215  2.889  octaves
+  centre   6035   6016   6018   5956   5933   5844   5473  Hz
+```
+
+Two readings, and they are the whole law. The **centre is fixed** -- 6035 down to
+5933 Hz over a sixteenfold change in depth, and only at the very top of the knob
+does it fall away as the sweep runs out of room. And the **span is linear in the
+knob**, at 0.0231 octaves per step through the origin, which puts every point
+within 0.05 octaves of the fit.
+
+That is not where the corner sits when the sweep is switched off. At ctl1 = 0 it
+parks at **2771 Hz**, an octave and an eighth below the centre it sweeps around
+the moment the knob leaves zero. The two are separate facts about the same
+control and the earlier readings had merged them.
+
+### The domain the sweep is linear in
+
+Straightness of each limb, as a percentage of its own range, over nine limbs at
+each depth:
+
+```
+  ctl1               32     64     96    127
+  log frequency     3.7    2.7    3.7    5.0  %
+  allpass coefficient 4.3  5.8    8.0    8.6  %
+```
+
+Log frequency wins at every depth and by more as the excursion grows, which is
+the direction that decides it: two domains agree where the excursion is small and
+separate where it is large. So the modulation is a triangle in **octaves**, and
+the sweep is `centre * 2^(span/2 * triangle(t))`.
+
+### The prediction that confirms it
+
+If the corner is a ramp, its slope is the same whether it is sweeping or catching
+up. The transient's length is then not a free parameter: it is how far the corner
+has to travel from 2771 Hz to reach the band, divided by the sweep's own rate,
+both of which are already measured. Nothing is fitted here.
+
+```
+  ctl1        8     16     32     48     64     96    127
+  predicted 14.9    7.0    2.7    1.3    0.6   none   none  s
+  observed  14.2    6.3    2.6    1.2    0.5   none   none  s
+```
+
+Every one, across a twenty-fivefold range, and the two settings where the band
+already contains the rest point correctly show no transient at all: the
+prediction goes negative at ctl1 96 and 127 and the corner is in the band from
+the first frame. The transient is not a separate mechanism. It is the same ramp,
+starting from somewhere it does not normally start.
+
+That also names the implementation: the corner is slewed toward a target at a
+fixed rate rather than assigned from a waveform, which is what makes a triangle
+out of a square and what makes the first excursion from an unusual starting point
+take longer than a limb.
+
+### The rate law holds where it had been extrapolated
+
+The 5.63 s period measured here is at ctl2 40, inside the range the rate law had
+only extrapolated across -- it was measured from 48 to 112 and the probe of the
+day reported "no period resolvable" below that. The law predicts 5.34 s. That is
+5 % out, on an extrapolation of nearly two octaves of rate, and it is the first
+direct reading below ctl2 48.
+
+### Where this leaves the rewrite
+
+Of the four inputs the rewrite needs, three are now measured:
+
+- **the structure** -- an allpass chain with feedback, one resonance per stage,
+  1, 2, 4 and 6 for ph1 to ph4
+- **the feedback**, which is what parameter 81 sets: `0.9491 * (level/127)^3.84`,
+  every point within 0.05 dB
+- **the trajectory**: a triangle in octaves, centre fixed, span `0.0231 * ctl1`
+  octaves, rate from the existing law, slewed rather than assigned, and parked at
+  2771 Hz when the depth is zero
+
+The fourth is the other three types' sweep, and taking the same reading for them
+found a limitation in this probe rather than an answer. Rank is a stable identity
+only while the number of resonances is stable, and it is not: sweeping ph3 the
+count runs from 4 to more than 12 across a cycle, ph4 from 5 to more than 12, ph2
+from 2 to 9. The comb's *spacing* changes with the corner, so resonances arrive
+in and leave the analysed range as it sweeps, and a summary keyed on rank then
+averages different resonances together -- which is exactly what it did, reporting
+eleven tracks for a type that has four.
+
+Tracking by continuity rather than by rank is the fix, and it is a change to the
+summary rather than to the measurement: the per-frame positions are already in
+the CSV.
+
+There is also a reason to think the fourth input may not be a free parameter at
+all. If the structure is one allpass chain with feedback, there is a single
+corner, and the resonance positions follow from it and from the stage count. Then
+ph2's tallest resonance sitting at 3899 Hz where ph1's sits at 2771 is a
+consequence of chain length, not a second centre to measure, and the trajectory
+fitted here is the trajectory for all four. That is a prediction the continuity
+tracker can test directly: one corner law should reproduce every type's comb.
