@@ -7329,6 +7329,11 @@ where the phase near DC is flattest. It does not fit the rate: the artefact is
 just as present at ctl2 8, where the corner moves 4.6e-6 octaves per sample, as
 at ctl2 64.
 
+> **Neither reading was right, and the rate is why.** It is not modulation at
+> all: pinning the corner high and still reproduces it in every frame. It is the
+> master limiter, whose knee sat at full scale while the phaser's DC resonance
+> legitimately reaches +21 dB. See the last section.
+
 ### What that costs, and why the correction still stands
 
 Correcting the centre to the measured 1271 Hz moves the sixteen-row A/B mean from
@@ -7340,3 +7345,74 @@ measurement to cancel a bug in the code rather than fixing either.
 The static settings are unaffected and remain essentially exact -- 0.00, 0.01,
 0.06 and 0.64 dB across the four types at ctl1 = 0. The whole of the remaining
 phaser error is in the sweep, and the largest part of it is this.
+
+### The artefact was the output limiter (2026-08-27)
+
+The spurious 51 Hz peak is not a phaser defect. It is the engine's master limiter,
+and the phaser is simply the first thing loud enough to reach it.
+
+### Found by pinning the corner
+
+The artefact only ever appeared while the corner was moving, which pointed at
+modulation. It is not. Setting the rest frequency to 3900 Hz temporarily -- so the
+corner sits high and **still** -- put the 52.7 Hz peak in every one of sixty-seven
+frames. Nothing was sweeping.
+
+At that corner the engine's whole curve is wrong, and wrong in a way that names
+the cause. Against the model it was fitted to it runs -5.8 dB at 16 Hz, -14.1 at
+33, -28 at 1 kHz, -57 at 3 kHz: a progressive collapse, not a filter. Rendering
+the same setting at amp gain 40 instead of 96 brings it back to **within 1.2 dB
+everywhere**. Level-dependent, therefore a nonlinearity, and the only one in the
+path is `soft_clip` on the master output.
+
+### Why the knee was in the wrong place
+
+A phaser with feedback has a resonance at DC -- the loop's phase is zero there --
+whose height is `1/(1-g)`, and at full feedback that is +26 dB. It is not a
+modelling artefact: driving the reference at the same setting and reading held
+tones from 33 Hz upward,
+
+```
+   Hz      33     41     52     65     82    104    131
+  ref   +21.15 +19.59 +18.11 +16.39 +14.48 +12.63 +10.70  dB
+  ours  +10.21 +10.11  +9.97  +9.79  +9.52  +9.10  +8.42
+```
+
+The reference really does put +21 dB at 33 Hz. Ours was flat at +10, which is a
+limiter's output, not a filter's.
+
+The note beside `soft_clip` had already said the reference does not limit and had
+measured its peaks at +19 and +30 dBFS. The knee was at 1.0 anyway, so anything
+above full scale was squashed toward 2. It now sits at **32**, which is those
+measured peaks, and the contract it exists for is untouched: an output asymptotic
+to 64 is still bounded, which is all "a stack of unison voices summing in phase
+must not produce something unbounded" ever required.
+
+### What it fixes
+
+The sweep, which was the whole of the remaining phaser error:
+
+```
+                 resonances per frame        strongest peak
+  reference      1 in 227 of 231 frames      3024 .. 10055 Hz   1.73 oct
+  before         1 in 109, 2 in 120            51 ..  8143      7.31
+  after          1 in 231 of 231             3024 ..  9860      1.71
+```
+
+Every frame, one resonance, sweeping where the reference sweeps.
+
+Over the sixteen-row A/B the mean spectral error goes from 4.54 to **3.35 dB** and
+the mean level error from 1.74 to 1.37. The largest single move is ph1 at ctl1
+127, ctl2 96: **13.72 to 1.69 dB**, with its level error going from -4.57 to +0.15.
+
+### What it costs
+
+One factory patch. 123.sy1 goes from 5.9758 to 6.1413 dB of spectral error,
+because it was clipping and now is not, and the clipping had been flattering it.
+Across all 128 the aggregate moves by **+0.0013 dB** spectral, +0.0042 envelope
+and +0.0006 level -- three figures that are, in effect, the one row.
+
+That trade is taken rather than tuned around. The reference's own peaks are
+measured at +19 and +30 dBFS, so a knee at full scale was never faithful; keeping
+it there to hold one factory row steady would be preferring a number to the
+instrument that produced it.

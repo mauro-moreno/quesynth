@@ -91,15 +91,39 @@ note_to_hz :: proc "contextless" (note: f32) -> f32 {
 // level of everything below it.
 //
 // Slope one at the knee, so the two halves meet smoothly rather than kinking.
+// Where the limiter starts, and why it is not at full scale.
+//
+// It was at 1.0, on the reasoning that nothing should leave the engine louder
+// than that. The note above already said why that is not faithful -- the
+// reference does not limit, and probing the effect unit measured its peaks at
+// +19 and +30 dBFS -- and the phaser rewrite turned "not faithful" into a
+// measurable defect. A phaser with feedback has a resonance at DC whose height
+// is 1/(1-g), and at full feedback with the corner swept high the reference
+// puts **+21.15 dB** at 33 Hz. A knee at 1.0 caps that near +6, and the engine
+// returned +10.21 where the reference returned +21.15, with the whole low end
+// squashed flat: 10.2 down to 8.4 dB across two octaves where the reference ran
+// 21.2 down to 10.7.
+//
+// It reads as a phaser defect and it is not one. Driven below the knee the
+// phaser matches its own fitted model to 1.2 dB across the band; driven above
+// it, the output stage is what departs.
+//
+// So the knee moves to where the reference's own measured peaks are, and the
+// contract survives: an output that approaches 64 rather than 2 is still bounded,
+// which is all "a stack of unison voices summing in phase must not produce
+// something unbounded" ever asked for.
+SOFT_CLIP_KNEE :: f32(32.0)
+
 soft_clip :: proc "contextless" (x: f32) -> f32 {
 	if !is_finite(x) {return 0}
 	magnitude := abs(x)
-	if magnitude <= 1.0 {
+	if magnitude <= SOFT_CLIP_KNEE {
 		return x
 	}
-	// tanh of the excess, so the output approaches 2 and never exceeds it.
-	excess := magnitude - 1.0
-	shaped := 1.0 + tanh_f32(excess)
+	// tanh of the excess, so the output approaches twice the knee and never
+	// exceeds it.
+	excess := magnitude - SOFT_CLIP_KNEE
+	shaped := SOFT_CLIP_KNEE * (1.0 + tanh_f32(excess / SOFT_CLIP_KNEE))
 	return x < 0 ? -shaped : shaped
 }
 

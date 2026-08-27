@@ -1950,11 +1950,17 @@ test_effects_stay_finite_at_their_extremes :: proc(t: ^testing.T) {
 		engine.engine_process(&e, l[n / 2:], r[n / 2:])
 
 		for i in 0 ..< n {
-			// Bounded by the output limiter, which since it was measured against the
-			// reference is transparent below full scale and asymptotic to 2 above it.
-			// The old bound of 1.5 came from a limiter that compressed at every level,
-			// and that cost 1 dB on every patch in the bank.
-			ok := l[i] == l[i] && r[i] == r[i] && abs(l[i]) <= 2.0 && abs(r[i]) <= 2.0
+			// Bounded by the output limiter, which is transparent below its knee and
+			// asymptotic to twice it above. The bound has moved twice and each move
+			// was the same correction in a different place: 1.5 came from a limiter
+			// that compressed at every level and cost 1 dB on every patch in the bank,
+			// 2.0 from a knee at full scale, and the knee is now at the reference's
+			// own measured peaks because the phaser's DC resonance legitimately
+			// reaches +21 dB and the old knee flattened it to +10.
+			//
+			// What this test is for is unchanged: finite, and bounded by something.
+			limit := f32(2.0) * dsp.SOFT_CLIP_KNEE
+			ok := l[i] == l[i] && r[i] == r[i] && abs(l[i]) <= limit && abs(r[i]) <= limit
 			if !ok {
 				testing.expectf(t, false,
 					"chorus feedback %v produced %v / %v at sample %v", fb, l[i], r[i], i)
