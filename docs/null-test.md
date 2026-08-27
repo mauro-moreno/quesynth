@@ -6303,6 +6303,12 @@ they count out exactly:
 | ph3 | 110, 262 | 5920 | **3** |
 | ph4 | 65, 156, 262 | 7040 | **4** |
 
+> These counts are **low**, and the finer instrument in the next section says by
+> how much: ph3 has four resonances and ph4 has six. At three-semitone spacing
+> ph3's 605 Hz and ph4's 441 Hz fall between the notes. The direction of the
+> correction stands -- it is a comb that grows with the type -- but the numbers
+> to use are the ones measured per resonance.
+
 So it is a stage count, the shipped implementation has had the right count since
 the first guess, and what it is missing is what turns an allpass chain's notches
 into resonances: **feedback**.
@@ -6400,4 +6406,130 @@ odin build tools/s1probe -out:build/s1probe.exe
 # and the depth band, at a rate whose period fits three times into the render
 ./build/s1probe.exe phaserband $reference --type 6 --ctl1 48 --ctl2 80 --level 127 `
   --seconds 4 --notes 75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120,123,126
+```
+
+### The per-resonance probe (2026-08-25)
+
+The two instruments before this each answered one question and blocked on the
+next. The saw comb reads a whole transfer function from one render, which is what
+identified the section as resonant rather than notched, but its fundamental is
+its floor and above ctl1 32 the resonance leaves it. The held tone has no floor
+and found the resonances the comb had missed, which is what showed the count is
+the type index, but it reports one number per note, so several resonances
+sweeping at once collapse into a single "band" that is only their union.
+
+What was left is the question the structure turns on: where is *each* resonance,
+and how does each one move. That needs a whole transfer function **and** time
+resolution, which is the pair this document had called irreconcilable -- lower
+fundamentals need longer FFTs, and longer FFTs smear a moving corner.
+
+It is reconcilable by moving the third variable. Nothing requires the sweep to
+run at a musical rate while it is being measured. Slowed to a period of tens of
+seconds, a 341 ms window sees the comb move under two per cent of one cycle: a
+static comb, photographed a hundred times across a sweep. The rate law is
+independent of depth, which is measured below rather than assumed, so slowing it
+changes nothing else about what is read. The window then resolves a 16 Hz
+fundamental, and the whole comb is visible at once, from ph4's 65 Hz resonance to
+its 7 kHz one.
+
+`phasercomb` is that instrument. Its control is the one place the answer is
+already known: ph1 at ctl1 = 0 returns **exactly one resonance in 116 of 116
+frames, at 2770.8 to 2771.7 Hz**, a span of 0.00 octaves.
+
+### The combs, counted and placed
+
+```
+  ph1   2771
+  ph2    251   3899
+  ph3    104    255    605   5457
+  ph4     66    147    256    441    932   6613   Hz, ctl1 = 0, level 127
+```
+
+One, two, four and six. The held tone had found five of ph4's six and three of
+ph3's four -- at three-semitone spacing 441 Hz and 605 Hz fall between the notes
+-- so even the corrected count in the section above was low. What is not in doubt
+is the direction of the correction: this is a comb whose size grows with the type,
+not one shape at four frequencies.
+
+The same runs measure this engine at every setting and find **no resonance in any
+frame of any of them**. That is the defect stated exactly: the shipped allpass
+chain sums with dry and makes shallow dips, and the reference makes a comb of
+resonances 25 dB tall.
+
+### The depth curve
+
+Measured on ph1, where there is a single resonance to follow, at ctl2 = 40 with
+renders holding three full cycles:
+
+```
+  ctl1        0      8     16     24     32     48     64     80     96    112    127
+  low      2771   2782   2827   2829   2829   2909   3024   3026   2680   2321   2011  Hz
+  high     2772   6432   6881   7327   7828   8847  10054  11266  12476  13404  14700  Hz
+  span    0.000  1.209  1.284  1.373  1.468  1.605  1.733  1.896  2.219  2.530  2.870  oct
+```
+
+Two things in it are structural rather than incidental. The bottom of the sweep
+sits at the depth-0 rest point and **stays there** to ctl1 80, so the modulation
+is one-sided -- upward from where the corner rests -- and only above that does the
+sweep also reach below it. And converted into an allpass coefficient through the
+bilinear map, the top of the sweep moves at a nearly constant **0.0045 per step**
+from ctl1 8 to 127, which is a linear control on the coefficient rather than on
+the frequency; the octave span looks saturating only because frequency is a
+saturating function of the coefficient.
+
+### Two instrument errors, both now caught by the instrument
+
+**A render shorter than one cycle reports where the recording stopped.** At
+ctl2 = 16 the first depth sweep read 0.79 octaves for ctl1 16, against 1.284
+measured over three cycles: the trajectory was still rising when the render
+ended. The probe now counts the turning points of the lowest resonance's own
+trajectory and refuses to present a span as anything but a lower bound when it
+sees fewer than two, which is what it does at ctl1 1, 2 and 4.
+
+**An analysis ceiling reads as a sweep's top.** With the ceiling at 13 kHz the
+deepest sweeps returned 12559 and 12672 Hz and fourteen frames of the deepest
+returned nothing at all. Raised to 20 kHz, the same settings read 12559 -- real --
+and 15061 -- not. This is the identical mistake as the 131 Hz and 10465 Hz of the
+original depth table, made again, one instrument later, and caught only because
+the number sat suspiciously close to a limit that had just been chosen.
+
+### What the trajectory does that a single LFO does not
+
+The sweep's shape is where this stops rather than concludes.
+
+At ctl2 = 40, holding ctl1 at 16, 64 and 127, the trajectory turns around every
+**5.6, 5.7 and 5.6 seconds** and the turning points land at the same times to
+within a few tenths, so the rate is independent of depth and the phase is
+reproducible across renders. Both confirm what this section already recorded.
+
+But at ctl1 4, at that same rate, the trajectory **rises monotonically for the
+whole twenty seconds** and never turns at all, and at ctl1 16 it makes one large
+rise to 6819 Hz over nine seconds before settling into much smaller oscillations
+between 5300 and 6700 Hz. A single triangle sweeping a corner does neither. There
+is a slow component and a fast one, their balance moves with depth, and the depth
+table above is a measurement of the pair rather than of one law.
+
+That is the next reading, and it is now a reading rather than a guess: the
+trajectory is recorded frame by frame in the probe's CSV, so whatever this is can
+be fitted rather than inferred from extremes.
+
+### Reproducing it
+
+```powershell
+$reference = "ext/synth1/Synth1/Synth1 VST64.dll"
+odin build tools/s1probe -out:build/s1probe.exe
+
+# the control: one resonance, in a known place, in every frame
+./build/s1probe.exe phasercomb $reference --type 6 --ctl1 0 --ctl2 16 --seconds 3
+
+# the comb each type makes
+./build/s1probe.exe phasercomb $reference --type 9 --ctl1 0 --ctl2 16 --seconds 3
+
+# the depth curve, at a rate whose period fits three times into the render
+./build/s1probe.exe phasercomb $reference --type 6 --ctl1 64 --ctl2 40 `
+  --seconds 20 --csv build/comb-c64.csv
+
+# and the trajectory itself, frame by frame
+./build/s1probe.exe phasercomb $reference --type 6 --ctl1 16 --ctl2 40 `
+  --seconds 20 --show
 ```

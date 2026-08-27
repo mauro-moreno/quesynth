@@ -659,6 +659,9 @@ usage :: proc() {
 	fmt.eprintln("  s1probe fxcompare [dll] [--ctl1 <n>] [--ctl2 <n>] [--level <n>] [--note <n>]")
 	fmt.eprintln("  s1probe compcurve [dll] [--ctl1 <n>] [--ctl2 <n>] [--level <n>] [--note <n>]")
 	fmt.eprintln("                    [--gains <list>] [--depths <list>] [--csv <path>]")
+	fmt.eprintln("  s1probe phasercomb [dll] [--type <6..9>] [--ctl1 <n>] [--ctl2 <n>]")
+	fmt.eprintln("                     [--level <n>] [--gain <n>] [--seconds <s>] [--fft <n>]")
+	fmt.eprintln("                     [--show] [--csv <path>]")
 	fmt.eprintln("  s1probe phaserband [dll] [--type <6..9>] [--ctl1 <n>] [--ctl2 <n>]")
 	fmt.eprintln("                     [--notes <list>] [--csv <path>]")
 	fmt.eprintln("  s1probe comptrace [dll] [--ctl1 <n>] [--ctl2 <n>] [--amp <n>] [--decay <n>]")
@@ -683,7 +686,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" {
         if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -999,6 +1002,50 @@ main :: proc() {
 		}
 		set_fx_note(ppnote)
 		cmd_phaserprobe(dll, pptype, ppctl1, ppctl2, pplevel, ppgain, f64(ppsecs), pprows)
+	case "phasercomb":
+		pctype, pcctl1, pcctl2, pclevel := 6, 0, 16, 127
+		pcgain := 96
+		pcsec := 20
+		pcshow := false
+		pccsv := ""
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--type":
+					if !parse_probe_int(rest, i + 1, &pctype) {usage()}
+					i += 2
+				case "--ctl1":
+					if !parse_probe_int(rest, i + 1, &pcctl1) {usage()}
+					i += 2
+				case "--ctl2":
+					if !parse_probe_int(rest, i + 1, &pcctl2) {usage()}
+					i += 2
+				case "--level":
+					if !parse_probe_int(rest, i + 1, &pclevel) {usage()}
+					i += 2
+				case "--gain":
+					if !parse_probe_int(rest, i + 1, &pcgain) {usage()}
+					i += 2
+				case "--seconds":
+					if !parse_probe_int(rest, i + 1, &pcsec) {usage()}
+					i += 2
+				case "--fft":
+					if !parse_probe_int(rest, i + 1, &g_comb_fft) {usage()}
+					i += 2
+				case "--show":
+					pcshow = true
+					i += 1
+				case "--csv":
+					if i + 1 >= len(rest) {usage()}
+					pccsv = rest[i + 1]
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_phasercomb(dll, pctype, pcctl1, pcctl2, pclevel, pcgain, f64(pcsec), pcshow, pccsv)
 	case "phaserband":
 		pbtype, pbctl1, pbctl2, pblevel := 6, 64, 80, 127
 		pbnotes := "24,27,30,33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120"
