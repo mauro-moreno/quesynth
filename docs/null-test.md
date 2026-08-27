@@ -8007,3 +8007,124 @@ not widen and this engine does.
 The next thing to vary is the one thing held fixed throughout: every rate here was
 measured at level 127. If the widening turns out to follow the feedback rather
 than the depth, that would explain an ordering in ctl1 that does not exist.
+
+### The distortions, measured (2026-08-27)
+
+Three of the four shapes in the effect unit were written from their names and
+never measured -- a.d.1 an asymmetric tanh with a hand-picked offset, a.d.2 a
+plain tanh, d.d. a hard clip, over a drive running exponentially from 1 to 64 --
+and they score 6.5, 7.4 and 14.3 dB, the worst of any section.
+
+A spectrum cannot be inverted into a curve. But a curve can be read off directly,
+in either of two ways, and the first of them fails informatively.
+
+### The time-domain scatter, and why it is not the instrument
+
+A waveshaper is memoryless, so render the same patch twice, once with the unit
+off and once on, and scatter the second against the first: the two are sample
+aligned because the same synth made both, and the scatter *is* the curve. It also
+says whether the thing is memoryless at all, because a filter draws a loop rather
+than a line.
+
+Everything drew a loop. At 2 kHz one sample is sixteen degrees of phase, so any
+delay scrambles the map; at the frequencies where the loop is widest the curve
+doubles back on itself and the mean of a bin falls between two branches. No shape
+was fitted through it, and the width of that loop is reported next to every curve
+so that none can be.
+
+### The harmonics, which are
+
+A memoryless curve driven by a sine puts power only at multiples of f0, and the
+amplitude of each is a fixed function of the drive. Whatever filtering follows
+multiplies each by a number that is fixed because f0 is. So measuring the
+harmonics across the whole of ctl1 separates the curve's shape from its drive
+without needing either in advance, and phase never enters.
+
+The input was checked rather than assumed. The probe's tone is a sine to within
+-104 dB, so every harmonic measured is the unit's own.
+
+### The unit's response, from where its curve is straight
+
+At ctl1 0 all three are linear -- a.d.2's third harmonic sits 46 dB down and does
+not move with input level -- so the gain at the fundamental, swept over eight
+octaves, is the response with nothing else in it. a.d.2 and d.d. return the same
+shape, and it is a two-pole high pass and nothing else:
+
+```
+             measured / fitted, fc 99.9 Hz, Q 2.26
+   32.7 Hz  -18.5 / -18.5      523 Hz  +0.3 / +0.3
+   65.4 Hz   -3.5 /  -3.4     1046 Hz  +0.1 / +0.1
+    131 Hz   +5.5 /  +5.5     2093 Hz  +0.1 / +0.1
+    262 Hz   +1.2 /  +1.3     4186 Hz  +0.2 / +0.1
+```
+
+Within 0.07 dB at every one. The +5.5 dB peak at 131 Hz is why the old law was
+wrong about level: the section had been carrying a one-pole high pass at 90 Hz
+placed by choosing a corner that produced the single loss anyone had measured.
+
+### a.d.2: a tanh whose drive stops
+
+Fitted against harmonics one to five over fourteen settings, with the response
+above held fixed rather than free, **a.d.2 lands within 0.15 dB**. Its drive
+saturates: the odd harmonics are identical at ctl1 80, 96, 112 and 127, and the
+fitted drive tops out at 34 where the old law was still climbing to 64. That was
+the single largest error in the section -- everything above ctl1 80 was
+over-driven by more than a factor of ten.
+
+```
+   fxcompare, a.d.2          before        after
+   ctl1 32 ctl2 64            7.4 dB        2.5
+   ctl1 64 ctl2 96            7.4           3.5
+   ctl1 96 ctl2 64            7.4           2.9
+   level error at 64/96      -3.58 dB      +0.02
+   null at 64/96             -6.79 dB     -28.46
+```
+
+### a.d.1: measured, and not implemented
+
+Its response is measured too, and it does not share the one above: it plateaus 8
+dB higher and falls twice as steeply, which is that two-pole high pass with one
+more pole at 839 Hz and 8.15 dB of makeup behind it -- within 1.26 dB across eight
+octaves, against 3.79 for any two-pole fit alone.
+
+Its curve is not measured, and this is the part worth recording. Fitted as a
+biased tanh against harmonics one to five it looks convincing at 1.85 dB, and the
+first five harmonics do come back within a dB or two of the reference. The gate
+then got **worse**, 6.5 dB to 15.3, and the reason is in the harmonics the fit did
+not include:
+
+```
+   ctl1 127, dB below the input fundamental
+              h1     h3     h5     h7     h9    h11
+   reference -3.1  -13.7  -18.6  -21.8  -23.9  -25.6
+   ours      -4.1  -13.7  -21.2  -29.8  -39.1  -48.7
+```
+
+The reference's tail barely decays. Relative to its own third harmonic it runs
+-4.9, -8.1, -10.2, -11.9 dB, and an ideal square wave runs -4.4, -7.4, -9.5,
+-11.2: a.d.1 at full drive is a square wave to within a decibel and a half. No
+tanh does that. Neither does a hard clipper, which gives the tail and then cannot
+give h3/h1 = 0.295 against its own 0.333; nor does the family between them with
+the knee left free per setting, which reaches 3.9 dB by wandering -- drive jumping
+5.46 to 1.64 to 3.00, knee 1.00 to 0.30 to 0.50 across neighbouring settings,
+which is a fit in a flat landscape and not a structure.
+
+So a.d.1 is left exactly as it was. The old shape scores better than the fitted
+one, and it is worth being clear that this is luck rather than merit: it was
+over-driven, an over-driven tanh has a longer tail, and a longer tail is what the
+reference has. Being wrong in the right direction is not a reason to keep a curve,
+but it is a reason not to replace it with one that is wrong in the other.
+
+### d.d. is a wavefolder
+
+Not a clipper. At small input its map is a straight line with a **negative** slope
+that steepens with drive, -0.53 at ctl1 0 to -1.42 at 32, so it inverts. Past
+that the map turns back on itself: twice at ctl1 32, four times at 40, and by 127
+the within-bin spread reaches nineteen times the output range, which is a map too
+steep to bin rather than a noisy one. The harmonics agree -- at ctl1 127 the
+fundamental is 50 dB down and every harmonic below -35 dB, with the energy gone
+inharmonic, which is what folding without oversampling does and what no clipper
+can do.
+
+That is a different mechanism from the two above and it is left measured and
+unwritten, along with the decimator, which has not been looked at.

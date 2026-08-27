@@ -3929,7 +3929,7 @@ test_effect_analog1_makes_even_harmonics_and_analog2_does_not :: proc(t: ^testin
 	for i in 1 ..= 64 {
 		x := f32(i) / 64.0 * 0.9
 		a1 := dsp.effect_shape_analog1(x, 8) + dsp.effect_shape_analog1(-x, 8)
-		a2 := dsp.effect_shape_analog2(x, 8) + dsp.effect_shape_analog2(-x, 8)
+		a2 := dsp.effect_shape_analog2(x, 8, 1) + dsp.effect_shape_analog2(-x, 8, 1)
 		asymmetric_error += abs(a1)
 		symmetric_error += abs(a2)
 	}
@@ -4171,4 +4171,29 @@ test_chorus_four_taps_are_narrower_than_two :: proc(t: ^testing.T) {
 		four < two,
 		fmt.tprintf("four taps (%.4f) should be narrower than two (%.4f)", four, two),
 	)
+}
+
+@(test)
+test_effect_analog_drive_saturates :: proc(t: ^testing.T) {
+	// The largest error in the old distortions was the drive, which ran
+	// exponentially to 64 while the reference's stops moving: a.d.2's odd
+	// harmonics are identical at ctl1 80, 96, 112 and 127, so whatever drives it
+	// has reached its end well before the knob does.
+	top := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 1.0)
+	at80 := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 80.0 / 127.0)
+	testing.expect(
+		t,
+		abs(top - at80) < 1.0e-3,
+		fmt.tprintf("a.d.2's drive still moves above ctl1 80: %.3f against %.3f", at80, top),
+	)
+	testing.expect(t, top < 64.0, fmt.tprintf("a.d.2's drive reaches %.1f, the old law's ceiling", top))
+
+	// And it rises monotonically below that, which is what a drive knob does.
+	prev := f32(-1)
+	for c in 0 ..= 127 {
+		d := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, f32(c) / 127.0)
+		testing.expect(t, d >= prev, fmt.tprintf("a.d.2's drive fell at ctl1 %d", c))
+		prev = d
+	}
+
 }

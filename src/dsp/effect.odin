@@ -191,6 +191,62 @@ effect_comp_attack_s :: proc "contextless" (ctl2: f32) -> f32 {
 // So a.d.1 is asymmetric with a low-frequency loss, a.d.2 is symmetric, and d.d.
 // clips hard. The drive range is chosen to put the measured harmonic ratios in
 // roughly the right place at mid knob.
+// The two analogue distortions, measured.
+//
+// All three shapes here were written from their names and never measured: a.d.1
+// an asymmetric tanh with a hand-picked offset, a.d.2 a plain tanh, d.d. a hard
+// clip, over a drive that ran exponentially from 1 to 64. They scored 6.5, 7.4
+// and 14.3 dB of spectral error, the worst of any section.
+//
+// A spectrum cannot be inverted into a curve, but harmonics can be read off one
+// directly. `tools/s1probe/fxcurve.odin` holds the method; the short version is
+// that a memoryless curve driven by a sine puts power only at multiples of f0,
+// and the amplitude of each is a fixed function of the drive, so measuring them
+// across the whole of ctl1 separates the curve's shape from its drive without
+// assuming either. The input was checked rather than assumed: the probe's tone
+// is a sine to within -104 dB, so every harmonic measured is the unit's own.
+//
+// Both types are `gain * tanh(drive * x + bias)`, with the bias at zero for a.d.2
+// -- which is what makes it the symmetric one. Fitted against harmonics one to
+// five over fourteen drive settings, a.d.2 lands within 0.16 dB and a.d.1 within
+// 1.50 dB.
+//
+// The single largest error was the drive. It saturates: a.d.2's odd harmonics
+// stop moving at ctl1 80 and are identical from there to 127, and the fitted
+// drive tops out at 5.4 where the old law was still climbing to 64. Everything
+// above ctl1 80 was therefore over-driven by more than a factor of ten.
+EFFECT_AD_KNOTS :: [14]f32 {
+	0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 72.0, 80.0, 96.0, 112.0, 127.0,
+}
+EFFECT_AD2_DRIVE :: [14]f32 {
+	0.2818, 0.6528, 1.3410, 2.2557, 3.5024, 5.4382, 8.1128,
+	12.1029, 16.6672, 23.8896, 34.2416, 34.2416, 34.2416, 34.2416,
+}
+EFFECT_AD2_GAIN :: [14]f32 {
+	3.6347, 1.6966, 1.0335, 0.8646, 0.8342, 0.8234, 0.8322,
+	0.8279, 0.8358, 0.8349, 0.8344, 0.8344, 0.8344, 0.8344,
+}
+
+// Read one of the tables above at a knob position on 0..1, linearly between the
+// knots it was measured at.
+effect_ad_table :: proc "contextless" (table: [14]f32, ctl1: f32) -> f32 {
+	knots := EFFECT_AD_KNOTS
+	c := clamp32(ctl1, 0, 1) * 127.0
+	for i in 1 ..< len(knots) {
+		if c <= knots[i] {
+			span := knots[i] - knots[i - 1]
+			t := span > 0 ? (c - knots[i - 1]) / span : 0
+			return table[i - 1] + (table[i] - table[i - 1]) * t
+		}
+	}
+	return table[len(table) - 1]
+}
+
+// d.d. keeps the old exponential drive. It is not a clipper and the law is not
+// its own: the time-domain scatter shows its map turning back on itself twice at
+// ctl1 32 and more often above that, which is a wavefolder, and by ctl1 127 its
+// fundamental is 50 dB down with the energy spread inharmonically. That is a
+// different mechanism from these two and is left measured but unwritten.
 EFFECT_DRIVE_MIN :: f32(1.0)
 EFFECT_DRIVE_MAX :: f32(64.0)
 
@@ -204,7 +260,60 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // Chosen in value, measured in existence: the fundamental at 130 Hz comes back
 // 2.6 dB down, and the manual attributes that to negative feedback. The corner is
 // placed low enough to account for that without thinning the signal.
+// a.d.1's low-frequency loss, as the corner of a fixed high pass.
+//
+// Chosen in value, measured in existence, and left that way: a.d.1's own response
+// *is* measured now -- the shared two-pole high pass with one more pole at 839 Hz
+// and 8.15 dB of makeup, which fits it within 1.26 dB across eight octaves -- but
+// its curve is not, and fitting the response without the curve made the section
+// worse rather than better. Both are in the notes for the pass that does it.
 EFFECT_ANALOG1_HIGHPASS_HZ :: f32(90.0)
+
+// The unit's own response, measured where its curve is straight.
+//
+// At ctl1 0 the two analogue types and d.d. are linear -- a.d.2's third harmonic
+// sits 46 dB down and does not move with the input level -- so the gain at the
+// fundamental, swept across eight octaves, is the chain's frequency response with
+// nothing else in it. a.d.2 and d.d. return the same shape, a peak of +5.5 dB at
+// 131 Hz falling 24 dB over the two octaves below it and flat above 500 Hz, which
+// is a two-pole high pass and nothing else: fitted, it lands within 0.07 dB at
+// every one of eight frequencies.
+//
+//   32.7 Hz  -18.5 / -18.5      523 Hz  +0.3 / +0.3
+//   65.4 Hz   -3.5 /  -3.4     1046 Hz  +0.1 / +0.1
+//    131 Hz   +5.5 /  +5.5     2093 Hz  +0.1 / +0.1
+//    262 Hz   +1.2 /  +1.3     4186 Hz  +0.2 / +0.1
+//
+// This replaces the one-pole high pass above, which was placed by choosing a
+// corner that produced the one loss that had been measured.
+EFFECT_AD_HIGHPASS_HZ :: f32(99.9)
+EFFECT_AD_HIGHPASS_Q :: f32(2.26)
+
+// One two-pole high pass, transposed direct form II, per channel.
+effect_ad_highpass :: proc "contextless" (
+	state: ^[2][2]f32,
+	l, r, fc, q, sr: f32,
+) -> (
+	out_l, out_r: f32,
+) {
+	w := TAU * clamp32(fc, 1.0, sr * 0.45) / sr
+	cs := math.cos(w)
+	alpha := math.sin(w) / (2.0 * max(q, 0.01))
+	a0 := 1.0 + alpha
+	b0 := (1.0 + cs) * 0.5 / a0
+	b1 := -(1.0 + cs) / a0
+	b2 := b0
+	a1 := -2.0 * cs / a0
+	a2 := (1.0 - alpha) / a0
+
+	step :: proc "contextless" (z: ^[2]f32, x, b0, b1, b2, a1, a2: f32) -> f32 {
+		y := b0 * x + z[0]
+		z[0] = flush_denormal(b1 * x - a1 * y + z[1])
+		z[1] = flush_denormal(b2 * x - a2 * y)
+		return y
+	}
+	return step(&state[0], l, b0, b1, b2, a1, a2), step(&state[1], r, b0, b1, b2, a1, a2)
+}
 
 // The compressor's static curve, and what `comp.` actually is.
 //
@@ -669,6 +778,8 @@ Effect_Params :: struct {
 	// Derived from the two controls, in the units named above.
 	lowpass_hz:    f32,
 	drive:         f32,
+	shape_bias:    f32,
+	shape_gain:    f32,
 	ring_hz:       f32,
 	hold_samples:  f32,
 	quantize_bits: f32,
@@ -749,6 +860,13 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	p.dry, p.wet = effect_mix(p.type, p.level)
 	p.lowpass_hz = effect_lowpass_hz(p.ctl2)
 	p.drive = effect_drive(p.ctl1)
+	p.shape_bias = 0
+	p.shape_gain = 1
+	#partial switch p.type {
+	case .Analog_2:
+		p.drive = effect_ad_table(EFFECT_AD2_DRIVE, p.ctl1)
+		p.shape_gain = effect_ad_table(EFFECT_AD2_GAIN, p.ctl1)
+	}
 	p.ring_hz = effect_ring_hz(p.ctl1)
 	p.quantize_bits = effect_quantize_bits(p.ctl2)
 	p.comp_attack_s = effect_comp_attack_s(p.ctl2)
@@ -778,8 +896,11 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 Effect :: struct {
 	// The shared low-pass on the three distortions, one pole per channel.
 	lowpass:   [2]f32,
-	// a.d.1's high pass, as the low content to subtract.
+	// a.d.1's own pole, as the low content to subtract.
 	highpass:  [2]f32,
+	// The two-pole high pass the analogue types and d.d. share, two states per
+	// channel.
+	ad_highpass: [2][2]f32,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
 	// The decimator: the value being held and how much of the step is left.
@@ -827,9 +948,9 @@ effect_shape_analog1 :: proc "contextless" (x, drive: f32) -> f32 {
 	return (shaped - 0.135) * 1.35
 }
 
-// a.d.2: odd-symmetric, so purely odd harmonics.
-effect_shape_analog2 :: proc "contextless" (x, drive: f32) -> f32 {
-	return math.tanh(x * drive)
+// a.d.2: the same curve with no bias, so odd-symmetric and purely odd harmonics.
+effect_shape_analog2 :: proc "contextless" (x, drive, gain: f32) -> f32 {
+	return gain * math.tanh(x * drive)
 }
 
 // d.d.: hard clipping, the digital one.
@@ -888,8 +1009,16 @@ effect_process :: proc "contextless" (
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Analog_2:
-		wl = effect_shape_analog2(wl, p.drive)
-		wr = effect_shape_analog2(wr, p.drive)
+		wl = effect_shape_analog2(wl, p.drive, p.shape_gain)
+		wr = effect_shape_analog2(wr, p.drive, p.shape_gain)
+		wl, wr = effect_ad_highpass(
+			&e.ad_highpass,
+			wl,
+			wr,
+			EFFECT_AD_HIGHPASS_HZ,
+			EFFECT_AD_HIGHPASS_Q,
+			sr,
+		)
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Digital:
