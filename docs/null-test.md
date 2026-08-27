@@ -7640,3 +7640,75 @@ in any frame of any setting -- it is now:
 with the comb landing on the reference's to a fraction of a hertz at every static
 setting, and the factory bank byte-identical throughout, as it must be: no patch
 in it switches this unit on.
+
+### Checking again: the rate law, and a probe that was lying (2026-08-27)
+
+Scanning both controls rather than sampling four corners of them, the phaser's
+spectral error is now under a decibel almost everywhere -- 0.00 at every depth
+with the sweep stopped, and 0.00 to 0.91 across ph1 at every combination of
+ctl1 32 to 96 with ctl2 32 to 127. What is left shows up in the **level** column,
+and it is concentrated where the comparison render is shorter than one sweep.
+
+### The rate probe was returning its own search bound
+
+Asked for the slow settings, `phaserrate` returned "200.00 Hz r=1.00" for both
+engines at ctl2 32, 48, 56 and 64 -- which is five frames, the first lag it
+examines. A slowly varying envelope correlates with itself at every short lag, so
+the correlation leaves the first lag near one and decays, and its first local
+maximum is the search's own starting point.
+
+The guard that exists for exactly this tests the bounds, and the scan can only
+return one lag inside them, so it never fired. A real period is a maximum that
+follows a trough, so the scan now waits for the correlation to fall away before
+it will accept one. With that, ctl2 32 reports unresolvable -- correctly, since
+its period is eight seconds and the render held twenty -- and the rest report
+periods.
+
+Worth recording as the third time this project has hit the same failure: a
+correlation maximum landing on the edge of its own search reads exactly like a
+confident answer.
+
+### Which made the rate law measurable, and it was four per cent fast
+
+```
+  ctl2        48     64     80     96    112
+  measured  0.27   0.64   1.51   3.47   8.55  Hz
+  refitted  0.270  0.637  1.506  3.559  8.411
+  the old   0.286  0.666  1.551  3.614  8.419
+```
+
+Worst deviation 2.6 per cent against 5.8. The original law came from
+autocorrelating a spectrogram, which is bounded by the analysis window at the fast
+end and needs the resonance to stay inside it at the slow one; the envelope has
+neither constraint.
+
+It is a small change that matters more than its size, because the comparison
+render is a second and a half: a few per cent of rate is a few per cent of a cycle
+of accumulated phase by the end of it, and phase is what the level metric sees. At
+ctl1 64, ctl2 64 the four types go from 0.52, 0.33, 1.54 and 4.91 dB to 0.40,
+0.20, 1.58 and 3.71, and at ctl2 127 from 0.62, 4.38, 3.70 and 6.05 to 0.54, 4.26,
+3.38 and 5.31.
+
+### One repair attempted and reverted
+
+The largest level errors are all at slow rates, where the render sits entirely
+inside the start-up transient. Reading the envelope through ph2 at ctl1 127,
+ctl2 32 shows the two engines' transients running in **opposite directions**: the
+reference rises from -4.2 to +6.9 dB over 690 ms as a resonance descends onto the
+tone, and this engine falls to -12.8 as its own climbs away. At that depth the
+band contains the rest point, so which way the sweep sets off is visible; at
+lower depths the corner has to climb into the band either way and it is not.
+
+Starting the sweep downward fixes that setting -- the first 570 ms then agree to
+within 0.6 dB, and ph2's level error there goes from -19.27 to -6.75 dB. It is
+still wrong: across twenty-eight rows the mean spectral error goes from 2.82 to
+3.76, with ph3 and ph4 at ctl1 64, ctl2 64 going from 1.58 and 3.71 to 10.91 and
+13.78. So the initial direction is not simply the other one, and the change is
+reverted rather than kept for the setting it happens to suit.
+
+What the attempt did establish is where the remaining error lives, which is the
+first sweep after a note rather than the sweep itself. Our corner reaches its
+limit and waits for the LFO to turn it around; the reference's keeps moving.
+Modelling that properly is the next thing, and it is a measurement of the first
+cycle rather than of the steady state, which is the part every instrument here has
+been pointed at so far.

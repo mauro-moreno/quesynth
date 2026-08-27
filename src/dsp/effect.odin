@@ -393,8 +393,24 @@ effect_comp_gain :: proc "contextless" (level: f32) -> f32 {
 // shape -- and it was wrong in the same way: fitted to where the resonance is
 // rather than to the response. What settled the structure was fitting the whole
 // measured curve, and the constants below are what came out of it.
-EFFECT_PHASER_MIN_RATE_HZ :: f32(0.0226)
-EFFECT_PHASER_RATE_OCTAVES :: f32(9.685)
+// The rate, refitted with an instrument that does not need a spectrum.
+//
+// The original law came from autocorrelating a spectrogram, which is limited by
+// the analysis window at the fast end and needs the resonance to stay inside it
+// at the slow one. Reading the envelope of a held tone instead -- `phaserrate` --
+// measures the same thing with neither constraint:
+//
+//   ctl2        48     64     80     96    112
+//   measured  0.27   0.64   1.51   3.47   8.55  Hz
+//   this law  0.270  0.637  1.506  3.559  8.411
+//   the old   0.286  0.666  1.551  3.614  8.419
+//
+// Worst deviation 2.6 per cent against the old law's 5.8. It is a small change
+// and it matters more than its size: the comparison render is a second and a
+// half, so a few per cent of rate is a few per cent of a cycle of phase error by
+// the end of it, and the phase is what the level metric sees.
+EFFECT_PHASER_MIN_RATE_HZ :: f32(0.02042)
+EFFECT_PHASER_RATE_OCTAVES :: f32(9.8493)
 
 // The circuit, fitted to the measured response rather than guessed.
 //
@@ -572,6 +588,9 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 //   ctl2      108    112    116    118    120    122    124    126    127
 //   law      6.81   8.42  10.40  11.56  12.85  14.28  15.88  17.65  18.60  Hz
 //   measured 6.71   8.55   9.35  10.42  11.76  13.33  15.62  15.62  15.62
+//
+// (the law's row above is the one this replaced; the refit moves it by a few per
+// cent and does not touch where it saturates)
 //
 // 15.62 Hz is 48000/3072, and every period below the cap is an integer number of
 // 512-sample blocks -- 14, 11, 10, 9, 8, 7 and then 6, which is the floor. So the

@@ -53,6 +53,10 @@ PHASER_RATE_MIN_CYCLES :: 3.0
 // which is what lets the earliest one win over the tallest.
 PHASER_RATE_ACCEPT :: 0.72
 
+// How far the correlation must fall before a maximum counts as a period rather
+// than as the tail of the correlation's own start.
+PHASER_RATE_TROUGH :: 0.4
+
 phaser_rate_envelope :: proc(off, on: []f32, frame: int) -> []f64 {
 	mo, so := split_mid_side(off, 2)
 	defer delete(mo)
@@ -123,10 +127,25 @@ phaser_rate_period :: proc(env: []f64, min_lag, max_lag: int) -> (lag: int, r: f
 	if best <= 0 {
 		return 0, 0
 	}
-	// The earliest local maximum that reaches most of the tallest one. Taking the
-	// tallest instead is what returns twice the period on a signal whose second
-	// match is a shade stronger than its first.
+	// A slowly varying envelope correlates with itself at every short lag, so the
+	// correlation leaves the first lag near one and decays; its first local
+	// maximum is then the search's own starting point rather than a period. This
+	// caught the guard below out -- it tests the bounds, but the scan can only
+	// return min_lag + 1, which is one inside them, so a monotone decay came back
+	// as a confident 200 Hz at every rate slower than 1 Hz.
+	//
+	// The fix is to require the correlation to fall away first. A real period is a
+	// maximum that follows a trough, so the scan starts only once the correlation
+	// has dropped well below where it began.
+	fell := false
+	start := corr[min_lag]
 	for l in min_lag + 1 ..< hi {
+		if !fell {
+			if corr[l] < start * PHASER_RATE_TROUGH && corr[l] < PHASER_RATE_TROUGH {
+				fell = true
+			}
+			continue
+		}
 		if corr[l] >= corr[l - 1] && corr[l] >= corr[l + 1] && corr[l] >= best * PHASER_RATE_ACCEPT {
 			return l, corr[l]
 		}
