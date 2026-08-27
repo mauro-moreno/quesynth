@@ -7136,6 +7136,10 @@ one the corner and one what the corner produces.
   rate         the existing law, confirmed at ctl2 40 to within 5%
 ```
 
+> Both of these were superseded within the hour by one missing term -- the
+> feedback's one-sample delay -- which took the joint fit from 2.133 dB to
+> 0.153 and removed the high section entirely. See "The rewrite" at the end.
+
 One inconsistency is left standing rather than smoothed: the level fit put `d`
 near 0.81 and `w` up to 1.24 at level 127, while the circuit fit puts them at
 0.51 and 0.53. Both reproduce their own data. They differ because the level fit
@@ -7143,3 +7147,105 @@ held ph1's *staggered* corners fixed -- the ones LM has now superseded -- so its
 `d` and `w` absorbed the difference between two chains. The level law's shape is
 unaffected, since the threshold and the zero below it come from `g`, but the two
 mixing numbers need one more pass with the corners that are now known.
+
+### The rewrite (2026-08-27)
+
+Written, and gated. The circuit is smaller than any of the three guesses that
+preceded it:
+
+```
+  v   = x + g * z^-1 * A(v)        A = N identical allpass sections at 254.61 Hz
+  out = 0.5 * (x + A(v))           N = 2, 4, 8, 12 for ph1 to ph4
+```
+
+That is a textbook phaser. The sections are coincident, not staggered; there is
+no second filter anywhere; and the output is a plain half-and-half sum.
+
+### The one sample that mattered
+
+The previous fit sat at 2.13 dB rms and could not do better, and the reason was a
+term nobody had written down: **the feedback carries one sample of delay**. Any
+realisable loop does -- the reference's included -- and modelling the loop without
+it puts every resonance too high, ph1's by a quarter.
+
+Putting `z^-1` in the loop and refitting took the joint error from 2.133 dB to
+**0.153 dB rms, 0.74 dB worst**, across all four types at once. It also removed
+the extra high-frequency section the earlier fits had needed: that section had
+been standing in for the delay's own phase, and once the delay is present it
+fits at 35 kHz, which is to say nowhere.
+
+So five numbers became three, and two of those are a half:
+
+```
+  corner   254.61 Hz      the sections, all at one frequency
+  g        0.9747         feedback at level 127
+  d, w     0.4983, 0.4979 -- a plain sum, to three decimal places
+```
+
+### Parameter 81, a third time
+
+Re-fitting the level knob under the corrected circuit gave a law simple enough to
+be obviously deliberate. Below the knob's midpoint the feedback is zero and the
+control is a crossfade from dry to that half-and-half sum. Above it the mix stops
+moving entirely and the feedback rises in a **straight line**:
+
+```
+  level      80      96     104     112     118     122     127
+  measured  0.2505  0.4977  0.6209  0.7439  0.8361  0.8977  0.9747
+  the law   0.2510  0.4985  0.6217  0.7447  0.8367  0.8981  0.9747
+```
+
+Worst deviation 0.0008 over seven settings, and `d` and `w` sit at 0.4983 and
+0.4977 at every one of them. This is the third law recorded for this control. The
+first, `L/127` as an output gain, came from generalising the distortions'. The
+second, `0.9491*(level/127)^3.84`, came from assuming the peak is `1/(1-g)`. Both
+were fitted to a structure that was wrong; this one is fitted to a structure that
+predicts thirteen resonances it was not shown.
+
+### What it does against the reference
+
+The comb, which is the check the whole rewrite rests on:
+
+```
+             reference        this engine
+  ph1        2770.8 Hz        2771.0 Hz
+  ph4          66.0             66.0
+              147.1            147.1
+              255.6            255.6
+              440.8            440.8
+              931.6            931.6
+             6612.4           6612.4
+```
+
+Every resonance, to a fraction of a hertz, from one corner frequency and a
+section count.
+
+And the direct A/B, over four operating points and all four types -- sixteen rows,
+spectral error in dB:
+
+```
+                        before    after
+  mean spectral         17.97      4.19
+  mean level             4.65      1.74
+  mean envelope          9.00      5.01
+```
+
+At ctl1 = 0, where the sweep is stopped, the four types now read 0.00, 0.01, 0.06
+and 0.64 dB of spectral error against 0.00, 0.59, 2.21 and 4.26, with level error
+under a tenth of a decibel where it had been up to +10.95.
+
+One row is worse: ph1 at ctl1 127, ctl2 96 goes from 11.94 to 13.38 dB. Every
+other row improves, several of them by more than twenty decibels -- ph2, ph3 and
+ph4 at that same setting go from 32.73, 43.48 and 48.64 to 1.88, 1.99 and 1.30.
+
+The factory bank is untouched and has to be: no patch in it switches this unit on.
+
+### What is still approximate
+
+The sweep. The corner's trajectory -- triangle in octaves, centre fixed, span
+0.050 octaves per depth step, slewed rather than assigned -- is measured and
+implemented, but it is measured through the resonances rather than on the corner
+itself, and the two are related by an arctangent that saturates. That is why the
+deeper sweeps still show several decibels of spectral error where the static
+settings show hundredths. The static response is now essentially exact; the moving
+one is not, and the remaining error is concentrated there.

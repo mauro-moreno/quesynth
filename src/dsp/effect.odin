@@ -389,29 +389,108 @@ effect_comp_gain :: proc "contextless" (level: f32) -> f32 {
 // because a cascade of band passes removes everything away from its centre while
 // the reference only drops 13 dB.
 //
-// The shape itself is exact and is what the structure below is built from: a flat
-// skirt at **-13 dB** below the corner, a resonant peak of about **+24 dB** at it,
-// and a return to **0 dB** above. That is a resonant high pass mixed with a fixed
-// fraction of dry -- the dry is what puts a floor under the skirt instead of the
-// -inf a high pass alone would give, and above the corner the two sum to unity.
+// A third guess followed those two -- a single swept resonance, read off that
+// shape -- and it was wrong in the same way: fitted to where the resonance is
+// rather than to the response. What settled the structure was fitting the whole
+// measured curve, and the constants below are what came out of it.
 EFFECT_PHASER_MIN_RATE_HZ :: f32(0.0226)
 EFFECT_PHASER_RATE_OCTAVES :: f32(9.685)
-// The band the sweep covers, and the depth as a plain fraction of it.
+
+// The circuit, fitted to the measured response rather than guessed.
 //
-// Chosen, and left chosen: see the note below on what happened when the measured
-// centre frequencies and depths were substituted for them.
-EFFECT_PHASER_BAND_LO_HZ :: f32(200.0)
-EFFECT_PHASER_BAND_HI_HZ :: f32(3000.0)
-// The measured skirt: 10^(-13/20).
-EFFECT_PHASER_DRY :: f32(0.224)
-// Resonance, set to reach the measured peak height.
-EFFECT_PHASER_RESONANCE :: f32(0.94)
+// `tools/phaserfit.py` holds the fitting; the short version is that five numbers
+// and a section count reproduce all four types' measured transfer functions to
+// about 2 dB rms. It is a cascade of *identical* first-order allpass sections --
+// not the staggered ones two earlier attempts assumed -- with one more section
+// well above the audio band, positive feedback around the whole chain, and the
+// output a fixed sum of dry and wet:
+//
+//   v   = x + g * A(v)
+//   out = d * x + w * A(v)
+//
+// The check that matters is not the fit. It is that the corner alone predicts
+// where every resonance lands, through nothing but the phase accumulating
+// 180 degrees per section and the loop resonating wherever it passes a multiple
+// of 360:
+//
+//   sections   resonances predicted from 254.8 Hz, against the comb probe
+//    2 (ph1)    2753                                          vs 2771
+//    4 (ph2)     253   3918                                   vs  251  3899
+//    8 (ph3)     105    254    606   5606                     vs  104   255   605  5457
+//   12 (ph4)      68    147    254    439    931   6943       vs   66   147   256   441   932  6613
+//
+// Thirteen resonances across four types, most within one per cent, from one
+// frequency. The section counts are not fitted either: 2, 4, 8 and 12 accumulate
+// enough phase for exactly 1, 2, 4 and 6 resonances above DC, which is what the
+// probe counted.
+EFFECT_PHASER_CORNER_REST_HZ :: f32(254.61)
+
+// Where the sweep is centred, in the corner's own terms.
+//
+// Not the rest position, and the gap is measured rather than tidied away: the
+// corner sits at its rest frequency with the depth at zero and sweeps about the
+// moment the knob leaves it. That discontinuity is what produces the start-up
+// transient recorded in the null test -- the corner slews from where it rests up
+// into the band, taking 14 seconds at the shallowest depth and none at all at the
+// deepest, where the band already contains the rest point.
+EFFECT_PHASER_CORNER_CENTRE_HZ :: f32(1187.0)
+
+// The sweep's width: 0.050 octaves per step of the depth knob.
+//
+// One law for all four types. It looked like two for a while -- ph1's resonance
+// moves only half as far as ph2 to ph4's lowest one at the same depth -- and the
+// explanation is in the arctangent rather than in the plugin. ph1's single
+// resonance sits where its two sections have already turned 339 of their 360
+// degrees, so the phase is deep into saturation and the resonance moves at half
+// the corner's rate; the others' lowest resonances sit low, where the response is
+// still linear, and track the corner one for one. Doubling this corner moves
+// ph1's resonance 0.505 octaves.
+EFFECT_PHASER_SPAN_OCTAVES :: f32(6.35)
+
+// What parameter 81 does, which is two different things either side of its
+// midpoint and neither of them a level.
+//
+// Below level 64 it is a crossfade and the feedback is flatly zero: dry falls
+// from one to a half while wet rises from nothing to a half. At 64 it arrives at
+// a plain 50/50 sum of the input and the chain, and from there to the top the mix
+// does not move at all -- fitted independently at seven settings it sits at
+// 0.4983 and 0.4977, which is a half to three decimal places -- while the
+// feedback rises **linearly**:
+//
+//   level      80      96     104     112     118     122     127
+//   measured  0.2505  0.4977  0.6209  0.7439  0.8361  0.8977  0.9747
+//   the law   0.2510  0.4985  0.6217  0.7447  0.8367  0.8981  0.9747
+//
+// worst deviation 0.0008 over seven settings. A straight line from the knob's
+// midpoint, which is what an author writes and not what a fit stumbles into.
+EFFECT_PHASER_FEEDBACK_MAX :: f32(0.9747)
+EFFECT_PHASER_MIX_KNEE :: f32(64.0 / 127.0)
+
+effect_phaser_feedback :: proc "contextless" (level: f32) -> f32 {
+	l := clamp32(level, 0, 1)
+	if l <= EFFECT_PHASER_MIX_KNEE {
+		return 0
+	}
+	return EFFECT_PHASER_FEEDBACK_MAX *
+		(l - EFFECT_PHASER_MIX_KNEE) / (1.0 - EFFECT_PHASER_MIX_KNEE)
+}
+
+effect_phaser_mix :: proc "contextless" (level: f32) -> (dry, wet: f32) {
+	l := clamp32(level, 0, 1)
+	if l >= EFFECT_PHASER_MIX_KNEE {
+		return 0.5, 0.5
+	}
+	t := l / EFFECT_PHASER_MIX_KNEE
+	return 1.0 - 0.5 * t, 0.5 * t
+}
 
 // One first-order allpass section.
 //
-// Each section passes every frequency at full level but rotates its phase, so
-// summing with the dry signal produces a dip wherever the rotation reaches 180
-// degrees. Sweeping the corner walks the dip.
+// Each section passes every frequency at full level and rotates its phase from
+// nothing at DC to half a turn at Nyquist. A cascade of them accumulates that
+// rotation, and with the chain fed back on itself the loop resonates wherever the
+// total passes a whole turn -- which is where the comb comes from and why the
+// section count sets how many teeth it has.
 Allpass1 :: struct {
 	z: f32,
 }
@@ -422,94 +501,59 @@ allpass1_process :: proc "contextless" (a: ^Allpass1, x, coefficient: f32) -> f3
 	return y
 }
 
-// How many allpass sections each phaser type sweeps.
-EFFECT_MAX_PHASER_STAGES :: 4
+// How many allpass sections each phaser type carries.
+//
+// 2, 4, 8 and 12, which is what the fit converged on from free corners and what
+// the resonance count independently requires: each section contributes half a
+// turn, so these accumulate enough for exactly 1, 2, 4 and 6 resonances above DC,
+// and that is what the comb probe counted.
+EFFECT_MAX_PHASER_STAGES :: 12
 
 effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 	switch type {
 	case .Phaser_1:
-		return 1
-	case .Phaser_2:
 		return 2
-	case .Phaser_3:
-		return 3
-	case .Phaser_4:
-		return 4
-	case .Analog_1, .Analog_2, .Digital, .Decimator, .Ring_Mod, .Compressor:
-		return 0
-	}
-	return 0
-}
-
-// ---------------------------------------------------------------------------
-// WHY THE RESONANT STRUCTURE IS NOT THE ONE BELOW
-//
-// The measurement above says the shipped structure -- an allpass chain summed with
-// dry, which makes dips -- is the wrong shape: the reference makes a resonance. The
-// resonant version was written and compared at two operating points against this
-// one, and the result is a tie on timbre and a clear loss on level:
-//
-//                       ph1    ph2    ph3    ph4   mean    level error
-//   ctl 64/64  allpass  3.07   3.41   7.89  15.00   7.34   -4 to -9 dB
-//              resonant 2.42   2.86   8.32  15.56   7.29   -16 to -22 dB
-//   ctl 112/96 allpass 12.64  25.61  35.66  44.72  29.66
-//              resonant 17.02  17.30  34.31  44.58  28.30
-//
-// Spectral error is within noise between them; the resonant one is 10 to 13 dB
-// worse on level, consistently, which is a real defect rather than a wash. So the
-// allpass version stays.
-//
-// Both of the measurements that were missing here have since been made, with a
-// held tone rather than a saw comb -- `tools/s1probe/phaserband.odin` -- and
-// together they say the resonant single-band model above was the wrong target.
-//
-// **The level law is feedback**, not a level. At ctl1 = 0 the response is flat to
-// within a decibel at level 0, and as the knob rises the peak grows and the notch
-// deepens together while the broadband level stays at unity -- +0.63 to -0.71 dB
-// across the top six settings. A feedback loop's peak gain is 1/(1-g), so the
-// measured peak states g outright:
-//
-//   level        96     104     112     118     122     127
-//   g        0.3208  0.4426  0.5870  0.7155  0.8129  0.9491
-//   fitted   0.3241  0.4407  0.5856  0.7157  0.8135  0.9491   0.9491*(L/127)^3.84
-//
-// every fitted peak within 0.05 dB. "Louder than bypass and broadband" at level 0
-// was the same fact seen from the other side: no feedback, no comb, nearly flat.
-//
-// **The depth curve** is measured where it means anything:
-//
-//   ctl1        48        80        127
-//   band   4186-8372  2960-9956  2093-11840  Hz, 1.00 / 1.75 / 2.50 octaves
-//
-// and below ctl1 48 it is not a single band at all, because several resonances
-// sweep at once and their excursions have not yet merged. That is a statement
-// about the structure, not a failed reading.
-//
-// Neither is implemented yet, deliberately. Feedback in a chain whose resonances
-// sit in the wrong places is worse than none, and the per-type centres above have
-// only been read at each type's tallest peak.
-//
-// One process note, because it cost most of the time spent here: the first four
-// comparisons were run at ctl 112/96 against a baseline recorded at ctl 64/64, and
-// read as a 20 dB regression that did not exist. A baseline is only a baseline at
-// the same operating point.
-// ---------------------------------------------------------------------------
-
-effect_phaser_centre_hz :: proc "contextless" (type: Effect_Type) -> f32 {
-	switch type {
-	case .Phaser_1:
-		return 2878.0
 	case .Phaser_2:
-		return 3924.0
+		return 4
 	case .Phaser_3:
-		return 5494.0
+		return 8
 	case .Phaser_4:
-		return 6540.0
+		return 12
 	case .Analog_1, .Analog_2, .Digital, .Decimator, .Ring_Mod, .Compressor:
 		return 0
 	}
 	return 0
 }
+
+// ---------------------------------------------------------------------------
+// WHAT THE EARLIER ATTEMPTS GOT WRONG, KEPT BECAUSE IT IS WHY THIS ONE IS RIGHT
+//
+// Three structures preceded this one. An allpass chain summed with dry, which
+// makes notches where the reference makes resonances. A cascade of band passes,
+// which was worse -- error rose monotonically with the stage count and the output
+// came out 20 dB quiet. And a single swept resonance, which tied on timbre and
+// lost 10 to 13 dB on level, and was parked rather than shipped.
+//
+// All three failed for the same reason: they were fitted to where the resonances
+// are. Resonance positions leave the structure wildly underdetermined -- three
+// different section layouts reproduced ph4's six resonances to within 5 per cent
+// of each other while sounding different in between. What settled it was fitting
+// the whole measured magnitude curve, which rules structures out rather than
+// merely accommodating them:
+//
+//   a pure feedback loop cannot notch deeper than 1/(1+g), which is -6 dB even
+//   as g approaches one, and the reference notches -12.15 dB at 262 Hz. So there
+//   is a dry path summed with the wet one.
+//
+//   the response rises toward DC -- +6.04 dB at 16 Hz and still climbing, with
+//   that -12.15 notch above it -- which is a resonance at zero frequency, and
+//   which is what tells positive feedback from the negative sign that would put
+//   a minimum there instead.
+//
+// The parked resonant version lost on level because the level knob is not a
+// level. It is a crossfade for two thirds of its travel and feedback for the
+// last third, and no amount of output gain reproduces that.
+// ---------------------------------------------------------------------------
 
 effect_phaser_rate_hz :: proc "contextless" (ctl2: f32) -> f32 {
 	return EFFECT_PHASER_MIN_RATE_HZ *
@@ -540,8 +584,10 @@ Effect_Params :: struct {
 	comp_attack_s: f32,
 	comp_makeup:   f32,
 	phaser_rate_hz:   f32,
-	phaser_depth:     f32,
-	phaser_centre_hz: f32,
+	phaser_span_oct:  f32,
+	phaser_feedback:  f32,
+	phaser_dry:       f32,
+	phaser_wet:       f32,
 	phaser_stages:    int,
 }
 
@@ -596,8 +642,13 @@ effect_mix :: proc "contextless" (type: Effect_Type, level: f32) -> (dry, wet: f
 	case .Compressor:
 		// Linear in decibels, so level 0 is 30 dB down rather than silent.
 		return 0, math.pow(f32(10.0), -EFFECT_COMP_LEVEL_RANGE_DB * (1.0 - l) / 20.0)
-	case .Analog_1, .Analog_2, .Digital, .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
+	case .Analog_1, .Analog_2, .Digital:
 		return 0, l
+	case .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
+		// The phasers read parameter 81 themselves -- it sets their feedback and
+		// their own dry/wet balance, neither of which is an output gain -- so the
+		// unit's mix passes their output through untouched.
+		return 0, 1
 	}
 	return 0, l
 }
@@ -612,8 +663,9 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	p.comp_attack_s = effect_comp_attack_s(p.ctl2)
 	p.comp_makeup = effect_comp_makeup(p.ctl1)
 	p.phaser_rate_hz = effect_phaser_rate_hz(p.ctl2)
-	p.phaser_depth = clamp32(p.ctl1, 0, 1)
-	p.phaser_centre_hz = effect_phaser_centre_hz(p.type)
+	p.phaser_span_oct = EFFECT_PHASER_SPAN_OCTAVES * clamp32(p.ctl1, 0, 1)
+	p.phaser_feedback = effect_phaser_feedback(p.level)
+	p.phaser_dry, p.phaser_wet = effect_phaser_mix(p.level)
 	p.phaser_stages = effect_phaser_stages(p.type)
 }
 
@@ -634,17 +686,22 @@ Effect :: struct {
 	// measured in. A mean-absolute detector settles at 2/pi of the amplitude
 	// instead of 1/sqrt(2), which would sit the whole curve 0.9 dB off.
 	envelope:   f32,
-	// The phasers. Both structures are here: the allpass chain that ships, and the
-	// resonant filter the measurement calls for, which is parked -- see the note in
-	// the constants above.
+	// The phasers: the sections, and the feedback each channel carries back into
+	// its own chain. That feedback is delayed by one sample, which is not an
+	// implementation compromise but part of the measurement -- modelling the loop
+	// without it puts every resonance too high and costs a factor of ten in fit.
 	allpass:    [2][EFFECT_MAX_PHASER_STAGES]Allpass1,
-	resonator:  Filter,
+	phaser_fb:  [2]f32,
+	// The corner, in octaves above one hertz, because it is slewed rather than
+	// assigned and a ramp in octaves is what the measurement found. Starts at the
+	// rest position, which is what produces the start-up transient.
+	corner_oct: f32,
+	corner_set: bool,
 	lfo_phase:  f32,
 }
 
 effect_reset :: proc "contextless" (e: ^Effect) {
 	e^ = {}
-	filter_init(&e.resonator)
 }
 
 // -------------------------------------------------------------------- shapers
@@ -786,34 +843,48 @@ effect_process :: proc "contextless" (
 		wr *= gain
 
 	case .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
-		e.lfo_phase += p.phaser_rate_hz / sr
-		e.lfo_phase -= math.floor(e.lfo_phase)
-
-		// The corner sweeps either side of this type's own measured centre, in
-		// octaves, so equal excursions up and down are equal musical intervals. The
-		// centre and the rate are measurements; the depth curve is the approximate
-		// one, and it is why the resonant structure is parked.
-		sweep := 0.5 + 0.5 * math.sin(TAU * e.lfo_phase) * p.phaser_depth
-		hz :=
-			EFFECT_PHASER_BAND_LO_HZ *
-			math.pow(f32(2.0), sweep * math.log2(EFFECT_PHASER_BAND_HI_HZ / EFFECT_PHASER_BAND_LO_HZ))
-
-		// The allpass coefficient for that corner, clamped short of Nyquist for the
-		// same reason as everywhere else in this file.
-		t := math.tan(0.5 * TAU * clamp32(hz, 10.0, sr * 0.45) / sr)
-		coefficient := (t - 1.0) / (t + 1.0)
-
-		stages := clamp(p.phaser_stages, 1, EFFECT_MAX_PHASER_STAGES)
-		pl := wl
-		pr := wr
-		for s in 0 ..< stages {
-			pl = allpass1_process(&e.allpass[0][s], pl, coefficient)
-			pr = allpass1_process(&e.allpass[1][s], pr, coefficient)
+		rest_oct := math.log2(EFFECT_PHASER_CORNER_REST_HZ)
+		if !e.corner_set {
+			e.corner_oct = rest_oct
+			e.corner_set = true
 		}
-		// Summing the rotated signal with the dry turns phase into amplitude; the
-		// halving keeps the sum at the level of its input.
-		wl = 0.5 * (wl + pl)
-		wr = 0.5 * (wr + pr)
+
+		if p.phaser_span_oct <= 0 {
+			// Depth at zero: no modulation, and the corner sits where it rests.
+			e.corner_oct = rest_oct
+		} else {
+			e.lfo_phase += p.phaser_rate_hz / sr
+			e.lfo_phase -= math.floor(e.lfo_phase)
+
+			// A square target and a rate limit, which is a triangle -- and is also
+			// why the first excursion from the rest position takes longer than a
+			// limb. Both fall out of one mechanism rather than being two.
+			half := 0.5 * p.phaser_span_oct
+			centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
+			target := e.lfo_phase < 0.5 ? centre + half : centre - half
+			slew := 2.0 * p.phaser_span_oct * p.phaser_rate_hz / sr
+			if e.corner_oct < target {
+				e.corner_oct = min(e.corner_oct + slew, target)
+			} else {
+				e.corner_oct = max(e.corner_oct - slew, target)
+			}
+		}
+
+		corner := math.pow(f32(2.0), e.corner_oct)
+		t := math.tan(0.5 * TAU * clamp32(corner, 10.0, sr * 0.45) / sr)
+		coefficient := (t - 1.0) / (t + 1.0)
+		stages := clamp(p.phaser_stages, 1, EFFECT_MAX_PHASER_STAGES)
+		vl := wl + p.phaser_feedback * e.phaser_fb[0]
+		vr := wr + p.phaser_feedback * e.phaser_fb[1]
+		for s in 0 ..< stages {
+			vl = allpass1_process(&e.allpass[0][s], vl, coefficient)
+			vr = allpass1_process(&e.allpass[1][s], vr, coefficient)
+		}
+		e.phaser_fb[0] = flush_denormal(vl)
+		e.phaser_fb[1] = flush_denormal(vr)
+
+		wl = p.phaser_dry * wl + p.phaser_wet * vl
+		wr = p.phaser_dry * wr + p.phaser_wet * vr
 	}
 
 	l := p.dry * left_in + p.wet * wl

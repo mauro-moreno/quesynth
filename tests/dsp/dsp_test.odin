@@ -3948,24 +3948,114 @@ test_effect_phaser_curves_match_the_saw_comb_measurement :: proc(t: ^testing.T) 
 		)
 	}
 
-	// The depth law's one exact anchor: at ctl1 zero the reference's resonance is
-	// static, measured to a span of 0.00 octaves. The depth *curve* is not asserted
-	// here, because it is not settled -- see the note in src/dsp/effect.odin.
-	testing.expect_value(t, dsp.effect_phaser_stages(.Phaser_1), 1)
-	testing.expect_value(t, dsp.effect_phaser_stages(.Phaser_4), 4)
+	// The section counts, which the fitted circuit and the resonance count both
+	// require: 2, 4, 8 and 12 accumulate enough phase for exactly 1, 2, 4 and 6
+	// resonances above DC, and that is what the comb probe found.
+	testing.expect_value(t, dsp.effect_phaser_stages(.Phaser_1), 2)
+	testing.expect_value(t, dsp.effect_phaser_stages(.Phaser_2), 4)
+	testing.expect_value(t, dsp.effect_phaser_stages(.Phaser_3), 8)
+	testing.expect_value(t, dsp.effect_phaser_stages(.Phaser_4), 12)
 }
 
+// The phasers' comb comes out where the reference's does.
+//
+// This is the check the whole rewrite rests on, and it is not a fit: the corner
+// is one frequency, and where the resonances land follows from the phase
+// accumulating 180 degrees per section and the loop resonating wherever that
+// passes a multiple of 360. Thirteen resonances across four types, from one
+// number.
 @(test)
-test_effect_phaser_centres_are_the_measured_ones :: proc(t: ^testing.T) {
-	// Read off each type's static response at ctl1 = 0, where the reference's sweep
-	// stops so there is no time smearing at all. All four are one shape at four
-	// frequencies -- which is what ph1..ph4 differ in, not the number of sections.
-	for pair in ([][2]f32{{0, 2878}, {1, 3924}, {2, 5494}, {3, 6540}}) {
-		type := dsp.Effect_Type(int(pair[0]) + int(dsp.Effect_Type.Phaser_1))
-		testing.expect_value(t, dsp.effect_phaser_centre_hz(type), pair[1])
+test_effect_phaser_comb_lands_where_it_was_measured :: proc(t: ^testing.T) {
+	corner := f64(dsp.EFFECT_PHASER_CORNER_REST_HZ)
+
+	// The loop's phase, in radians: the sections, plus the one sample of delay the
+	// feedback carries. That delay is not a rounding detail -- leaving it out puts
+	// every resonance too high, and ph1's by a quarter.
+	phase :: proc(f, corner: f64, sections: int) -> f64 {
+		w := 2.0 * math.PI * f / 48000.0
+		t := math.tan(math.PI * corner / 48000.0)
+		c := (t - 1.0) / (t + 1.0)
+		sw, cw := math.sin(w), math.cos(w)
+		// One section: the numerator's angle less the denominator's. It runs from
+		// zero at DC to -pi at Nyquist without wrapping, for a negative c.
+		one := math.atan2(-sw, c + cw) - math.atan2(-c * sw, 1.0 + c * cw)
+		return f64(sections) * one - w
 	}
-	// And nothing else claims a centre frequency.
-	testing.expect_value(t, dsp.effect_phaser_centre_hz(.Ring_Mod), 0)
+
+	for c in ([]struct {
+		type:       dsp.Effect_Type,
+		resonances: []f64,
+	} {
+		{.Phaser_1, {2771}},
+		{.Phaser_2, {251, 3899}},
+		{.Phaser_3, {104, 255, 605, 5457}},
+		{.Phaser_4, {66, 147, 256, 441, 932, 6613}},
+	}) {
+		sections := dsp.effect_phaser_stages(c.type)
+		for measured, k in c.resonances {
+			// Where the loop's phase passes a whole turn, k+1 times over.
+			lo, hi := f64(1), f64(23000)
+			for _ in 0 ..< 200 {
+				mid := math.sqrt(lo * hi)
+				if phase(mid, corner, sections) > -2.0 * math.PI * f64(k + 1) {
+					lo = mid
+				} else {
+					hi = mid
+				}
+			}
+			got := math.sqrt(lo * hi)
+			testing.expectf(
+				t,
+				abs(got / measured - 1.0) < 0.06,
+				"%v resonance %v: the reference has it at %v Hz, this circuit puts it at %.0f",
+				c.type,
+				k + 1,
+				measured,
+				got,
+			)
+		}
+	}
+}
+
+// Parameter 81 is a crossfade for two thirds of its travel and feedback for the
+// last third. Both halves are measured; the zero below the knee is the part that
+// an earlier reading of this knob got wrong.
+@(test)
+test_effect_phaser_level_is_a_crossfade_then_feedback :: proc(t: ^testing.T) {
+	for level in ([]f32{0, 16, 32, 48, 56, 64}) {
+		testing.expectf(
+			t,
+			dsp.effect_phaser_feedback(level / 127.0) == 0,
+			"the phaser has feedback at level %v, where the reference has none",
+			level,
+		)
+	}
+	for c in ([]struct {
+		level, feedback: f32,
+	}{{80, 0.2505}, {96, 0.4977}, {112, 0.7439}, {127, 0.9747}}) {
+		got := dsp.effect_phaser_feedback(c.level / 127.0)
+		testing.expectf(
+			t,
+			abs(got - c.feedback) < 0.03,
+			"feedback at level %v is %v, measured %v",
+			c.level,
+			got,
+			c.feedback,
+		)
+	}
+
+	// And the crossfade under it: dry falls while wet rises, and at the bottom of
+	// the knob the wet path is shut and the response is the dry gain alone.
+	d0, w0 := dsp.effect_phaser_mix(0)
+	dk, wk := dsp.effect_phaser_mix(64.0 / 127.0)
+	testing.expect_value(t, d0, 1.0)
+	testing.expect_value(t, w0, 0.0)
+	// And at the midpoint it arrives at a plain sum, which is where it stays.
+	testing.expect_value(t, dk, 0.5)
+	testing.expect_value(t, wk, 0.5)
+	df, wf := dsp.effect_phaser_mix(1)
+	testing.expect_value(t, df, 0.5)
+	testing.expect_value(t, wf, 0.5)
 }
 
 @(test)
