@@ -242,11 +242,22 @@ effect_ad_table :: proc "contextless" (table: [14]f32, ctl1: f32) -> f32 {
 	return table[len(table) - 1]
 }
 
-// d.d. keeps the old exponential drive. It is not a clipper and the law is not
-// its own: the time-domain scatter shows its map turning back on itself twice at
-// ctl1 32 and more often above that, which is a wavefolder, and by ctl1 127 its
-// fundamental is 50 dB down with the energy spread inharmonically. That is a
-// different mechanism from these two and is left measured but unwritten.
+// d.d. is a wavefolder, and a sine one.
+//
+// It is the only type here whose fundamental does not fall monotonically with
+// drive: measured across ctl1 it reads -7.2, -10.8, -19.0, -14.1, -29.0, -21.8,
+// -24.8 and -50.2 dB, dipping and recovering twice. Nothing that clips does that.
+// A fold does: sin(z sin t) expands as 2 J_k(z) over the odd k alone, so the
+// harmonics are Bessel functions of the fold depth, they are odd-only -- which is
+// what is measured, the evens sitting 60 dB down -- and the fundamental passes
+// through zero where J1 does.
+//
+// Fitted that way over h1, h3, h5 and h7 it lands within 0.2 to 1.0 dB from ctl1
+// 40 upward. Below that the fold is too shallow to identify from four harmonics
+// and the fit wanders, so the first two knots are set by the linear constraint
+// instead: at ctl1 0 the unit is straight and its gain is what the response says.
+
+// The rest of the section keeps the old exponential drive.
 EFFECT_DRIVE_MIN :: f32(1.0)
 EFFECT_DRIVE_MAX :: f32(64.0)
 

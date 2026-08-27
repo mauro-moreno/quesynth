@@ -8126,5 +8126,37 @@ fundamental is 50 dB down and every harmonic below -35 dB, with the energy gone
 inharmonic, which is what folding without oversampling does and what no clipper
 can do.
 
-That is a different mechanism from the two above and it is left measured and
-unwritten, along with the decimator, which has not been looked at.
+### and it is not a sine fold, which was tried
+
+The harmonics say fold louder than the scatter does. d.d. is the only type here
+whose fundamental does not fall monotonically with drive:
+
+```
+   ctl1     48     56     64     72     80     96    112    127
+   h1     -7.2  -10.8  -19.0  -14.1  -29.0  -21.8  -24.8  -50.2 dB
+```
+
+It dips and recovers twice. Nothing that clips does that, and a fold does exactly
+that: `sin(z sin t)` expands as `2 J_k(z)` over the odd k alone, so each harmonic
+is a Bessel function of the fold depth and the fundamental passes through zero
+where J1 does. Fitted that way over h1, h3, h5 and h7 it lands within 0.2 to 1.0
+dB from ctl1 40 upward, which looked like the answer.
+
+It is not. Written in, the section went from 14.3 dB to 20.5, and at full drive
+to 42.2 with the output 37 dB too quiet. Two things in the measurement say why,
+both of which the fit had been reading past:
+
+  * at ctl1 127 the **even** harmonics come back at -36.0 and -35.4 dB and the odd
+    ones at -50.2 and -53.5. A sine fold has no even harmonics at all, so
+    whatever is folding is not doing it symmetrically by then.
+  * the total output is far above the sum of the harmonics, and at f0 = 131 Hz a
+    fold of the depth fitted puts its highest harmonic near 3 kHz, nowhere near
+    folding back off Nyquist. So the energy that is not in the harmonics is not
+    aliasing: it is genuinely not periodic at f0.
+
+That is the same thing the scatter's loop was saying at ctl1 127, where the
+within-bin spread reaches nineteen times the output range. It was read as a map
+too steep to bin. It is at least as likely to be memory, and a memoryless curve
+of any shape is then the wrong family -- which is why fitting a better one made
+it worse. d.d. is left as it was, with the decimator, which has not been looked
+at and is now the section's worst at 19.2 dB.
