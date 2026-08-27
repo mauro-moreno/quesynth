@@ -6662,3 +6662,94 @@ ph2's tallest resonance sitting at 3899 Hz where ph1's sits at 2771 is a
 consequence of chain length, not a second centre to measure, and the trajectory
 fitted here is the trajectory for all four. That is a prediction the continuity
 tracker can test directly: one corner law should reproduce every type's comb.
+
+> The tracker was built and it answers this: **no**. The low resonances of ph2,
+> ph3 and ph4 sweep 3.10, 3.25 and 3.19 octaves where ph1's single resonance
+> sweeps 1.73, all at the same depth and driven by the same corner. A comb that
+> merely scaled with its corner would give every member the same octave span. See
+> the next section.
+
+### The continuity tracker (2026-08-25)
+
+Rank is a stable identity only while the number of resonances is stable, and the
+previous section showed it is not. `comb_track` follows resonances frame to frame
+instead: greedy nearest-neighbour in log frequency, closest pair first so a clear
+match is never displaced by an ambiguous one, one peak to one track.
+
+Its controls are the two places the answer is known, and it passes both exactly.
+Static ph1 returns one track across every frame; static ph3 returns **four**
+tracks, each present in all 32 frames, at 103.6, 254.4, 605.4 and 5457 Hz --
+which is the rank summary, because with a stable count the two must agree.
+
+### Three things it took to work, and one that had to be undone
+
+**The peak cap was throwing frames away.** It was set to twelve on the reasoning
+that a four-stage chain cannot make more, which is true standing still and false
+while sweeping: the comb's spacing changes with its corner, so as the sweep runs
+low more of the comb falls inside the analysed band. ph4 reaches more than twelve
+in nearly two frames in five, every one of which was discarded whole -- and a
+discarded frame matches no track, so every track died at the same instants. That
+alone accounted for most of the fragmentation. Raised to forty, with a full frame
+now keeping what it found and saying it was full.
+
+**The jump tolerance was guessed, and the guess was wrong.** It had been derived
+from the corner's own speed, 0.18 octaves per frame at the fastest sweep. But the
+members of a comb do not move at the corner's rate -- the spacing changes, so the
+outer ones move faster. Measured over the renders themselves, the step between
+frames has a median of 0.10 to 0.14 octaves and a 99th percentile of 0.35 to
+0.60, so a 0.35 tolerance was rejecting a few per cent of legitimate steps. Every
+rejection starts a new track, which is why a few per cent of bad steps produced
+hundreds of fragments.
+
+Two changes rather than a larger tolerance, because the spacing between
+neighbouring resonances is only about 0.8 octaves and there is not much room. The
+hop is a quarter of the window instead of a half, which costs only arithmetic and
+halves every step; and a track is matched against where its own velocity says it
+will be rather than where it was, so a resonance moving steadily is followed
+however fast it goes.
+
+**Coasting through gaps was tried and reverted.** Carrying a track through a gap
+on its last velocity reconnected fragments, and some of what it reconnected was
+wrong: ph3 came back with a track running 168 Hz to 13294 Hz, a span of 6.3
+octaves, which is two resonances joined across a gap where a third had passed
+between them. A broken track is a visible fragment and an honest one; a track
+joined to the wrong resonance is a measurement that looks fine and is not. The
+gap is six frames, half a second, and tracks break rather than guess.
+
+### What it can and cannot follow
+
+```
+                       longest track   tracks agreeing on that span
+  ph1, swept            465 / 465      1
+  ph2, low resonance     86 / 465      6, spanning 402-3540 Hz
+  ph3, low resonance    132 / 465      4, spanning 168-1612 Hz
+  ph4, low resonance    171 / 465      3, spanning 113-1024 Hz
+```
+
+ph1 is followed perfectly, which is the case the trajectory was fitted on. The
+others still break, and the reason is now visible rather than mysterious: their
+resonances genuinely merge, cross and leave the band as the spacing changes, and
+no amount of tolerance separates two peaks that have become one. What the
+fragments do is agree -- six independent fragments of ph2's low resonance return
+the same 3.10 octaves to within 0.05 -- so the span is measured even where a
+single unbroken track is not available.
+
+### And a finding, from the spans it does return
+
+```
+  ph1 single resonance   1.73 octaves
+  ph2 low resonance      3.10
+  ph3 low resonance      3.25
+  ph4 low resonance      3.19
+```
+
+All at ctl1 64, all driven by the same corner. **The resonances do not all move by
+the same amount in log frequency.** A comb that simply scaled with its corner
+would give every member the same octave span, and the lower members move roughly
+twice as far as ph1's single one.
+
+That is a constraint on the structure rather than an answer, and it is the first
+one measured. It rules out the simplest reading of "one corner scales the whole
+comb", and it says the fourth input the rewrite needs cannot be assumed from
+ph1's trajectory after all: whatever maps corner to comb has to reproduce these
+four spans as well as the four static combs.

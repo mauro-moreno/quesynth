@@ -60,15 +60,26 @@ COMB_TOP_HZ :: 20000.0
 COMB_PROMINENCE_DB :: 4.0
 COMB_HEIGHT_DB :: 2.0
 
-// More than a four-stage chain can produce, so overrunning it means the peak test
-// is admitting something it should not.
-COMB_MAX_PEAKS :: 12
+// How many resonances one frame can hold.
+//
+// Not the stage count. A comb's spacing changes with its corner, so as the sweep
+// runs low the comb compresses and far more of it falls inside the analysed band
+// than the type shows at rest: ph4 has six resonances standing still and more
+// than twelve at the bottom of a deep sweep. The first version of this capped at
+// twelve and threw away any frame that exceeded it, which silently discarded
+// nearly two frames in five of a ph4 sweep -- and since a discarded frame matches
+// no track, every track died at the same points and the continuity tracker
+// returned a hundred and ninety fragments for a type with six resonances.
+COMB_MAX_PEAKS :: 40
 
 Comb_Frame :: struct {
-	ms:    f64,
-	count: int,
-	hz:    [COMB_MAX_PEAKS]f64,
-	db:    [COMB_MAX_PEAKS]f64,
+	ms:       f64,
+	// Set when the frame ran out of room. Its peaks are still usable; there were
+	// simply more of them than there is space for.
+	overflow: bool,
+	count:    int,
+	hz:       [COMB_MAX_PEAKS]f64,
+	db:       [COMB_MAX_PEAKS]f64,
 }
 
 // The transfer function at one instant, sampled at every harmonic of the saw.
@@ -147,7 +158,9 @@ comb_find_peaks :: proc(transfer: []f64, f0: f64, frame: ^Comb_Frame) {
 		}
 
 		if frame.count >= COMB_MAX_PEAKS {
-			frame.count = COMB_MAX_PEAKS + 1
+			// Full. Keep what is here and say so, rather than throwing the frame
+			// away: a frame with too many peaks still holds the ones it found.
+			frame.overflow = true
 			return
 		}
 		frame.hz[frame.count] = phaser_interpolate(
@@ -190,7 +203,10 @@ comb_analyse :: proc(off, on: []f32, f0: f64, harmonics: int) -> []Comb_Frame {
 		flat[i] = 1
 	}
 	count := 0
-	hop := g_comb_fft / 2
+	// A quarter-window hop rather than a half. The overlap costs only arithmetic
+	// and it halves how far a resonance moves between frames, which is the
+	// quantity continuity tracking has to bridge.
+	hop := g_comb_fft / 4
 	for from := 0; from + g_comb_fft <= len(off_mono); from += hop {
 		if !comb_transfer(off_mono, from, f0, flat, re, im, power, scratch, transfer) {
 			break
@@ -219,6 +235,146 @@ comb_analyse :: proc(off, on: []f32, f0: f64, harmonics: int) -> []Comb_Frame {
 		append(&frames, f)
 	}
 	return frames[:]
+}
+
+// ------------------------------------------------------- tracking by continuity
+
+// How far a resonance may move between frames, against a *predicted* position,
+// and still be the same resonance.
+//
+// The first version guessed this from the corner's own speed and was wrong, in a
+// way worth recording because the symptom did not look like a tolerance problem.
+// Individual members of a comb do not move at the corner's rate: the spacing
+// changes as it sweeps, so the outer ones move faster. Measured over the actual
+// renders, the step between frames has a median of 0.10 to 0.14 octaves but a
+// 99th percentile of 0.35 to 0.60 -- so a 0.35 tolerance rejected a few per cent
+// of legitimate steps, and since every rejection starts a new track, ph4 came
+// back as 213 fragments instead of six resonances.
+//
+// Two things fix it rather than one. The hop is a quarter of the window instead
+// of a half, which halves every step; and a track is matched against where its
+// own velocity says it will be, not against where it was, so a resonance moving
+// steadily is followed however fast it goes. What is left for the tolerance to
+// cover is the error in that prediction, which is largest at a turning point and
+// is still far inside the 0.8 octaves that separates neighbouring resonances.
+COMB_TRACK_JUMP_OCT :: 0.35
+
+// A resonance may go missing for this many frames and still be picked up again.
+//
+// Short, and deliberately so. Carrying a track further than this through a gap
+// was tried, coasting it on its own last velocity so the prediction would keep up
+// with wherever the resonance had gone. It reconnected tracks, and some of what
+// it reconnected was wrong: ph3 came back with a track running from 168 Hz to
+// 13294 Hz, a span of 6.3 octaves, which is two different resonances joined
+// across a gap where a third had passed between them. A broken track is a visible
+// fragment and an honest one. A track joined to the wrong resonance is a
+// measurement that looks fine and is not, and this instrument exists to settle a
+// structural question where that would be the worse failure by far.
+COMB_TRACK_GAP :: 6
+
+Comb_Track :: struct {
+	lo, hi:             f64,
+	first_ms, last_ms:  f64,
+	frames:             int,
+	last_hz:            f64,
+	// Octaves per frame, smoothed. A track is matched against its prediction.
+	velocity:           f64,
+	gap:                int,
+	alive:              bool,
+	// Whether this track was ever within a frame's reach of the ends of the
+	// analysed band, which makes its span a lower bound rather than a reading.
+	edge:               bool,
+}
+
+// Resonances followed frame to frame, rather than keyed on their position in the
+// sorted list.
+//
+// Rank is a stable identity only while the number of resonances is stable, and it
+// is not. Sweeping ph3 the count runs from 4 to more than 12 across one cycle and
+// ph4 from 5 to more than 12, because the comb's spacing changes with the corner
+// and its members cross the ends of the analysed range as it moves. A summary
+// keyed on rank then averages different resonances together -- it reported eleven
+// tracks for a type that has four.
+//
+// Greedy nearest-neighbour in log frequency, closest pair first so that a clear
+// match is never displaced by an ambiguous one, and one peak to one track.
+comb_track :: proc(frames: []Comb_Frame, f0: f64) -> []Comb_Track {
+	tracks := make([dynamic]Comb_Track, 0, 16)
+	taken: [COMB_MAX_PEAKS]bool
+	matched := make([dynamic]bool, 0, 16)
+	defer delete(matched)
+
+	edge_lo := f0 * 2.5
+	edge_hi := COMB_TOP_HZ * 0.9
+
+	for f in frames {
+		n := f.count
+		for i in 0 ..< COMB_MAX_PEAKS {taken[i] = false}
+		clear(&matched)
+		for _ in 0 ..< len(tracks) {append(&matched, false)}
+
+		for {
+			best := COMB_TRACK_JUMP_OCT
+			bt, bp := -1, -1
+			for ti in 0 ..< len(tracks) {
+				if !tracks[ti].alive || matched[ti] {continue}
+				predicted := tracks[ti].last_hz * math.pow(2.0, tracks[ti].velocity)
+				for pi in 0 ..< n {
+					if taken[pi] || f.hz[pi] <= 0 || predicted <= 0 {continue}
+					d := abs(math.log2(f.hz[pi] / predicted))
+					if d < best {
+						best, bt, bp = d, ti, pi
+					}
+				}
+			}
+			if bt < 0 {break}
+
+			hz := f.hz[bp]
+			t := &tracks[bt]
+			step := math.log2(hz / t.last_hz)
+			// Smoothed, so one noisy frame does not aim the next prediction off
+			// the end of the track.
+			t.velocity = t.frames > 1 ? 0.5 * t.velocity + 0.5 * step : step
+			t.lo = min(t.lo, hz)
+			t.hi = max(t.hi, hz)
+			t.last_hz = hz
+			t.last_ms = f.ms
+			t.frames += 1
+			t.gap = 0
+			if hz < edge_lo || hz > edge_hi {t.edge = true}
+			taken[bp] = true
+			matched[bt] = true
+		}
+
+		// Whatever matched nothing is a resonance arriving.
+		for pi in 0 ..< n {
+			if taken[pi] || f.hz[pi] <= 0 {continue}
+			append(
+				&tracks,
+				Comb_Track {
+					lo = f.hz[pi],
+					hi = f.hz[pi],
+					first_ms = f.ms,
+					last_ms = f.ms,
+					frames = 1,
+					last_hz = f.hz[pi],
+					alive = true,
+					edge = f.hz[pi] < edge_lo || f.hz[pi] > edge_hi,
+				},
+			)
+			append(&matched, true)
+		}
+
+		// And whatever went unmatched is a resonance leaving, or briefly out of
+		// sight. Held open for a few frames because those two look identical at
+		// the moment they happen.
+		for ti in 0 ..< len(tracks) {
+			if !tracks[ti].alive || matched[ti] {continue}
+			tracks[ti].gap += 1
+			if tracks[ti].gap > COMB_TRACK_GAP {tracks[ti].alive = false}
+		}
+	}
+	return tracks[:]
 }
 
 cmd_phasercomb :: proc(
@@ -283,29 +439,27 @@ cmd_phasercomb :: proc(
 		os.exit(1)
 	}
 
-	report :: proc(label: string, frames: []Comb_Frame, show: bool) {
+	report :: proc(label: string, frames: []Comb_Frame, f0: f64, show: bool) {
 		if len(frames) == 0 {
 			return
 		}
 		// How many resonances, as a histogram rather than an average: the count is
 		// the structural reading and a mean of it would hide a frame that found
 		// six where every other frame found four.
-		hist: [COMB_MAX_PEAKS + 2]int
+		hist: [COMB_MAX_PEAKS + 1]int
 		for f in frames {
-			hist[min(f.count, COMB_MAX_PEAKS + 1)] += 1
+			hist[min(f.count, COMB_MAX_PEAKS)] += 1
 		}
 		fmt.printfln("  -- %s, %d frames --", label, len(frames))
 		fmt.printf("  resonances per frame:")
-		for n in 0 ..= COMB_MAX_PEAKS + 1 {
-			if hist[n] > 0 {
-				fmt.printf(
-					"  %s%d x%d",
-					n > COMB_MAX_PEAKS ? ">" : "",
-					min(n, COMB_MAX_PEAKS),
-					hist[n],
-				)
-			}
+		for n in 0 ..= COMB_MAX_PEAKS {
+			if hist[n] > 0 {fmt.printf("  %d x%d", n, hist[n])}
 		}
+		over := 0
+		for f in frames {
+			if f.overflow {over += 1}
+		}
+		if over > 0 {fmt.printf("   (%d frames full)", over)}
 		fmt.println()
 
 		// Each resonance tracked by its rank from the bottom. That is the right
@@ -313,7 +467,7 @@ cmd_phasercomb :: proc(
 		// reader can see whether it is.
 		most := 0
 		for f in frames {
-			if f.count <= COMB_MAX_PEAKS && f.count > most {
+			if f.count > most {
 				most = f.count
 			}
 		}
@@ -348,7 +502,7 @@ cmd_phasercomb :: proc(
 				extreme := f64(0)
 				started := false
 				for f in frames {
-					if f.count == 0 || f.count > COMB_MAX_PEAKS {continue}
+					if f.count == 0 {continue}
 					v := f.hz[0]
 					if !started {
 						extreme, started = v, true
@@ -387,7 +541,7 @@ cmd_phasercomb :: proc(
 			lo, hi := f64(1e18), f64(0)
 			seen := 0
 			for f in frames {
-				if f.count <= r || f.count > COMB_MAX_PEAKS {
+				if f.count <= r {
 					continue
 				}
 				seen += 1
@@ -412,11 +566,51 @@ cmd_phasercomb :: proc(
 			)
 		}
 
+		// The same frames, keyed on identity instead of on position.
+		tracks := comb_track(frames, f0)
+		defer delete(tracks)
+		kept := 0
+		for t in tracks {
+			if t.frames * 20 >= len(frames) {kept += 1}
+		}
+		fmt.printfln("  followed by continuity: %d tracks, %d of them lasting", len(tracks), kept)
+		if kept > 0 {
+			fmt.println("  track     low       high     span     frames   note")
+			// Lowest first, which is the order a comb is read in.
+			for _ in 0 ..< len(tracks) {
+				swapped := false
+				for i in 1 ..< len(tracks) {
+					if tracks[i].lo < tracks[i - 1].lo {
+						tracks[i], tracks[i - 1] = tracks[i - 1], tracks[i]
+						swapped = true
+					}
+				}
+				if !swapped {break}
+			}
+			n := 0
+			for t in tracks {
+				// A track present for a twentieth of the render is a resonance;
+				// anything shorter is a fragment and is counted, not tabulated.
+				if t.frames * 20 < len(frames) {continue}
+				n += 1
+				fmt.printfln(
+					"  %s  %s Hz  %s Hz  %s oct  %s/%d  %s",
+					pad_left(fmt.tprintf("%d", n), 5),
+					pad_left(dec1(t.lo), 8),
+					pad_left(dec1(t.hi), 8),
+					pad_left(dec2(t.lo > 0 ? math.log2(t.hi / t.lo) : f64(0)), 6),
+					pad_left(fmt.tprintf("%d", t.frames), 5),
+					len(frames),
+					t.edge ? "reached the end of the band: span is a lower bound" : "",
+				)
+			}
+		}
+
 		if show {
 			fmt.println("  every frame, lowest resonance first:")
 			for f in frames {
 				fmt.printf("  %s ms  n=%d ", pad_left(dec0(f.ms), 6), f.count)
-				for i in 0 ..< min(f.count, COMB_MAX_PEAKS) {
+				for i in 0 ..< f.count {
 					fmt.printf(" %s", pad_left(dec0(f.hz[i]), 6))
 				}
 				fmt.println()
@@ -424,8 +618,8 @@ cmd_phasercomb :: proc(
 		}
 	}
 
-	report("reference", ref, show)
-	report("ours", ours, show)
+	report("reference", ref, f0, show)
+	report("ours", ours, f0, show)
 
 	if csv_path != "" {
 		b := strings.builder_make()
@@ -433,7 +627,7 @@ cmd_phasercomb :: proc(
 		fmt.sbprintln(&b, "engine,type,ctl1,ctl2,level,ms,rank,hz,db")
 		emit :: proc(b: ^strings.Builder, engine: string, frames: []Comb_Frame, t, c1, c2, l: int) {
 			for f in frames {
-				for i in 0 ..< min(f.count, COMB_MAX_PEAKS) {
+				for i in 0 ..< f.count {
 					fmt.sbprintfln(
 						b,
 						"%s,%d,%d,%d,%d,%.3f,%d,%.4f,%.4f",
