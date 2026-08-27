@@ -362,10 +362,21 @@ effect_comp_gain :: proc "contextless" (level: f32) -> f32 {
 // 131 Hz readings are the analysis window's floor rather than the sweep's, so at
 // high depth the extent is a lower bound, and the exponent below is fitted through
 // the two settings that were not window-limited.
-// What separates ph1 from ph4 is the **centre frequency**, not the number of
-// sections. Reading each type's static response at ctl1 = 0 -- where the sweep
-// stops, so there is no time smearing at all -- gives four copies of one shape at
-// four frequencies:
+// What separates ph1 from ph4 **is** the number of sections, and the reading that
+// said otherwise had only found the tallest peak of each. Sweeping a held tone
+// down to 55 Hz instead of a saw comb down to 131 finds the rest, and they count
+// out exactly one per type:
+//
+//   type      ph1    ph2    ph3    ph4
+//   tall     2794   4186   5920   7040   Hz
+//   others     --    262  110,   65, 156,
+//                          262      262   Hz, each 9 to 20 dB clear of both
+//                                        neighbours
+//
+// So this is a comb, and the shipped stage count below has been right since the
+// first guess. What is missing is what turns an allpass chain's notches into
+// resonances -- feedback -- and parameter 81 is what sets it; see the level law
+// note further down. The superseded reading was:
 //
 //   type      ph1    ph2    ph3    ph4
 //   centre   2878   3924   5494   6540   Hz
@@ -448,16 +459,35 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // worse on level, consistently, which is a real defect rather than a wash. So the
 // allpass version stays.
 //
-// Two missing measurements explain the level gap, and both are named so the next
-// attempt starts from them rather than from a guess. The resonance sits in its own
-// -13 dB skirt for most of each cycle unless the corner sweeps below the note being
-// played, so the depth curve decides the output level -- and the depth curve is the
-// one reading the saw-comb probe could not finish, because at high depth the
-// resonance leaves the analysis window and the reading becomes a lower bound. And
-// the phasers' level law is unmeasured: at level 0 they come back *louder* than
-// bypass and broadband, which fits neither of the two laws the other six types
-// follow. Finishing it needs a wider analysis window -- a lower probe fundamental
-// with proportionally more harmonics -- and a level sweep for one phaser type.
+// Both of the measurements that were missing here have since been made, with a
+// held tone rather than a saw comb -- `tools/s1probe/phaserband.odin` -- and
+// together they say the resonant single-band model above was the wrong target.
+//
+// **The level law is feedback**, not a level. At ctl1 = 0 the response is flat to
+// within a decibel at level 0, and as the knob rises the peak grows and the notch
+// deepens together while the broadband level stays at unity -- +0.63 to -0.71 dB
+// across the top six settings. A feedback loop's peak gain is 1/(1-g), so the
+// measured peak states g outright:
+//
+//   level        96     104     112     118     122     127
+//   g        0.3208  0.4426  0.5870  0.7155  0.8129  0.9491
+//   fitted   0.3241  0.4407  0.5856  0.7157  0.8135  0.9491   0.9491*(L/127)^3.84
+//
+// every fitted peak within 0.05 dB. "Louder than bypass and broadband" at level 0
+// was the same fact seen from the other side: no feedback, no comb, nearly flat.
+//
+// **The depth curve** is measured where it means anything:
+//
+//   ctl1        48        80        127
+//   band   4186-8372  2960-9956  2093-11840  Hz, 1.00 / 1.75 / 2.50 octaves
+//
+// and below ctl1 48 it is not a single band at all, because several resonances
+// sweep at once and their excursions have not yet merged. That is a statement
+// about the structure, not a failed reading.
+//
+// Neither is implemented yet, deliberately. Feedback in a chain whose resonances
+// sit in the wrong places is worse than none, and the per-type centres above have
+// only been read at each type's tallest peak.
 //
 // One process note, because it cost most of the time spent here: the first four
 // comparisons were run at ctl 112/96 against a baseline recorded at ctl 64/64, and

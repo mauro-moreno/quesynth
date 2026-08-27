@@ -1736,8 +1736,9 @@ the plugin's own noise, but those rows are unscored rather than passing.
 
 - the three distortion transfer curves — the harmonic *signatures* are measured
   and the shapers reproduce them, but the curves themselves are chosen
-- the phasers' depth curve and level law — see below, where the rest of that
-  section is now measured
+- ~~the phasers' depth curve and level law~~ — both measured, and the level law
+  turned out not to be a level at all: see "The phasers: it was a stage count
+  after all" at the end of this document
 - the decimator's post-step ring
 - ~~the compressor's threshold and ratio, and its envelope error~~ -- measured,
   and it was neither a threshold nor a ratio: see "The compressor is a leveller"
@@ -1778,6 +1779,12 @@ a return to **0 dB** above it. And ph1 to ph4 are one shape at four frequencies:
 ```
 
 Not a stage count, which is what had been assumed.
+
+> **This conclusion is wrong**, and the correction is at the end of this
+> document. Only the tallest peak of each type was read. Sweeping a held tone
+> down to 55 Hz finds one more resonance per type, counting out to exactly one
+> for ph1 through four for ph4, so it is a stage count after all — with
+> feedback turning what would be notches into resonances.
 
 **The rate needed a third instrument.** Tracking the resonance's own trajectory
 failed differently from the sine: the resonance leaves the analysis window at both
@@ -6201,4 +6208,196 @@ odin build tools/s1probe -out:build/s1probe.exe
 
 # and the section's own A/B
 ./build/s1probe.exe fxcompare $reference --ctl1 64 --ctl2 64 --level 127
+```
+
+## The phasers: it was a stage count after all (2026-08-25)
+
+Two readings in this section were marked unfinished -- the depth curve and the
+level law -- and finishing them overturned a third that was not marked at all.
+
+### The old depth numbers were the instrument measuring itself
+
+```
+  ctl1        0     16     32     64     96    127
+  band     2800   2923   3057   3304    131    131   Hz
+           2800   6839   7781  10465  10465  10465
+```
+
+131 Hz and 10465 Hz are not edges of anything the plugin does. The saw probe's
+fundamental is 130.8 Hz and it uses eighty harmonics, so 131 and 10465 are the
+lowest and highest frequencies that instrument can see at all. Above ctl1 32 the
+resonance simply leaves it and every reading after that is the window reporting
+its own size. The note in the margin -- "the 131 Hz readings are the analysis
+window's floor rather than the sweep's" -- was right, and the table was left in
+anyway.
+
+Widening the window cannot fix it: harmonics have to be resolvable, so a lower
+fundamental needs a longer FFT, and a longer FFT smears a corner that is moving.
+A sweep is exactly the case where both requirements bite at once.
+
+### A tone, not a spectrum
+
+`phaserband` drops the spectrum entirely. A resonance passing over a tone
+announces itself in that tone's own level, so a single sine held at frequency f
+rises by the height of the resonance, briefly, once per sweep -- but only if the
+corner reaches f at all. Sweeping f over nine octaves and asking whether the peak
+ever arrives maps the swept band directly, at a resolution set by the spacing of
+the notes and by nothing else.
+
+The control is ctl1 = 0, where the sweep stops and the answer is already known.
+It returns a single sharp peak of **+25.85 dB at 2794 Hz** with a -11 dB skirt
+below and 0 dB above, which is the shape this section already had on record, and
+the peak equals the floor in every row, which is what "static" looks like.
+
+### The instrument's own error, and the control that caught it
+
+The first depth readings were nonsense in an interesting way: the band's lower
+edge was not monotonic in depth, rising from 2960 Hz at ctl1 8 to 4186 Hz at
+ctl1 48 and then falling to 2093 Hz at 127. No depth control does that.
+
+Holding the depth fixed and moving the *rate* -- which by every earlier
+measurement is a separate control that does not touch the depth -- showed the
+reading was the instrument's:
+
+```
+  ctl1 = 8, band read at five rates
+  ctl2        48        64        80        96       112
+  band   2960-3729 2960-5274 3729-5920 5274-5920 5920-6645  Hz
+```
+
+Two causes, both fixed by one rule. A corner sweeping quickly crosses a note in
+less than one analysis frame, so its peak is averaged away; and at the slowest
+rates the LFO period reaches 8 seconds, so a 6-second render does not contain a
+whole sweep. Requiring the render to hold **three complete LFO cycles** and
+keeping the rate off the top of its range makes three rates agree exactly:
+
+```
+  ctl1 = 48       ctl2 48 / 12 s   ctl2 64 / 6 s   ctl2 80 / 3 s
+  band              4186-8372       4186-8372       4186-8372   Hz
+```
+
+### The finding: one resonance per type, not one shape at four frequencies
+
+This section concluded that ph1 to ph4 are one shape at four centre frequencies
+-- 2878, 3924, 5494 and 6540 Hz -- and that "what separates ph1 from ph4 is the
+centre frequency, not the number of sections". That is wrong, and it is wrong
+because only the tallest peak was read. Sweeping the tone down to 55 Hz at
+ctl1 = 0 finds the rest of them:
+
+```
+  static response at ctl1 = 0, level 127, dB against the unit off
+  Hz        55     65     78     92    110    131    156    185    220    262    311
+  ph1    -4.06  -5.42  -6.72  -7.94  -9.10 -10.09 -10.93 -11.56 -11.98 -12.15 -12.06
+  ph2    -8.90 -10.04 -10.98 -11.61 -11.97 -11.56 -10.22  -7.23  -0.39 +11.49  -3.59
+  ph3   -10.91 -10.26  -7.87  +0.04  +8.70  -6.02 -10.92 -11.05  -5.91  +7.61  -8.16
+  ph4    -5.07  +9.28  -0.17  -8.74 -10.79  -4.37  +1.43  -9.71  -8.05  +5.25 -10.17
+```
+
+Every one of those is a peak standing 9 to 20 dB clear of both neighbours, and
+they count out exactly:
+
+| | extra resonances | the tall one | total |
+|---|---|---|---|
+| ph1 | none | 2794 Hz | **1** |
+| ph2 | 262 | 4186 | **2** |
+| ph3 | 110, 262 | 5920 | **3** |
+| ph4 | 65, 156, 262 | 7040 | **4** |
+
+So it is a stage count, the shipped implementation has had the right count since
+the first guess, and what it is missing is what turns an allpass chain's notches
+into resonances: **feedback**.
+
+### The level law, which was never a level
+
+Parameter 81 for these four types was recorded as unmeasured, with the note that
+at level 0 they come back "louder than bypass and broadband, fitting neither of
+the two laws the other six types follow". Measured directly, per frequency, at
+ctl1 = 0 where the response is static:
+
+```
+  level        0     32     64     96    104    112    118    122    127
+  peak      -2.61  -1.70  -0.13  +3.35  +5.07  +7.68 +10.92 +14.56 +25.85  dB at 2794 Hz
+  skirt     -1.53  -2.08  -4.69  -8.24  -8.94  -9.48  -9.80  -9.96 -10.09  dB at 131 Hz
+```
+
+It is not a mix and it is not an output gain. At level 0 the response is flat to
+within a decibel; as the knob rises the peak grows and the notch deepens
+together, and the output level far from either barely moves -- at 8372 Hz it runs
++0.63, +0.47, +0.16, -0.15, -0.39, -0.71 dB across the top six settings, which is
+unity throughout. A knob that deepens a notch and raises a peak while leaving the
+broadband level alone is a **feedback** control.
+
+Read as one, the numbers are a clean law. A feedback loop's peak gain is
+1/(1-g), so the measured peak states g outright:
+
+```
+  level        96     104     112     118     122     127
+  g        0.3208  0.4426  0.5870  0.7155  0.8129  0.9491
+  fitted   0.3241  0.4407  0.5856  0.7157  0.8135  0.9491    g = 0.9491*(L/127)^3.84
+```
+
+Every fitted peak lands within **0.05 dB** of the measurement. The exponent is
+stable at 3.82 to 3.88 across the five points it is fitted through.
+
+This also explains the two things that made the old reading look unfit for either
+law. "Louder than bypass" and "broadband" are the same observation: at level 0
+the feedback is zero, the comb collapses, and what comes back is nearly flat.
+
+### The depth curve, and where it stands
+
+At large depth the band is now rate-independent and reproducible:
+
+```
+  ctl1        48        80        127
+  band   4186-8372  2960-9956  2093-11840  Hz
+  span      1.00       1.75       2.50     octaves
+```
+
+At small depth it is not, and the reason is the finding above rather than the
+instrument: with several resonances sweeping at once, "the band" is the union of
+several narrow excursions, and which of them a sweep of held tones catches
+depends on where the notes fall. The union only becomes a single contiguous
+interval once the excursions overlap, which is why ctl1 48, 80 and 127 agree
+across rates to the note while 8 and 24 do not. The summary statistic is the
+wrong abstraction below that point, not a broken measurement.
+
+So the depth curve is measured where it is meaningful and named where it is not.
+What it needs is a probe that tracks each resonance separately, which is a
+different instrument again.
+
+### What is not changed, and why
+
+No engine file changes here. The structure this points to -- the existing
+allpass chain with feedback added, the level knob driving that feedback, and the
+sweep spanning the measured bands -- is a rewrite of the section rather than a
+constant, and two of its four inputs are still open: the per-type centre
+frequencies have only been read at the tallest peak, and the depth curve is
+established only at the top of its range. Shipping the level law alone would put
+feedback into a chain whose resonances sit in the wrong places.
+
+The section's own record is corrected instead: the stage count is real, the
+level law is feedback, and the depth table that read 131 and 10465 was the probe
+measuring itself.
+
+### Reproducing it
+
+```powershell
+$reference = "ext/synth1/Synth1/Synth1 VST64.dll"
+odin build tools/s1probe -out:build/s1probe.exe
+
+# the control: at depth zero the sweep stops and the peak has a known place
+./build/s1probe.exe phaserband $reference --type 6 --ctl1 0 --ctl2 80 --level 127 `
+  --seconds 2 --notes 90,93,96,99,101,102,103,105,108,114,120
+
+# how many resonances each type has
+./build/s1probe.exe phaserband $reference --type 9 --ctl1 0 --ctl2 80 --level 127 `
+  --seconds 2 --notes 33,36,39,42,45,48,51,54,57,60,63
+
+# the level law
+./build/s1probe.exe phaserband $reference --type 6 --ctl1 0 --ctl2 80 --level 112 `
+  --seconds 2 --notes 48,96,99,100,101,102,103,106,120
+
+# and the depth band, at a rate whose period fits three times into the render
+./build/s1probe.exe phaserband $reference --type 6 --ctl1 48 --ctl2 80 --level 127 `
+  --seconds 4 --notes 75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120,123,126
 ```
