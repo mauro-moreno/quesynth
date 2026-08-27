@@ -8492,3 +8492,35 @@ The section's mean is 3.02 dB. What is left is at the other end: above 500 Hz ou
 now runs 4 to 5 dB quiet at high drive, where the shelf in front is being clipped
 away rather than passed. That is the same trade seen in the table above, taken
 knowingly, and it is where the next pass should start.
+
+
+### d.d.'s fold depth above ctl1 48, and why the fundamental does not settle it
+
+The depth above ctl1 48 was extrapolated, because a fold that deep puts its
+harmonics past Nyquist and they alias off the harmonic grid. The fundamental
+survives that, and it looked like the way in: a fold's fundamental does not fall
+away with depth, it oscillates and passes through zeros, so the reference's
+-10.8, -19.0, -14.1, -29.0, -21.8, -24.8 and -50.2 dB at ctl1 56 to 127 are seven
+samples of a curve that turns over. Simulated at the reference's own rate on its
+own note, so the aliasing is reproduced rather than corrected for, and required to
+climb so that one branch is picked, the depths 16.2, 26.7, 28.3, 39.6, 65.4, 71.4
+and 112.1 reproduce **every one of the seven within 0.0 to 2.4 dB**, the -50.2
+null at the top included.
+
+They are also sixteen times smaller than the extrapolation at the top of the
+knob, and they make the section worse:
+
+```
+   d.d. spectral      extrapolated   fundamental-matched
+   ctl1 64                5.07 dB          6.73
+   ctl1 80                6.17            7.58
+   ctl1 96                7.01            8.21
+   ctl1 127               6.29           15.69
+```
+
+The reading is that at these depths the fundamental is not what the spectrum is.
+The output is broadband -- that is the whole character of a fold this deep -- and
+what a spectral comparison sees is how dense that broadband content is, which the
+larger depths get right and the null-matched ones do not. A feature can be
+reproduced exactly and still be the wrong feature to fit. The extrapolation
+stands, and the loose end stands with it.
