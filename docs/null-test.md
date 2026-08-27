@@ -7712,3 +7712,61 @@ limit and waits for the LFO to turn it around; the reference's keeps moving.
 Modelling that properly is the next thing, and it is a measurement of the first
 cycle rather than of the steady state, which is the part every instrument here has
 been pointed at so far.
+
+> Measured: the sweep sets off **downward**, and turns 0.062 of a cycle later --
+> the same fraction at four different rates. See the last section.
+
+### The first cycle, measured (2026-08-27)
+
+The remaining error was the first sweep after a note rather than the sweep itself.
+Measuring it needed the tone probe rather than the comb: the comb's hop is 85 ms
+and the feature to be timed is a tenth of a second.
+
+### The sweep sets off downward, a sixteenth of a cycle before it turns
+
+Tracked with the comb at ctl1 127, ctl2 32, where the period is long enough to
+resolve, the reference's resonance **dips before it climbs** -- 2518 Hz at the
+first frame, 2206 by 0.68 s, and then up to 14828 by 4.78 s. This engine climbed
+from the first sample.
+
+Timed properly, with a tone held at 2093 Hz just below the 2771 Hz resonance the
+corner rests at, so that a descending resonance reads as a rising response:
+
+```
+  ctl2         32      40      48      64
+  period     8.77    5.70    3.71    1.57  s
+  peak at    0.543   0.355   0.231   0.097 s
+  as a cycle 0.062   0.062   0.062   0.062
+```
+
+Four rates, one number to three decimals. The phase at note-on is fixed, not the
+time, which is what makes it a property of the LFO rather than of the note.
+
+### Why the obvious version of this was wrong
+
+Setting the sweep off downward for a *whole* limb was tried first and reverted: it
+fixed ctl1 127, ctl2 32 and cost more elsewhere, taking twenty-eight rows from
+2.82 to 3.76 dB. The measurement says why. The descent is a sixteenth of a cycle,
+not a half, and at 0.062 the two are entirely different journeys.
+
+### What it fixes
+
+```
+  ctl1 127, ctl2 32    ph1     ph2     ph3     ph4
+  before              0.15    7.43    9.88   13.66  dB
+  after               0.07    3.11    7.03    4.58
+  level              +7.36  -19.27   -2.42   -2.94  ->  +0.57  -17.89  -2.51  -3.34
+```
+
+and at ctl1 64, ctl2 64 ph4 goes from 3.71 to 2.21 dB with its level error from
++3.14 to +0.20, and ph1 and ph2's level errors from -4.13 and -4.15 to -1.96 and
+-2.01. Over the twenty-four rows scanned the mean spectral error goes from 3.26 to
+**2.51 dB**. The settings where the render holds several sweeps are unmoved, as
+they should be: a starting phase cannot matter once it has been forgotten.
+
+### What is left
+
+One outlier: ph2 at ctl1 127, ctl2 32 still reads -17.89 dB of level error where
+its spectral error is 3.11. Its timbre is right and its level is not, at one
+setting, and the rest of that row is now within a few decibels. Everything else is
+either under a decibel or accounted for above.

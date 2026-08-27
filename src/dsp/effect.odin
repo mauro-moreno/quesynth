@@ -604,6 +604,10 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // holds still across all of them.
 EFFECT_PHASER_MAX_RATE_HZ :: f32(15.625)
 
+// How far before the turn the sweep is when a note starts. See the note where it
+// is used; 0.062 of a cycle, measured at four rates.
+EFFECT_PHASER_START_PHASE :: f32(0.062)
+
 // How much wider the sweep runs than its span, once the rate has saturated.
 effect_phaser_span_widening :: proc "contextless" (ctl2: f32) -> f32 {
 	demanded :=
@@ -921,6 +925,20 @@ effect_process :: proc "contextless" (
 		rest_oct := math.log2(EFFECT_PHASER_CORNER_REST_HZ)
 		if !e.corner_set {
 			e.corner_oct = rest_oct
+			// Where in its cycle the sweep is when the note arrives.
+			//
+			// Measured, and it is a phase rather than a time. Holding a tone at
+			// 2093 Hz -- just below the 2771 Hz resonance the corner rests at -- the
+			// reference's response climbs as a resonance descends onto it and peaks
+			// at 0.543, 0.355, 0.231 and 0.097 seconds at ctl2 32, 40, 48 and 64.
+			// Against periods of 8.77, 5.70, 3.71 and 1.57 seconds those are
+			// 0.062 of a cycle, all four, to three decimals.
+			//
+			// So the corner sets off downward and turns a sixteenth of a cycle
+			// later. Starting at the top of the ramp instead sends it the wrong way
+			// for the whole of the first limb, which is the largest part of what the
+			// level metric sees on a render shorter than one sweep.
+			e.lfo_phase = 1.0 - EFFECT_PHASER_START_PHASE
 			e.corner_set = true
 		}
 
