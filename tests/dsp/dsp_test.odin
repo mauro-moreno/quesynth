@@ -3924,13 +3924,20 @@ test_effect_analog1_makes_even_harmonics_and_analog2_does_not :: proc(t: ^testin
 	// asymmetric and so produces even harmonics, a.d.2 is odd-symmetric and cannot.
 	// Checked here on the shapers rather than through a spectrum, because
 	// asymmetry is exactly the property being asserted: f(-x) = -f(x) for one and
-	// not the other.
+	// not the other. a.d.1 carries a loop, so each polarity gets its own state and
+	// is driven to rest first -- asymmetry in a loop is still asymmetry, and the
+	// bias is what produces the even harmonics measured.
 	symmetric_error, asymmetric_error: f32
 	for i in 1 ..= 64 {
 		x := f32(i) / 64.0 * 0.9
-		a1 := dsp.effect_shape_analog1(x, 8) + dsp.effect_shape_analog1(-x, 8)
+		pos, neg: [2]f32
+		p1, n1: f32
+		for _ in 0 ..< 64 {
+			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01)
+			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01)
+		}
 		a2 := dsp.effect_shape_analog2(x, 8, 1) + dsp.effect_shape_analog2(-x, 8, 1)
-		asymmetric_error += abs(a1)
+		asymmetric_error += abs(p1 + n1)
 		symmetric_error += abs(a2)
 	}
 
@@ -4233,5 +4240,40 @@ test_effect_digital_folds_rather_than_clips :: proc(t: ^testing.T) {
 			fmt.tprintf("d.d. jumped at %.3f: %.3f to %.3f", x, prev, v),
 		)
 		prev = v
+	}
+}
+
+@(test)
+test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
+	// a.d.1 is the one type here that is not memoryless: the phases of its
+	// harmonics read 0.146 to 0.439 where a.d.2 reads 0.011 to 0.042. So the same
+	// input twice must not give the same output -- that is the whole point -- and
+	// the loop must still be stable, which a feedback path has to be checked for.
+	SR_LOCAL :: f32(48000.0)
+	coef := dsp.one_pole_coef(dsp.EFFECT_ANALOG1_FEEDBACK_HZ, SR_LOCAL)
+	drive := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 1.0)
+	gain := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 1.0)
+
+	state: [2]f32
+	first := dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef)
+	settled := first
+	for _ in 0 ..< 4000 {
+		settled = dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef)
+	}
+	testing.expect(
+		t,
+		abs(settled - first) > 1.0e-6,
+		"a.d.1 gave the same answer to the same input twice, so it has no loop",
+	)
+
+	// Stability: driven hard for a second, nothing may run away or go non-finite.
+	loud: [2]f32
+	for i in 0 ..< 48000 {
+		x := f32(i % 97) / 48.0 - 1.0
+		v := dsp.effect_shape_analog1(&loud, x, drive, gain, coef)
+		if !(abs(v) <= gain * 1.001) || v != v {
+			testing.expect(t, false, fmt.tprintf("a.d.1 left its rails at sample %d: %.4f", i, v))
+			break
+		}
 	}
 }

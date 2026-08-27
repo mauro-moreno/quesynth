@@ -316,14 +316,35 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // Chosen in value, measured in existence: the fundamental at 130 Hz comes back
 // 2.6 dB down, and the manual attributes that to negative feedback. The corner is
 // placed low enough to account for that without thinning the signal.
-// a.d.1's low-frequency loss, as the corner of a fixed high pass.
+// a.d.1 is a clipper inside a feedback loop, which is what the manual calls it.
 //
-// Chosen in value, measured in existence, and left that way: a.d.1's own response
-// *is* measured now -- the shared two-pole high pass with one more pole at 839 Hz
-// and 8.15 dB of makeup, which fits it within 1.26 dB across eight octaves -- but
-// its curve is not, and fitting the response without the curve made the section
-// worse rather than better. Both are in the notes for the pass that does it.
-EFFECT_ANALOG1_HIGHPASS_HZ :: f32(90.0)
+// It is the one type here that is not memoryless. Its harmonics' phases say so
+// outright -- 0.146 to 0.439 where a.d.2 reads 0.011 to 0.042 -- and that is why
+// every curve fitted to it failed: no curve of any shape was ever going to.
+//
+// A loop explains what the curves could not. The distortion grows with frequency,
+// because the feedback rolls off and stops linearising; the tail decays like 1/k,
+// because what is inside the loop is a hard clip; and the even harmonics peak in
+// the middle of the knob and fade, because the bias matters less as the drive
+// grows. Fitted over h1 to h11 across twelve settings it reaches 2.51 dB, against
+// 3.91 for the best memoryless family, and from ctl1 56 upward it is inside 1.1.
+//
+// What it does not yet reproduce is the response away from the note it was fitted
+// at. The loop's own low-frequency loss is a decibel where the reference measures
+// forty, so its corner is not this loop's corner and something else is blocking
+// the bottom. The harmonics at 131 Hz are right and the shape of the response is
+// not, which is recorded rather than papered over.
+EFFECT_ANALOG1_LOOP_GAIN :: f32(1.0)
+EFFECT_ANALOG1_FEEDBACK_HZ :: f32(80.0)
+EFFECT_ANALOG1_BIAS :: f32(1.0)
+EFFECT_AD1_DRIVE :: [14]f32 {
+	0.7288, 0.7288, 0.7288, 1.2000, 1.7927, 2.1000, 2.4199,
+	4.4093, 8.0342, 10.8451, 19.7610, 36.0069, 48.6042, 65.6088,
+}
+EFFECT_AD1_GAIN :: [14]f32 {
+	0.4537, 0.4537, 0.4537, 0.5000, 0.5531, 0.5800, 0.6000,
+	0.6104, 0.4945, 0.4773, 0.4673, 0.4555, 0.4479, 0.4502,
+}
 
 // The unit's own response, measured where its curve is straight.
 //
@@ -922,6 +943,9 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	p.shape_bias = 0
 	p.shape_gain = 1
 	#partial switch p.type {
+	case .Analog_1:
+		p.drive = effect_ad_table(EFFECT_AD1_DRIVE, p.ctl1)
+		p.shape_gain = effect_ad_table(EFFECT_AD1_GAIN, p.ctl1)
 	case .Analog_2:
 		p.drive = effect_ad_table(EFFECT_AD2_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD2_GAIN, p.ctl1)
@@ -963,6 +987,8 @@ Effect :: struct {
 	// The two-pole high pass the analogue types and d.d. share, two states per
 	// channel.
 	ad_highpass: [2][2]f32,
+	// a.d.1's feedback loop: two poles of the output, per channel.
+	ad1_loop:    [2][2]f32,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
 	// The decimator: the value being held and how much of the step is left.
@@ -1001,13 +1027,19 @@ effect_reset :: proc "contextless" (e: ^Effect) {
 // The asymmetry is what makes the harmonics even. A shaper that is odd-symmetric
 // -- f(-x) = -f(x) -- can only produce odd harmonics, however hard it is driven,
 // which is why a.d.2 below reads as purely odd and this one does not.
-effect_shape_analog1 :: proc "contextless" (x, drive: f32) -> f32 {
-	d := x * drive
-	// Softer on the way up than on the way down.
-	shaped := d >= 0 ? math.tanh(d) : math.tanh(d * 0.6) * 0.6
-	// Normalised back so the drive knob changes timbre rather than level, and the
-	// asymmetry's DC offset removed here rather than left for the high pass.
-	return (shaped - 0.135) * 1.35
+// One sample of the loop: the clip sees the input less what the feedback has
+// integrated, and the feedback is two poles of the output.
+effect_shape_analog1 :: proc "contextless" (
+	state: ^[2]f32,
+	x, drive, gain, coef: f32,
+) -> f32 {
+	v := drive * (x - EFFECT_ANALOG1_LOOP_GAIN * state[1]) + EFFECT_ANALOG1_BIAS
+	y := clamp32(v, -1, 1)
+	state[0] += (y - state[0]) * coef
+	state[1] += (state[0] - state[1]) * coef
+	state[0] = flush_denormal(state[0])
+	state[1] = flush_denormal(state[1])
+	return gain * y
 }
 
 // a.d.2: the same curve with no bias, so odd-symmetric and purely odd harmonics.
@@ -1072,16 +1104,9 @@ effect_process :: proc "contextless" (
 
 	switch p.type {
 	case .Analog_1:
-		wl = effect_shape_analog1(wl, p.drive)
-		wr = effect_shape_analog1(wr, p.drive)
-		// The low-frequency loss the manual attributes to negative feedback.
-		coef := one_pole_coef(EFFECT_ANALOG1_HIGHPASS_HZ, sr)
-		e.highpass[0] += (wl - e.highpass[0]) * coef
-		e.highpass[1] += (wr - e.highpass[1]) * coef
-		e.highpass[0] = flush_denormal(e.highpass[0])
-		e.highpass[1] = flush_denormal(e.highpass[1])
-		wl -= e.highpass[0]
-		wr -= e.highpass[1]
+		coef := one_pole_coef(EFFECT_ANALOG1_FEEDBACK_HZ, sr)
+		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef)
+		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef)
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Analog_2:

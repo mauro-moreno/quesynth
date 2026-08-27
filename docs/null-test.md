@@ -8225,6 +8225,46 @@ the law is extrapolated through the region the instrument cannot read.
 
 The section's mean spectral error is 4.56 dB, from 10.92 when this started.
 
+### a.d.1 is a clipper in a loop, which is what the manual calls it
+
+The phase residual says a.d.1 is not memoryless at any setting, and that is why
+every curve fitted to it failed: no curve of any shape was going to. The manual
+names the mechanism -- negative feedback -- and a loop explains each of the three
+things the curves could not, all at once:
+
+  * the distortion grows with frequency, because the feedback rolls off and stops
+    linearising. At ctl1 0 the second harmonic is 22.7 dB below the fundamental
+    at 131 Hz and 13.6 dB below it at 2093.
+  * the tail decays like 1/k, because what is inside the loop is a hard clip.
+  * the even harmonics peak in the middle of the knob and fade by the top,
+    because the bias matters less the harder the loop is driven.
+
+A hard clip inside a two-pole feedback path at 80 Hz, with unity loop gain and a
+fixed bias, fitted over h1 to h11 across twelve settings:
+
+```
+   overall rms 2.51 dB     against 3.91 for the best memoryless family
+   ctl1 56 upward          0.74 to 2.12 dB
+   ctl1 64, measured    h1 -3.1  h2 -24.2  h3 -14.2  h5 -19.8  h9 -27.3  h11 -31.1
+   ctl1 64, model       h1 -2.9  h2 -26.6  h3 -13.6  h5 -18.4  h9 -28.1  h11 -32.0
+```
+
+```
+   fxcompare, a.d.1       before      after
+   ctl1 32  ctl2 64        5.36 dB     4.18
+   ctl1 64  ctl2 96        6.48        4.46
+   ctl1 96  ctl2 64        4.70        3.63
+   ctl1 127 ctl2 96        7.15        4.73
+   level error at 64/96   +5.64 dB    +0.75
+```
+
+One thing it does not do, and it is worth stating rather than leaving to be
+found. The loop was fitted against harmonics at one note, and its own
+low-frequency loss is about a decibel where the reference measures forty. So the
+corner that blocks a.d.1's bottom end is not this loop's corner, and something
+else is doing it. The harmonics at 131 Hz are right; the shape of the response
+away from there is not yet.
+
 ### The decimator, which is also not what it says (2026-08-27)
 
 With d.d. reverted the decimator is the section's worst at 19.2 dB, and it is the
