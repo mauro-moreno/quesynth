@@ -661,7 +661,7 @@ usage :: proc() {
 	fmt.eprintln("                    [--gains <list>] [--depths <list>] [--csv <path>]")
 	fmt.eprintln("  s1probe phasercomb [dll] [--type <6..9>] [--ctl1 <n>] [--ctl2 <n>]")
 	fmt.eprintln("                     [--level <n>] [--gain <n>] [--seconds <s>] [--fft <n>]")
-	fmt.eprintln("                     [--show] [--csv <path>]")
+	fmt.eprintln("                     [--show] [--csv <path>] [--curve <path>]")
 	fmt.eprintln("  s1probe phaserband [dll] [--type <6..9>] [--ctl1 <n>] [--ctl2 <n>]")
 	fmt.eprintln("                     [--notes <list>] [--csv <path>]")
 	fmt.eprintln("  s1probe comptrace [dll] [--ctl1 <n>] [--ctl2 <n>] [--amp <n>] [--decay <n>]")
@@ -1008,6 +1008,7 @@ main :: proc() {
 		pcsec := 20
 		pcshow := false
 		pccsv := ""
+		pccurve := ""
 		{
 			i := 0
 			for i < len(rest) {
@@ -1036,6 +1037,10 @@ main :: proc() {
 				case "--show":
 					pcshow = true
 					i += 1
+				case "--curve":
+					if i + 1 >= len(rest) {usage()}
+					pccurve = rest[i + 1]
+					i += 2
 				case "--csv":
 					if i + 1 >= len(rest) {usage()}
 					pccsv = rest[i + 1]
@@ -1045,7 +1050,7 @@ main :: proc() {
 				}
 			}
 		}
-		cmd_phasercomb(dll, pctype, pcctl1, pcctl2, pclevel, pcgain, f64(pcsec), pcshow, pccsv)
+		cmd_phasercomb(dll, pctype, pcctl1, pcctl2, pclevel, pcgain, f64(pcsec), pcshow, pccsv, pccurve)
 	case "phaserband":
 		pbtype, pbctl1, pbctl2, pblevel := 6, 64, 80, 127
 		pbnotes := "24,27,30,33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120"

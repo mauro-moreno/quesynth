@@ -175,7 +175,15 @@ comb_find_peaks :: proc(transfer: []f64, f0: f64, frame: ^Comb_Frame) {
 	}
 }
 
-comb_analyse :: proc(off, on: []f32, f0: f64, harmonics: int) -> []Comb_Frame {
+// The transfer function itself, averaged over the render, for the callers that
+// want the curve rather than the peaks picked out of it. Static settings only:
+// averaging a moving comb smears it into nothing.
+comb_analyse :: proc(
+	off, on: []f32,
+	f0: f64,
+	harmonics: int,
+	mean_db: []f64 = nil,
+) -> []Comb_Frame {
 	off_mono := phaser_mono(off)
 	defer delete(off_mono)
 	on_mono := phaser_mono(on)
@@ -233,6 +241,16 @@ comb_analyse :: proc(off, on: []f32, f0: f64, harmonics: int) -> []Comb_Frame {
 		}
 		comb_find_peaks(transfer, f0, &f)
 		append(&frames, f)
+		if mean_db != nil {
+			for h in 0 ..< min(len(mean_db), harmonics) {
+				mean_db[h] += transfer[h]
+			}
+		}
+	}
+	if mean_db != nil && len(frames) > 0 {
+		for h in 0 ..< len(mean_db) {
+			mean_db[h] /= f64(len(frames))
+		}
 	}
 	return frames[:]
 }
@@ -383,6 +401,7 @@ cmd_phasercomb :: proc(
 	seconds: f64,
 	show: bool,
 	csv_path: string,
+	curve_path: string = "",
 ) {
 	pristine, work := probe_open_chunk(dll)
 	defer delete(pristine)
@@ -430,10 +449,32 @@ cmd_phasercomb :: proc(
 	ours_on := render_ours(on_patch, COMB_NOTE)
 	defer delete(ours_on)
 
-	ref := comb_analyse(ref_off, ref_on, f0, harmonics)
+	ref_curve, our_curve: []f64
+	if curve_path != "" {
+		ref_curve = make([]f64, harmonics)
+		our_curve = make([]f64, harmonics)
+	}
+	defer delete(ref_curve)
+	defer delete(our_curve)
+
+	ref := comb_analyse(ref_off, ref_on, f0, harmonics, ref_curve)
 	defer delete(ref)
-	ours := comb_analyse(ours_off, ours_on, f0, harmonics)
+	ours := comb_analyse(ours_off, ours_on, f0, harmonics, our_curve)
 	defer delete(ours)
+
+	if curve_path != "" {
+		b := strings.builder_make()
+		defer strings.builder_destroy(&b)
+		fmt.sbprintln(&b, "hz,ref_db,our_db")
+		for h in 0 ..< harmonics {
+			fmt.sbprintfln(&b, "%.4f,%.6f,%.6f", f64(h + 1) * f0, ref_curve[h], our_curve[h])
+		}
+		if os.write_entire_file(curve_path, transmute([]u8)strings.to_string(b)) != nil {
+			fmt.eprintfln("phasercomb: could not write %s", curve_path)
+		} else {
+			fmt.printfln("  wrote %s (%d points, %.1f Hz apart)", curve_path, harmonics, f0)
+		}
+	}
 	if len(ref) == 0 {
 		fmt.eprintln("phasercomb: nothing to analyse")
 		os.exit(1)

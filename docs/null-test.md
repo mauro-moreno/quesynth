@@ -6970,3 +6970,87 @@ semitones and fit to only 7.18 dB, with corners at 0.01 Hz that are plainly the
 optimiser exploiting gaps in the data rather than a circuit. Both are measurement
 problems with a known instrument, which is a better place to be than the guess
 this would otherwise have been.
+
+### The level law, re-derived (2026-08-25)
+
+The previous section retired `0.9491 * (level/127)^3.84` as an artefact of the
+wrong model. This is the replacement, measured under the fitted topology.
+
+### A denser instrument, for nothing
+
+The curves it is fitted to are the whole transfer function rather than a handful
+of held tones, and they come from renders that were already being made. The saw
+comb computes the transfer at every harmonic of its fundamental; `phasercomb`
+was picking peaks out of it and discarding the rest. `--curve` writes it out:
+**1223 points from 16 Hz to 20 kHz, from one render**, against the twenty-five a
+tone sweep took several minutes to produce.
+
+The two agree to **0.2 dB at every frequency they share** -- 131 Hz reads -10.11
+against -10.11, the peak 25.80 against 25.85, 8372 Hz -0.71 against -0.71. Two
+instruments with nothing in common but the plugin.
+
+### Three parameters, not one
+
+With ph1's sections held fixed -- the knob does not move frequencies -- and `d`,
+`w` and `g` fitted independently at each of twelve settings:
+
+```
+  level      0     16     32     48     64     80     96    104    112    118    122    127
+  g       0.000  0.000  0.000  0.000  0.000  0.000  0.059  0.211  0.401  0.578  0.718  0.917
+  d       0.837  0.818  0.795  0.770  0.736  0.749  0.777  0.800  0.828  0.853  0.872  0.899
+  w      ~0     ~0     0.082  0.365  0.697  0.637  0.658  0.752  0.876  0.998  1.096  1.239
+```
+
+**The feedback is exactly zero over two thirds of the knob.** It does not engage
+until about level 87 and then climbs steeply:
+
+```
+  g = 0.917 * ((level - 87)/40)^1.76      worst deviation 0.0079 over six settings
+  g = 0                                    below level 87
+```
+
+What the knob does below that is mix. `w` rises from nothing to about 0.7 by
+level 64 while `d` holds near 0.81 -- so the lower two thirds is a dry/wet
+crossfade and the top third adds resonance on top of it. That is a normal design
+for a phaser and it is what the manual's "the amount of the effect, or the
+balance with the original sound" says, with both halves of the "or" true at once
+in different parts of the travel.
+
+`d` near 0.81 is also directly checkable: at level 0 the wet path is shut and the
+response should be flat at `20 log10(d)` = -1.8 dB. The measurement reads -1.53 dB
+at 131 Hz.
+
+### How wrong the old law was
+
+```
+  level                   96      104      112      118      122      127
+  measured g           0.059    0.211    0.401    0.578    0.718    0.917
+  0.9491*(L/127)^3.84  0.320    0.442    0.587    0.716    0.813    0.949
+```
+
+It agrees only at the top, which is the anchor it was fitted through, and it is
+wrong by a factor of five at level 96 -- and it claimed a feedback of 0.32 at 96
+and 0.07 at 64 where there is none at all. The exponent 3.84 was never a number
+about the plugin.
+
+### The section fits, and where they stop
+
+```
+                sections   rms     worst
+  ph1              3      1.93 dB  5.01 dB
+  ph2              5      1.97     5.16
+  ph3              7-8    4.02    16.46
+  ph4              9-12   5.35    25.65
+```
+
+ph1 and ph2 fit; ph3 and ph4 do not, and the honest reading is that this does not
+yet distinguish two possibilities. With eight to twelve free corners plus three
+mixing parameters, a random-walk optimiser in pure Python may simply be failing
+to converge -- one ph3 run left a corner at 5e18 Hz, which is a section the
+optimiser had switched off rather than placed. Or the single-loop form is wrong
+for the longer chains and they nest their feedback.
+
+Distinguishing those needs a better optimiser rather than more measurement, which
+is worth saying plainly: the data is dense, matched and cross-validated, and it is
+the fitting that is short. ph1 and ph2 are ready to implement; ph3 and ph4 are
+not.
