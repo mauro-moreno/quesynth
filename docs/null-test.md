@@ -1739,7 +1739,9 @@ the plugin's own noise, but those rows are unscored rather than passing.
 - the phasers' depth curve and level law — see below, where the rest of that
   section is now measured
 - the decimator's post-step ring
-- the compressor's threshold and ratio, and its envelope error
+- ~~the compressor's threshold and ratio, and its envelope error~~ -- measured,
+  and it was neither a threshold nor a ratio: see "The compressor is a leveller"
+  at the end of this document
 
 ### The phasers, and three instruments
 
@@ -5988,3 +5990,215 @@ rows, and four engine-silent-by-sustain rows. Absolute level MAE is
 `1.676711 dB`; signed level mean/median are `+0.33 / +0.22 dB`. No factory
 patch has nonzero parameter 95, so this bank is regression evidence only and
 cannot prove the sub law.
+
+## The compressor is a leveller (2026-08-25)
+
+`comp.` was the one type in the effect unit whose diagnosis was already written
+down and never acted on: 0.87 dB of spectral error, better than the section's own
+floor, against 15.19 dB of envelope error. The timbre right and the dynamics
+wrong. What had not been noticed is that the same reading also says the *static*
+law was never measured at all, and it was the static law that was wrong.
+
+Nine of the ten types in this section were named from what they do to a pure
+tone. That instrument cannot work here and the section's own notes say why: a
+compressor "adds nothing, and changes the envelope". One tone at one level is one
+point on a curve whose whole content is its shape.
+
+### The instrument
+
+Hold the tone and move the level going in. Every point renders the same patch
+twice, once with the unit switched off, and the off render *is* the measurement
+of what arrived — so the input is never inferred from the amp gain knob, whose
+own curve would otherwise be fitted into the answer. Both renders happen in this
+process, the reference through the DLL and ours through the statically linked
+engine, so the columns are matched rather than merely comparable.
+
+```
+ctl1 = 64, ctl2 = 127, level 127, note 48, settled RMS in dBFS
+  in    -51.9  -42.0  -35.3  -27.1  -21.5  -17.0  -13.3  -10.0   -7.1   -4.7
+  out   -21.7  -12.9  -11.2  -10.8  -10.8  -10.7  -10.7  -10.7  -10.7  -10.7
+```
+
+The output does not move. Over a 37 dB span of input it stays within a tenth of a
+decibel of −10.74 dBFS. That is a **leveller** — gain reduction tracking input one
+for one — and not the threshold-and-ratio compressor that was implemented, which
+had a threshold at 0.25, a ratio reaching 20:1 and a flat +10.9 dB of make-up
+where the reference was giving +30.2.
+
+### Depth is an input gain
+
+Plot each depth against the level *after* its own make-up and the curves fall on
+top of each other. Over 115 points at seven depths, the residual of predicting
+each point from the other depths' points is **0.0024 dB mean and 0.088 dB worst**,
+and that worst point is the knee, where interpolating between neighbours is
+hardest.
+
+So depth is not a threshold, a ratio or a knee width. It is a gain in front, and
+it is linear in decibels across exactly forty of them:
+
+```
+  ctl1        0     16     32     64
+  make-up +10.00 +15.04 +20.08 +30.16 dB     10 + 40*(ctl1/127) fits all four
+```
+
+The three depths above 64 were held back rather than fitted, because at those
+settings even the quietest render this patch can produce is already compressing,
+so the make-up cannot be read off directly. Predicting them puts all twelve rows
+within **0.02 dB**:
+
+```
+  ctl1 = 96      in  -55.43  -51.85  -49.38  -47.44
+                 ref -15.19  -12.75  -11.92  -11.51
+                 predicted   -15.21  -12.77  -11.92  -11.52
+  ctl1 = 127     in  -55.43  -51.85  -49.38  -47.44
+                 ref -11.26  -10.97  -10.87  -10.83
+                 predicted   -11.26  -10.97  -10.87  -10.83
+```
+
+Two more controls say this is the whole law. Notes 36 and 72, three octaves
+apart, reproduce note 48 to three decimals, so nothing here is frequency
+weighted. And the level knob moves every point by the same amount — 0.23625 dB
+per step, 30.0 dB across the range, which is the crossfade law already measured
+for this type — so it is an output gain sitting after all of this rather than part
+of it.
+
+### One instrument error, caught by disagreement
+
+The first sweep was run at ctl2 = 0, the fastest attack, on the reasoning that a
+fast detector settles soonest. It gives a curve of the same shape sitting up to
+1.09 dB lower, and it is not the static law: at 2 ms against a 7.7 ms period the
+gain moves *within* the cycle, which is the −6.7 dB of THD this section already
+had on record for that setting. The static curve has to be read where the
+detector cannot follow the waveform. The two sweeps agreeing in shape and
+disagreeing in level is what identified the mistake.
+
+### The curve
+
+A table rather than a formula, because no formula was found that fits. The curve
+is exactly unity below −15.3 dB — identity to four decimal places, a real
+threshold and not a soft approach to one — and then bends over into limiting far
+more sharply than a soft knee does while still taking twenty decibels to get
+there. Every closed form tried was either too gentle at the corner or still
+compressing below the threshold: a peak-normalised algebraic saturator at any
+exponent, tanh, `1 − exp`, and the standard quadratic soft knee. On a one-decibel
+grid the table reconstructs the 118 measured points to **0.0018 dB mean, 0.0426 dB
+worst**, that worst again at the knee, which is better than any of them managed
+anywhere.
+
+### The detector is symmetric, and that is measured twice
+
+The rebuilt engine matched the reference's curve to 0.51 dB and then stopped,
+with a flat **+0.68 dB** left over at every level in the limiting region — the
+signature of a constant, not a curve. It was the detector: 190 ms of attack
+against 120 ms of release settles off-centre on a signal that ripples, because it
+tracks downward faster than up. Making the two equal took the residual to
+**0.00 dB at every point**. A steady tone cannot be levelled to the same place by
+an asymmetric detector, so the reference's is not one.
+
+The second line of evidence is independent and comes from the other direction.
+Timing the gain's return after a step down — with the amplifier's own decay
+providing the step — the recovery slows as ctl2 rises, which a fixed release
+cannot do:
+
+```
+  ctl2         32     48     80     96
+  attack      6.3   11.2   35.2   62.5  ms, the law already measured
+  recovery     ~9    ~16    ~49    ~80  ms, first-order fit to the trajectory
+```
+
+One knob, one time constant, both directions. The recovery reads about 1.35 times
+the attack rather than exactly equal, and that factor is **not** adopted: the two
+are measured through different mappings — the attack from an overshoot in level,
+the recovery from a gain trajectory through the knee — and a sweep of the scale
+across five settings of ctl2 confirms it buys nothing.
+
+```
+  detector scale   1.0    1.35   1.7    2.2
+  ctl2 = 0        1.72    1.78   1.82   1.86   mean |gain error|, dB
+  ctl2 = 32       0.23    0.32   0.39   0.46
+  ctl2 = 64       0.25    0.33   0.40   0.47
+  ctl2 = 96       0.70    0.78   0.83   0.88
+  ctl2 = 127      1.54    1.51   1.43   1.26
+```
+
+So the attack law is left exactly as it was measured, and the only change to the
+dynamics is the symmetry.
+
+### The other instrument this needed
+
+Timing a compressor by watching its output confounds two things, because the
+level moving is the input moving *and* the gain moving. Rendering the same patch
+twice and dividing frame by frame separates them exactly and needs a model of
+neither: the ratio is the gain the unit applied, with the note's own envelope
+cancelled out of it. That is `comptrace`, and it is what both the recovery
+readings and the scale sweep above are measured with.
+
+### What it bought
+
+The level sweep it was diagnosed with, at the depth and attack the curve was read
+at, over 37 levels spanning 51 dB:
+
+```
+                          mean |error|   worst
+  before                     11.25 dB   19.25 dB
+  after                       0.00 dB    0.04 dB
+```
+
+And the direct A/B against the reference, on the `comp.` row, at six operating
+points. Spectral and envelope are decibels of error; level is ours minus theirs:
+
+```
+  ctl1  ctl2      spectral            envelope             level
+                before  after      before  after      before   after
+     0    64     0.99    0.34       8.46    0.28      +5.80   -0.07
+    64     0    17.17   16.48       3.52    5.73      +8.74   +0.82
+    64    64     0.29    0.36      11.52    4.94      +8.17   -0.68
+    64   127     1.60    0.02      23.76   12.12      +3.90   -6.50
+    96    96     0.65    0.10      22.57   12.75      +4.80   -5.05
+   127    64     0.29    0.36      15.05    7.78      +7.51   -1.45
+  mean            3.50    2.94     14.15    7.27       6.45    2.43
+```
+
+The factory bank is untouched, and has to be: no patch in it switches this unit
+on. Both executables were run against all 128 patches and the CSVs are
+byte-identical, SHA-256 `dd13c651be53eaaa1a6496f701cccb9f825b22fc960bc738b`
+`8759168285b7319`, which is also the hash already recorded for the full factory
+baseline above.
+
+### Two residuals, both measured, both left open
+
+**The fast attack sits 0.78 dB high.** At ctl2 = 0 the reference's settled level
+is 0.78 dB below its own slow-attack level, from the gain moving within the cycle,
+and this engine reproduces 0.01 dB of that. The obvious cause is not the cause:
+making the detector ten times faster at that end of the knob — 2 ms to 0.2 ms —
+moved the residual from 0.77 to 0.73 dB, so it is not the time constant, and the
+measured attack law is left alone. It is the `ctl1=64 ctl2=0` row's remaining
+16.48 dB of spectral error.
+
+**The slowest attack overshoots on the way in.** At ctl2 = 127 the level error
+went from +3.90 to −6.50 dB while everything else on that row improved, and the
+trajectory says where it comes from: at the note's first frames the reference has
+already applied 5.4 dB of reduction where this engine has applied 13.3. Both
+detectors start from silence and neither reaches the true level for tens of
+milliseconds; they take different paths there. The static law is exact at that
+setting — 0.00 dB over 37 levels — so this is the detector's approach and not the
+curve.
+
+### Reproducing it
+
+```powershell
+$reference = "ext/synth1/Synth1/Synth1 VST64.dll"
+odin build tools/s1probe -out:build/s1probe.exe
+
+# the static law, and the collapse that shows depth is an input gain
+./build/s1probe.exe compcurve $reference --ctl2 127 --level 127 `
+  --depths 32,48,64,80,96,112,127 `
+  --gains 2,4,6,8,10,12,16,20,24,32,40,48,64,80,96,112,127 --csv build/comp-law
+
+# the dynamics: the gain itself, with the note's envelope divided out
+./build/s1probe.exe comptrace $reference --ctl1 64 --ctl2 64 `
+  --amp 127 --decay 24 --sustain 32 --step 2
+
+# and the section's own A/B
+./build/s1probe.exe fxcompare $reference --ctl1 64 --ctl2 64 --level 127
+```

@@ -657,6 +657,10 @@ usage :: proc() {
 	fmt.eprintln("  s1probe fxenv     [dll] [--type <0..9>] [--ctl1 <n>] [--ctl2 <n>]")
 	fmt.eprintln("                          [--level <n>] [--step <ms>]")
 	fmt.eprintln("  s1probe fxcompare [dll] [--ctl1 <n>] [--ctl2 <n>] [--level <n>] [--note <n>]")
+	fmt.eprintln("  s1probe compcurve [dll] [--ctl1 <n>] [--ctl2 <n>] [--level <n>] [--note <n>]")
+	fmt.eprintln("                    [--gains <list>] [--depths <list>] [--csv <path>]")
+	fmt.eprintln("  s1probe comptrace [dll] [--ctl1 <n>] [--ctl2 <n>] [--amp <n>] [--decay <n>]")
+	fmt.eprintln("                    [--sustain <n>] [--step <ms>] [--csv <path>]")
 	fmt.eprintln("  s1probe deciprobe [dll] [--ctl <1|2>] [--values <list>] [--other <n>]")
 	fmt.eprintln("  s1probe runhist   [dll] [--type <n>] [--ctl1 <n>] [--ctl2 <n>] [--level <n>]")
 	fmt.eprintln("  s1probe phaserprobe [dll] [--type <6..9>] [--ctl1 <n>] [--ctl2 <n>]")
@@ -677,7 +681,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" {
         if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -993,6 +997,111 @@ main :: proc() {
 		}
 		set_fx_note(ppnote)
 		cmd_phaserprobe(dll, pptype, ppctl1, ppctl2, pplevel, ppgain, f64(ppsecs), pprows)
+	case "comptrace":
+		ctctl1, ctctl2, ctlevel := 64, 64, 127
+		ctnote := int(FX_PROBE_NOTE)
+		ctamp, ctdecay, ctsustain := 127, 40, 48
+		ctstep := 1
+		ctcsv := ""
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--ctl1":
+					if !parse_probe_int(rest, i + 1, &ctctl1) {usage()}
+					i += 2
+				case "--ctl2":
+					if !parse_probe_int(rest, i + 1, &ctctl2) {usage()}
+					i += 2
+				case "--level":
+					if !parse_probe_int(rest, i + 1, &ctlevel) {usage()}
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &ctnote) {usage()}
+					i += 2
+				case "--amp":
+					if !parse_probe_int(rest, i + 1, &ctamp) {usage()}
+					i += 2
+				case "--decay":
+					if !parse_probe_int(rest, i + 1, &ctdecay) {usage()}
+					i += 2
+				case "--sustain":
+					if !parse_probe_int(rest, i + 1, &ctsustain) {usage()}
+					i += 2
+				case "--step":
+					if !parse_probe_int(rest, i + 1, &ctstep) {usage()}
+					i += 2
+				case "--csv":
+					if i + 1 >= len(rest) {usage()}
+					ctcsv = rest[i + 1]
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		set_fx_note(ctnote)
+		cmd_comptrace(dll, ctctl1, ctctl2, ctlevel, ctnote, ctamp, ctdecay, ctsustain, f64(ctstep), ctcsv)
+	case "compcurve":
+		ccctl1 := 64
+		ccctl2 := 0
+		cclevel := 127
+		ccnote := int(FX_PROBE_NOTE)
+		ccgains := "0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,127"
+		cccsv := ""
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--ctl1":
+					if !parse_probe_int(rest, i + 1, &ccctl1) {usage()}
+					i += 2
+				case "--ctl2":
+					if !parse_probe_int(rest, i + 1, &ccctl2) {usage()}
+					i += 2
+				case "--level":
+					if !parse_probe_int(rest, i + 1, &cclevel) {usage()}
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &ccnote) {usage()}
+					i += 2
+				case "--gains":
+					if i + 1 >= len(rest) {usage()}
+					ccgains = rest[i + 1]
+					i += 2
+				case "--csv":
+					if i + 1 >= len(rest) {usage()}
+					cccsv = rest[i + 1]
+					i += 2
+				case "--depths":
+					if i + 1 >= len(rest) {usage()}
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		set_fx_note(ccnote)
+		ccdepths := ""
+		{
+			i := 0
+			for i < len(rest) {
+				if rest[i] == "--depths" && i + 1 < len(rest) {
+					ccdepths = rest[i + 1]
+				}
+				i += 1
+			}
+		}
+		cmd_compcurve(
+			dll,
+			ccctl1,
+			ccctl2,
+			cclevel,
+			ccnote,
+			parse_env_values(ccgains),
+			cccsv,
+			ccdepths != "" ? parse_env_values(ccdepths) : nil,
+		)
 	case "fxcompare":
 		fcctl1 := 64
 		fcctl2 := 64

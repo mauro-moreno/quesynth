@@ -3667,6 +3667,95 @@ effect_params_for :: proc(type: dsp.Effect_Type, ctl1, ctl2, level: f32) -> dsp.
 	return p
 }
 
+// The compressor is a leveller, and its depth knob is an input gain.
+//
+// Both halves are measured -- `tools/s1probe/compcurve.odin` -- and both are
+// checked here end to end rather than at the constants, because the constants
+// are only right if the signal path assembles them the way the measurement read
+// them: makeup before the detector, one symmetric time constant, and the curve
+// applied to an RMS.
+//
+// The expectations are the reference's own settled levels. The last four rows
+// are the ones that matter most: they are at depths the table was *not* built
+// from, and at those depths even the quietest render is already compressing, so
+// the makeup cannot be read off them directly. They were predictions first.
+@(test)
+test_the_compressor_levels_rather_than_compresses :: proc(t: ^testing.T) {
+	// Depth is an input gain, linear in decibels over exactly forty of them.
+	testing.expect(
+		t,
+		abs(20.0 * math.log10(dsp.effect_comp_makeup(0)) - 10.0) < 0.01,
+		"the compressor's depth no longer starts at +10 dB",
+	)
+	testing.expect(
+		t,
+		abs(20.0 * math.log10(dsp.effect_comp_makeup(1)) - 50.0) < 0.01,
+		"the compressor's depth no longer reaches +50 dB",
+	)
+
+	// One tone at one level, held until the detector has settled, read as RMS
+	// over the last third -- which is what the probe reads, so the two are
+	// comparable. ctl2 at the top: a slow detector does not move the gain within
+	// a cycle, and a fast one does, which is a separate finding and not this one.
+	settled :: proc(ctl1_stored, in_db: f32) -> f32 {
+		fx: dsp.Effect
+		p := effect_params_for(.Compressor, ctl1_stored / 127.0, 1.0, 1.0)
+		amplitude := math.pow(f32(10.0), in_db / 20.0) * math.sqrt(f32(2.0))
+		total := int(SR * 1.5)
+		from := total * 2 / 3
+		sum := f64(0)
+		n := 0
+		for i in 0 ..< total {
+			x := amplitude * math.sin(2.0 * math.PI * 440.0 * f32(i) / SR)
+			l, _ := dsp.effect_process(&fx, x, x, &p, SR)
+			if i >= from {
+				sum += f64(l) * f64(l)
+				n += 1
+			}
+		}
+		if n == 0 || sum <= 0 {return -200}
+		return f32(20.0 * math.log10(math.sqrt(sum / f64(n))))
+	}
+
+	for c in ([]struct {
+		ctl1, in_db, out_db: f32,
+	} {
+		// ctl1 = 64: the depth the curve was measured at.
+		{64, -51.85, -21.69},
+		{64, -42.01, -12.87},
+		{64, -35.34, -11.23},
+		{64, -27.11, -10.82},
+		{64, -16.99, -10.75},
+		{64, -4.68, -10.74},
+		// And four rows the table never saw.
+		{96, -55.43, -15.19},
+		{96, -47.44, -11.51},
+		{127, -55.43, -11.26},
+		{127, -51.85, -10.97},
+	}) {
+		got := settled(c.ctl1, c.in_db)
+		testing.expectf(
+			t,
+			abs(got - c.out_db) < 0.2,
+			"depth %v, %v dB in: the reference settles at %v dB and this settles at %v",
+			c.ctl1,
+			c.in_db,
+			c.out_db,
+			got,
+		)
+	}
+
+	// A leveller's output may never fall as its input rises. The old
+	// threshold-and-ratio implementation could not violate this either, but the
+	// curve is a table now, and a table can.
+	previous := f32(-1e9)
+	for db := f32(-40); db <= 20; db += 1 {
+		out := db + 20.0 * math.log10(dsp.effect_comp_gain(math.pow(f32(10.0), db / 20.0)))
+		testing.expectf(t, out >= previous - 0.001, "the leveller folds back at %v dB in", db)
+		previous = out
+	}
+}
+
 @(test)
 test_effect_level_means_different_things_per_type :: proc(t: ^testing.T) {
 	// Parameter 81 is not one law. The manual offers two readings of it -- "the

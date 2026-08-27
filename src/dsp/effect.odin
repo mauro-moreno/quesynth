@@ -206,16 +206,126 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // placed low enough to account for that without thinning the signal.
 EFFECT_ANALOG1_HIGHPASS_HZ :: f32(90.0)
 
-// The compressor's threshold and how far ctl1 pushes the ratio.
+// The compressor's static curve, and what `comp.` actually is.
 //
-// Chosen. ctl1 is documented as the depth of the compression effect and reads as
-// one -- the overshoot grows from 10.5 dB to 24.9 dB across it -- but neither a
-// threshold nor a ratio is recoverable from a single steady tone.
-EFFECT_COMP_THRESHOLD :: f32(0.25)
-EFFECT_COMP_MAX_RATIO :: f32(20.0)
-// Release is not separately controllable in the reference: the unit has only two
-// knobs and both are accounted for. Held at a musical value.
-EFFECT_COMP_RELEASE_S :: f32(0.120)
+// Measured, and it is not the threshold-and-ratio compressor this was first
+// written as. `tools/s1probe/compcurve.odin` holds the method; the short version
+// is that a dynamics processor cannot be identified from one tone at one level,
+// which is the reading every other type in this section was named from. Move the
+// level going in and read the level coming out once it has settled, and the shape
+// states itself:
+//
+//   ctl1 = 64, note 48, settled RMS in dBFS
+//     in    -42.0  -35.3  -27.1  -17.0  -10.0   -4.7
+//     out   -12.9  -11.2  -10.8  -10.7  -10.7  -10.7
+//
+// The output does not move. Across a 37 dB span of input it sits within a tenth
+// of a decibel of -10.74 dBFS, which is a **leveller**: gain reduction tracking
+// input one for one, not a ratio bending it. The implementation it replaces had a
+// threshold at 0.25 and a ratio reaching 20:1, and read +10.9 dB of flat makeup
+// where the reference was giving +30.
+//
+// The second half of the reading is what `ctl1` does. Plot every depth against
+// the level *after* its own makeup gain and the curves collapse onto one line:
+// over 115 points at seven depths the cross-depth residual is 0.0024 dB mean and
+// 0.088 dB worst, and that worst point is the knee, where interpolating between
+// neighbours is hardest. So depth is not a threshold, a ratio or a knee. It is an
+// input gain, and it is linear in decibels across exactly 40 of them:
+//
+//   ctl1        0     16     32     64
+//   makeup  +10.00 +15.04 +20.08 +30.16  dB, and 10 + 40*(ctl1/127) fits all four
+//
+// Predicting the three depths that were held back -- 96, 112 and 127, where even
+// the quietest render is already compressing so the makeup cannot be read off
+// directly -- puts all twelve rows within 0.02 dB of the measurement.
+//
+// Two independent checks that this is the whole law. Notes 36 and 72, three
+// octaves apart, reproduce note 48 to three decimals, so nothing here is
+// frequency weighted. And the level knob moves every point by the same amount --
+// 0.23625 dB per step, 30.0 dB across the range, which is the crossfade law
+// already measured for this type -- so it is an output gain sitting after all of
+// this and not part of it.
+EFFECT_COMP_MAKEUP_MIN_DB :: f32(10.0)
+EFFECT_COMP_MAKEUP_RANGE_DB :: f32(40.0)
+
+effect_comp_makeup :: proc "contextless" (ctl1: f32) -> f32 {
+	db := EFFECT_COMP_MAKEUP_MIN_DB + EFFECT_COMP_MAKEUP_RANGE_DB * clamp32(ctl1, 0, 1)
+	return math.pow(f32(10.0), db / 20.0)
+}
+
+// The leveller itself: gain in decibels against the level arriving at it, also in
+// decibels, on a one-decibel grid.
+//
+// A table rather than a formula because no formula was found that fits. The curve
+// is exactly unity below -15.3 dB -- the renders there are identity to four
+// decimal places, which is a real threshold and not a soft approach to one -- and
+// then bends over into limiting far more sharply than a soft knee does while
+// still taking twenty decibels to get there. Every closed form tried was either
+// too gentle at the corner or still compressing below the threshold: a
+// peak-normalised algebraic saturator at any exponent, tanh, 1-exp, and the
+// standard quadratic soft knee. The measurement is dense enough not to need one.
+//
+// Against the 118 points behind it this reconstructs to 0.0018 dB mean and
+// 0.0426 dB worst, that worst again at the knee.
+EFFECT_COMP_TABLE_LO_DB :: f32(-16.0)
+EFFECT_COMP_TABLE_HI_DB :: f32(24.0)
+// Where the output settles once it is limiting, and the value the table runs into
+// at its top: above it every further decibel in is a decibel of gain reduction.
+EFFECT_COMP_CEILING_DB :: f32(-10.739)
+
+EFFECT_COMP_GAIN_DB := [41]f32 {
+	0.0000, 0.0000, -0.1352, -0.4606, -0.9336, -1.5142, -2.1612,
+	-2.8852, -3.6553, -4.4727, -5.3294, -6.2090, -7.1144, -8.0391,
+	-8.9787, -9.9312, -10.8920, -11.8612, -12.8367, -13.8171, -14.8017,
+	-15.7890, -16.7790, -17.7710, -18.7647, -19.7597, -20.7556, -21.7523,
+	-22.7497, -23.7476, -24.7459, -25.7446, -26.7435, -27.7426, -28.7419,
+	-29.7414, -30.7409, -31.7405, -32.7402, -33.7399, -34.7398,
+}
+
+// The gain the leveller applies to a signal sitting at `level`, as a linear
+// amplitude. `level` is an RMS, because that is what the curve above was read in.
+effect_comp_gain :: proc "contextless" (level: f32) -> f32 {
+	if level <= 0 {
+		return 1
+	}
+	db := 20.0 * math.log10(level)
+	if db <= EFFECT_COMP_TABLE_LO_DB {
+		return 1
+	}
+	gain_db: f32
+	if db >= EFFECT_COMP_TABLE_HI_DB {
+		gain_db = EFFECT_COMP_CEILING_DB - db
+	} else {
+		pos := db - EFFECT_COMP_TABLE_LO_DB
+		i := int(pos)
+		f := pos - f32(i)
+		gain_db = EFFECT_COMP_GAIN_DB[i] + (EFFECT_COMP_GAIN_DB[i + 1] - EFFECT_COMP_GAIN_DB[i]) * f
+	}
+	return math.pow(f32(10.0), gain_db / 20.0)
+}
+// The detector is symmetric: one time constant, and ctl2 sets it.
+//
+// Measured twice over, from two directions. A detector that rises and falls at
+// different rates settles off-centre on a signal that ripples, and the size of
+// that bias is a reading in itself: with a 190 ms attack against a 120 ms
+// release this engine settled 0.68 dB above the reference at every level in the
+// limiting region, and making the two equal took that to 0.00 dB at every one.
+// A steady tone cannot be levelled to the same place by an asymmetric detector.
+//
+// And the recovery after a level step slows down as ctl2 rises, which a fixed
+// release cannot do. Timing the gain's return with the amplifier's own decay
+// providing the step:
+//
+//   ctl2         32     48     80     96
+//   attack      6.3   11.2   35.2   62.5  ms, the law already measured
+//   recovery     ~9    ~16    ~49    ~80  ms, first-order fit to the trajectory
+//
+// One knob, one time constant, both directions. The recovery reads about 1.35
+// times the attack rather than exactly equal, and that factor is not adopted:
+// the two are measured through different mappings -- the attack from an
+// overshoot in level, the recovery from a gain trajectory through the knee --
+// and the residual is well inside what those mappings differ by. What is
+// implemented is the symmetry the settled-level control proves.
 
 // The phasers: a swept resonance, and both of its control laws.
 //
@@ -398,7 +508,7 @@ Effect_Params :: struct {
 	hold_samples:  f32,
 	quantize_bits: f32,
 	comp_attack_s: f32,
-	comp_ratio:    f32,
+	comp_makeup:   f32,
 	phaser_rate_hz:   f32,
 	phaser_depth:     f32,
 	phaser_centre_hz: f32,
@@ -470,7 +580,7 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	p.ring_hz = effect_ring_hz(p.ctl1)
 	p.quantize_bits = effect_quantize_bits(p.ctl2)
 	p.comp_attack_s = effect_comp_attack_s(p.ctl2)
-	p.comp_ratio = 1.0 + clamp32(p.ctl1, 0, 1) * (EFFECT_COMP_MAX_RATIO - 1.0)
+	p.comp_makeup = effect_comp_makeup(p.ctl1)
 	p.phaser_rate_hz = effect_phaser_rate_hz(p.ctl2)
 	p.phaser_depth = clamp32(p.ctl1, 0, 1)
 	p.phaser_centre_hz = effect_phaser_centre_hz(p.type)
@@ -489,7 +599,10 @@ Effect :: struct {
 	// The decimator: the value being held and how much of the step is left.
 	hold_value: [2]f32,
 	hold_left:  f32,
-	// The compressor's detector.
+	// The compressor's detector, held as a mean square so that its settled value
+	// for a tone is that tone's RMS -- which is the quantity the static curve was
+	// measured in. A mean-absolute detector settles at 2/pi of the amplitude
+	// instead of 1/sqrt(2), which would sit the whole curve 0.9 dB off.
 	envelope:   f32,
 	// The phasers. Both structures are here: the allpass chain that ships, and the
 	// resonant filter the measurement calls for, which is parked -- see the note in
@@ -622,32 +735,25 @@ effect_process :: proc "contextless" (
 		wr *= modulator
 
 	case .Compressor:
-		// A peak detector with a fast release and the measured attack, then a
-		// gain computed from how far the detector sits above the threshold.
-		peak := max(abs(wl), abs(wr))
-		attack := one_pole_coef_time(p.comp_attack_s, sr)
-		release := one_pole_coef_time(EFFECT_COMP_RELEASE_S, sr)
-		coef := peak > e.envelope ? attack : release
-		e.envelope += (peak - e.envelope) * coef
+		// Depth first, as an input gain, because that is where the measurement
+		// puts it: every depth's curve collapses onto one curve when it is plotted
+		// against the level *after* this gain. It is not make-up applied at the
+		// end -- doing it there would leave the leveller seeing a different signal
+		// at every depth and the collapse would not hold.
+		wl *= p.comp_makeup
+		wr *= p.comp_makeup
+
+		// The detector, on the mean square of the pair. One detector and one gain
+		// for both channels: two would move the image whenever the two sides
+		// differed, and the unit is a single slot.
+		square := 0.5 * (wl * wl + wr * wr)
+		coef := one_pole_coef_time(p.comp_attack_s, sr)
+		e.envelope += (square - e.envelope) * coef
 		e.envelope = flush_denormal(e.envelope)
 
-		gain := f32(1.0)
-		if e.envelope > EFFECT_COMP_THRESHOLD && p.comp_ratio > 1 {
-			over := e.envelope / EFFECT_COMP_THRESHOLD
-			// The compressed level is `over` raised to 1/ratio, so the gain is the
-			// ratio between that and the level that arrived.
-			compressed := math.pow(f32(2.0), math.log2(over) / p.comp_ratio)
-			gain = compressed / over
-		}
-		// Make-up, so the knob does not read as a volume control. Referenced to
-		// the gain a full-scale signal would receive.
-		makeup := f32(1.0)
-		if p.comp_ratio > 1 {
-			full := 1.0 / EFFECT_COMP_THRESHOLD
-			makeup = math.pow(f32(2.0), math.log2(full) * (1.0 - 1.0 / p.comp_ratio))
-		}
-		wl *= gain * makeup
-		wr *= gain * makeup
+		gain := effect_comp_gain(math.sqrt(max(e.envelope, 0)))
+		wl *= gain
+		wr *= gain
 
 	case .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
 		e.lfo_phase += p.phaser_rate_hz / sr
