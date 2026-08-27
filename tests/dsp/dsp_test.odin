@@ -4197,3 +4197,41 @@ test_effect_analog_drive_saturates :: proc(t: ^testing.T) {
 	}
 
 }
+
+@(test)
+test_effect_digital_folds_rather_than_clips :: proc(t: ^testing.T) {
+	// d.d.'s curve was read off its own harmonics rather than fitted, and what it
+	// draws is a triangle fold: at ctl1 16 it rises along a slope of 1.2 to a peak
+	// of 0.83 at x = 0.69 and comes back down, reaching 0.651 at x = 0.83 where a
+	// triangle predicts 0.662. A clipper stays at its ceiling instead.
+	drive := dsp.effect_ad_table(dsp.EFFECT_DD_DRIVE, 16.0 / 127.0)
+	gain := dsp.effect_ad_table(dsp.EFFECT_DD_GAIN, 16.0 / 127.0)
+
+	peak := dsp.effect_shape_digital(1.0 / drive, drive, gain)
+	past := dsp.effect_shape_digital(1.35 / drive, drive, gain)
+	testing.expect(
+		t,
+		past < peak * 0.9,
+		fmt.tprintf("d.d. did not turn back: %.3f at the fold, %.3f past it", peak, past),
+	)
+
+	// The fold is odd-symmetric, which is why its even harmonics measure 70 dB
+	// down, and it is continuous across every reflection.
+	for i in 1 ..= 200 {
+		x := f32(i) / 40.0
+		a := dsp.effect_shape_digital(x, drive, gain)
+		b := dsp.effect_shape_digital(-x, drive, gain)
+		testing.expect(t, abs(a + b) < 1.0e-5, fmt.tprintf("d.d. is not odd at %.3f", x))
+	}
+	prev := dsp.effect_shape_digital(0, drive, gain)
+	for i in 1 ..= 4000 {
+		x := f32(i) / 200.0
+		v := dsp.effect_shape_digital(x, drive, gain)
+		testing.expect(
+			t,
+			abs(v - prev) < 0.05,
+			fmt.tprintf("d.d. jumped at %.3f: %.3f to %.3f", x, prev, v),
+		)
+		prev = v
+	}
+}

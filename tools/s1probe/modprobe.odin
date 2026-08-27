@@ -1002,3 +1002,16 @@ parse_probe_int :: proc(args: []string, i: int, out: ^int) -> bool {
 	out^ = v
 	return true
 }
+
+// The same, for the arguments that are frequencies rather than knob positions.
+parse_probe_f64 :: proc(args: []string, i: int, out: ^f64) -> bool {
+	if i >= len(args) {
+		return false
+	}
+	v, ok := strconv.parse_f64(args[i])
+	if !ok {
+		return false
+	}
+	out^ = v
+	return true
+}

@@ -268,20 +268,39 @@ effect_ad_table :: proc "contextless" (table: [14]f32, ctl1: f32) -> f32 {
 	return table[len(table) - 1]
 }
 
-// d.d. is a wavefolder, and a sine one.
+// d.d. is a triangle wavefolder, read off its own curve rather than fitted.
 //
-// It is the only type here whose fundamental does not fall monotonically with
-// drive: measured across ctl1 it reads -7.2, -10.8, -19.0, -14.1, -29.0, -21.8,
-// -24.8 and -50.2 dB, dipping and recovering twice. Nothing that clips does that.
-// A fold does: sin(z sin t) expands as 2 J_k(z) over the odd k alone, so the
-// harmonics are Bessel functions of the fold depth, they are odd-only -- which is
-// what is measured, the evens sitting 60 dB down -- and the fundamental passes
-// through zero where J1 does.
+// Recovering a curve needs the harmonics' phases, which the magnitude probe
+// throws away. A memoryless curve's harmonics are all real once the input's own
+// phase is removed -- that is what memoryless means -- so dividing by the measured
+// response and rotating gives the curve back with no family assumed at all, and
+// the phase left over measures how much of the reading is neither. d.d. comes
+// back at 0.030 to 0.042 up to ctl1 64, against a.d.2's 0.011 to 0.042, so it is
+// memoryless and the curve is exact rather than fitted.
 //
-// Fitted that way over h1, h3, h5 and h7 it lands within 0.2 to 1.0 dB from ctl1
-// 40 upward. Below that the fold is too shallow to identify from four harmonics
-// and the fit wanders, so the first two knots are set by the linear constraint
-// instead: at ctl1 0 the unit is straight and its gain is what the response says.
+// What it draws is a fold, and a straight one. At ctl1 16 it rises along a slope
+// of 1.2 to a peak of 0.83 at x = 0.69 and then comes back down; a triangle
+// predicts 0.662 at x = 0.83 and the measurement is 0.651. A sine fold was fitted
+// first, against Bessel magnitudes, and is wrong: a fold of any shape looks like
+// that from a distance.
+//
+// Fitted against the odd harmonics with the response held fixed, ctl1 16 to 48
+// lands within 0.19 to 0.88 dB, and the fold depth is a clean exponential: 1.50,
+// 2.52, 4.15, 6.99, 11.52, a ratio of 1.66 every eight steps. Above ctl1 48 the
+// fitted depth scatters and the law is extrapolated through it, because that is
+// where the reading fails and not the law -- a fold that deep puts harmonics past
+// Nyquist, they alias back to frequencies that are not multiples of f0, and the
+// phase residual rises to 0.30 and then 0.61. The reference aliases them too,
+// its output at full drive collapsing to -23 dB with the energy spread
+// inharmonically, so a memoryless fold reproduces that by doing the same thing.
+EFFECT_DD_DRIVE :: [14]f32 {
+	0.5400, 0.8988, 1.4982, 2.5200, 4.1548, 6.9885, 11.5221,
+	19.1640, 31.8760, 53.0190, 88.1870, 244.100, 675.700, 1768.50,
+}
+EFFECT_DD_GAIN :: [14]f32 {
+	1.8430, 1.2500, 0.8490, 0.7140, 0.6700, 0.6310, 0.6370,
+	0.6370, 0.6370, 0.6370, 0.6370, 0.6370, 0.6370, 0.6370,
+}
 
 // The rest of the section keeps the old exponential drive.
 EFFECT_DRIVE_MIN :: f32(1.0)
@@ -325,6 +344,9 @@ EFFECT_ANALOG1_HIGHPASS_HZ :: f32(90.0)
 // corner that produced the one loss that had been measured.
 EFFECT_AD_HIGHPASS_HZ :: f32(99.9)
 EFFECT_AD_HIGHPASS_Q :: f32(2.26)
+
+// d.d. shares that response, a decibel quieter.
+EFFECT_DD_MAKEUP :: f32(0.896)
 
 // One two-pole high pass, transposed direct form II, per channel.
 effect_ad_highpass :: proc "contextless" (
@@ -903,6 +925,9 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	case .Analog_2:
 		p.drive = effect_ad_table(EFFECT_AD2_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD2_GAIN, p.ctl1)
+	case .Digital:
+		p.drive = effect_ad_table(EFFECT_DD_DRIVE, p.ctl1)
+		p.shape_gain = effect_ad_table(EFFECT_DD_GAIN, p.ctl1) * EFFECT_DD_MAKEUP
 	}
 	p.ring_hz = effect_ring_hz(p.ctl1)
 	p.quantize_bits = effect_quantize_bits(p.ctl2)
@@ -990,9 +1015,23 @@ effect_shape_analog2 :: proc "contextless" (x, drive, gain: f32) -> f32 {
 	return gain * math.tanh(x * drive)
 }
 
-// d.d.: hard clipping, the digital one.
-effect_shape_digital :: proc "contextless" (x, drive: f32) -> f32 {
-	return clamp32(x * drive, -1, 1)
+// d.d.: the fold. A triangle of period four, reflecting at every odd integer.
+effect_fold :: proc "contextless" (u: f32) -> f32 {
+	v := math.mod(u, f32(4.0))
+	if v < 0 {
+		v += 4.0
+	}
+	if v <= 1.0 {
+		return v
+	}
+	if v <= 3.0 {
+		return 2.0 - v
+	}
+	return v - 4.0
+}
+
+effect_shape_digital :: proc "contextless" (x, drive, gain: f32) -> f32 {
+	return gain * effect_fold(x * drive)
 }
 
 // ------------------------------------------------------------------- process
@@ -1059,8 +1098,16 @@ effect_process :: proc "contextless" (
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Digital:
-		wl = effect_shape_digital(wl, p.drive)
-		wr = effect_shape_digital(wr, p.drive)
+		wl = effect_shape_digital(wl, p.drive, p.shape_gain)
+		wr = effect_shape_digital(wr, p.drive, p.shape_gain)
+		wl, wr = effect_ad_highpass(
+			&e.ad_highpass,
+			wl,
+			wr,
+			EFFECT_AD_HIGHPASS_HZ,
+			EFFECT_AD_HIGHPASS_Q,
+			sr,
+		)
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Decimator:

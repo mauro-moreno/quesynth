@@ -8156,10 +8156,74 @@ both of which the fit had been reading past:
 
 That is the same thing the scatter's loop was saying at ctl1 127, where the
 within-bin spread reaches nineteen times the output range. It was read as a map
-too steep to bin. It is at least as likely to be memory, and a memoryless curve
-of any shape is then the wrong family -- which is why fitting a better one made
-it worse. d.d. is left as it was, with the decimator, which has not been looked
-at and is now the section's worst at 19.2 dB.
+too steep to bin, and then as memory. **Both readings were wrong, and the next
+section reads the curve instead of guessing at its family.**
+
+### Reading the curve instead of fitting one (2026-08-27)
+
+Every failure above is the same failure: a family was guessed, fitted to the
+harmonics it explains, and scored on the ones it does not. The fault is the
+method. A curve does not have to be guessed at, because everything needed to read
+it is in the phases, and the magnitude probe throws those away.
+
+Drive the unit with `A cos(wt + p)`. A memoryless curve puts out
+`sum D_k cos(k(wt + p))` with every `D_k` **real** -- that is what memoryless
+means, that nothing lags -- and a filter after it multiplies each by `H(k f0)`,
+which is known once the response has been measured. Take each harmonic's complex
+coefficient, divide by `H`, rotate out the input's own phase, and what is left is
+`D_k`. The curve is the sum. Nothing is assumed about its shape.
+
+The phase that survives is the instrument's own check, and it has to be measured
+per harmonic rather than in total: weighted by magnitude, a filter that boosts the
+fundamental until the output looks linear scores zero, which is how a four-pole
+fit at 351 Hz briefly appeared to make a.d.1 memoryless. Per harmonic there is
+nothing to exploit.
+
+```
+   phase residual, 0 is memoryless behind the stated filter
+   ctl1        16     32     48     64     96    127
+   a.d.2    0.011  0.013  0.028  0.042  0.042  0.042
+   d.d.     0.030  0.041  0.042  0.042  0.303  0.610
+   a.d.1    0.146  0.434  0.439  0.336  0.220  0.238
+```
+
+Three answers in one table. a.d.2 is memoryless, which is why it was the one that
+worked. **d.d. is memoryless too**, and the earlier conclusion that it had memory
+was wrong -- what failed was the sine family, not the unit. And **a.d.1 genuinely
+has memory** at every setting, which is the negative feedback the manual names,
+and no curve of any shape was ever going to fit it.
+
+### d.d., read off
+
+The curve is a fold and a straight one. At ctl1 16 it rises along a slope of 1.2
+to a peak of 0.83 at x = 0.69 and comes back down; a triangle predicts 0.662 at
+x = 0.83 and the measurement is 0.651. Fitted against the odd harmonics with the
+response held fixed, ctl1 16 to 48 lands within 0.19 to 0.88 dB, and the fold
+depth is a clean exponential:
+
+```
+   ctl1        16     24     32     40     48
+   depth     1.50   2.52   4.15   6.99  11.52     x1.66 every 8 steps
+```
+
+Above ctl1 48 the fitted depth scatters, and that is the reading failing rather
+than the law. A fold that deep puts harmonics past Nyquist; they alias back to
+frequencies that are not multiples of f0, which is exactly what the phase
+residual reports at 0.30 and 0.61. The reference aliases them too -- its output at
+full drive collapses to -23 dB with the energy spread inharmonically -- so a
+memoryless fold at the same depth reproduces that by doing the same thing, and
+the law is extrapolated through the region the instrument cannot read.
+
+```
+   fxcompare, d.d.        before      after
+   ctl1 32  ctl2 64        5.50 dB     3.54
+   ctl1 64  ctl2 96       14.27        5.07
+   ctl1 96  ctl2 64       20.63        7.67
+   ctl1 127 ctl2 96       22.97        6.29
+   null at 64/96          -0.09 dB    -7.75
+```
+
+The section's mean spectral error is 4.56 dB, from 10.92 when this started.
 
 ### The decimator, which is also not what it says (2026-08-27)
 

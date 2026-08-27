@@ -690,7 +690,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" {
         if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -1045,6 +1045,64 @@ main :: proc() {
 		}
 		set_fx_note(fcnote)
 		cmd_fxcurve(dll, fctype, 0, fcctl2, fclevel, fcnote, fcgain, parse_env_values(fcdrives), fccsv)
+	case "fxshape":
+		fstype, fsctl2, fslevel, fsnote := 0, 127, 127, 48
+		fsgain := 127
+		fsdrives := "32,64,96,127"
+		fsfc, fsq, fspole, fsmk := 99.9, 2.26, 0.0, 1.0
+		fscsv := ""
+		fsharm := ""
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--type":
+					if !parse_probe_int(rest, i + 1, &fstype) {usage()}
+					i += 2
+				case "--ctl2":
+					if !parse_probe_int(rest, i + 1, &fsctl2) {usage()}
+					i += 2
+				case "--level":
+					if !parse_probe_int(rest, i + 1, &fslevel) {usage()}
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &fsnote) {usage()}
+					i += 2
+				case "--gain":
+					if !parse_probe_int(rest, i + 1, &fsgain) {usage()}
+					i += 2
+				case "--drives":
+					if i + 1 >= len(rest) {usage()}
+					fsdrives = rest[i + 1]
+					i += 2
+				case "--fc":
+					if !parse_probe_f64(rest, i + 1, &fsfc) {usage()}
+					i += 2
+				case "--q":
+					if !parse_probe_f64(rest, i + 1, &fsq) {usage()}
+					i += 2
+				case "--pole":
+					if !parse_probe_f64(rest, i + 1, &fspole) {usage()}
+					i += 2
+				case "--makeup":
+					if !parse_probe_f64(rest, i + 1, &fsmk) {usage()}
+					i += 2
+				case "--csv":
+					if i + 1 >= len(rest) {usage()}
+					fscsv = rest[i + 1]
+					i += 2
+				case "--harmonics":
+					if i + 1 >= len(rest) {usage()}
+					fsharm = rest[i + 1]
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		set_fx_note(fsnote)
+		cmd_fxshape(dll, fstype, fsctl2, fslevel, fsnote, fsgain, parse_env_values(fsdrives),
+			Fx_Response{fc = fsfc, q = fsq, pole_hz = fspole, makeup = fsmk}, fscsv, fsharm)
 	case "fxharm":
 		fhtype, fhctl2, fhlevel, fhnote := 0, 127, 127, 48
 		fhdrives := "0,16,32,48,64,80,96,112,127"

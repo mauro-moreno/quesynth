@@ -378,3 +378,230 @@ cmd_fxharm :: proc(
 		}
 	}
 }
+
+// ------------------------------------------------------ the curve, recovered
+//
+// Fitting families failed for three of the four types, and it failed the same way
+// each time: a family that matched the first few harmonics missed the tail, and
+// the tail is most of what a spectrum sees. The fault is in the method rather
+// than in the families. A curve should not be guessed at and scored; it should be
+// read.
+//
+// It can be. Everything needed is in the phases, which the harmonic probe above
+// throws away when it takes power. Drive the unit with a sine `A cos(wt + p)`.
+// A memoryless curve puts out `sum D_k cos(k(wt + p))` with every `D_k` **real** --
+// that is what memoryless means, that nothing lags -- and a filter after it
+// multiplies each by `H(k f0)`, which is known once the response has been
+// measured. So take the complex coefficient of each harmonic, divide by `H`, and
+// rotate by the input's own phase: what is left is `D_k`, and the curve is the sum.
+//
+// The imaginary part that survives is the instrument's own check. For a
+// memoryless curve behind the right filter it is zero, and whatever it is
+// measures how much of the reading is neither.
+FXSHAPE_HARMONICS :: 40
+FXSHAPE_POINTS :: 257
+
+Fx_Complex :: [2]f64
+
+fx_cmul :: proc "contextless" (a, b: Fx_Complex) -> Fx_Complex {
+	return {a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]}
+}
+fx_cdiv :: proc "contextless" (a, b: Fx_Complex) -> Fx_Complex {
+	d := b[0] * b[0] + b[1] * b[1]
+	if d == 0 {
+		return {0, 0}
+	}
+	return {(a[0] * b[0] + a[1] * b[1]) / d, (a[1] * b[0] - a[0] * b[1]) / d}
+}
+
+// The response fitted at ctl1 0, where every type here is linear: a two-pole high
+// pass, optionally one more pole behind it, and a makeup gain.
+Fx_Response :: struct {
+	fc, q:   f64,
+	pole_hz: f64, // zero for none
+	makeup:  f64,
+}
+
+fx_response_at :: proc "contextless" (r: Fx_Response, f: f64) -> Fx_Complex {
+	// The analogue prototype, which is what the magnitudes were fitted against.
+	x := f / r.fc
+	num := Fx_Complex{-x * x, 0}
+	den := Fx_Complex{1.0 - x * x, x / r.q}
+	h := fx_cdiv(num, den)
+	if r.pole_hz > 0 {
+		y := f / r.pole_hz
+		h = fx_cmul(h, fx_cdiv(Fx_Complex{0, y}, Fx_Complex{1, y}))
+	}
+	return {h[0] * r.makeup, h[1] * r.makeup}
+}
+
+// The complex amplitude of one harmonic, at a frequency that need not land on a
+// bin: a Hann-windowed sum against the exact frequency, so a non-integer number
+// of periods in the window costs nothing.
+fx_harmonic_at :: proc(x: []f32, f, sr: f64) -> Fx_Complex {
+	n := len(x)
+	if n < 16 {
+		return {0, 0}
+	}
+	re, im, norm := 0.0, 0.0, 0.0
+	for i in 0 ..< n {
+		w := 0.5 - 0.5 * math.cos(TAU_F64 * f64(i) / f64(n - 1))
+		phase := -TAU_F64 * f * f64(i) / sr
+		re += w * f64(x[i]) * math.cos(phase)
+		im += w * f64(x[i]) * math.sin(phase)
+		norm += w
+	}
+	if norm <= 0 {
+		return {0, 0}
+	}
+	return {2.0 * re / norm, 2.0 * im / norm}
+}
+
+TAU_F64 :: 6.283185307179586
+
+cmd_fxshape :: proc(
+	dll: string,
+	type_state, ctl2, level, note, gain: int,
+	drives: []int,
+	resp: Fx_Response,
+	csv_path: string,
+	harmonics_path: string = "",
+) {
+	set_compare_timing(COMPARE_BLOCK_DEFAULT)
+	pristine, work := probe_open_chunk(dll)
+	defer delete(pristine)
+	defer delete(work)
+
+	sr := f64(SAMPLE_RATE)
+	f0 := 440.0 * math.pow(2.0, (f64(note) - 69.0) / 12.0)
+	name := type_state >= 0 && type_state < len(FX_TYPE_NAMES) ? FX_TYPE_NAMES[type_state] : "?"
+	fmt.printfln(
+		"transfer curve, recovered: %s (state %d) ctl2=%d level=%d, sine at %.1f Hz",
+		name,
+		type_state,
+		ctl2,
+		level,
+		f0,
+	)
+	fmt.printfln(
+		"  dividing out a two-pole high pass at %.1f Hz, Q %.2f%s, makeup %.3f",
+		resp.fc,
+		resp.q,
+		resp.pole_hz > 0 ? fmt.tprintf(", one more pole at %.0f Hz", resp.pole_hz) : "",
+		resp.makeup,
+	)
+	fmt.println("  the residual is what is left over after a memoryless curve: 0 is one, 1 is none of one")
+	fmt.println("  ctl1   in      out     residual   harmonics used")
+
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	fmt.sbprintln(&b, "ctl1,x,y")
+
+	// The coefficients before anything is divided out, so a filter can be fitted
+	// against them offline instead of guessed at and re-rendered.
+	hb := strings.builder_make()
+	defer strings.builder_destroy(&hb)
+	fmt.sbprintln(&hb, "ctl1,k,re,im,in_amp,in_phase")
+
+	for d in drives {
+		p_off := fx_probe_patch(false, type_state, d, ctl2, level)
+		p_on := fx_probe_patch(true, type_state, d, ctl2, level)
+		set_param(&p_off, 29, gain)
+		set_param(&p_on, 29, gain)
+
+		ref_off, _, ok1 := render_reference_fresh(dll, &p_off, pristine, work, u8(note))
+		defer delete(ref_off)
+		ref_on, _, ok2 := render_reference_fresh(dll, &p_on, pristine, work, u8(note))
+		defer delete(ref_on)
+		if !ok1 || !ok2 {
+			continue
+		}
+		mo, so := split_mid_side(ref_off, 2)
+		defer delete(mo)
+		defer delete(so)
+		mn, sn := split_mid_side(ref_on, 2)
+		defer delete(mn)
+		defer delete(sn)
+
+		held := min(g_hold_frames, min(len(mo), len(mn)))
+		from := min(int(0.15 * sr), held / 4)
+		to := min(from + int(0.5 * sr), held)
+		if to - from < 4096 {
+			continue
+		}
+
+		// The input's own fundamental fixes both the amplitude and the phase that
+		// everything else is measured against.
+		c_in := fx_harmonic_at(mo[from:to], f0, sr)
+		amp := math.sqrt(c_in[0] * c_in[0] + c_in[1] * c_in[1])
+		if amp <= 0 {
+			continue
+		}
+		phase := math.atan2(c_in[1], c_in[0])
+
+		coeff: [FXSHAPE_HARMONICS + 1]f64
+		real_sum, imag_sum := 0.0, 0.0
+		used := 0
+		for k in 1 ..= FXSHAPE_HARMONICS {
+			f := f0 * f64(k)
+			if f >= sr * 0.45 {
+				break
+			}
+			c := fx_harmonic_at(mn[from:to], f, sr)
+			if math.sqrt(c[0] * c[0] + c[1] * c[1]) < amp * 1.0e-4 {
+				continue
+			}
+			if harmonics_path != "" {
+				fmt.sbprintfln(&hb, "%d,%d,%.10f,%.10f,%.8f,%.8f", d, k, c[0], c[1], amp, phase)
+			}
+			c = fx_cdiv(c, fx_response_at(resp, f))
+			// Undo the input's phase, k times over: a memoryless curve's harmonic
+			// rides on k times the fundamental's phase.
+			rot := Fx_Complex{math.cos(f64(k) * phase), -math.sin(f64(k) * phase)}
+			c = fx_cmul(c, rot)
+			coeff[k] = c[0]
+			real_sum += c[0] * c[0]
+			imag_sum += c[1] * c[1]
+			used += 1
+		}
+		residual := real_sum + imag_sum > 0 ? math.sqrt(imag_sum / (real_sum + imag_sum)) : 1.0
+
+		out_peak := 0.0
+		for i in 0 ..< FXSHAPE_POINTS {
+			t := TAU_F64 * f64(i) / f64(FXSHAPE_POINTS)
+			x := amp * math.cos(t)
+			y := 0.0
+			for k in 1 ..= FXSHAPE_HARMONICS {
+				y += coeff[k] * math.cos(f64(k) * t)
+			}
+			if abs(y) > out_peak {out_peak = abs(y)}
+			if csv_path != "" {
+				fmt.sbprintfln(&b, "%d,%.8f,%.8f", d, x, y)
+			}
+		}
+
+		fmt.printfln(
+			"  %s  %s  %s     %s      %d",
+			pad_left(fmt.tprintf("%d", d), 4),
+			pad_left(dec3(amp), 6),
+			pad_left(dec3(out_peak), 6),
+			pad_left(dec3(residual), 6),
+			used,
+		)
+	}
+
+	if csv_path != "" {
+		if os.write_entire_file(csv_path, transmute([]u8)strings.to_string(b)) != nil {
+			fmt.eprintfln("fxshape: could not write %s", csv_path)
+		} else {
+			fmt.printfln("  wrote %s", csv_path)
+		}
+	}
+	if harmonics_path != "" {
+		if os.write_entire_file(harmonics_path, transmute([]u8)strings.to_string(hb)) != nil {
+			fmt.eprintfln("fxshape: could not write %s", harmonics_path)
+		} else {
+			fmt.printfln("  wrote %s", harmonics_path)
+		}
+	}
+}
