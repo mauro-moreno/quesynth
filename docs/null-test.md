@@ -7054,3 +7054,92 @@ Distinguishing those needs a better optimiser rather than more measurement, whic
 is worth saying plainly: the data is dense, matched and cross-validated, and it is
 the fitting that is short. ph1 and ph2 are ready to implement; ph3 and ph4 are
 not.
+
+> It was the search. Levenberg-Marquardt takes ph3 to 2.07 dB and ph4 to 2.43,
+> and finds the sections are coincident rather than staggered -- which collapses
+> the whole model to five numbers. See the next section.
+
+### The circuit, identified (2026-08-25)
+
+The random walk had left ph3 and ph4 unfinished at 3.87 and 5.35 dB rms, with the
+honest caveat that this did not distinguish a wrong model from a failed search.
+It was a failed search. Levenberg-Marquardt, written out in
+`tools/phaserfit.py` because there is no numpy here, takes the same data and the
+same model to **2.07 and 2.43 dB** -- level with ph1 and ph2.
+
+Two details in it earn their place. `g` is carried as a logistic so the search
+cannot walk it past one, where the loop stops converging and the cost function
+goes meaningless rather than merely large. And the Jacobian's corner columns
+reuse the phase already computed, subtracting one section's arctangent and adding
+the perturbed one, which is what makes a thirty-parameter fit tractable in plain
+Python.
+
+### What it converged on
+
+Freed, LM did not produce the staggered corners the earlier fitting had assumed.
+It produced **coincident** ones -- seven identical values at 249.58 Hz for ph3,
+twelve at 255.3 Hz for ph4 -- which is a cascade of identical sections, and a
+standard phaser topology rather than an exotic one.
+
+That is a much smaller model, and constraining the fit to it collapses thirty-odd
+parameters to five with no meaningful loss:
+
+```
+  corner        254.80 Hz     the sections, all at one frequency
+  high section 14740.2 Hz     one more, shared by every type
+  g              0.9630       feedback
+  d              0.5138       dry
+  w              0.5266       wet
+
+  ph1   2 sections   rms 2.05 dB   worst 5.69 dB
+  ph2   4            rms 1.96      worst 5.44
+  ph3   8            rms 2.07      worst 4.87
+  ph4  12            rms 2.43      worst 7.02
+                     joint rms 2.133 dB
+```
+
+**Five numbers and a section count reproduce four measured curves.** The section
+count is 2, 4, 8 and 12, and it is not fitted freely: it is what the free fits
+converged on, and it independently predicts the resonance counts. A chain of N
+first-order sections accumulates 180N degrees, and with positive feedback a
+resonance falls wherever the phase passes a multiple of 360 -- so N of 2, 4, 8
+and 12 gives 1, 2, 4 and 6 resonances above DC, which is exactly what the comb
+probe counted.
+
+The mixing numbers are also a check rather than three free dials. `d` and `w` are
+each about 0.52, and the four types were fitted individually before they were
+fitted together: their separate answers agreed at g around 0.96, d around 0.52
+and w around 0.53 before anything forced them to. A joint fit from random starts
+did *not* find this -- it stalled at 4.83 dB -- and only converged when seeded
+from the individual solutions, which is worth recording as the reason the search
+needed steering rather than more iterations.
+
+### Where the corner sits
+
+254.80 Hz is the corner at rest, at ctl1 = 0, and it is the parameter the LFO
+sweeps. It is not the resonance: ph1's single resonance sits at 2771 Hz, which is
+where two sections at 255 Hz have turned the phase through 360 degrees. That
+distinction is why the swept-band measurements and the static comb measurements
+looked like they disagreed for so long -- they were measuring different things,
+one the corner and one what the corner produces.
+
+### The rewrite's inputs, complete
+
+```
+  structure    N first-order allpass sections at one corner, plus one at
+               14.7 kHz, positive feedback, out = d*x + w*A(v), v = x + g*A(v)
+  sections     2, 4, 8, 12 for ph1 to ph4
+  level        g = 0.917*((level-87)/40)^1.76 above the threshold and zero below;
+               d near 0.81 throughout; w rising from zero to about 1.24
+  corner       rest 254.8 Hz; triangle in octaves; span 0.050 octaves per depth
+               step for ph2 to ph4 and 0.0238 for ph1; slewed, not assigned
+  rate         the existing law, confirmed at ctl2 40 to within 5%
+```
+
+One inconsistency is left standing rather than smoothed: the level fit put `d`
+near 0.81 and `w` up to 1.24 at level 127, while the circuit fit puts them at
+0.51 and 0.53. Both reproduce their own data. They differ because the level fit
+held ph1's *staggered* corners fixed -- the ones LM has now superseded -- so its
+`d` and `w` absorbed the difference between two chains. The level law's shape is
+unaffected, since the threshold and the zero below it come from `g`, but the two
+mixing numbers need one more pass with the corners that are now known.

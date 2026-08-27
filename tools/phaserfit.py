@@ -153,6 +153,142 @@ def fit_mix(meas, corners, seeds=6, iterations=30000):
     return best + (error(meas, phi, best[1], best[2], best[3], True),)
 
 
+# --------------------------------------------------------------- least squares
+
+# Levenberg-Marquardt, written out because there is no numpy here. The random
+# walk that preceded it stalled on the longer chains -- ph4 sat at 5.35 dB rms and
+# one ph3 run left a corner at 5e18 Hz, which is a section the search had switched
+# off rather than placed. LM took the same data to 2.4 and 2.1.
+#
+# Two details earn their place. `g` is carried as a logistic so the search cannot
+# walk it past one, where the feedback loop would not converge and the cost
+# function goes meaningless rather than merely large. And the Jacobian's corner
+# columns reuse the phase already computed, subtracting one section's arctangent
+# and adding the perturbed one, which is what makes a thirty-parameter fit
+# tractable in plain Python.
+
+G_MAX = 0.9995
+LC_LO, LC_HI = math.log(1.0), math.log(2.0e5)
+
+
+def sigmoid(u):
+    return G_MAX / (1.0 + math.exp(-u)) if u > -40 else 0.0
+
+
+def inv_sigmoid(g):
+    g = min(max(g, 1e-6), G_MAX - 1e-4)
+    return math.log(g / (G_MAX - g))
+
+
+def clamp_corner(lc):
+    return min(max(lc, LC_LO), LC_HI)
+
+
+def solve(a, b):
+    """Gaussian elimination with partial pivoting; None if singular."""
+    n = len(b)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-14:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        pv = m[col][col]
+        for r in range(n):
+            if r == col:
+                continue
+            fac = m[r][col] / pv
+            if fac == 0.0:
+                continue
+            for c in range(col, n + 1):
+                m[r][c] -= fac * m[col][c]
+    return [m[i][n] / m[i][i] for i in range(n)]
+
+
+def levenberg_marquardt(p, residual, iterations=200, corner_count=0):
+    """Minimise sum(residual(p)^2). Parameters below corner_count are log-corners."""
+    r = residual(p)
+    cost = sum(v * v for v in r)
+    lam = 1e-3
+    np_ = len(p)
+    for _ in range(iterations):
+        jac = []
+        for j in range(np_):
+            h = 1e-5 if j < corner_count else 1e-6
+            q = p[:]
+            q[j] += h
+            if j < corner_count:
+                q[j] = clamp_corner(q[j])
+            r2 = residual(q)
+            jac.append([(a - b) / h for a, b in zip(r2, r)])
+        m = len(r)
+        jtj = [[sum(jac[i][x] * jac[j][x] for x in range(m)) for j in range(np_)]
+               for i in range(np_)]
+        jtr = [sum(jac[i][x] * r[x] for x in range(m)) for i in range(np_)]
+        stepped = False
+        for _try in range(10):
+            a = [row[:] for row in jtj]
+            for i in range(np_):
+                a[i][i] += lam * max(jtj[i][i], 1e-12)
+            step = solve(a, [-v for v in jtr])
+            if step is None:
+                lam *= 10
+                continue
+            q = [p[i] + step[i] for i in range(np_)]
+            for i in range(corner_count):
+                q[i] = clamp_corner(q[i])
+            r2 = residual(q)
+            c2 = sum(v * v for v in r2)
+            if c2 < cost:
+                p, cost, r = q, c2, r2
+                lam = max(lam * 0.3, 1e-9)
+                stepped = True
+                break
+            lam *= 10
+            if lam > 1e12:
+                break
+        if not stepped:
+            break
+    return math.sqrt(cost / len(r)), p
+
+
+# ------------------------------------------------------- the identified circuit
+
+# What the fitting converged on: one corner, one high section, one set of mixing
+# numbers, and a section count per type. Five numbers for four measured curves.
+SECTIONS = {"ph1": 2, "ph2": 4, "ph3": 8, "ph4": 12}
+
+
+def circuit_db(freqs, sections, corner, high, g, d, w):
+    out = []
+    for f in freqs:
+        phi = -2.0 * sections * math.atan(f / corner) - 2.0 * math.atan(f / high)
+        cp, sp = math.cos(phi), math.sin(phi)
+        den = 1.0 - 2.0 * g * cp + g * g
+        re = d + w * (cp - g) / den
+        im = w * sp / den
+        out.append(10.0 * math.log10(max(re * re + im * im, 1e-30)))
+    return out
+
+
+def fit_circuit(curves):
+    """curves: {name: [(hz, db), ...]}. Returns corner, high, g, d, w."""
+    def residual(p):
+        corner = math.exp(clamp_corner(p[0]))
+        high = math.exp(clamp_corner(p[1]))
+        g, d, w = sigmoid(p[2]), p[3], p[4]
+        out = []
+        for name, meas in curves.items():
+            freqs = [f for f, _ in meas]
+            model = circuit_db(freqs, SECTIONS[name], corner, high, g, d, w)
+            out.extend(a - b for a, b in zip(model, [m for _, m in meas]))
+        return out
+
+    start = [math.log(253.0), math.log(15300.0), inv_sigmoid(0.96), 0.51, 0.53]
+    rms, p = levenberg_marquardt(start, residual, iterations=300, corner_count=2)
+    return rms, math.exp(p[0]), math.exp(p[1]), sigmoid(p[2]), p[3], p[4]
+
+
 def main(argv):
     if len(argv) < 3:
         print(__doc__)
@@ -190,6 +326,30 @@ def main(argv):
             rms, g, d, w, worst = fit_mix(meas, corners)
             print("   %4d   %7.4f  %7.4f  %7.4f   %5.2f   %5.2f"
                   % (lv, g, d, w, rms, worst))
+        return 0
+
+    if argv[1] == "circuit":
+        curves = {}
+        for name in ("ph1", "ph2", "ph3", "ph4"):
+            try:
+                curves[name] = load(argv[2] % name, count=60)
+            except OSError:
+                pass
+        if not curves:
+            print("no curves matched %s" % argv[2])
+            return 1
+        rms, corner, high, g, d, w = fit_circuit(curves)
+        print("  corner %.2f Hz   high section %.1f Hz   g %.4f   d %.4f   w %.4f"
+              % (corner, high, g, d, w))
+        print("  joint rms %.3f dB" % rms)
+        for name, meas in curves.items():
+            freqs = [f for f, _ in meas]
+            model = circuit_db(freqs, SECTIONS[name], corner, high, g, d, w)
+            e = [a - b for a, b in zip(model, [m for _, m in meas])]
+            print("  %s (%2d sections): rms %.2f dB  worst %.2f dB"
+                  % (name, SECTIONS[name],
+                     math.sqrt(sum(v * v for v in e) / len(e)),
+                     max(abs(v) for v in e)))
         return 0
 
     print(__doc__)
