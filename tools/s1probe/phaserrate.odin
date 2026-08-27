@@ -42,8 +42,8 @@ import "core:strings"
 // The envelope is sampled at four periods of the probe tone or one millisecond,
 // whichever is longer. Short enough to hold thirty points inside the fastest
 // sweep the law predicts.
-PHASER_RATE_MIN_FRAME_MS :: 1.0
-PHASER_RATE_TONE_PERIODS :: 4.0
+PHASER_RATE_MIN_FRAME_MS :: 0.25
+PHASER_RATE_TONE_PERIODS :: 2.0
 
 // A sweep has to repeat this many times inside the render before a period is
 // believed. Below it the answer is a fit to one and a bit cycles.

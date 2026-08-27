@@ -4355,3 +4355,41 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 		fmt.tprintf("a.d.1's high pass still takes %.1f dB at 131 Hz, so it will tilt the harmonics", mid_db),
 	)
 }
+
+@(test)
+test_effect_phaser_period_is_whole_control_blocks :: proc(t: ^testing.T) {
+	// Every sweep period the reference produces is a whole number of 512-sample
+	// blocks -- 40, 27, 17, 14, 13, 11, 10, 9, 8, 7 and 6 at ctl2 88 to 127, each
+	// measured within 0.02 of an integer on a held tone. The rate is rounded down
+	// to one that fits, so the quantity to check is the period, not the rate.
+	SR_LOCAL :: f32(48000.0)
+	per_block := SR_LOCAL / f32(dsp.EFFECT_PHASER_CONTROL_BLOCK)
+
+	for ctl2 in 0 ..= 127 {
+		demanded := dsp.effect_phaser_rate_hz(f32(ctl2) / 127.0)
+		used := dsp.effect_phaser_block_rate(demanded, SR_LOCAL)
+		blocks := per_block / used
+		off := blocks - math.round(blocks)
+		testing.expect(
+			t,
+			abs(off) < 1.0e-3,
+			fmt.tprintf("ctl2 %d: period is %.4f blocks, not a whole number", ctl2, blocks),
+		)
+		// Rounding the period up can only make the sweep slower, never faster.
+		testing.expect(
+			t,
+			used <= demanded * 1.0001,
+			fmt.tprintf("ctl2 %d: %.4f Hz used exceeds the %.4f Hz demanded", ctl2, used, demanded),
+		)
+	}
+
+	// The top of the knob is not a cap: ctl2 124 and 127 both demand a period
+	// between five and six blocks and both are served six, which is the 15.6 Hz
+	// that had been recorded as a ceiling.
+	top := per_block / dsp.effect_phaser_block_rate(dsp.effect_phaser_rate_hz(1.0), SR_LOCAL)
+	testing.expect(
+		t,
+		abs(top - 6.0) < 1.0e-3,
+		fmt.tprintf("ctl2 127 should sweep in 6 blocks, not %.3f", top),
+	)
+}

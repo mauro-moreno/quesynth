@@ -641,8 +641,8 @@ effect_comp_gain :: proc "contextless" (level: f32) -> f32 {
 // and it matters more than its size: the comparison render is a second and a
 // half, so a few per cent of rate is a few per cent of a cycle of phase error by
 // the end of it, and the phase is what the level metric sees.
-EFFECT_PHASER_MIN_RATE_HZ :: f32(0.02042)
-EFFECT_PHASER_RATE_OCTAVES :: f32(9.8493)
+EFFECT_PHASER_MIN_RATE_HZ :: f32(0.02160)
+EFFECT_PHASER_RATE_OCTAVES :: f32(9.7584)
 
 // The circuit, fitted to the measured response rather than guessed.
 //
@@ -736,6 +736,26 @@ EFFECT_PHASER_SPAN_UP_SHARE :: f32(0.4745)
 // midpoint, which is what an author writes and not what a fit stumbles into.
 EFFECT_PHASER_FEEDBACK_MAX :: f32(0.9747)
 EFFECT_PHASER_MIX_KNEE :: f32(64.0 / 127.0)
+
+// The sweep runs at control rate, one step per 512 samples, and the reference's
+// own block sets that number rather than the host's. Every period measured on a
+// held tone is a whole number of these: 40, 27, 17, 13, 10, 8 and 6 blocks at
+// ctl2 88 to 127, each within 0.02 of an integer.
+EFFECT_PHASER_CONTROL_BLOCK :: 512
+
+// The demanded rate, rounded down to one whose period is a whole number of
+// control blocks.
+effect_phaser_block_rate :: proc "contextless" (rate, sr: f32) -> f32 {
+	if rate <= 0 {
+		return rate
+	}
+	per_block := sr / f32(EFFECT_PHASER_CONTROL_BLOCK)
+	blocks := math.ceil(per_block / rate)
+	if blocks < 1 {
+		blocks = 1
+	}
+	return per_block / blocks
+}
 
 effect_phaser_feedback :: proc "contextless" (level: f32) -> f32 {
 	l := clamp32(level, 0, 1)
@@ -1061,6 +1081,7 @@ Effect :: struct {
 	corner_oct:    f32,
 	corner_rising: bool,
 	corner_set:    bool,
+	corner_tick:   int,
 }
 
 effect_reset :: proc "contextless" (e: ^Effect) {
@@ -1320,7 +1341,46 @@ effect_process :: proc "contextless" (
 			// Guarding it explicitly instead was tried and disabled the lower limit
 			// for good, which let the corner run away downward and cost 29 dB at the
 			// one setting where the widened span puts the rest point outside.
-			slew := 2.0 * p.phaser_span_oct * p.phaser_rate_hz / sr
+			// The rate is quantised so that a period is a whole number of control
+			// blocks, which is the one thing the held-tone probe reads directly:
+			// every period the reference produces is an integer number of them, 40,
+			// 27, 17, 13, 10, 8 and 6 at ctl2 88 to 127, each within 0.02 of an
+			// integer, and each the demanded period rounded up.
+			//
+			// Two other readings were tried and are wrong. Stepping the corner once
+			// per block cost 16 dB: at ctl2 96 a block is a quarter of an octave and
+			// the comb would jump that far in one sample. Turning at the first
+			// boundary past the limit instead is right in kind but accumulates -- the
+			// overshoot is carried into the next limb, which lengthens the one after,
+			// and the period settled two blocks long at every rate (30 blocks against
+			// the reference's 27, 20 against 17, 8 against 6).
+			//
+			// Rounding up is also what the top of the knob was: the rate does not
+			// stop climbing at 15.6 Hz because anything caps it, but because ctl2 124
+			// and 127 both demand a period between five and six blocks and both get
+			// six. And it explains the one pattern that had no reading as a law --
+			// the sweep runs wide at ctl1 28, 32 and 38 and not at 30, 34 or 36,
+			// which is no ordering in depth at all. At ctl2 127 the demand is 5.04
+			// blocks, four per cent above the tie, so a rate that varies with depth by
+			// under one per cent lands on either side of it and rounding turns that
+			// into a fifth of a period. The step is taken
+			// and the limit is tested at the same instant, so the corner turns
+			// wherever the block boundary finds it -- past the limit, not on it --
+			// and both the period and the excursion round up to what the boundary
+			// allows. It explains three measurements at once that had been recorded
+			// as separate defects: the period is always a whole number of blocks;
+			// the excursion runs wider than the band by the overshoot, measured at
+			// 1.208 where this predicts 1.19; and the rate stops climbing near 15.6
+			// Hz, which is not a cap but the top of the staircase, two limbs of
+			// three blocks.
+			//
+			// It also accounts for the one pattern that made no sense as a law. The
+			// widening appears at some depths and not others, alternating -- ctl1
+			// 28, 32 and 38 wide, 30, 34 and 36 not -- which is no ordering in depth
+			// at all. Here it needs none: the limit is where depth puts it, and
+			// whether a boundary lands just short of it or just past it turns over
+			// from one depth to the next.
+			slew := 2.0 * p.phaser_span_oct * effect_phaser_block_rate(p.phaser_rate_hz, sr) / sr
 			if e.corner_rising {
 				e.corner_oct += slew
 				if e.corner_oct >= top {

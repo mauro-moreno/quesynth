@@ -8744,3 +8744,147 @@ Normalised so state zero is neutral again, everything improves at once:
 The resonance-dependent correction survives intact -- across the knob at cutoff
 63 the spread falls from 3.8 dB to 0.5 -- and the effect unit returns to its own
 figures exactly, 3.02 dB mean over ten types.
+
+### The sweep is on a staircase (2026-08-27)
+
+The widening does not follow the level. Held at ctl2 127 and swept across the
+whole of it, the period does not move at all:
+
+```
+  ctl1 32, level  96 104 112 120 127    18.87 Hz at every one
+  ctl1 64, level  96 104 112 120 127    15.62 Hz at every one
+```
+
+So it follows depth. But a fine scan of depth does not partition either -- the
+wide settings are not a region, they alternate:
+
+```
+  ctl1   24     26     28     30     32     34     36     38     40     44
+        15.62  15.62  18.87  15.62  18.87  15.62  15.62  18.87  15.62  15.62
+```
+
+No law orders that. Two values, though, and only two, at every depth and every
+level: 53 ms and 64 ms. Two values is a quantiser.
+
+### What the two values are
+
+The probe's frame was the limit, not the reference. At note 108 the four-period
+floor makes a frame 0.96 ms, so a period is known to about a part in fifty --
+enough to separate 53 from 64 and not enough to say what either is. Shortening
+the frame to 0.24 ms, at note 120 and two periods, says exactly what they are:
+
+```
+  ctl1    28      30      32      64      96     127
+        5.016   6.002   5.016   6.002   6.002   4.992   x 512 samples
+```
+
+**The sweep period is a whole number of 512-sample blocks.** It holds across the
+knob as well as across depth, and it is not a coincidence of two values:
+
+```
+  ctl2      88     96    104    110    116    120    124    127
+  blocks  39.89  27.02  16.98  13.00  10.01   7.99   6.00   6.00
+```
+
+Every one within 0.02 of an integer. The two rate CSVs already on disk from the
+original fit say the same of ctl2 108 to 126 -- 14, 11, 10, 9, 8, 7, 6 -- which is
+thirteen settings measured on two instruments months apart, all integers.
+
+This corrects a retraction rather than a finding. Rendering at 256, 512 and 1024
+samples per call returned identical periods, and that was recorded as killing the
+idea that a block quantises the sweep. It kills only the host's block. The
+reference has its own, and the host cannot see it.
+
+### The rate cap and the widening were this all along
+
+Both dissolve. The rate does not stop climbing at 15.6 Hz because something caps
+it: ctl2 124 and 127 demand periods of 5.89 and 5.04 blocks and both are served
+six, and six blocks is 15.625 Hz. The excursion runs 1.208 wider than the law at
+those settings because the period does: 6/5.04 is 1.19.
+
+And the alternation with depth needs no ordering in depth. At ctl2 127 the demand
+is 5.04 blocks, four per cent above the tie between five and six. A rate that
+varies with depth by under one per cent -- which is below anything measured here
+-- lands on either side of that tie, and rounding turns a fraction of a per cent
+into a fifth of a period. That is why 28, 32 and 38 are wide and 30, 34 and 36
+are not.
+
+### Three readings, and the two that are wrong
+
+**Stepping the corner once per block** is the obvious reading and costs 16 dB. At
+ctl2 96 a block is a quarter of an octave, so the whole comb jumps that far in one
+sample; the spectral error on the four types goes from 2.63 dB to 15.3.
+
+**Turning at the first boundary past the limit** is right in kind and accumulates.
+The overshoot is carried into the next limb, which lengthens the one after it, and
+the period settles two blocks long at every rate -- 30 blocks against the
+reference's 27, 20 against 17, 8 against 6.
+
+**Rounding the rate so a period fits a whole number of blocks** is what the
+reference does. It reproduces the integers directly, and the ramp stays
+continuous, which the first reading shows it must be.
+
+### The law, refitted against integers
+
+An integer period is a far tighter constraint than a rate: N blocks pins the rate
+to `[93.75/N, 93.75/(N-1))`, which at ctl2 88 is a window three per cent wide. No
+pure exponential satisfies all thirteen, and that is worth stating plainly rather
+than fitting around -- the law has a shape error somewhere above ctl2 100, since
+104 and 112 pull opposite ways. The best it can do, held within five per cent of
+the anchor at ctl2 40 where the law was originally fitted:
+
+```
+  rate = 0.02160 * 2^(9.7584 * ctl2/127)        11 of 13 periods exact
+  rate = 0.02042 * 2^(9.8493 * ctl2/127)         8 of 13        (previous)
+```
+
+Measured back through the reference, ours and theirs now agree exactly at six of
+eight settings, and the two that miss are the 104 and 112 the fit predicted:
+
+```
+  ctl2      96   104   108   112   116   120   124   127
+  theirs    27    17    14    11    10     8     6     6
+  ours      27    18    14    12    10     8     6     6
+```
+
+### What it does not do is move the gate
+
+```
+  ph1..ph4 mean spectral, over the scan     1.74 dB, against 1.71 before
+  ph1..ph4 mean envelope, four settings     2.88 dB, against 2.80 before
+```
+
+Flat, and a hair worse. That is the honest result and it should be read for what
+it says about the instrument rather than about the change: before this, the sweep
+rate was wrong by up to twenty per cent at the top of the knob and the scan scored
+the same. **fxcompare cannot see the sweep rate.** A note is rendered, both
+engines are compared over the whole of it, and two sweeps that share no phase
+score alike whether their periods match or not.
+
+So the change is kept on the measurement it was made against -- the periods, which
+went from continuously wrong to exact at six of eight -- and not on the scan,
+which is silent on it. What the scan is still measuring at ctl2 127 is something
+else, and it is now the only phaser defect left that has no mechanism.
+
+### A postscript, from merging it late (2026-08-27)
+
+This change sat on its own branch while the distortion, filter and equaliser work
+went into main, and rebasing it on top of that gives it a gate it did not have at
+the time. The scan still barely moves -- 3.06 dB mean over the ten types against
+3.02, the four phasers a tenth of a decibel worse each -- but the **null** does,
+and the null is the measurement that actually cares whether two sweeps are in step:
+
+```
+   ctl1 64, ctl2 96      before     after
+   ph1                  -15.15 dB  -21.68
+   ph2                  -14.38     -20.35
+   ph3                   -3.36      -2.89
+   ph4                   -0.24      -1.25
+```
+
+Six decibels of cancellation on each of the two types whose comb is simple enough
+to line up at all. That is the same conclusion the section reached from the
+periods -- that fxcompare's spectral column cannot see a sweep rate -- arriving
+from the other side, and it is a better argument than the one made at the time.
+The periods themselves are unchanged by the rebase: six of eight exact, with the
+same two, ctl2 104 and 112, off by a single block.
