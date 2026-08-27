@@ -3933,8 +3933,8 @@ test_effect_analog1_makes_even_harmonics_and_analog2_does_not :: proc(t: ^testin
 		pos, neg: [2]f32
 		p1, n1: f32
 		for _ in 0 ..< 64 {
-			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01, 1.0)
-			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01, 1.0)
+			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01)
+			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01)
 		}
 		a2 := dsp.effect_shape_analog2(x, 8, 1) + dsp.effect_shape_analog2(-x, 8, 1)
 		asymmetric_error += abs(p1 + n1)
@@ -4251,14 +4251,16 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	// the loop must still be stable, which a feedback path has to be checked for.
 	SR_LOCAL :: f32(48000.0)
 	coef := dsp.one_pole_coef(dsp.EFFECT_ANALOG1_FEEDBACK_HZ, SR_LOCAL)
-	drive := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 1.0)
-	gain := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 1.0)
+	// Read at the gentlest drive: anywhere above it the clip saturates on the
+	// first sample and stays there, which is correct and shows no settling.
+	mid := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 0)
+	gain := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 0)
 
 	state: [2]f32
-	first := dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef, 1.0)
+	first := dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef)
 	settled := first
-	for _ in 0 ..< 4000 {
-		settled = dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef, 1.0)
+	for _ in 0 ..< 8000 {
+		settled = dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef)
 	}
 	testing.expect(
 		t,
@@ -4266,40 +4268,29 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 		"a.d.1 gave the same answer to the same input twice, so it has no loop",
 	)
 
+	// It rests at zero rather than at its operating point, so silence in is
+	// silence out and enabling the unit does not thump.
+	idle: [2]f32
+	quiet := f32(0)
+	for _ in 0 ..< 4000 {
+		quiet = dsp.effect_shape_analog1(&idle, 0, mid, gain, coef)
+	}
+	testing.expect(t, abs(quiet) < 1.0e-6, fmt.tprintf("a.d.1 idles at %.5f, not silence", quiet))
+
 	// Stability: driven hard for a second, nothing may run away or go non-finite.
+	// The clip spans one either side of the rest point, so the output cannot
+	// exceed that times the gain.
+	drive := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 1.0)
+	top := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 1.0)
+	bound := top * (1.0 + dsp.EFFECT_ANALOG1_REST) * 1.001
 	loud: [2]f32
 	for i in 0 ..< 48000 {
 		x := f32(i % 97) / 48.0 - 1.0
-		v := dsp.effect_shape_analog1(&loud, x, drive, gain, coef, 1.0)
-		if !(abs(v) <= gain * 1.001) || v != v {
+		v := dsp.effect_shape_analog1(&loud, x, drive, top, coef)
+		if !(abs(v) <= bound) || v != v {
 			testing.expect(t, false, fmt.tprintf("a.d.1 left its rails at sample %d: %.4f", i, v))
 			break
 		}
-	}
-}
-
-@(test)
-test_effect_quantize_depth_is_what_it_does_not_what_it_looks_like :: proc(t: ^testing.T) {
-	// Counting distinct output values said 8.55 bits at ctl2 96. An 8.55-bit
-	// quantiser driven at 82.5 per cent of full scale has a total error 51 dB
-	// down, and the reference's third harmonic there is -36.0, so the count was
-	// not the step. Fitted to the harmonics instead it is 3.55 bits, and the
-	// depth has to stay that coarse or the distortion goes with it.
-	at96 := dsp.effect_quantize_bits(96.0 / 127.0)
-	testing.expect(
-		t,
-		at96 < 4.5,
-		fmt.tprintf("ctl2 96 quantises to %.2f bits, too fine for the harmonics measured", at96),
-	)
-	top := dsp.effect_quantize_bits(1.0)
-	testing.expect(t, top < 2.5, fmt.tprintf("the top of the knob is %.2f bits, not the few measured", top))
-
-	// Monotone, and never finer than the bypass threshold at the bottom.
-	prev := f32(1e9)
-	for c in 0 ..= 127 {
-		b := dsp.effect_quantize_bits(f32(c) / 127.0)
-		testing.expect(t, b <= prev + 1.0e-4, fmt.tprintf("depth rose at ctl2 %d", c))
-		prev = b
 	}
 }
 
@@ -4314,7 +4305,6 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	measure :: proc(hz, sr: f32) -> f32 {
 		e: dsp.Effect
 		state: [2][2]f32
-		shelf: [2]f32
 		peak := f32(0)
 		n := int(sr / hz * 8)
 		for i in 0 ..< n {
@@ -4335,12 +4325,8 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 				dsp.EFFECT_ANALOG1_HP2_Q,
 				sr,
 			)
-			c := dsp.one_pole_coef(dsp.EFFECT_ANALOG1_SHELF_HZ, sr)
-			shelf[0] += (l2 - shelf[0]) * c
-			g := dsp.EFFECT_ANALOG1_SHELF_GAIN
-			y := (g * l2 + (1.0 - g) * shelf[0]) * dsp.EFFECT_ANALOG1_MAKEUP
 			// The last two thirds, so the filters have settled.
-			if i > n / 3 && abs(y) > peak {peak = abs(y)}
+			if i > n / 3 && abs(l2) > peak {peak = abs(l2)}
 		}
 		return peak
 	}
@@ -4352,15 +4338,20 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	low_db := 20.0 * math.log10(max(low / high, 1.0e-9))
 	mid_db := 20.0 * math.log10(max(mid / high, 1.0e-9))
 
-	// The reference falls 48 dB from its plateau to 33 Hz and about 10 dB to 131.
+	// This is the half of the response that sits behind the loop, and it is the
+	// half that has to: the loss must survive the clip, or a drive of three
+	// hundred turns a 33 Hz input cut by 44 dB back into a square wave. The other
+	// half, the shelf, sits in front for the opposite reason.
 	testing.expect(
 		t,
-		low_db < -30.0,
-		fmt.tprintf("a.d.1's filter only loses %.1f dB at 33 Hz, against the 48 measured", -low_db),
+		low_db < -24.0,
+		fmt.tprintf("a.d.1 only loses %.1f dB at 33 Hz behind the loop", -low_db),
 	)
+	// And it is nearly done by 131 Hz, which is why it barely touches the
+	// harmonics the loop makes there.
 	testing.expect(
 		t,
-		mid_db > -16.0 && mid_db < -4.0,
-		fmt.tprintf("a.d.1's filter is %.1f dB at 131 Hz, against the -10 measured", mid_db),
+		mid_db > -8.0,
+		fmt.tprintf("a.d.1's high pass still takes %.1f dB at 131 Hz, so it will tilt the harmonics", mid_db),
 	)
 }

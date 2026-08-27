@@ -8420,3 +8420,75 @@ at high drive ours loses 5 or 6 dB too much below 65 Hz, and at ctl1 0 it gives
 4 dB too little above 500 Hz because the loop is still compressing there. Both
 are the same loose end -- the loop's linear response is drive-dependent and the
 reference's is not -- and no fixed filter in front of it can take that out.
+
+### The loop's drive-dependent response (2026-08-27)
+
+The loose end left by the last section was that our loop's own response moves with
+the knob and the reference's does not. The cause is in one pair of brackets. The
+loop was written `drive * (x - G * s)`, so the feedback is multiplied by the drive
+too and the loop's own loss is `1 + drive * G` -- twenty decibels deeper at the top
+of the knob than the bottom. Written `drive * x - L * s` the loop gain is fixed,
+the response it shapes stops moving, and the drive still sets how hard the clip is
+worked. That is the fix; the rest of this section is what it broke.
+
+### Where the filter has to sit, which is not a choice
+
+With the loop's response fixed, the filter's placement stops being free, and
+both sides are forced by measurement:
+
+```
+                        harmonics   response at ctl1 127, 33 Hz
+   all in front           2.84 dB      +32.6 dB wrong
+   all behind             5.30          right by construction
+   loop supplies it       7.65          right, 0.71 dB
+   shelf front, HP behind 3.95          right, 0.61 dB
+```
+
+**The loss must survive the clip**, so it goes behind. In front of a drive of
+three hundred, a 33 Hz input cut by 44 dB is still large enough to clip, and the
+attenuation is simply undone -- ours came back 32.6 dB too loud at the bottom of
+the range, which is worse than the defect being fixed.
+
+**The tilt must not survive it**, so it goes in front. A shelf behind the clip
+multiplies every harmonic the loop makes, and the harmonic fit falls from 2.84 dB
+to 5.30.
+
+Split that way both hold at once, and the high pass is nearly done by 131 Hz so it
+barely touches the harmonics at all.
+
+### And the bias stops being a table
+
+The feedback servo holds the clip's input at `bias / (1 + L)`, which is 0.700 of
+the way to a rail 1.000 away. That offset is the asymmetry, and the hump in the
+even harmonics now falls out of it: small signals sit clear of both rails, middling
+ones clip the near one, and large ones clip both and come out square. The
+hand-made bias ramp of the previous section is gone.
+
+The loop is also offset so that rest is zero rather than the operating point, so
+silence in is silence out and enabling the unit does not thump.
+
+```
+   a.d.1 fundamental gain, ours less the reference
+                 33 Hz   46 Hz   65 Hz   93 Hz  131 Hz   523 Hz  2093 Hz
+   ctl1 0         -1.3    -1.5    -0.9    -0.2    +0.0     -2.7     -3.8
+   ctl1 64        +2.5    +1.4    +0.9    +0.6    -0.0     -4.3     -5.4
+   ctl1 127       +2.7    +1.5    +1.0    +0.6    -0.0     -4.4     -5.5
+```
+
+The worst low-frequency error falls from 5.9 dB to 2.7, and the two drives now sit
+on the same side of the reference rather than 4 dB apart in opposite directions.
+
+```
+   fxcompare, a.d.1        before     after
+   ctl1 32  ctl2 64         4.69 dB    3.66
+   ctl1 64  ctl2 96         4.53       2.14
+   ctl1 96  ctl2 64         3.60       5.26
+   ctl1 127 ctl2 96         4.72       5.12
+   envelope at 64/96        2.84       0.37
+   null at 64/96           -5.71     -15.26 at 32/64, -8.30 at 64/96
+```
+
+The section's mean is 3.02 dB. What is left is at the other end: above 500 Hz ours
+now runs 4 to 5 dB quiet at high drive, where the shelf in front is being clipped
+away rather than passed. That is the same trade seen in the table above, taken
+knowingly, and it is where the next pass should start.
