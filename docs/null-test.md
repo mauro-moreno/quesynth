@@ -7556,3 +7556,87 @@ have more teeth, and a comb swept at fifteen cycles a second is the hardest thin
 in this section to match. That is now the whole of the phaser's remaining error,
 and it is a dwell problem rather than a placement one: the resonances are in the
 right places at every setting measured.
+
+> **It was not the dwell.** Measured, the envelope distributions agree within a
+> per cent or two and both engines reach the same extremes. What was wrong is
+> that the sweep did not reach far enough down past the rate cap. See the last
+> section.
+
+### It was not the dwell (2026-08-27)
+
+The last section called the remaining error a dwell problem -- the resonances in
+the right places, the time spent at each of them wrong. Measured, that is not what
+it is.
+
+The dwell is fine. Holding a tone at 4186 Hz and taking the distribution of the
+envelope over a cycle, which needs no peak-picking and no spectrum, the two
+engines agree closely:
+
+```
+  fraction of the cycle above         +20 dB      +10        0
+  ctl2 96      reference / ours     6.8 / 7.6  25.3/26.2  41.8/41.0  %
+  ctl2 112                          8.0 / 8.8  26.4/26.3  40.7/41.2
+```
+
+and both reach the same extremes, -15.2 to +25 dB. There is no smearing to fix.
+
+### What it is
+
+The sweep does not reach far enough down, and only at the very top of the knob.
+Holding a tone at 2960 Hz instead -- near the bottom of the sweep:
+
+```
+  ctl2 112   reference -13.5 .. +10.7   ours -13.5 .. +9.0
+  ctl2 127   reference -13.5 .. +24.4   ours -13.6 .. +8.5
+```
+
+At 112 they agree. At 127 the reference's resonance plainly arrives at 2960 Hz --
++24.4 dB is its full height, and it spends 18.7 % of the cycle above +10 -- and
+ours never gets there at all.
+
+### The mechanism, and the setting that shows it
+
+The reference's rate is the same 15.62 Hz at ctl2 124 and at 127, since both are
+past the cap. Its response is not: at 2960 Hz it reads +7.82 dB at 124 and +21.40
+at 127. Same rate, same depth, different reach. So what grows above the cap is the
+sweep's **extent**, and it grows with how far past the cap the knob is asking to
+go -- at 124 the law exceeds the cap by under two per cent and there is no
+widening to see, at 127 by nineteen per cent and the sweep reaches an octave
+further down.
+
+That names the mechanism. The extent is how far the corner travels in half a
+period at the rate demanded, and it is the period that saturates, not the travel.
+Below the cap the two agree and the span is constant, which is what the depth
+measurements found; above it the period stops shrinking while the travel does not,
+so the sweep widens by exactly the ratio between them.
+
+### What it fixes
+
+```
+  ctl1 64, ctl2 127     ph1    ph2    ph3    ph4
+  before               1.96   7.88   6.78  11.37  dB
+  after                0.62   4.38   3.70   6.05
+  level error         -0.82  -0.94  -3.06  +6.88  ->  +0.19  +0.16  -1.63  +4.13
+```
+
+and at ctl1 96, ctl2 127 the four types go from 1.87, 10.97, 10.62 and 8.56 to
+0.80, 5.33, 6.19 and 5.12. Over the sixteen-row A/B the mean spectral error goes
+from 2.95 to **2.12 dB** and the mean level error from 1.37 to 1.26. Nothing below
+the cap moves at all, because the widening is exactly one there.
+
+### Where the phaser now stands
+
+From where this started -- an allpass chain summed with dry, making shallow dips
+where the reference makes a comb of resonances 25 dB tall, and no resonance at all
+in any frame of any setting -- it is now:
+
+```
+  static settings          0.00, 0.01, 0.06, 0.64 dB across the four types
+  swept, ctl2 <= 112       within about a decibel to four
+  swept, ctl2 127          0.62, 4.38, 3.70, 6.05
+  sixteen-row mean         2.12 dB spectral, 1.26 dB level
+```
+
+with the comb landing on the reference's to a fraction of a hertz at every static
+setting, and the factory bank byte-identical throughout, as it must be: no patch
+in it switches this unit on.

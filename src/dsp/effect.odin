@@ -585,6 +585,17 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // holds still across all of them.
 EFFECT_PHASER_MAX_RATE_HZ :: f32(15.625)
 
+// How much wider the sweep runs than its span, once the rate has saturated.
+effect_phaser_span_widening :: proc "contextless" (ctl2: f32) -> f32 {
+	demanded :=
+		EFFECT_PHASER_MIN_RATE_HZ *
+		math.pow(f32(2.0), EFFECT_PHASER_RATE_OCTAVES * clamp32(ctl2, 0, 1))
+	if demanded <= EFFECT_PHASER_MAX_RATE_HZ {
+		return 1
+	}
+	return demanded / EFFECT_PHASER_MAX_RATE_HZ
+}
+
 effect_phaser_rate_hz :: proc "contextless" (ctl2: f32) -> f32 {
 	rate :=
 		EFFECT_PHASER_MIN_RATE_HZ *
@@ -695,7 +706,20 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	p.comp_attack_s = effect_comp_attack_s(p.ctl2)
 	p.comp_makeup = effect_comp_makeup(p.ctl1)
 	p.phaser_rate_hz = effect_phaser_rate_hz(p.ctl2)
-	p.phaser_span_oct = EFFECT_PHASER_SPAN_OCTAVES * clamp32(p.ctl1, 0, 1)
+	// The sweep widens where the rate is capped.
+	//
+	// Below the cap the two agree and this is one. Above it the reference's sweep
+	// reaches lower than its span alone allows, and by more the further past the
+	// cap the knob is asked to go: at ctl2 124, where the law exceeds the cap by
+	// under two per cent, its response at 2960 Hz is the same +8 dB as at ctl2 112,
+	// and at 127, where the law asks for nineteen per cent more than the cap can
+	// give, it jumps to +21.4 -- at the same measured rate. The extent follows how
+	// far the corner would travel in half a period at the rate demanded, while the
+	// period is what saturates.
+	p.phaser_span_oct =
+		EFFECT_PHASER_SPAN_OCTAVES *
+		clamp32(p.ctl1, 0, 1) *
+		effect_phaser_span_widening(p.ctl2)
 	p.phaser_feedback = effect_phaser_feedback(p.level)
 	p.phaser_dry, p.phaser_wet = effect_phaser_mix(p.level)
 	p.phaser_stages = effect_phaser_stages(p.type)
