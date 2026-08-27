@@ -6753,3 +6753,118 @@ one measured. It rules out the simplest reading of "one corner scales the whole
 comb", and it says the fourth input the rewrite needs cannot be assumed from
 ph1's trajectory after all: whatever maps corner to comb has to reproduce these
 four spans as well as the four static combs.
+
+> **Half of this is wrong**, and the next section says which half. Those spans
+> were measured over whole renders, so they include the start-up transient, and
+> over broken tracks. Measured in steady state, ph2, ph3 and ph4 agree with each
+> other to within two per cent and do share one corner law. ph1 is genuinely the
+> odd one, at about half their sweep. The comb does scale rigidly after all.
+
+### The corner-to-comb map (2026-08-25)
+
+The previous section closed with a constraint: whatever maps corner to comb has
+to reproduce four static combs and four swept spans. Fitting it needs no
+knowledge of the corner at all, because the combs supply their own reference.
+
+### The comb scales rigidly
+
+If one corner drives a chain, every resonance is a function of that single
+parameter, so the ratios between them are fixed and the whole comb slides as a
+unit. Measured across a sweep, using only frames where the comb is intact -- the
+count equal to the type's own, so position and identity agree:
+
+```
+  spread of each resonance's ratio to the lowest, over a sweep
+  ph3, all below  7 kHz,  57 frames, 0.71 oct of sweep    1.8%  1.6%  6.8%
+  ph3, all below 10 kHz, 145 frames, 1.84 oct             1.4%  1.4% 16.8%
+  ph4, all below 10 kHz,  87 frames, 1.35 oct             2.4%  2.3%  2.2%  2.3% 11.3%
+```
+
+The inner resonances hold their ratios to within a couple of per cent while the
+corner moves more than an octave. The comb is rigid.
+
+The outermost one is the exception, and it is an artefact rather than a finding:
+its spread falls from 24.5 to 16.8 to 6.8 per cent as the analysis is restricted
+to lower and lower frames. A structural departure does not shrink when you look
+at a smaller part of the range; a resonance leaving the top of the analysed band
+does exactly that.
+
+### It is not a uniform chain
+
+A chain of N identical allpass sections with feedback puts its resonances where
+the accumulated phase crosses a multiple of pi, at
+`tan(theta_k)/tan(theta_0)` with `theta_k = 90(2k+1)/N` degrees. That family is a
+one-parameter fit against each measured comb, and it fails:
+
+```
+  ph2, 2 resonances    best N =  3.2   worst error   1.0%
+  ph3, 4 resonances    best N =  8.1   worst error  39.5%
+  ph4, 6 resonances    best N = 12.6   worst error  54.6%
+```
+
+ph2 fits because two points and one parameter always will. ph3 and ph4 do not fit
+at all, so the sections are **staggered** -- at different corner frequencies --
+rather than identical. That is what an analogue phaser does, and it is why the
+comb's spacing is uneven.
+
+### The map, then, is the ratios themselves
+
+With the comb rigid and the sections staggered, the map has no closed form to
+recover: it is a fixed set of ratios per type, and those are read directly off
+the static comb, where nothing is moving and the measurement is exact.
+
+```
+  ph1   1
+  ph2   1   15.53
+  ph3   1    2.452    5.817   52.47
+  ph4   1    2.227    3.879    6.682   14.12   100.2
+```
+
+### The corner's own sweep, and one type that does not share it
+
+The remaining question is how far the corner moves per step of depth. Taking the
+lowest resonance of each type as the reference -- it sits low enough that
+frequency and the analogue prototype agree there, so no warping enters:
+
+```
+  span of the lowest resonance, steady state, octaves
+  ctl1     ph1      ph2      ph3      ph4
+     8    0.194    0.392    0.399    0.411
+    24    0.554    1.180    1.212    1.203
+    48    1.142    2.362    2.417    2.436
+  per step 0.0238   0.0491   0.0503   0.0508
+```
+
+**ph2, ph3 and ph4 share one law**, 0.050 octaves per step, agreeing with each
+other to within two per cent at every depth. That is the answer to the question
+the tracker raised: their sweeps do follow a single corner law, and the earlier
+suggestion that they did not came from spans measured through the start-up
+transient and through broken tracks.
+
+**ph1 does not.** It sweeps 0.0238 octaves per step, close to half, at every one
+of five depths. Converting to the analogue prototype, where its resonance sits
+high enough for the warping to matter, narrows the gap but does not close it:
+1.281 octaves against 2.438 at ctl1 48, a factor of 1.90.
+
+That is left as measured rather than explained. It is a clean, repeatable factor
+of about two between one type and the other three, and the obvious readings --
+that ph1's single section is modulated half as hard, or that its resonance is not
+where the others' reference is -- are not distinguishable from four combs.
+
+### What the rewrite now has
+
+```
+  structure     an allpass chain with feedback, sections staggered, one
+                resonance per section pair: 1, 2, 4 and 6 for ph1 to ph4
+  feedback      parameter 81:  0.9491 * (level/127)^3.84, within 0.05 dB
+  comb          rigid, at the measured ratios above
+  corner        centre fixed per type; span 0.050 octaves per depth step for
+                ph2 to ph4 and 0.0238 for ph1; triangle in octaves; slewed
+                rather than assigned; parked at the rest point at depth zero
+  rate          the existing law, now confirmed at ctl2 40 to within 5%
+```
+
+Every input the rewrite needs is measured. What remains before writing it is the
+one thing measurement cannot supply: a topology that produces staggered sections
+in these particular ratios, which is a design decision to be gated against the
+combs above rather than a further reading.
