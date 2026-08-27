@@ -7739,8 +7739,12 @@ corner rests at, so that a descending resonance reads as a rising response:
   as a cycle 0.062   0.062   0.062   0.062
 ```
 
-Four rates, one number to three decimals. The phase at note-on is fixed, not the
-time, which is what makes it a property of the LFO rather than of the note.
+Four rates, one number to three decimals.
+
+> **That reading is wrong**, and the correction is in the last section: 0.062 is
+> when a descending resonance crosses the tone it was measured with, which is a
+> fixed fraction of a cycle for any tone. The constant survives as a fit; its
+> meaning does not.
 
 ### Why the obvious version of this was wrong
 
@@ -7770,3 +7774,65 @@ One outlier: ph2 at ctl1 127, ctl2 32 still reads -17.89 dB of level error where
 its spectral error is 3.11. Its timbre is right and its level is not, at one
 setting, and the rest of that row is now within a few decibels. Everything else is
 either under a decibel or accounted for above.
+
+### The ph2 outlier: the band is not symmetric (2026-08-27)
+
+ph2 at ctl1 127, ctl2 32 read 17.89 dB of level error against 3.11 dB of
+spectral -- its timbre right and its loudness not. Chasing it corrected an
+assumption and left the outlier standing, so both are recorded.
+
+### Where the error is, and where it is not
+
+Held tones locate it. At 2093 Hz the two engines differ by 2.49 dB across the
+comparison window; at **130.8 Hz**, which is the note `fxcompare` actually
+renders, they differ by 17.87 -- the whole of it. At full depth ph2's lowest
+resonance sweeps down to about 130 Hz, so the probe's own tone sits exactly where
+that resonance arrives, and a resonance this sharp landing 7 Hz off a tone is the
+difference between +24 dB and almost nothing.
+
+### The band reaches further down than up
+
+Inverting the circuit on the reference's resonances gives the corner band at seven
+depths, and fitting one centre with two slopes rather than one:
+
+```
+  down 0.02615 octaves per step, up 0.02361, centre 1333.5 Hz
+  worst edge error 0.072 octaves, against 0.179 for the symmetric form
+```
+
+At ctl1 127 that puts the bottom at 133.4 Hz against 133.3 measured, where
+assuming symmetry put it at 140.7. It is a small correction and it is worth
+having on its own account -- over six scanned settings the mean spectral error
+goes from 2.52 to 2.39 dB, with ctl1 127, ctl2 96 going from 2.83 to 1.97 and
+ctl1 64, ctl2 127 from 3.36 to 3.21.
+
+It did not fix ph2. At ctl2 32 the render is a sixth of one sweep, so the corner
+never reaches the band's edge inside it and where that edge sits cannot matter.
+
+### And a correction to the last section
+
+The 0.062 of a cycle measured there is **not the LFO's phase at note-on**, which
+is what it was taken for. It is when a descending resonance crosses the tone the
+measurement was made with, and that is a fixed fraction of a cycle for any tone,
+because the corner's speed is proportional to the rate: the distance is fixed, so
+the time scales with the period and the fraction does not move. Four rates
+agreeing to three decimals was arithmetic, not evidence about phase.
+
+What the corner actually does is descend to the bottom of its band and turn there.
+The reference's resonance bottoms at 2010, 2015 and 2014 Hz at ctl2 32, 40 and 48
+-- the same frequency, at three different times -- and 2011 Hz is where the
+steady-state inversion puts that edge.
+
+The value 0.062 survives anyway, because it is still the best of the ones tried:
+against mean spectral errors of 4.31, 4.23 and 3.78 dB for descents of half,
+a quarter and 0.15 of a cycle, it gives **2.39**. It is kept as a fitted constant
+with its meaning corrected, rather than as the phase it is not.
+
+### What is left of it
+
+ph2 at ctl1 127, ctl2 32 still reads -17.89 dB. The mechanism is visible: the
+reference's resonance crosses 130.8 Hz at 734 ms and keeps descending, and this
+engine's has already turned at 543 ms and is climbing away. Making the descent
+longer reaches that crossing and costs more everywhere else than it gains there.
+So the first limb after a note is longer in the reference than any single phase
+reproduces, and what governs its length is not yet measured.

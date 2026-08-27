@@ -456,7 +456,7 @@ EFFECT_PHASER_CORNER_REST_HZ :: f32(254.61)
 // transient recorded in the null test -- the corner slews from where it rests up
 // into the band, taking 14 seconds at the shallowest depth and none at all at the
 // deepest, where the band already contains the rest point.
-EFFECT_PHASER_CORNER_CENTRE_HZ :: f32(1271.0)
+EFFECT_PHASER_CORNER_CENTRE_HZ :: f32(1333.5)
 
 // The sweep's width: 0.050 octaves per step of the depth knob.
 //
@@ -468,7 +468,23 @@ EFFECT_PHASER_CORNER_CENTRE_HZ :: f32(1271.0)
 // the corner's rate; the others' lowest resonances sit low, where the response is
 // still linear, and track the corner one for one. Doubling this corner moves
 // ph1's resonance 0.505 octaves.
-EFFECT_PHASER_SPAN_OCTAVES :: f32(6.35)
+EFFECT_PHASER_SPAN_OCTAVES :: f32(6.320)
+
+// The sweep is not symmetric about its centre: it reaches further down than up,
+// 0.02615 octaves per step against 0.02361.
+//
+// Assuming symmetry cost one setting badly. ph2's lowest resonance follows the
+// corner, and at full depth it lands near 130 Hz -- which is the note fxcompare
+// renders. A symmetric band puts the corner's bottom at 140.7 Hz where the
+// reference's is at 133.3, and a resonance that sharp, 7 Hz off a tone, is the
+// difference between +24 dB and almost nothing: 17.9 dB of level error at that
+// one setting while its timbre was within 3.
+//
+// Fitted against the corner bands recovered by inverting the circuit on the
+// reference's own resonances at seven depths, one shared centre and two slopes
+// put every edge within 0.072 octaves, against 0.179 for the symmetric form, and
+// the bottom at ctl1 127 at 133.4 Hz against 133.3 measured.
+EFFECT_PHASER_SPAN_UP_SHARE :: f32(0.4745)
 
 // What parameter 81 does, which is two different things either side of its
 // midpoint and neither of them a level.
@@ -952,9 +968,10 @@ effect_process :: proc "contextless" (
 			// A square target and a rate limit, which is a triangle -- and is also
 			// why the first excursion from the rest position takes longer than a
 			// limb. Both fall out of one mechanism rather than being two.
-			half := 0.5 * p.phaser_span_oct
+			up := p.phaser_span_oct * EFFECT_PHASER_SPAN_UP_SHARE
+			down := p.phaser_span_oct - up
 			centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
-			target := e.lfo_phase < 0.5 ? centre + half : centre - half
+			target := e.lfo_phase < 0.5 ? centre + up : centre - down
 			slew := 2.0 * p.phaser_span_oct * p.phaser_rate_hz / sr
 			if e.corner_oct < target {
 				e.corner_oct = min(e.corner_oct + slew, target)
