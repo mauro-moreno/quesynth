@@ -345,16 +345,51 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // forty, so its corner is not this loop's corner and something else is blocking
 // the bottom. The harmonics at 131 Hz are right and the shape of the response is
 // not, which is recorded rather than papered over.
+// The response, measured where the loop is straight, and it is not the loop's.
+//
+// A feedback loop is a high pass in its own right, and its loss is set by the
+// loop gain -- so if a.d.1's bottom end were the loop's doing it would deepen as
+// the knob drives the loop harder. It does not move at all:
+//
+//   ctl1        0     64    127
+//   33 Hz   -40.9  -37.2  -37.4 dB
+//   65 Hz   -18.2  -15.8  -15.9
+//   131 Hz   -2.6   -3.1   -3.1
+//
+// So it is a fixed filter. Measured at fourteen frequencies it is the shared
+// two-pole high pass with one more two-pole section on top and a shelf: about
+// 23 dB per octave below 90 Hz, a shoulder at -2.5 dB from 116 to 147 Hz, then a
+// climb of some three dB per octave to a plateau of +7.2 dB. Fitted with the
+// shared section held at its own measured value it lands within 0.20 dB at every
+// one of the fourteen. Written as one feedback loop instead it reaches 0.71 dB at
+// best, so the loop is not what shapes it and the two are separate in series.
+EFFECT_ANALOG1_HP2_HZ :: f32(23.7)
+EFFECT_ANALOG1_HP2_Q :: f32(0.186)
+// A one-pole shelf, as a gain plus what a low pass at its pole leaves behind:
+// (1 + s/wz)/(1 + s/wp) is exactly G + (1 - G) * lowpass(wp), with G = wp/wz.
+EFFECT_ANALOG1_SHELF_HZ :: f32(864.0)
+EFFECT_ANALOG1_SHELF_GAIN :: f32(864.0 / 153.0)
+EFFECT_ANALOG1_MAKEUP :: f32(0.4672)
+
 EFFECT_ANALOG1_LOOP_GAIN :: f32(1.0)
 EFFECT_ANALOG1_FEEDBACK_HZ :: f32(80.0)
-EFFECT_ANALOG1_BIAS :: f32(1.0)
+// The bias is what makes a.d.1 asymmetric, and it cannot be fixed. At the top of
+// the knob it sits at the clip threshold, which is what half-wave rectifies the
+// signal and puts the even harmonics there. At the bottom the reference is very
+// nearly straight -- its third harmonic is 45.9 dB down at ctl1 0 -- so a bias at
+// the threshold there would clip a signal that should pass, and it is the reason
+// ctl1 0 never fitted better than 10 dB. It fades with the drive instead.
+EFFECT_AD1_BIAS :: [14]f32 {
+	0.1000, 0.1500, 0.2200, 0.3200, 0.4500, 0.6000, 0.7500,
+	0.9000, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000,
+}
 EFFECT_AD1_DRIVE :: [14]f32 {
-	0.7288, 0.7288, 0.7288, 1.2000, 1.7927, 2.1000, 2.4199,
-	4.4093, 8.0342, 10.8451, 19.7610, 36.0069, 48.6042, 65.6088,
+	0.8862, 0.8862, 0.8862, 1.4592, 2.1799, 2.5536, 2.9426,
+	5.3617, 9.7696, 13.1876, 24.0294, 43.7844, 59.0987, 79.7803,
 }
 EFFECT_AD1_GAIN :: [14]f32 {
-	0.4537, 0.4537, 0.4537, 0.5000, 0.5531, 0.5800, 0.6000,
-	0.6104, 0.4945, 0.4773, 0.4673, 0.4555, 0.4479, 0.4502,
+	0.9666, 0.5877, 0.4847, 0.3479, 0.3907, 0.4579, 0.4738,
+	0.4613, 0.4565, 0.4550, 0.4536, 0.4527, 0.4524, 0.4522,
 }
 
 // The unit's own response, measured where its curve is straight.
@@ -957,6 +992,7 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	case .Analog_1:
 		p.drive = effect_ad_table(EFFECT_AD1_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD1_GAIN, p.ctl1)
+		p.shape_bias = effect_ad_table(EFFECT_AD1_BIAS, p.ctl1)
 	case .Analog_2:
 		p.drive = effect_ad_table(EFFECT_AD2_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD2_GAIN, p.ctl1)
@@ -1000,6 +1036,10 @@ Effect :: struct {
 	ad_highpass: [2][2]f32,
 	// a.d.1's feedback loop: two poles of the output, per channel.
 	ad1_loop:    [2][2]f32,
+	// and the response after it: a second two-pole high pass of its own, and the
+	// low pass the shelf is built from.
+	ad1_highpass: [2][2]f32,
+	ad1_shelf:    [2]f32,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
 	// The decimator: the value being held and how much of the step is left.
@@ -1042,9 +1082,9 @@ effect_reset :: proc "contextless" (e: ^Effect) {
 // integrated, and the feedback is two poles of the output.
 effect_shape_analog1 :: proc "contextless" (
 	state: ^[2]f32,
-	x, drive, gain, coef: f32,
+	x, drive, gain, coef, bias: f32,
 ) -> f32 {
-	v := drive * (x - EFFECT_ANALOG1_LOOP_GAIN * state[1]) + EFFECT_ANALOG1_BIAS
+	v := drive * (x - EFFECT_ANALOG1_LOOP_GAIN * state[1]) + bias
 	y := clamp32(v, -1, 1)
 	state[0] += (y - state[0]) * coef
 	state[1] += (state[0] - state[1]) * coef
@@ -1115,9 +1155,38 @@ effect_process :: proc "contextless" (
 
 	switch p.type {
 	case .Analog_1:
+		// The response comes first: what the loop distorts is what the filter has
+		// already shaped. Putting it after the loop instead was tried and is wrong
+		// -- the harmonics it generates would then be tilted twice, and the loop
+		// cannot fit them behind it (4.49 dB against 2.51 in front).
+		wl, wr = effect_ad_highpass(
+			&e.ad_highpass,
+			wl,
+			wr,
+			EFFECT_AD_HIGHPASS_HZ,
+			EFFECT_AD_HIGHPASS_Q,
+			sr,
+		)
+		wl, wr = effect_ad_highpass(
+			&e.ad1_highpass,
+			wl,
+			wr,
+			EFFECT_ANALOG1_HP2_HZ,
+			EFFECT_ANALOG1_HP2_Q,
+			sr,
+		)
+		shelf := one_pole_coef(EFFECT_ANALOG1_SHELF_HZ, sr)
+		e.ad1_shelf[0] += (wl - e.ad1_shelf[0]) * shelf
+		e.ad1_shelf[1] += (wr - e.ad1_shelf[1]) * shelf
+		e.ad1_shelf[0] = flush_denormal(e.ad1_shelf[0])
+		e.ad1_shelf[1] = flush_denormal(e.ad1_shelf[1])
+		sg := EFFECT_ANALOG1_SHELF_GAIN
+		wl = (sg * wl + (1.0 - sg) * e.ad1_shelf[0]) * EFFECT_ANALOG1_MAKEUP
+		wr = (sg * wr + (1.0 - sg) * e.ad1_shelf[1]) * EFFECT_ANALOG1_MAKEUP
+
 		coef := one_pole_coef(EFFECT_ANALOG1_FEEDBACK_HZ, sr)
-		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef)
-		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef)
+		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.shape_bias)
+		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.shape_bias)
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Analog_2:

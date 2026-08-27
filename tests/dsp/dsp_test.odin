@@ -3933,8 +3933,8 @@ test_effect_analog1_makes_even_harmonics_and_analog2_does_not :: proc(t: ^testin
 		pos, neg: [2]f32
 		p1, n1: f32
 		for _ in 0 ..< 64 {
-			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01)
-			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01)
+			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01, 1.0)
+			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01, 1.0)
 		}
 		a2 := dsp.effect_shape_analog2(x, 8, 1) + dsp.effect_shape_analog2(-x, 8, 1)
 		asymmetric_error += abs(p1 + n1)
@@ -4255,10 +4255,10 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	gain := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 1.0)
 
 	state: [2]f32
-	first := dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef)
+	first := dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef, 1.0)
 	settled := first
 	for _ in 0 ..< 4000 {
-		settled = dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef)
+		settled = dsp.effect_shape_analog1(&state, 0.5, drive, gain, coef, 1.0)
 	}
 	testing.expect(
 		t,
@@ -4270,7 +4270,7 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	loud: [2]f32
 	for i in 0 ..< 48000 {
 		x := f32(i % 97) / 48.0 - 1.0
-		v := dsp.effect_shape_analog1(&loud, x, drive, gain, coef)
+		v := dsp.effect_shape_analog1(&loud, x, drive, gain, coef, 1.0)
 		if !(abs(v) <= gain * 1.001) || v != v {
 			testing.expect(t, false, fmt.tprintf("a.d.1 left its rails at sample %d: %.4f", i, v))
 			break
@@ -4301,4 +4301,66 @@ test_effect_quantize_depth_is_what_it_does_not_what_it_looks_like :: proc(t: ^te
 		testing.expect(t, b <= prev + 1.0e-4, fmt.tprintf("depth rose at ctl2 %d", c))
 		prev = b
 	}
+}
+
+@(test)
+test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
+	// The defect this fixes: a.d.1's loop lost about a decibel at 33 Hz where the
+	// reference loses forty. The loss is not the loop's -- it does not move when
+	// the knob drives the loop harder, reading -40.9, -37.2 and -37.4 dB at ctl1
+	// 0, 64 and 127 -- so it is a fixed filter in front, and this checks the
+	// filter is there and steep.
+	SR_LOCAL :: f32(48000.0)
+	measure :: proc(hz, sr: f32) -> f32 {
+		e: dsp.Effect
+		state: [2][2]f32
+		shelf: [2]f32
+		peak := f32(0)
+		n := int(sr / hz * 8)
+		for i in 0 ..< n {
+			x := math.sin(TAU_LOCAL * hz * f32(i) / sr)
+			l, r := dsp.effect_ad_highpass(
+				&state,
+				x,
+				x,
+				dsp.EFFECT_AD_HIGHPASS_HZ,
+				dsp.EFFECT_AD_HIGHPASS_Q,
+				sr,
+			)
+			l2, _ := dsp.effect_ad_highpass(
+				&e.ad1_highpass,
+				l,
+				r,
+				dsp.EFFECT_ANALOG1_HP2_HZ,
+				dsp.EFFECT_ANALOG1_HP2_Q,
+				sr,
+			)
+			c := dsp.one_pole_coef(dsp.EFFECT_ANALOG1_SHELF_HZ, sr)
+			shelf[0] += (l2 - shelf[0]) * c
+			g := dsp.EFFECT_ANALOG1_SHELF_GAIN
+			y := (g * l2 + (1.0 - g) * shelf[0]) * dsp.EFFECT_ANALOG1_MAKEUP
+			// The last two thirds, so the filters have settled.
+			if i > n / 3 && abs(y) > peak {peak = abs(y)}
+		}
+		return peak
+	}
+	TAU_LOCAL :: f32(6.283185307179586)
+
+	low := measure(32.7, SR_LOCAL)
+	mid := measure(130.8, SR_LOCAL)
+	high := measure(2093.0, SR_LOCAL)
+	low_db := 20.0 * math.log10(max(low / high, 1.0e-9))
+	mid_db := 20.0 * math.log10(max(mid / high, 1.0e-9))
+
+	// The reference falls 48 dB from its plateau to 33 Hz and about 10 dB to 131.
+	testing.expect(
+		t,
+		low_db < -30.0,
+		fmt.tprintf("a.d.1's filter only loses %.1f dB at 33 Hz, against the 48 measured", -low_db),
+	)
+	testing.expect(
+		t,
+		mid_db > -16.0 && mid_db < -4.0,
+		fmt.tprintf("a.d.1's filter is %.1f dB at 131 Hz, against the -10 measured", mid_db),
+	)
 }

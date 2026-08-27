@@ -8351,3 +8351,72 @@ that the model each was written on is the wrong family, and the measurements to
 say what the right one is are not in hand for any of them. That is a better place
 than the section was in -- it had four shapes chosen from their names and no
 reading against any of them -- but it is not the section finished.
+
+### a.d.1's bottom end (2026-08-27)
+
+The loop was left with a defect stated rather than fixed: its own low-frequency
+loss is about a decibel where the reference measures forty. Whose loss it is has
+a direct test, because a feedback loop is a high pass in its own right and its
+loss is set by the loop gain -- so if the bottom end were the loop's, driving the
+loop harder would deepen it. It does not move:
+
+```
+   ctl1        0     64    127
+   33 Hz   -40.9  -37.2  -37.4 dB
+   65 Hz   -18.2  -15.8  -15.9
+   131 Hz   -2.6   -3.1   -3.1
+```
+
+So it is a fixed filter, and the loop is not what shapes it. Measured at fourteen
+frequencies at ctl1 0, where the unit is straight, it is about 23 dB per octave
+below 90 Hz, a shoulder at -2.5 dB from 116 to 147 Hz, then a climb of some three
+dB per octave to a plateau of +7.2 dB. Fitted as the shared two-pole high pass
+with one more two-pole section and a shelf, it lands within **0.20 dB** at every
+one of the fourteen. Written as a single feedback loop instead it reaches 0.71 dB
+at best, which is the same answer from the other side: two things in series.
+
+### Which side of the loop it sits on
+
+The harmonics decide it, and they are unambiguous. Behind the loop the same fit
+reaches 2.51 dB; in front of it, 4.49. A filter after the shaper would tilt the
+harmonics it generates a second time, and the loop cannot absorb that.
+
+The reading that seemed to rule the filter out was that at 33 Hz, where a filter
+in front leaves the loop almost nothing to work with, the reference still shows
+its second harmonic only 11.3 dB below its fundamental. That is not evidence
+against it. The bias sits at the clip threshold, so a signal of any size is
+half-wave rectified and the ratio holds however small it gets.
+
+### What it took beyond adding the filter
+
+Two things, both of which the first attempt got wrong and the measurements
+caught.
+
+**The filter must supply only what the loop does not.** Fitted against the whole
+measured response it double-counts, because the loop tilts the band too: ours
+then over-attenuated 33 Hz by 5 dB and under-delivered 2 kHz by the same. Fitted
+against the response less the loop's own, the two together land within about a
+decibel and a half across the range.
+
+**The bias cannot be fixed.** At the top of the knob it belongs at the clip
+threshold, which is what puts the even harmonics there. At the bottom the
+reference is very nearly straight -- its third harmonic is 45.9 dB down at ctl1 0
+-- and a bias at the threshold clips a signal that should pass. That is why ctl1
+0 never fitted better than 10 dB. It fades with the drive now.
+
+```
+   a.d.1 fundamental gain, ours less the reference
+                33 Hz   46 Hz   65 Hz   93 Hz  131 Hz  523 Hz  2093 Hz
+   ctl1 0        -1.6    -1.9    -1.0    -0.1    +0.0    -3.5     -4.3
+   ctl1 64       -5.9    -5.4    -3.1    +0.6    -0.0    -0.7     -1.6
+```
+
+Against a loss that was simply absent before. The scan is unmoved -- 4.53 dB at
+ctl1 64 against 4.46 -- and the level error at that setting is +0.05 dB against
++0.75, with the section's mean at 3.26 dB.
+
+What is left is the loop's own contribution, which the reference's does not have:
+at high drive ours loses 5 or 6 dB too much below 65 Hz, and at ctl1 0 it gives
+4 dB too little above 500 Hz because the loop is still compressing there. Both
+are the same loose end -- the loop's linear response is drive-dependent and the
+reference's is not -- and no fixed filter in front of it can take that out.
