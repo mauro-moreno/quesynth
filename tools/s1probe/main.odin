@@ -1011,6 +1011,7 @@ main :: proc() {
 		prvals := "48,64,80,96,104,112,120,127"
 		prcsv := ""
 		prblock := COMPARE_BLOCK_DEFAULT
+		prenv := ""
 		{
 			i := 0
 			for i < len(rest) {
@@ -1036,6 +1037,10 @@ main :: proc() {
 				case "--block":
 					if !parse_probe_int(rest, i + 1, &prblock) {usage()}
 					i += 2
+				case "--envelope":
+					if i + 1 >= len(rest) {usage()}
+					prenv = rest[i + 1]
+					i += 2
 				case "--values":
 					if i + 1 >= len(rest) {usage()}
 					prvals = rest[i + 1]
@@ -1060,6 +1065,7 @@ main :: proc() {
 			f64(prsec),
 			prcsv,
 			prblock,
+			prenv,
 		)
 	case "phasercomb":
 		pctype, pcctl1, pcctl2, pclevel := 6, 0, 16, 127

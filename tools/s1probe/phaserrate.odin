@@ -141,6 +141,7 @@ cmd_phaserrate :: proc(
 	seconds: f64,
 	csv_path: string,
 	block: int = COMPARE_BLOCK_DEFAULT,
+	envelope_path: string = "",
 ) {
 	pristine, work := probe_open_chunk(dll)
 	defer delete(pristine)
@@ -207,6 +208,19 @@ cmd_phaserrate :: proc(
 			}
 			return 1000.0 / (f64(lag) * frame_ms), c
 		}
+		if envelope_path != "" && len(values) == 1 {
+			b := strings.builder_make()
+			defer strings.builder_destroy(&b)
+			fmt.sbprintln(&b, "ms,reference_db,ours_db")
+			n := min(len(ref_env), len(our_env))
+			for i in 0 ..< n {
+				fmt.sbprintfln(&b, "%.4f,%.6f,%.6f", f64(i) * frame_ms, ref_env[i], our_env[i])
+			}
+			if os.write_entire_file(envelope_path, transmute([]u8)strings.to_string(b)) == nil {
+				fmt.printfln("  wrote %s", envelope_path)
+			}
+		}
+
 		ref_rate, ref_r := read(ref_env, min_lag, max_lag, frame_ms)
 		our_rate, our_r := read(our_env, min_lag, max_lag, frame_ms)
 
