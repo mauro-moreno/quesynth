@@ -146,8 +146,34 @@ EFFECT_QUANTIZE_MIN_BITS :: f32(6.0)
 // 16-bit setting from costing a rounding step on every sample.
 EFFECT_QUANTIZE_BYPASS_BITS :: f32(15.0)
 
+// The decimator's level count, measured off the rendered samples.
+//
+// The old law was a straight line from 16 bits to 6. The reference's is a curve:
+// it barely moves over the first quarter of the knob, falls fastest through the
+// middle and flattens again at the top, so the line ran as much as 1.6 bits
+// coarse around ctl2 32. Distinct output levels counted at nine settings, over
+// the 82.5 per cent of full scale the probe tone covers:
+//
+//   ctl2      0     16     32     48     64     80     96    112    127
+//   levels 64410  56392  33690  13816   4301   1214    308    105     73
+//   bits   16.25  16.06  15.32  14.03  12.35  10.53   8.55   6.99   6.47
+EFFECT_QUANTIZE_KNOTS :: [9]f32{0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 127.0}
+EFFECT_QUANTIZE_BITS :: [9]f32 {
+	16.25, 16.06, 15.32, 14.03, 12.35, 10.53, 8.55, 6.99, 6.47,
+}
+
 effect_quantize_bits :: proc "contextless" (ctl2: f32) -> f32 {
-	return lerp32(EFFECT_QUANTIZE_MAX_BITS, EFFECT_QUANTIZE_MIN_BITS, clamp32(ctl2, 0, 1))
+	knots := EFFECT_QUANTIZE_KNOTS
+	bits := EFFECT_QUANTIZE_BITS
+	c := clamp32(ctl2, 0, 1) * 127.0
+	for i in 1 ..< len(knots) {
+		if c <= knots[i] {
+			span := knots[i] - knots[i - 1]
+			t := span > 0 ? (c - knots[i - 1]) / span : 0
+			return bits[i - 1] + (bits[i] - bits[i - 1]) * t
+		}
+	}
+	return bits[len(bits) - 1]
 }
 
 // The compressor's attack, in seconds, for `ctl2` on 0..1.

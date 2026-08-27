@@ -8160,3 +8160,52 @@ too steep to bin. It is at least as likely to be memory, and a memoryless curve
 of any shape is then the wrong family -- which is why fitting a better one made
 it worse. d.d. is left as it was, with the decimator, which has not been looked
 at and is now the section's worst at 19.2 dB.
+
+### The decimator, which is also not what it says (2026-08-27)
+
+With d.d. reverted the decimator is the section's worst at 19.2 dB, and it is the
+one type here whose two controls give up their laws immediately. Read off the
+rendered samples rather than a spectrum:
+
+```
+   ctl1     64     80     96    112    127      hold, in samples
+   hold     55     71     87    103    118
+```
+
+One sample per step, `hold = ctl1 - 9`, which is exactly the law this engine
+already had. The second control is the level count, and there the old law -- a
+straight line from 16 bits to 6 -- is wrong in the middle by as much as 1.6 bits:
+
+```
+   ctl2      0     16     32     48     64     80     96    112    127
+   levels 64410  56392  33690  13816   4301   1214    308    105     73
+   bits   16.25  16.06  15.32  14.03  12.35  10.53   8.55   6.99   6.47
+   line   16.00  14.74  13.48  12.22  11.00   9.70   8.44   7.18   6.00
+```
+
+It barely moves over the first quarter of the knob, falls fastest through the
+middle and flattens at the top. Replaced with the measured curve, which the gate
+is indifferent to -- 19.4 dB against 19.2 -- because the level count is not what
+is wrong.
+
+This is what is wrong, and it is the same shape of finding as d.d.'s. At ctl1 0,
+where nothing is held and the quantiser is working alone, the reference's third
+harmonic comes back at -36.0 dB and ours at -76.5:
+
+```
+   ctl1 0, ctl2 96      h2     h3     h4     h5     h6     h7
+   reference         -69.8  -36.0  -58.4  -36.9  -63.7  -38.6
+   ours              -79.6  -76.5  -85.4  -76.6  -85.7  -76.6
+```
+
+Forty decibels apart on the same measured step size. And the reference's is not
+merely larger than ours, it is larger than the arithmetic allows: a quantiser of
+8.55 bits driven by a sine at 82.5 per cent of full scale has a total error 51 dB
+down, and a single harmonic 15 dB above that is not a rounding error of any step
+size. Whatever the decimator does to the signal, quantising it is not all of it.
+
+So three of the four types in this section are now measured well enough to say
+that the model each was written on is the wrong family, and the measurements to
+say what the right one is are not in hand for any of them. That is a better place
+than the section was in -- it had four shapes chosen from their names and no
+reading against any of them -- but it is not the section finished.
