@@ -620,10 +620,6 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // holds still across all of them.
 EFFECT_PHASER_MAX_RATE_HZ :: f32(15.625)
 
-// How far before the turn the sweep is when a note starts. See the note where it
-// is used; 0.062 of a cycle, measured at four rates.
-EFFECT_PHASER_START_PHASE :: f32(0.062)
-
 // How much wider the sweep runs than its span, once the rate has saturated.
 effect_phaser_span_widening :: proc "contextless" (ctl2: f32) -> f32 {
 	demanded :=
@@ -790,9 +786,12 @@ Effect :: struct {
 	// The corner, in octaves above one hertz, because it is slewed rather than
 	// assigned and a ramp in octaves is what the measurement found. Starts at the
 	// rest position, which is what produces the start-up transient.
-	corner_oct: f32,
-	corner_set: bool,
-	lfo_phase:  f32,
+	// The corner, in octaves above one hertz, with the direction it is travelling
+	// and whether it has been placed yet. There is no LFO phase: the sweep turns
+	// on reaching a limit, not on a clock.
+	corner_oct:    f32,
+	corner_rising: bool,
+	corner_set:    bool,
 }
 
 effect_reset :: proc "contextless" (e: ^Effect) {
@@ -939,22 +938,21 @@ effect_process :: proc "contextless" (
 
 	case .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
 		rest_oct := math.log2(EFFECT_PHASER_CORNER_REST_HZ)
+		up := p.phaser_span_oct * EFFECT_PHASER_SPAN_UP_SHARE
+		down := p.phaser_span_oct - up
+		centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
+		top := centre + up
+		bottom := centre - down
+
 		if !e.corner_set {
 			e.corner_oct = rest_oct
-			// Where in its cycle the sweep is when the note arrives.
-			//
-			// Measured, and it is a phase rather than a time. Holding a tone at
-			// 2093 Hz -- just below the 2771 Hz resonance the corner rests at -- the
-			// reference's response climbs as a resonance descends onto it and peaks
-			// at 0.543, 0.355, 0.231 and 0.097 seconds at ctl2 32, 40, 48 and 64.
-			// Against periods of 8.77, 5.70, 3.71 and 1.57 seconds those are
-			// 0.062 of a cycle, all four, to three decimals.
-			//
-			// So the corner sets off downward and turns a sixteenth of a cycle
-			// later. Starting at the top of the ramp instead sends it the wrong way
-			// for the whole of the first limb, which is the largest part of what the
-			// level metric sees on a render shorter than one sweep.
-			e.lfo_phase = 1.0 - EFFECT_PHASER_START_PHASE
+			// Which way it sets off, and the reference decides it by where the rest
+			// point falls relative to the band rather than by a phase. Below the
+			// band it climbs in; inside it, it descends. Held at 2489 Hz, just under
+			// the 2771 Hz resonance the corner rests at, the reference's response
+			// falls at ctl1 32 and 64 and rises at 96 and 127 -- up, up, down, down,
+			// which is exactly where the rest point crosses the band's lower edge.
+			e.corner_rising = rest_oct < bottom
 			e.corner_set = true
 		}
 
@@ -962,21 +960,38 @@ effect_process :: proc "contextless" (
 			// Depth at zero: no modulation, and the corner sits where it rests.
 			e.corner_oct = rest_oct
 		} else {
-			e.lfo_phase += p.phaser_rate_hz / sr
-			e.lfo_phase -= math.floor(e.lfo_phase)
-
-			// A square target and a rate limit, which is a triangle -- and is also
-			// why the first excursion from the rest position takes longer than a
-			// limb. Both fall out of one mechanism rather than being two.
-			up := p.phaser_span_oct * EFFECT_PHASER_SPAN_UP_SHARE
-			down := p.phaser_span_oct - up
-			centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
-			target := e.lfo_phase < 0.5 ? centre + up : centre - down
+			// The sweep is a relaxation oscillator, not a clocked one: the corner
+			// ramps at a fixed rate and turns when it arrives at a limit rather than
+			// when a phase says so.
+			//
+			// In steady state the two are the same -- the ramp covers the span in
+			// half a period either way -- and they differ in one place, which is the
+			// first limb after a note. The corner starts at its rest point, which is
+			// not on the band's edge, so what it has to travel is not a limb's
+			// worth. A clock turns it around on time; a limit turns it around when it
+			// arrives; and the reference does the second, its resonance still
+			// descending at 734 ms where a clocked sweep had turned at 543.
+			//
+			// Nothing here guards against snapping to a limit from outside the band,
+			// because choosing the starting direction above makes it impossible: a
+			// corner resting below the band sets off upward and does not meet the
+			// lower limit until it has been to the top, by which time it is inside.
+			// Guarding it explicitly instead was tried and disabled the lower limit
+			// for good, which let the corner run away downward and cost 29 dB at the
+			// one setting where the widened span puts the rest point outside.
 			slew := 2.0 * p.phaser_span_oct * p.phaser_rate_hz / sr
-			if e.corner_oct < target {
-				e.corner_oct = min(e.corner_oct + slew, target)
+			if e.corner_rising {
+				e.corner_oct += slew
+				if e.corner_oct >= top {
+					e.corner_oct = top
+					e.corner_rising = false
+				}
 			} else {
-				e.corner_oct = max(e.corner_oct - slew, target)
+				e.corner_oct -= slew
+				if e.corner_oct <= bottom {
+					e.corner_oct = bottom
+					e.corner_rising = true
+				}
 			}
 		}
 

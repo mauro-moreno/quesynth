@@ -7836,3 +7836,72 @@ engine's has already turned at 543 ms and is climbing away. Making the descent
 longer reaches that crossing and costs more everywhere else than it gains there.
 So the first limb after a note is longer in the reference than any single phase
 reproduces, and what governs its length is not yet measured.
+
+> Nothing governs it: the sweep is a relaxation oscillator and the limb is
+> however long the journey to the limit takes. See the last section.
+
+### What sets the first limb: nothing does (2026-08-27)
+
+The question was what governs the length of the first sweep after a note, since
+no single starting phase reproduced it. The answer is that the sweep is not
+clocked at all. **It is a relaxation oscillator**: the corner ramps at a fixed
+rate and turns when it arrives at a limit, not when a phase says so.
+
+In steady state the two are indistinguishable -- the ramp covers the span in half
+a period either way, which is why every measurement of the settled sweep fitted a
+clocked triangle. They differ in exactly one place, and it is the place that was
+left over: the corner starts at its rest point, which is not on the band's edge,
+so the first limb is however long the journey happens to be.
+
+### Two things it predicts that were already measured
+
+**The turn is at a fixed frequency, not a fixed time.** The reference's resonance
+bottoms at 2010, 2015 and 2014 Hz at ctl2 32, 40 and 48 -- the same place at three
+different times, which is what a limit does and a clock cannot.
+
+**The starting direction follows the depth.** Held at 2489 Hz, just under the
+2771 Hz resonance the corner rests at, the reference's response falls at ctl1 32
+and 64 and rises at 96 and 127: up, up, down, down. That is exactly where the rest
+point crosses the band's lower edge, and it falls out of the model rather than
+being put in -- a corner resting below its band climbs into it, and one resting
+inside descends.
+
+### What it fixes
+
+```
+  config              before   after
+  ctl1 127, ctl2  32    3.69    1.29  dB, mean spectral over the four types
+  ctl1  64, ctl2  64    1.26    0.67
+  ctl1  32, ctl2  64    1.77    0.81
+  ctl1  96, ctl2  32    2.45    0.96
+  ctl1 127, ctl2  96    1.97    1.96
+  ctl1  64, ctl2 127    3.21    3.18
+  ctl1   0, ctl2  64    0.18    0.18
+```
+
+**2.39 to 1.48 dB** over the six swept settings, with the static one unmoved as it
+must be. The ph2 outlier this started from goes from 3.10 dB spectral and -17.89
+level to **0.88 and -8.25**, and at ctl1 64, ctl2 64 the four types now read 0.08,
+0.08, 1.08 and 1.44 dB with level errors under a third of a decibel.
+
+The clocked sweep's starting phase, and the 0.062 fitted into it, are gone: there
+is no phase left to start.
+
+### Two mistakes on the way, both mine
+
+Turning the corner back **from outside** the band snaps it to the edge in one
+sample -- a 22 dB step in the first millisecond at the depths where the rest point
+lies outside. Guarding against that by testing where the rest point is disabled
+the lower limit permanently, which let the corner run away downward and cost 29 dB
+at the one setting whose widened span puts the rest point outside the band. The
+guard is not needed at all once the starting direction is chosen properly: a
+corner resting below its band sets off upward and cannot meet the lower limit
+until it has been to the top, by which time it is inside.
+
+### What is left
+
+ph2 and ph3 at ctl1 127, ctl2 32 still read -8.25 and -7.19 dB of level error
+against spectral errors of 0.88 and 2.05 -- half of what they were, at the one
+setting where the render covers a sixth of a sweep and almost all of what it
+covers is the first limb. Everything else is now within about two decibels
+spectral and a decibel of level.
