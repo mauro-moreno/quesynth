@@ -7535,6 +7535,10 @@ reference's own readings move with that: at 128-frame blocks ctl2 127 reads
 still across all of them, which is what makes it a property of the plugin rather
 than of the measurement.
 
+> **The block reading is wrong**, and the last section shows why: rendered at 256,
+> 512 and 1024 frames to the block the periods do not move at all. They sat near
+> multiples of 512 by coincidence and were never tested against the block.
+
 ### What it fixes
 
 At ctl2 127, spectral error across the four types:
@@ -7956,3 +7960,50 @@ is not depth alone, since 32, 80 and 127 run uncapped while 16, 24, 48, 64, 96 a
 The static column is exact at every depth. The two slowest rate columns are at or
 under one decibel everywhere except ctl1 127, and ctl2 96 is under 2.63 throughout.
 Level errors outside the last column and outside ctl1 127 are under 1.25 dB.
+
+### What separates the two sets: they are one phenomenon (2026-08-27)
+
+At ctl2 127 the reference runs at 15.6 Hz at some depths and 18.9 at others. Three
+things are now settled about that, and the third makes the first two into one
+question instead of two.
+
+**It is not the measurement.** The split holds at every probe note: ctl1 32 reads
+18.69, 18.50, 18.87 and 18.87 Hz at notes 96, 102, 108 and 114, and ctl1 64 reads
+15.39, 15.42, 15.62 and 15.62.
+
+**It is not block quantisation**, which is what the note beside the constant said
+it was. Rendered at 256, 512 and 1024 frames to the block the periods do not move
+at all -- 53.0 ms at ctl1 32 and 64.0 at ctl1 64, the same three times over -- and
+53.0 ms is not a whole number of 1024-sample blocks. The earlier reading came from
+comparing periods that happened to be near multiples of 512 and never testing
+whether they followed the block. They do not.
+
+**The rate difference and the band widening are the same thing.** Measured at both
+rates:
+
+```
+  ctl1 32   ctl2  96   band 4978..7040 Hz   0.50 octaves
+            ctl2 127        4978..7040      0.50      -- unchanged
+  ctl1 64   ctl2  96        3520..8372      1.25
+            ctl2 127        2960..8372      1.50      -- wider
+```
+
+Where the sweep widens it also slows, and by the same factor: 64.0 ms against
+53.0 is 1.208, and the widening implemented for the top of the rate knob is 1.206.
+That is what a relaxation oscillator does -- the corner ramps at a fixed rate, so a
+longer journey is a longer cycle -- and it means there is one question here, not
+two. Not "why does the rate cap at some depths" and "how much does the span
+widen", but **why does the sweep widen at some depths and not others**.
+
+### What that leaves
+
+Widening at ctl1 16, 24, 48, 64, 96 and 112; not at 32, 80 and 127. No ordering,
+no periodicity that six samples can establish, and it is not the note, the block
+or the rate. This engine widens at every depth, which is right at six of the nine
+measured and wrong at three, and the error it leaves is the 4.87 and 7.03 dB in
+the ctl2 127 column at ctl1 32 and 127 -- the two depths where the reference does
+not widen and this engine does.
+
+The next thing to vary is the one thing held fixed throughout: every rate here was
+measured at level 127. If the widening turns out to follow the feedback rather
+than the depth, that would explain an ordering in ctl1 that does not exist.

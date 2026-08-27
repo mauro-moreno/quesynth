@@ -620,11 +620,17 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // it is wrong, 4.74 dB mean across that column against 5.66 without it, and
 // removing it inverts which depths are right rather than improving them.
 //
-// Only the cap is implemented. The block quantisation under it is real but it is
-// not ours to reproduce: it would tie the sound to the host's buffer size, and the
-// reference's own readings move with that too -- at 128-frame blocks ctl2 127
-// reads 16.95 Hz where 256, 512 and 1024 all read 15.62. The cap is the part that
-// holds still across all of them.
+// The block quantisation this once claimed is not there. Rendered at 256, 512 and
+// 1024 frames to the block the periods do not move -- 53.0 ms at ctl1 32 and 64.0
+// at ctl1 64, the same three times over -- and 53.0 ms is not a whole number of
+// 1024-sample blocks. They sat near multiples of 512 by coincidence.
+//
+// What the cap really is: the sweep widens at some depths and not at others, and
+// where it widens it also slows by the same factor, 1.208 against the 1.206
+// applied below. A relaxation oscillator ramping at a fixed rate takes longer over
+// a longer journey, so capping the rate and widening the span are one behaviour
+// seen twice. Why it widens at ctl1 16, 24, 48, 64, 96 and 112 but not at 32, 80
+// and 127 is not known, and this engine widens at all of them.
 EFFECT_PHASER_MAX_RATE_HZ :: f32(15.625)
 
 // How much wider the sweep runs than its span, once the rate has saturated.
