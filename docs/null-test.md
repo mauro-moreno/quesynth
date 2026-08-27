@@ -7905,3 +7905,54 @@ against spectral errors of 0.88 and 2.05 -- half of what they were, at the one
 setting where the render covers a sixth of a sweep and almost all of what it
 covers is the first limb. Everything else is now within about two decibels
 spectral and a decibel of level.
+
+### Checking again: it is one column (2026-08-27)
+
+Scanning both controls at five depths and four rates, the phaser's spectral error,
+averaged over the four types:
+
+```
+  ctl1 \ ctl2      32      64      96     127
+      0          0.18    0.18    0.18    0.18
+     32          0.30    0.81    0.59    4.87
+     64          0.26    0.67    2.63    3.18
+     96          0.96    0.82    1.76    3.86
+    127          1.29    2.40    1.96    7.03
+```
+
+Everything outside the last column is 2.63 dB or under, and eleven of the sixteen
+swept cells are under one. The remaining error is the top step of the rate knob,
+and one level error left over at ctl1 127, ctl2 32.
+
+### What is wrong there is the rate, and it is not a cap
+
+The saturation recorded earlier -- 15.62 Hz from ctl2 124 upward -- was measured at
+ctl1 64 and taken to be a property of the rate knob. It is not. At ctl2 127 the
+reference's rate depends on the **depth**:
+
+```
+  ctl1     8    16    24    32    48    64    80    96   112   127
+  rate  16.1  15.6  15.6  18.9  15.9  15.6  18.9  15.6  15.6  18.9  Hz
+```
+
+Two values and no pattern in between. Both are solid readings -- the envelope's
+peaks are countable by eye, alternating gaps of 18 and 46 ms at ctl1 64, summing
+to the 64 ms of 15.62 Hz, and 20 and 33 ms at ctl1 127, summing to the 53 ms of
+18.87, which is the uncapped law to two decimals.
+
+Removing the cap confirms it from the other side, and inverts which depths are
+right: ctl1 32 and 127 improve from 4.87 and 7.03 dB to 1.56 and 3.00, and ctl1 64
+and 96 worsen from 3.18 and 3.86 to 8.76 and 9.33. Exactly the four depths whose
+measured rate says so.
+
+The cap is kept because it is right at more depths than it is wrong -- 4.74 dB
+mean across the column against 5.66 without it -- and it is recorded as what it
+is: a fit to the commoner of two behaviours, not a law. What decides between them
+is not depth alone, since 32, 80 and 127 run uncapped while 16, 24, 48, 64, 96 and
+112 do not, and nothing measured so far separates those two sets.
+
+### And what is not wrong
+
+The static column is exact at every depth. The two slowest rate columns are at or
+under one decibel everywhere except ctl1 127, and ctl2 96 is under 2.63 throughout.
+Level errors outside the last column and outside ctl1 127 are under 1.25 dB.

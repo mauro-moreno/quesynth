@@ -613,6 +613,13 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // reference's sweep advances once per block and cannot go faster than six of them
 // to a cycle.
 //
+// The cap is a fit to the commoner of two behaviours rather than a law. Measured
+// across depth at ctl2 127 the reference runs at 15.62 Hz at ctl1 16, 24, 48, 64,
+// 96 and 112 and at 18.87 -- the uncapped law -- at 32, 80 and 127, and nothing
+// measured so far separates those two sets. Capping is right at more depths than
+// it is wrong, 4.74 dB mean across that column against 5.66 without it, and
+// removing it inverts which depths are right rather than improving them.
+//
 // Only the cap is implemented. The block quantisation under it is real but it is
 // not ours to reproduce: it would tie the sound to the host's buffer size, and the
 // reference's own readings move with that too -- at 128-frame blocks ctl2 127
