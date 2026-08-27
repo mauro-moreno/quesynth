@@ -562,9 +562,34 @@ effect_phaser_stages :: proc "contextless" (type: Effect_Type) -> int {
 // last third, and no amount of output gain reproduces that.
 // ---------------------------------------------------------------------------
 
+// The top of the rate knob, where the exponential stops.
+//
+// The law was fitted from ctl2 48 to 112 and extrapolated above that, and the
+// extrapolation is wrong: the reference's sweep does not keep accelerating. Read
+// with an instrument that does not need a spectrum -- the envelope of a held tone,
+// autocorrelated, which is what `phaserrate` does -- it saturates:
+//
+//   ctl2      108    112    116    118    120    122    124    126    127
+//   law      6.81   8.42  10.40  11.56  12.85  14.28  15.88  17.65  18.60  Hz
+//   measured 6.71   8.55   9.35  10.42  11.76  13.33  15.62  15.62  15.62
+//
+// 15.62 Hz is 48000/3072, and every period below the cap is an integer number of
+// 512-sample blocks -- 14, 11, 10, 9, 8, 7 and then 6, which is the floor. So the
+// reference's sweep advances once per block and cannot go faster than six of them
+// to a cycle.
+//
+// Only the cap is implemented. The block quantisation under it is real but it is
+// not ours to reproduce: it would tie the sound to the host's buffer size, and the
+// reference's own readings move with that too -- at 128-frame blocks ctl2 127
+// reads 16.95 Hz where 256, 512 and 1024 all read 15.62. The cap is the part that
+// holds still across all of them.
+EFFECT_PHASER_MAX_RATE_HZ :: f32(15.625)
+
 effect_phaser_rate_hz :: proc "contextless" (ctl2: f32) -> f32 {
-	return EFFECT_PHASER_MIN_RATE_HZ *
+	rate :=
+		EFFECT_PHASER_MIN_RATE_HZ *
 		math.pow(f32(2.0), EFFECT_PHASER_RATE_OCTAVES * clamp32(ctl2, 0, 1))
+	return min(rate, EFFECT_PHASER_MAX_RATE_HZ)
 }
 
 // ----------------------------------------------------------------- parameters

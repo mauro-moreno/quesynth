@@ -7467,6 +7467,9 @@ So the error sits on top of an extrapolation, in a region where the existing
 instruments cannot resolve the thing being extrapolated. Fitting a special case
 there would be fitting to the least reliable numbers in the section.
 
+> An instrument that does not need a spectrum settles it: the rate **saturates at
+> 15.62 Hz**, which is six 512-sample blocks. See the last section.
+
 ### What is not wrong
 
 ph4 is the worst type in the A/B and its comb is not the reason. Sweeping it and
@@ -7481,3 +7484,75 @@ range:
 
 The structure tracks. What is left is where the corner goes at the top of the rate
 knob, and how fast it goes there.
+
+### An instrument for the rate, and the cap it found (2026-08-27)
+
+The phaser's remaining error sat at the top of the rate knob, on an extrapolation
+that could not be checked because both existing instruments need a spectrum --
+and resolving a 16 Hz comb takes a 341 ms window, which at ctl2 127 is longer
+than the whole sweep period. Tracking the resonance's trajectory returned
+15.56 Hz there, autocorrelating the spectrogram returned 5.21, and the law said
+18.6. Three numbers, no agreement.
+
+### A rate does not need a spectrum
+
+Hold one tone inside the swept band and its amplitude rises and falls once per
+sweep. An envelope can be sampled as finely as you like -- at 4 kHz, four periods
+is one millisecond, so a 64 ms sweep is sixty points rather than a fifth of one
+window.
+
+The first phaser instrument in this project was a held tone and it failed,
+counting how often the level crossed its own mean; with several features sweeping
+there are several crossings per cycle, so the count moved with the feature count
+and the sweep range as much as with the rate. **Counting was the mistake, not the
+tone.** Autocorrelating the envelope identifies no feature at all: whatever shape
+the envelope has, it repeats once per sweep, and the lag where it best matches
+itself is the period. Both guards from the older rate probe come with it -- the
+earliest strong maximum rather than the tallest, against the octave error, and a
+result at either search bound reported as unresolvable rather than as a number.
+
+Its control is the range where the rate is already known. Against the law's 0.67,
+1.55, 3.61 and 8.42 Hz at ctl2 64, 80, 96 and 112 it reads **0.64, 1.50, 3.44 and
+8.44**.
+
+### What it found
+
+```
+  ctl2      108    112    116    118    120    122    124    126    127
+  law      6.81   8.42  10.40  11.56  12.85  14.28  15.88  17.65  18.60  Hz
+  measured 6.71   8.55   9.35  10.42  11.76  13.33  15.62  15.62  15.62
+```
+
+The sweep **stops accelerating at 15.62 Hz**. That is 48000/3072, and it is not a
+coincidence: every period below the cap is an integer number of 512-sample blocks
+-- 14, 11, 10, 9, 8, 7 and then 6, which is the floor. The reference's LFO
+advances once per block and cannot manage fewer than six blocks to a cycle.
+
+Only the cap is implemented. The quantisation under it is real but it is not ours
+to reproduce, because it would tie the sound to the host's buffer size -- and the
+reference's own readings move with that: at 128-frame blocks ctl2 127 reads
+16.95 Hz where 256, 512 and 1024 all read 15.62. The cap is the part that holds
+still across all of them, which is what makes it a property of the plugin rather
+than of the measurement.
+
+### What it fixes
+
+At ctl2 127, spectral error across the four types:
+
+```
+              ph1    ph2    ph3    ph4
+  before     4.19   9.54   9.01  11.71  dB
+  after      1.96   7.88   6.78  11.37
+```
+
+and over the sixteen-row A/B the mean goes from 3.35 to **2.95 dB**. The factory
+bank is untouched, as it must be: no patch in it switches the unit on.
+
+### What is left
+
+ph2, ph3 and ph4 still read 8 to 11 dB at the top of the rate knob, where ph1
+reads 2. Those are the types with four, eight and twelve sections, so their combs
+have more teeth, and a comb swept at fifteen cycles a second is the hardest thing
+in this section to match. That is now the whole of the phaser's remaining error,
+and it is a dwell problem rather than a placement one: the resonances are in the
+right places at every setting measured.
