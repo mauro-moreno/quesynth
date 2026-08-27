@@ -428,12 +428,19 @@ EFFECT_PHASER_CORNER_REST_HZ :: f32(254.61)
 // Where the sweep is centred, in the corner's own terms.
 //
 // Not the rest position, and the gap is measured rather than tidied away: the
-// corner sits at its rest frequency with the depth at zero and sweeps about the
-// moment the knob leaves it. That discontinuity is what produces the start-up
+// corner sits at its rest frequency with the depth at zero and sweeps about this
+// one the moment the knob leaves it.
+//
+// Both this and the span are read by inverting the circuit on the reference's own
+// resonances rather than by assuming the resonance is the corner -- which is what
+// the earlier reading did, and it is why ph1 appeared to sweep half as far as the
+// other types. Inverted, the seven measured depths give a centre of 1272, 1266,
+// 1275, 1271, 1271, 1283 and 1162 Hz and a span of 0.0516, 0.0500, 0.0506, 0.0504,
+// 0.0510, 0.0499 and 0.0492 octaves per step. That discontinuity is what produces the start-up
 // transient recorded in the null test -- the corner slews from where it rests up
 // into the band, taking 14 seconds at the shallowest depth and none at all at the
 // deepest, where the band already contains the rest point.
-EFFECT_PHASER_CORNER_CENTRE_HZ :: f32(1187.0)
+EFFECT_PHASER_CORNER_CENTRE_HZ :: f32(1271.0)
 
 // The sweep's width: 0.050 octaves per step of the depth knob.
 //

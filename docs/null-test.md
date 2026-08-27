@@ -7249,3 +7249,94 @@ itself, and the two are related by an arctangent that saturates. That is why the
 deeper sweeps still show several decibels of spectral error where the static
 settings show hundredths. The static response is now essentially exact; the moving
 one is not, and the remaining error is concentrated there.
+
+### The remaining error, located (2026-08-27)
+
+The rewrite left the sweep approximate and said the error was concentrated there.
+Checking it found two things: one measurement that can now be done exactly, and
+one defect that is this engine's own.
+
+### The corner can now be read directly
+
+The trajectory had been measured *through* the resonances, because until the
+circuit was identified there was no way to convert one into the other. There is
+now. Inverting the loop's phase equation on the reference's own steady-state
+bands gives the corner itself, and it is a much better-behaved quantity:
+
+```
+  ctl1    resonance band        corner band          span    per step
+     8    5642..  6455 Hz    1103.. 1468 Hz      0.413 oct    0.0516
+    16    5281..  6852       959.. 1670          0.800        0.0500
+    32    4626..  7827       728.. 2234          1.619        0.0506
+    48    4037..  8849       549.. 2940          2.421        0.0504
+    64    3500.. 10056       410.. 3944          3.267        0.0510
+    96    2713.. 12595       244.. 6746          4.789        0.0499
+   127    2011.. 14895       133..10137          6.249        0.0492
+```
+
+The span law survives intact -- 0.0504 octaves per step, against the 0.050 already
+implemented. The **centre does not**: the corner sweeps about 1271 Hz, not the
+1187 that came from treating the resonance as the corner. The seven depths give
+1272, 1266, 1275, 1271, 1271, 1283 and 1162 Hz, and the constant is corrected to
+the measurement.
+
+Two checks on the inversion itself. It returns 254.74 Hz for the resonance the
+engine sits at when the corner is 254.61, which is the round trip. And the
+per-step figure it produces is constant across a sixteenfold change in depth,
+which the old reading was not -- that reading had ph1 sweeping half as far as the
+other types, and this is what the difference was.
+
+### And a defect that is ours
+
+Sweeping ph1 at full level, our resonance and the reference's do not match, and
+the summary hides how:
+
+```
+                strongest peak, after the transient
+  reference     3500 .. 10055 Hz   1.52 octaves
+  this engine     51 ..  8143 Hz   7.31 octaves
+```
+
+The 51 Hz is not a resonance. Two sections and a sample of delay cannot put one
+there: at 51 Hz the loop's phase is about nine degrees, and it needs 360. It is a
+spurious peak, and looking at the frames it appears in says what it is:
+
+```
+     7168 ms                7718 Hz (+4.7)
+     7253 ms                7915   (+4.7)
+     7339 ms    51.3 (+12.5)  8226   (+5.2)
+     7424 ms    51.6 (+13.0)  8423   (+5.4)
+     7509 ms    51.9 (+13.4)  8732   (+5.7)
+     7595 ms    52.0 (+13.7)  9043   (+6.9)
+```
+
+It arrives only when the real resonance climbs past about 8 kHz, it tracks that
+resonance as it moves, and **it grows** -- 12.5 to 14.2 dB over six frames. A
+filter feature does not grow. That is energy accumulating in the feedback loop.
+
+It is bounded and its conditions are exact. It appears only above about 0.9 of
+feedback -- at level 96 and 112, where the law gives 0.495 and 0.743, every frame
+of the same sweep has exactly one resonance -- and only while the corner is
+moving: the static response at full level is a single resonance at 2771.1 Hz
+against the reference's 2770.8, in all sixty-seven frames. The reference, at the
+same full feedback and the same sweep, has one peak in 227 of 231 frames and none
+below 200 Hz.
+
+The mechanism is not settled. The obvious reading -- that a direct-form allpass is
+not passive while its coefficient moves, so a loop with two and a half per cent
+of margin can gain -- fits the feedback threshold and the fact that it is worst
+where the phase near DC is flattest. It does not fit the rate: the artefact is
+just as present at ctl2 8, where the corner moves 4.6e-6 octaves per sample, as
+at ctl2 64.
+
+### What that costs, and why the correction still stands
+
+Correcting the centre to the measured 1271 Hz moves the sixteen-row A/B mean from
+4.19 to 4.54 dB, which is worse. It is kept anyway, and the reason is the defect
+above: a better-founded trajectory drives the corner higher, and the artefact
+scales with the corner. Tuning the centre back to hide that would be fitting one
+measurement to cancel a bug in the code rather than fixing either.
+
+The static settings are unaffected and remain essentially exact -- 0.00, 0.01,
+0.06 and 0.64 dB across the four types at ctl1 = 0. The whole of the remaining
+phaser error is in the sweep, and the largest part of it is this.
