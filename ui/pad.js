@@ -21,7 +21,13 @@
 
   var ROWS = 4, COLS = 4;
   var COUNT = ROWS * COLS;
-  var KEY = "quesynth.pad.v1";
+  // Bumped from v1 because the notes changed meaning rather than merely changing.
+  // v1 opened with every cell on C4, which was harmless while a note only ever
+  // played the selected cell and is not now that a note addresses the cells that
+  // answer to it: sixteen pads all listening to C4 would sound sixteen at once.
+  // A stored grid from then is discarded rather than migrated -- it is a minute
+  // old and holds nothing but defaults.
+  var KEY = "quesynth.pad.v2";
   var NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
   var PARAMS = window.SYNTH1_PARAMS || [];
@@ -41,9 +47,18 @@
     return v;
   }
 
+  // Which note each cell answers to: sixteen chromatic steps up from MIDI 36,
+  // read left to right and top to bottom.
+  //
+  // 36 because that is where every drum machine and every drum rack starts, so a
+  // controller made for one already lines up with this without being told to.
+  // The strip below the grid names it C2, which is what the rest of this
+  // interface calls it -- middle C is C4 here.
+  var FIRST_NOTE = 36;
+
   var pads = [];
   for (var i = 0; i < COUNT; i++) {
-    pads.push({ values: defaults(), note: 60, name: "" });
+    pads.push({ values: defaults(), note: FIRST_NOTE + i, name: "" });
   }
   var selected = 0;
   var clipboard = null;
@@ -85,8 +100,43 @@
     return tagged({ type: "set", index: index, value: value });
   };
 
+  // A note addresses the cell that answers to it, wherever the note came from --
+  // a MIDI keyboard, the keys along the foot, a controller's own pads.
+  //
+  // Sending it to whichever cell happened to be selected is the obvious thing and
+  // it is wrong: selecting is how you choose what to *edit*, and clicking a pad
+  // both selects and strikes it, so a bar into a session every note played would
+  // be arriving at whichever pad was last touched. On a grid of sixteen
+  // instruments the note is the address.
+  //
+  // A note no cell answers to falls back to the selected one, which is what makes
+  // the keyboard still useful: it plays the sound being worked on, chromatically,
+  // without having to be assigned anywhere first.
+  var routed = {};   // note -> the cells it was sent to, so its note off matches
+
+  function cellsAnswering(note) {
+    var out = [];
+    for (var i = 0; i < COUNT; i++) if (pads[i].note === note) out.push(i);
+    return out;
+  }
+
   bridge.note = function (on, note, velocity) {
-    return tagged({ type: "note", on: on, note: note, velocity: velocity || 100 });
+    if (!on) {
+      var previous = routed[note] || [selected];
+      delete routed[note];
+      previous.forEach(function (s) {
+        tagged({ type: "note", on: false, note: note, velocity: 0 }, s);
+      });
+      return true;
+    }
+    var targets = cellsAnswering(note);
+    if (!targets.length) targets = [selected];
+    routed[note] = targets;
+    targets.forEach(function (s) {
+      tagged({ type: "note", on: true, note: note, velocity: velocity || 100 }, s);
+      flash(s);
+    });
+    return true;
   };
 
   bridge.beginEdit = function (index) { tagged({ type: "edit", index: index, begin: true }); };
@@ -127,18 +177,24 @@
 
   var held = {};   // cell -> the note it is currently sounding
 
+  // Lighting a cell, whoever struck it. A note arriving over MIDI has to show on
+  // the grid as plainly as a finger does, or there is no way to see which cell
+  // answered without listening for it.
+  function flash(index) {
+    var el = cells[index];
+    if (!el) return;
+    el.classList.add("lit");
+    // Restarted rather than accumulated, so a fast roll keeps lighting up.
+    clearTimeout(el._dim);
+    el._dim = setTimeout(function () { el.classList.remove("lit"); }, 110);
+  }
+
   function strike(index, velocity) {
     if (held[index] !== undefined) release(index);
     var note = pads[index].note;
     held[index] = note;
     tagged({ type: "note", on: true, note: note, velocity: velocity || 110 }, index);
-    var el = cells[index];
-    if (el) {
-      el.classList.add("lit");
-      // Restarted rather than accumulated, so a fast roll keeps lighting up.
-      clearTimeout(el._dim);
-      el._dim = setTimeout(function () { el.classList.remove("lit"); }, 110);
-    }
+    flash(index);
   }
 
   function release(index) {

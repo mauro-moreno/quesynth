@@ -1672,6 +1672,7 @@ body.modal-open { overflow: hidden; }
 .pads {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 8px;
   margin-bottom: var(--gap);
 }
@@ -1690,6 +1691,10 @@ body.modal-open { overflow: hidden; }
    * the cells at about 80px -- comfortably past the 44px a thumb needs. */
   max-width: 460px;
   width: 100%;
+  /* Centred, because a capped grid pinned to the left of a wide window reads as
+   * a column that failed to fill rather than as an instrument. The strip below
+   * takes the same cap so the two line up as one object. */
+  margin-inline: auto;
 }
 
 /* Square cells at any width. `aspect-ratio` rather than a padding trick because
@@ -1764,6 +1769,9 @@ body.modal-open { overflow: hidden; }
   align-items: center;
   gap: 10px;
   padding: 0 2px;
+  max-width: 460px;
+  width: 100%;
+  margin-inline: auto;
 }
 
 .pad-bar-label {
