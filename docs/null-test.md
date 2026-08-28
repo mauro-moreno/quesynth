@@ -9127,3 +9127,49 @@ The next attempt has a specification rather than a guess:
     -42.0, -24.9, -14.2 and -9.3 dB **while** the open-filter rows stay at -26.5,
     -13.9, -8.9 and -7.2. Two conditions, one free parameter each, and both are a
     minute's measurement away.
+
+
+### Where the saturation defect starts, which narrows it a lot
+
+Two more measurements, both cheap, both worth having before the next attempt.
+
+**The unity-gain limiter does not disturb the control.** Put on the resonance
+integrator at loop drives of 1.0 and 0.4 of the saturation drive, the open-filter
+rows stay exactly where they were -- -26.5, -13.9 and -7.2 dB against the
+reference's identical three, peak 0.8253 against 0.8253. That is worth knowing on
+its own: a loop-side term can be fitted freely without touching the case that
+pins the curve.
+
+What it cannot do is buy harmonics without spending level. At stored 64 the
+closed-filter THD improves from -41.4 to -29.4 dB as the loop drive goes from
+nothing to full, and the peak falls from 0.442 to 0.234 against the reference's
+0.467. The exchange is about one for one, and the reference pays neither.
+
+**The defect is a cliff, not a curve.** Holding the saturation at stored 64 and
+closing the filter:
+
+```
+   cutoff      127     96     64     48     34
+   ref THD   -13.9  -13.9  -13.5  -15.3  -24.9 dB
+   ours      -13.9  -13.9  -12.9  -16.8  -41.4
+   short       0.0    0.0    0.6   -1.5  -16.5
+```
+
+Nothing at all until the filter starts attenuating the note, and then sixteen
+decibels. At cutoff 48 the corner is about 250 Hz against the probe's 262 Hz note
+-- the filter has barely begun -- and the two engines agree. At cutoff 34 the
+corner is near 110 Hz, the fundamental is down 8.9 dB, and they do not.
+
+That last pair of numbers is the useful one. The drive multiplier the closed case
+needs is about 1.45, which is 3.2 dB, against 8.9 dB of attenuation on the
+fundamental: **half of it, in decibels**. A signal that loses half the decibels
+the low pass loses is the band pass, which rolls off at 6 dB per octave where the
+low pass rolls off at 12 -- and the band-pass amplitude at that setting computes
+to 0.32 against the 0.35 the harmonics require.
+
+Three separate arguments now land on the same node, so the next attempt should
+put the nonlinearity between the two integrators rather than on either end of the
+section. The TPT form does not expose that point -- its low pass is computed
+directly rather than integrated from its band pass -- so it needs the explicit
+form, which is a restructuring rather than an insertion and is why it was not
+simply tried here.
