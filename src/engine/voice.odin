@@ -97,7 +97,9 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 		// resonance 107: 105.3 and 576.1 Hz at states 34 and 64, against 110.4 and
 		// 582.6 fitted from the response. A ladder needs one surface at every
 		// resonance, so none of the blending below applies to it.
-		return exp_map(fraction, FILTER_CUTOFF_HZ_24[lo], FILTER_CUTOFF_HZ_24[hi])
+		// See `filter_ladder_pole`: the peak surface is a few per cent low.
+		return exp_map(fraction, FILTER_CUTOFF_HZ_24[lo], FILTER_CUTOFF_HZ_24[hi]) *
+			filter_ladder_pole(bounded)
 	}
 
 	if p.filter_slope == .Slope_24 {

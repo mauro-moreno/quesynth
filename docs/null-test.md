@@ -9517,3 +9517,72 @@ The other residual that stays open is the closed-cutoff shape: the ladder is
 the harmonics at very closed cutoffs are unchanged by any of this -- the
 saturation curve still sits after the filter, where a ladder's belongs inside the
 loop, which is the next thing this points at.
+
+
+### The two residuals after the ladder (2026-08-28)
+
+**The shape one is closed.** `FILTER_CUTOFF_HZ_24` was measured from the resonant
+peak, which for a four-pole ladder is the pole -- but measured at resonance 107,
+through a filter that is ringing. Fitting the pole instead against the whole
+magnitude response at resonance 0, where the model is a pure `G^4` and the fit
+lands at 0.02 to 0.04 dB rms, it sits consistently above the table:
+
+```
+   state    8     12     16     20     24     28     34     40     44     48     52     56     60     64
+   ratio 1.024  0.998  1.028  1.006  1.000  1.024  1.053  1.003  1.035  1.062  1.052  1.054  1.036  1.023
+```
+
+Only those states constrain anything -- above 64 the response is flat across the
+swept notes and the fit will accept any pole, so the correction returns to one
+there instead of following numbers that mean nothing. Smoothed, because the
+state-to-state scatter is the table's own noise.
+
+Four decibels of output per decibel of corner turns five per cent into 1.8 dB,
+which is what state 34 was showing. Applied, the resonance-0 error goes from
++1.5 dB to within 0.4 across every cutoff and every resonance. Factory spectral
+better on 20 patches against 7; percussion envelope median 3.511 to 3.433 and
+level better on 20 against 9.
+
+**The harmonic one is not**, but it is now cornered rather than merely open.
+Three things were tried, and each failed in a way that removes a possibility.
+
+*A ladder's nonlinearity belongs in its stages* -- which is what the previous
+commit predicted -- **is wrong**. Per-stage curves, with the drive refitted for
+them, reproduce the open-filter control beautifully: THD within 0.5 dB and peak
+within 3 per cent at every saturation state, and the scale the refit wanted came
+out 0.48 to 0.67 across the whole knob, one factor within a few per cent, which
+says the old table's shape was right all along. Closed to cutoff 34 they are 31.5
+dB short of the reference at the top of the knob, where the same curve placed
+after the filter is 0.9 dB *over*. The saturation is a post-filter waveshaper.
+The reason is visible in the fundamental: closed and driven, the reference reaches
+27.3 dB, within two of its own open-filter pass band, which is what a
+peak-normalised curve does when its input is small and it runs at its full
+`d/tanh(d)` makeup. Nothing inside the filter does that.
+
+*The drive fit is degenerate* -- true, and not enough. Once `a*d` is deep in
+clipping, doubling `d` changes neither THD nor peak, so the open-filter
+measurement cannot pin the drive at the top of the control, and the closed-filter
+shortfall grows exactly with the saturation state: -1.5, -5.2, -18.7 and -23.4 dB
+at states 32, 64, 96 and 127. Breaking the degeneracy on a closed filter:
+
+```
+   state 127   closed THD lands at scale 4.0, and costs 0.6 dB of the open control
+   state  96   lands at 8.5, costs 2.3
+   state  64   lands at 20,  costs 7.2
+```
+
+So the branch is real at the very top and useless in the middle. No single drive
+table satisfies both ends, which means the reference's curve is a different
+*shape* and not a differently driven `tanh`.
+
+*Opening the corner further* buys harmonics and overshoots the fundamental, and
+the two cannot be had at once. Fitted to the fundamental, the ladder wants a
+gentler opening than the 12 dB path's -- 1.589 against 1.905 at the top -- and
+that lands the fundamental within 0.3 dB at cutoff 12 and 20 while costing 5 dB of
+THD, and the bank rejects it: percussion spectral better on 13 patches and worse
+on 28. The corpus prefers the harmonics to the fundamental, so the committed curve
+stays.
+
+What is left is a curve that matches `tanh` where the signal is large and makes
+more distortion than `tanh` where it is small, with the same drive law. That is a
+shape question, and it is the one open thing on this path.

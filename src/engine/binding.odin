@@ -307,6 +307,47 @@ FILTER_LADDER_FEEDBACK := [?]f32{
 	0.00, 0.50, 1.00, 1.50, 2.00, 2.55, 3.00, 3.35, 3.60, 3.70,
 }
 
+// A few per cent of pole, which the peak surface does not carry.
+//
+// `FILTER_CUTOFF_HZ_24` was measured from the resonant peak, and for a four-pole
+// ladder that is the pole -- but measured at resonance 107, through a filter that
+// is ringing. Fitting the pole instead against the reference's whole magnitude
+// response at resonance 0, where the fit is a pure `G^4` and lands at 0.02 to
+// 0.04 dB rms, it comes out consistently above the table: 1.024, 0.998, 1.028,
+// 1.006, 1.000, 1.024, 1.053, 1.003, 1.035, 1.062, 1.052, 1.054, 1.036 and 1.023
+// across states 8 to 64.
+//
+// Those are the states whose transition is actually inside the swept notes; above
+// 64 the response is flat across the sweep and the fit stops constraining
+// anything, so the correction returns to one there rather than following numbers
+// that mean nothing. The curve is smoothed: the state-to-state scatter is the
+// table's own noise, and chasing it would be fitting that instead of the filter.
+//
+// It is worth 1.8 dB at state 34, where four decibels of output per decibel of
+// corner turns 5 per cent into exactly the offset measured there.
+FILTER_LADDER_POLE_STATES := [?]int{0, 8, 16, 24, 34, 44, 52, 60, 64, 72, 80, 127}
+FILTER_LADDER_POLE := [?]f32{
+	1.00, 1.01, 1.01, 1.01, 1.04, 1.05, 1.05, 1.04, 1.02, 1.01, 1.00, 1.00,
+}
+
+filter_ladder_pole :: proc "contextless" (state: f32) -> f32 {
+	last := len(FILTER_LADDER_POLE_STATES) - 1
+	if state <= f32(FILTER_LADDER_POLE_STATES[0]) {
+		return FILTER_LADDER_POLE[0]
+	}
+	if state >= f32(FILTER_LADDER_POLE_STATES[last]) {
+		return FILTER_LADDER_POLE[last]
+	}
+	for i in 0 ..< last {
+		lo := f32(FILTER_LADDER_POLE_STATES[i])
+		hi := f32(FILTER_LADDER_POLE_STATES[i + 1])
+		if state <= hi {
+			return dsp.lerp32(FILTER_LADDER_POLE[i], FILTER_LADDER_POLE[i + 1], (state - lo) / (hi - lo))
+		}
+	}
+	return FILTER_LADDER_POLE[last]
+}
+
 filter_ladder_feedback :: proc(stored: int) -> f32 {
 	state := resolved_position(20, stored)
 	last := len(FILTER_LADDER_FEEDBACK_STATES) - 1
