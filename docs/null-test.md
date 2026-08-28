@@ -9586,3 +9586,89 @@ stays.
 What is left is a curve that matches `tanh` where the signal is large and makes
 more distortion than `tanh` where it is small, with the same drive law. That is a
 shape question, and it is the one open thing on this path.
+
+
+### The saturation curve, read instead of inferred (2026-08-28)
+
+Everything above about this control was fitted from THD through an open filter,
+and the previous section closed by saying what was left: a curve matching `tanh`
+where the signal is large and bending harder where it is small. That is a
+description of a shape, and a shape can be measured.
+
+`s1probe filtercurve` does it the way `fxshape` does the effect unit. Render one
+patch twice, saturation off and on; both come from the same synth, sample for
+sample, so the second scattered against the first **is** the transfer curve, one
+point per sample, no fitting and no assumed family. The filter is left open so
+that nothing but the shaping differs between the two renders, and a sine sweeps
+its whole range on the way past, so the bottom of the curve -- the part in
+question -- is sampled as densely as the top.
+
+**It is not a tanh.** Against nine families at three settings:
+
+```
+                        sat 32    sat 64    sat 96
+   x d / (1 + |x d|)   0.00022   0.00068   0.00241   rms
+   atan(x d)           0.00261   0.00814   0.00629
+   tanh(x d)           0.00306   0.01707   0.02559
+   hard clip           0.01309   0.04170   0.03845
+```
+
+The algebraic saturator wins every setting by an order of magnitude, and at
+saturation 32 it lands at 0.00022 -- the measurement's own floor. Normalised to
+pass one unchanged it is `x(1+d)/(1+|x d|)`, whose small-signal gain is `1 + d`
+where a peak-normalised tanh gives `d/tanh(d)`. That is the whole difference: half
+again as steep at the middle of the knob, and a closed filter is exactly what puts
+the signal down there.
+
+The drive table is now the curve's own parameter at each knot rather than an
+inversion of THD, fitted at 0.0002 to 0.011 rms across the whole control, and it
+runs to 74 where the tanh law stopped at 16.9.
+
+### Which retracts the corner opening
+
+Two sections above, this file recorded that the saturation control opens the
+filter's corner, with three arguments: a defect that was a cliff rather than a
+curve, a fundamental that climbed 16 dB at a closed cutoff to arrive at its own
+open-filter value, and a residual twice as large on the 24 dB slope as the 12 dB
+one. A table was fitted for it, and later a second table for the ladder.
+
+**All of it was the wrong curve.** With the algebraic saturator in place and the
+corner opening switched off entirely:
+
+```
+   cutoff 34, THD and fundamental error, dB
+   12 dB path   +0.2/+0.3   +0.3/+0.4   +0.3/+0.2   +0.6/+0.3
+   24 dB path   +0.4/+0.3   +0.4/+0.3   +0.5/+0.5   +1.6/+1.2
+```
+
+against 16.5 and 23 dB short before. The fundamental climbs because `1 + d`
+reaches 75 at the top of the control, which is the makeup a peak-normalised curve
+applies to a small input -- not because the filter opens. The cliff was a cliff
+because that makeup only shows once the filter has attenuated the signal enough to
+reach the steep part of the curve. And the slope dependence followed because the
+24 dB filter attenuates faster, putting its signal further down the curve at the
+same cutoff.
+
+Both corner tables are deleted. The three arguments were consistent with each
+other and with a mechanism that is not there, which is the failure mode worth
+naming: they were all measurements of the same missing steepness, read through
+whatever model was to hand.
+
+### Gated
+
+```
+                         median            mean          driven patches
+   percussion spectral 5.827 -> 5.458   7.234 -> 6.863   7.713 -> 7.053
+   percussion level    2.197 -> 2.005   3.132 -> 2.862   3.414 -> 2.933
+   factory driven      spectral 6.491 -> 4.836, level 2.270 -> 1.397,
+                       envelope 2.527 -> 2.151, correlation 0.572 -> 0.681
+```
+
+Percussion spectral better on 87 patches against 54 and level on 79 against 43;
+the two saturation bands improve together, 5.116 to 4.346 above stored 112 and
+5.750 to 5.362 below it. The largest single movements are improvements by a wide
+margin -- -12.62, -7.13, -6.87 and -6.71 dB against a worst regression of +4.65.
+
+What is left on this control is small and unexplained: the 24 dB path is 2.4 dB
+out at cutoff 20 with the knob at the top, and its open-filter level surface has
+drifted to -1.1 dB at high resonance now that the curve beneath it has changed.

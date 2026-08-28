@@ -137,60 +137,34 @@ pow_f32 :: proc(base, exponent: f32) -> f32 {
 
 // Parameter 23's measured drive curve.
 //
-// A sine through an open, non-resonant filter identifies both halves of the
-// law independently. The reference keeps the waveform's peak fixed at every
-// setting and every downstream gain, while its harmonic series approaches a
-// square wave. That is a peak-normalised tanh:
+// The saturation control's drive, read off the curve itself.
 //
-//     y = tanh(drive * x) / tanh(drive)
+// The earlier version of this table was fitted by inverting the reference's THD
+// through an open filter, against a `tanh`. That is one operating point, and it
+// does not identify a curve: it was exact open and up to 23 dB short of the
+// reference's harmonics closed, and docs/null-test.md records the three ways of
+// patching that which do not work.
 //
-// The values below invert the measured THD at each knot. Linear interpolation
-// is deliberate: the knots are at most eight states apart across the curved
-// part of the control, making the interpolation error smaller than the probe's
-// 0.1 dB THD resolution. Stored 109 and 122 are included because the two worst
-// factory outliers use those exact settings.
+// `s1probe filtercurve` reads the curve instead of inferring it. The same patch
+// is rendered with the saturation control off and on; both come from the same
+// synth, sample for sample, so the second scattered against the first is the
+// transfer curve, one point per sample. The filter is left open so that the
+// corner opening cannot make the two renders differ by anything but the shaping,
+// and the scatter's loop width confirms it -- 0.004 to 0.014 across the lower two
+// thirds of the control, which is a line and not a loop.
+//
+// The values below are that curve's own parameter at each knot, fitted to
+// `x*(1+d)/(1+|x*d|)` -- see `dsp.filter_saturate` -- at 0.0002 to 0.011 rms.
 FILTER_SATURATION_STATES := [?]int{
 	0, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64,
 	72, 80, 88, 96, 104, 109, 112, 120, 122, 124, 127,
 }
 FILTER_SATURATION_DRIVE := [?]f32{
-	0.0, 0.110344, 0.156102, 0.238590, 0.319932, 0.403366,
-	0.588754, 0.812051, 1.088197, 1.418726, 1.827576, 2.321027,
-	2.917104, 3.711868, 4.771326, 6.096842, 8.177998, 9.634074,
-	10.250473, 13.854322, 15.213064, 15.9, 16.879008,
+	0.0, 0.0085, 0.0149, 0.0309, 0.0528, 0.0832,
+	0.1731, 0.3328, 0.5910, 1.0290, 1.7220, 2.8250,
+	4.5439, 7.3086, 11.5249, 17.8173, 27.0050, 34.9339,
+	40.1280, 57.3127, 62.0371, 67.1510, 74.1401,
 }
-
-// How far the saturation control opens the corner.
-//
-// The drive table above was fitted through an open filter, where it is exact.
-// Through a closed one it was 16.5 dB short of the reference's harmonics at
-// cutoff 34, and the shortfall was a cliff rather than a curve -- nothing at
-// cutoff 127, 96, 64 or 48, all of it at 34, which is where the corner first
-// falls below the note being played. What moves at a closed cutoff and cannot
-// move at an open one is the corner.
-//
-// The reference's fundamental confirms it directly. At cutoff 34 it climbs 16 dB
-// across the knob, 7.5 to 23.5 dB, arriving within 0.7 dB of the value the same
-// note measures through a fully open filter; through an open filter it climbs
-// 1.7 dB and through a half-open one 1.0. The saturation control opens the
-// filter.
-//
-// The amount is read where the reading is unambiguous. At cutoff 8 the corner
-// sits about 2.7 octaves below the note, so the 12 dB per octave asymptote holds
-// across the whole knob and the excess fundamental converts straight to corner
-// gain, at half a decibel of corner per decibel of output. Measured that way it
-// reaches 1.9 at the top of the control. The obvious closed form, the
-// `sqrt(d/tanh d)` that the drive's own normalisation suggests, reaches 4.1 and
-// overshoots the fundamental by 4.9 dB at the middle of the knob, so the table is
-// the measurement rather than the formula.
-FILTER_SATURATION_CORNER_STATES := [?]int{
-	0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127,
-}
-FILTER_SATURATION_CORNER := [?]f32{
-	1.000, 1.000, 1.006, 1.023, 1.041, 1.078, 1.117, 1.181, 1.259,
-	1.355, 1.467, 1.573, 1.679, 1.738, 1.845, 1.858, 1.905,
-}
-
 // What the saturation control does to the level once the filter is resonant.
 //
 // The corner-opening tables above were fitted at resonance 0 and are exact
@@ -366,26 +340,6 @@ filter_ladder_feedback :: proc(stored: int) -> f32 {
 		}
 	}
 	return FILTER_LADDER_FEEDBACK[last]
-}
-
-filter_saturation_corner :: proc(stored: int) -> f32 {
-	state := resolved_position(23, stored)
-	last := len(FILTER_SATURATION_CORNER_STATES) - 1
-	if state <= FILTER_SATURATION_CORNER_STATES[0] {
-		return FILTER_SATURATION_CORNER[0]
-	}
-	if state >= FILTER_SATURATION_CORNER_STATES[last] {
-		return FILTER_SATURATION_CORNER[last]
-	}
-	for i in 0 ..< last {
-		lo := FILTER_SATURATION_CORNER_STATES[i]
-		hi := FILTER_SATURATION_CORNER_STATES[i + 1]
-		if state <= hi {
-			t := f32(state - lo) / f32(hi - lo)
-			return dsp.lerp32(FILTER_SATURATION_CORNER[i], FILTER_SATURATION_CORNER[i + 1], t)
-		}
-	}
-	return FILTER_SATURATION_CORNER[last]
 }
 
 filter_saturation_drive :: proc(stored: int) -> f32 {
@@ -1137,7 +1091,6 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
 	e.filter_ladder_feedback = filter_ladder_feedback(p.values[20])
 	e.filter_ladder_gain = filter_ladder_gain(p.values[20], p.values[23])
-	e.filter_saturation_corner = filter_saturation_corner(p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 
 	// -- amplifier -----------------------------------------------------------

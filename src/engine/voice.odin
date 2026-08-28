@@ -950,10 +950,9 @@ voice_process :: proc(
 		filtered: f32
 		output_gain := p.filter_output_gain
 		if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
-			// Saturation opens the corner; see `filter_saturation_corner`.
 			dsp.ladder_set(
 				&u.ladder,
-				cutoff * p.filter_saturation_corner,
+				cutoff,
 				p.filter_ladder_feedback,
 				sample_rate,
 			)
@@ -976,7 +975,7 @@ voice_process :: proc(
 		} else {
 			dsp.filter_set_damping(
 				&u.filter,
-				cutoff * p.filter_saturation_corner,
+				cutoff,
 				p.filter_damping,
 				sample_rate,
 				p.filter_slope,

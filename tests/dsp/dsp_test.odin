@@ -371,10 +371,10 @@ test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 	p := default_patch()
 	p.values[23] = 109
 	p.present[23] = true
-	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 9.634074) < 0.00001,
+	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 34.9339) < 0.00001,
 		"stored 109 did not bind to its measured drive")
 	p.values[23] = 122
-	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 15.213064) < 0.00001,
+	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 62.0371) < 0.00001,
 		"stored 122 did not bind to its measured drive")
 }
 
@@ -4451,5 +4451,34 @@ test_ladder_recovers_from_non_finite_input :: proc(t: ^testing.T) {
 	for i in 0 ..< 64 {
 		y := dsp.ladder_process(&l, 0.25)
 		testing.expectf(t, dsp.is_finite(y), "ladder stayed poisoned at %v", i)
+	}
+}
+
+// The saturation curve is algebraic, not a tanh, and the two are told apart at
+// the bottom of the curve rather than the top: both are normalised to pass an
+// input of one unchanged, and they differ by half again in slope at the origin,
+// which is where a closed filter puts the signal.
+@(test)
+test_filter_saturation_curve_is_algebraic :: proc(t: ^testing.T) {
+	d := f32(2.825) // the measured drive at stored 64
+	testing.expectf(t, abs(dsp.filter_saturate(1, d) - 1) < 0.0001,
+		"curve did not pass its normalising point: %v", dsp.filter_saturate(1, d))
+	testing.expectf(t, abs(dsp.filter_saturate(-1, d) + 1) < 0.0001, "curve is not odd")
+
+	// Slope at the origin is 1 + d, where a peak-normalised tanh would give
+	// d/tanh(d) -- 3.83 against 2.85 here.
+	small := f32(0.0005)
+	slope := dsp.filter_saturate(small, d) / small
+	testing.expectf(t, abs(slope - (1 + d)) < 0.01,
+		"small-signal gain was not 1 + d: %v", slope)
+
+	// And it must stay monotone and bounded out to the top of the drive range.
+	prev := dsp.filter_saturate(-1, 74.14)
+	for i in -99 ..= 100 {
+		x := f32(i) / 100.0
+		y := dsp.filter_saturate(x, 74.14)
+		testing.expectf(t, y > prev, "curve is not monotone at %v", x)
+		testing.expectf(t, abs(y) <= 1.0001, "curve left its normalised range at %v: %v", x, y)
+		prev = y
 	}
 }

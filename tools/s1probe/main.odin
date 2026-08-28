@@ -644,6 +644,8 @@ usage :: proc() {
 	fmt.eprintln("                             set of one-parameter-at-a-time variants")
 	fmt.eprintln("  s1probe fmfilter    [dll] [--note <n>] [patch.sy1 ...]")
 	fmt.eprintln("                          -- FM spectrum before and through a moving filter")
+	fmt.eprintln("  s1probe filtercurve [dll] [--type <n>] [--cutoff <n>] [--res <n>] [--gain <n>]")
+	fmt.eprintln("                          [--note <n>] [--values <sats>]")
 	fmt.eprintln("  s1probe filtersaturation [dll] [--values <list>] [--gains <list>]")
 	fmt.eprintln("                          [--type <n>] [--cutoff <n>] [--res <n>] [--note <n>]")
     fmt.eprintln("  s1probe substageprobe [dll] [--notes <list>] [--p95 <list>] [--mix <list>]")
@@ -690,7 +692,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" || cmd == "sectionlevel" || cmd == "paramlevel" {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "filtercurve" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" || cmd == "sectionlevel" || cmd == "paramlevel" {
         if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -2467,6 +2469,43 @@ main :: proc() {
 			}
 		}
 		cmd_filterdistortion(dll, fdtype, fdcutoff, u8(clamp(fdnote, 0, 127)), fdspec, fdgain)
+	case "filtercurve":
+		fctype := 1
+		fccutoff := 127
+		fcres := 0
+		fcgain := 96
+		fcnote := 60
+		fcvalues := "32,64,96,127"
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--type":
+					if !parse_probe_int(rest, i + 1, &fctype) {usage()}
+					i += 2
+				case "--cutoff":
+					if !parse_probe_int(rest, i + 1, &fccutoff) {usage()}
+					i += 2
+				case "--res":
+					if !parse_probe_int(rest, i + 1, &fcres) {usage()}
+					i += 2
+				case "--gain":
+					if !parse_probe_int(rest, i + 1, &fcgain) {usage()}
+					i += 2
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &fcnote) {usage()}
+					i += 2
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					fcvalues = rest[i + 1]
+					i += 2
+				case:
+					usage()
+				}
+			}
+		}
+		cmd_filtercurve(dll, fctype, fccutoff, fcres, fcgain, u8(clamp(fcnote, 0, 127)), fcvalues)
+
 	case "filtersaturation":
 		fstype := 0
 		fscutoff := 127
