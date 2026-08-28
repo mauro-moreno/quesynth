@@ -8688,3 +8688,59 @@ patches that use it:
 
 No factory patch moves the delay's tone off centre, so the same law reaching that
 control through the shared `Tone` is unmeasured there rather than confirmed.
+
+### Checking the two compressor residuals (2026-08-27)
+
+Both are still open, and checking them found something else.
+
+**The fast attack is unchanged.** At ctl1 64, ctl2 0 the row reads 16.48 dB
+spectral, 5.74 envelope, +0.82 level -- the same to the decimal as when it was
+recorded. Nothing since has touched the compressor, and the diff confirms it: the
+detector, the makeup and the static curve are byte-identical.
+
+**The slow attack is still open, and its number moved for a reason that is not
+the compressor.** It reads -5.33 dB now against the -6.50 recorded, with the
+envelope 5.71 against 12.12. The soft clip's knee moved from 1.0 to 32.0 during
+the phaser work, after this row was measured, and the old knee was limiting the
+compressor's output. Rebuilt with the knee at 1.0 the row returns exactly:
+
+```
+   ctl1 64 ctl2 127     spectral   envelope    level
+   recorded                 0.02      12.12    -6.50 dB
+   knee at 1.0 today        0.02      12.12    -6.50
+   knee at 32.0 today       0.02       5.71    -5.33
+```
+
+So the overshoot on the way in is undiminished; what changed is that the output
+stage no longer squashes it. The mechanism recorded at the time -- the detector's
+approach from silence, not the static curve -- stands unexamined.
+
+### And a correction to the 24 dB output gain
+
+The check turned up a defect of my own. That table was built from a noise sweep
+that read our 24 dB path 0.99 dB quiet at zero resonance, and the correction was
+written in at state 0 along with the resonance-dependent part. It should not have
+been. The ring modulator settles it: it is a linear crossfade and passes level
+through untouched, and its error went from -0.00 dB to +0.98 the moment that
+entry moved. The whole effect unit was a decibel loud.
+
+The 0.99 dB is real but it is a **shape** and not a gain -- two cascaded two-pole
+sections have a lower -3 dB point than one four-pole design, so the loss is there
+for broadband content and absent for a tone sitting well inside the passband.
+Correcting it with a gain helps wherever the first is true and hurts wherever the
+second is, which is exactly why state zero is the neutral multiplier in the table
+above it.
+
+Normalised so state zero is neutral again, everything improves at once:
+
+```
+                          effect unit      48 factory patches
+                          r.m. level    level mean   magnitude
+   before the filter fix    -0.00 dB       +0.56       1.17 dB
+   state 0 raised           +0.98          +0.32       0.96
+   state 0 neutral          -0.00          -0.29       0.81
+```
+
+The resonance-dependent correction survives intact -- across the knob at cutoff
+63 the spread falls from 3.8 dB to 0.5 -- and the effect unit returns to its own
+figures exactly, 3.02 dB mean over ten types.
