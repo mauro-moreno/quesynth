@@ -9342,3 +9342,80 @@ What is left is the shape, and it is the larger half: the residual after the
 correction still reaches 6.8 dB at cutoff 40, and it is signed -- too loud below
 the corner, too quiet above -- because a single factor cannot change a slope. That
 needs the topology the fits above could not find, and it stays open.
+
+
+### What saturation does to a resonant filter's level (2026-08-28)
+
+The second residual said the corner opening needed more correction as resonance
+rose, from 5.4 dB at resonance 0 to 10.4 at 115. Fitting a multiplier on the
+opening failed, and usefully: at cutoff 34, resonance 115 and saturation 127 the
+opened corner is already past the note, so our fundamental is sitting at its own
+pass-band ceiling and widening it further changes nothing. For the reference to be
+6.9 dB above that, it is not a corner at all.
+
+Opening the filter completely removes the corner from the question, and the effect
+survives:
+
+```
+   open filter, resonance 115, saturation 127
+   reference 30.9 dB    ours 22.5    short 8.4
+   open filter, resonance   0, saturation 127
+   reference 24.2 dB    ours 24.2    short 0.0
+```
+
+The reference gains 10.5 dB from the saturation knob at resonance 115 and 1.7 dB
+at resonance 0. This engine gains about 2 dB either way. With the filter open the
+resonant peak is far above the note being measured, so what this measures is a
+broadband gain and not a peak, which is what makes it separable and correctable.
+
+The surface is clean -- zero along both axes, monotone in both, and near enough
+separable that the saturation profile is the same shape at every resonance:
+
+```
+   ref - ours, dB, 12 dB low pass, open filter
+   res \ sat      0     16     32     48     64     80     96    112    127
+      0        +0.0   +0.0   +0.0   -0.1   -0.2   -0.1   -0.1   -0.1   +0.0
+     32        -0.1   +0.0   +0.2   +0.5   +0.9   +1.2   +1.4   +1.6   +1.6
+     64        -0.1   +0.1   +0.6   +1.3   +2.2   +2.9   +3.3   +3.5   +3.6
+     96        -0.1   +0.2   +0.9   +2.2   +3.7   +4.9   +5.6   +6.1   +6.3
+    115        +0.0   +0.2   +1.2   +2.8   +4.8   +6.4   +7.6   +8.1   +8.4
+```
+
+Each row is referenced to its own saturation-0 value before use, and the two
+things that forced that are worth recording, because both were caught by the bank
+rather than by the probe.
+
+**The 24 dB path is also short at saturation 0**, by up to 3.8 dB, which is its
+resonance output gain and has nothing to do with saturation. Correcting it from
+this reading made four factory patches about 3.5 dB loud -- 121, 077, 064 and 108
+are all 24 dB filters with resonance 65 to 89 and the saturation control at zero,
+and they play at cutoff 10 to 34, where the deficit measured with the filter open
+is not there. It is a real error awaiting a measurement taken where it applies.
+
+**The 24 dB filter self-oscillates at the top of its resonance knob.** The raw
+deficit runs +3.8, +3.6, +3.2, +3.3, +3.7, +4.0, +4.6 from resonance 96 to 124 and
+then falls to -19.0 at 127, one state wide, where we are far louder rather than
+quieter. Applied as a saturation correction it cost `123.sy1` -- a 24 dB patch at
+resonance 127 with saturation at zero -- 19 dB. Referenced to its own
+saturation-0 value the row becomes mild and only affects patches that are actually
+saturated.
+
+Gated:
+
+```
+                        median          mean
+   percussion level   2.765 -> 2.425   3.918 -> 3.306   97 better, 30 worse
+   percussion envelope 3.459 -> 3.436
+   factory level      0.937 -> 0.935   1.287 -> 1.252    3 better,  1 worse
+   spectral, both     unchanged
+```
+
+Level is the metric a gain law should move and it moves; spectral does not, which
+is the right signature. `083.sy1`, the single regression from the corner-opening
+commit, improves 9.4 dB here.
+
+One patch still regresses: `032.sy1`, a 12 dB filter at cutoff 39 with resonance 71
+and saturation 109, goes 4.07 dB loud. It is the closed-cutoff case, where the
+correction was fitted with the filter open and over-applies -- measured directly,
+the same setting reads -5.5 dB at cutoff 34 where it reads 0.0 open. The law is a
+gain and the residual is not; that stays open.
