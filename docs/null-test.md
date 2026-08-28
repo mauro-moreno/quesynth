@@ -9051,3 +9051,79 @@ should be a saturator in the loop **with** the output normalisation the curve
 already carries, rather than a fourth guess at where one curve goes -- and it can
 be checked in a minute, because `filtersaturation` compares both engines directly
 and the open-filter rows are a control that must not move.
+
+
+### Doing it: a saturator in the loop with the output normalisation (2026-08-28)
+
+The section above proposed exactly that, and it is worth writing down what
+happened, because the first thing it produced was a correction to its own
+reasoning.
+
+**The open-filter control does not test what it was said to test.** It was
+offered as the thing that must not move, on the grounds that it pins the
+placement. It does not: with the filter open the input and the output are the
+same signal, so *every* placement gives the same answer. Measured rather than
+assumed -- input-side saturation through an open filter returns -26.5, -13.9,
+-8.9 and -7.2 dB of THD against the reference's -26.5, -13.9, -8.9 and -7.2. The
+control pins the curve and the drive table, and says nothing at all about where
+the curve sits.
+
+### The attempt
+
+In the loop on `x - ic2eq` *and* at the output, which is what was proposed:
+
+```
+   cutoff 34            sat 32    64      96     127
+   reference            -42.0   -24.9   -14.2    -9.3 dB THD
+   output only          -58.8   -41.4   -25.9   -13.8
+   loop and output      -42.4   -29.9   -21.4   -12.4
+   peak, reference      0.288   0.467   0.666   0.787
+   peak, loop+output    0.279   0.536   0.804   0.825
+```
+
+The shortfall goes from 16.8, 16.5, 11.7 and 4.5 dB to 0.4, 5.0, 7.2 and 3.1, and
+the level tracks within 1.6 dB where it used to be out by 4.5. On the closed
+filter it is better in every column.
+
+**And the open case degrades, which is what stops it.** Two saturators in series
+compress before the second one sees the signal, so at stored 96 the THD comes
+back -19.4 against the reference's -8.9, having been exact. Ten decibels lost
+where the patch is loudest to buy seven where it is quietest is not a trade worth
+taking, and it is not what the reference does.
+
+### The resonance path, which is where the arithmetic pointed
+
+Matching the closed-filter harmonics needs a saturator seeing about 0.35 where
+the output is 0.24 and the unfiltered input is 0.83. The band-pass amplitude at
+that setting computes to 0.32 -- the only signal in the section of the right
+size -- so that is where it was tried next.
+
+Twice, and the first was a mistake worth recording: saturating the returned `bp`
+changes nothing at all, because the states update from the unsaturated `v1` and
+`v2`. The measurement coming back byte-identical to the unmodified engine is what
+caught it, the same way the dropped `--hold` argument was caught.
+
+Put on the integrator state, where it really is in the loop, it runs away: the
+peak goes to 1.23 against the reference's 0.29 and the THD overshoots by 19 dB.
+The reason is in the curve rather than the placement. `tanh(x d)/tanh(d)` is
+peak-normalised, so its small-signal gain is `d/tanh(d)`, which is greater than
+one -- fine on an output, unstable inside a feedback path.
+
+### What that leaves, stated precisely
+
+The reference needs harmonics generated where the signal is still large and a
+level that only an output-side normalisation gives, and the two cannot both come
+from one placement of one curve. Everything tried is reverted; the engine still
+saturates its output.
+
+The next attempt has a specification rather than a guess:
+
+  * in the loop, a limiter with **unity small-signal gain** -- `tanh(x d)/d`
+    rather than `tanh(x d)/tanh(d)` -- since a gain-carrying curve in a feedback
+    path is what ran away above.
+  * at the output, the normalisation that already exists, whose job is the ten
+    decibels of level rise and the top of the knob, both of which it already gets.
+  * the drive split between them fitted so that the closed-filter THD lands at
+    -42.0, -24.9, -14.2 and -9.3 dB **while** the open-filter rows stay at -26.5,
+    -13.9, -8.9 and -7.2. Two conditions, one free parameter each, and both are a
+    minute's measurement away.
