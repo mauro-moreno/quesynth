@@ -8991,3 +8991,63 @@ So the remaining percussion error is not one law but a cluster, and the
 saturation curve at three quarters of its travel is the largest single piece of
 it. That is the next thing to measure, and it can now be measured, which is what
 this pass was for.
+
+
+### The filter saturation, measured (2026-08-28)
+
+The previous section named this as the largest remaining piece of the percussion
+error: on the transient window, patches driving the saturation between stored 64
+and 95 carry 9.34 dB of spectral error against 6.34 for those with it off.
+
+**Through an open filter it is already exact.** Sixty rows of `filtersaturation`
+at input gains 96 and 127, from stored 0 to 127, and the two engines agree to the
+digit: THD -9.7 against -9.7 at stored 88, -7.2 against -7.2 at 127, the
+fundamental within 0.1 dB and the peak within 0.0001. Whatever is wrong is not
+the curve and not the drive table.
+
+**Through a closed filter it is not.** With the cutoff at stored 34, where the
+worst percussion patches sit, ours makes far too little distortion:
+
+```
+   sat        0      32      64      96     127
+   ref     -66.0   -42.0   -24.9   -14.2    -9.3 dB THD
+   ours    -67.4   -58.8   -41.4   -25.9   -13.8
+   short     1.4    16.8    16.5    11.7     4.5
+```
+
+Resonance compounds it. At stored 80 the peak at full saturation is 0.786 for the
+reference and 0.465 for us, 4.5 dB of level on top of the missing harmonics.
+
+### Where the saturator sits, which is the whole question
+
+Ours takes the finished filter output. With the cutoff low that output is a small
+clean sine -- the filter has already removed what there was to distort -- so a
+soft curve barely bends it. Three placements were built and measured:
+
+```
+                        mid-knob THD (ref -42.0)   peak at full (ref 0.787)
+   the output, as now          -58.8                      0.822
+   the filter's input          -46.1                      0.310
+   the integrator's input      -43.2                      0.338
+```
+
+The analogue placement, on `x - ic2eq` inside the state-variable loop, very nearly
+lands the harmonics -- -43.2 against -42.0 -- and loses the level completely. The
+output placement is the only one that reproduces the level, because the
+peak-normalised curve maps a small input to nearly full scale and that is where
+the reference's ten decibels of level gain come from.
+
+So the reference does both, and no single placement of one curve does both. It
+generates its harmonics where the signal is still large and it applies a gain that
+only an output-side normalisation gives.
+
+There is a number for how large "still large" is. Matching the closed-filter THD
+at stored 64 requires the saturator to see about 0.35, where the filter's output
+is 0.24 and its unfiltered input is 0.83. Not either end of the filter: a point
+inside it.
+
+The reverted experiments are the useful part of this section. The next attempt
+should be a saturator in the loop **with** the output normalisation the curve
+already carries, rather than a fourth guess at where one curve goes -- and it can
+be checked in a minute, because `filtersaturation` compares both engines directly
+and the open-filter rows are a control that must not move.
