@@ -155,6 +155,15 @@ pow_f32 :: proc(base, exponent: f32) -> f32 {
 //
 // The values below are that curve's own parameter at each knot, fitted to
 // `x*(1+d)/(1+|x*d|)` -- see `dsp.filter_saturate` -- at 0.0002 to 0.011 rms.
+//
+// The last five are corrected from a second reading taken through a *closed*
+// filter. Once the corner opening was removed the two renders differ by nothing
+// but the shaping at any cutoff, so the scatter is clean there too -- loop width
+// 0.006 to 0.012 against 0.08 to 0.18 open -- and a closed filter samples the
+// steep part of the curve, which is what sets the level and what the open reading
+// constrains worst. Left at their open-filter values the top of the control came
+// out 0.5, 0.8, 1.4 and 2.3 dB quiet at cutoff 20 while every state up to 96 was
+// exact.
 FILTER_SATURATION_STATES := [?]int{
 	0, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64,
 	72, 80, 88, 96, 104, 109, 112, 120, 122, 124, 127,
@@ -162,8 +171,8 @@ FILTER_SATURATION_STATES := [?]int{
 FILTER_SATURATION_DRIVE := [?]f32{
 	0.0, 0.0085, 0.0149, 0.0309, 0.0528, 0.0832,
 	0.1731, 0.3328, 0.5910, 1.0290, 1.7220, 2.8250,
-	4.5439, 7.3086, 11.5249, 17.8173, 27.0050, 34.9339,
-	40.1280, 57.3127, 62.0371, 67.1510, 74.1401,
+	4.5439, 7.3086, 11.5249, 17.8173, 28.6600, 37.6000,
+	44.0800, 67.5000, 75.3000, 83.8000, 96.9000,
 }
 // What the saturation control does to the level once the filter is resonant.
 //
@@ -207,8 +216,12 @@ FILTER_OUTPUT_CORRECTION_DB_12 := [6][5]f32 {
 //   res      0     16     32     48     64     80     96    107    115
 //   dB     0.0   +2.3   +3.7   +4.7   +5.4   +6.2   +6.4   +6.8   +6.9
 //
-// The saturation columns fall away to nothing because the output curve pins the
-// level once it is driven, so this is a surface in both and not a curve in one.
+// The saturation columns fall away because the output curve pins the level once
+// it is driven, so this is a surface in both and not a curve in one. They were
+// re-measured after the curve underneath them was replaced -- the old ones had
+// drifted into a shallow bowl reaching -1.1 dB at resonance 115 -- and the
+// saturation-0 column is untouched by that, being the ladder's own DC loss and
+// nothing to do with the shaping.
 //
 // Held flat above resonance 115. The 24 dB filter self-oscillates at 127, where
 // the reference collapses by 15 to 34 dB, but only at open cutoffs -- at cutoff
@@ -218,15 +231,15 @@ FILTER_OUTPUT_CORRECTION_DB_12 := [6][5]f32 {
 FILTER_LADDER_GAIN_RESONANCE := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115}
 FILTER_LADDER_GAIN_SATURATION := [?]int{0, 32, 64, 96, 127}
 FILTER_LADDER_GAIN_DB := [9][5]f32 {
-	{+0.0, +0.0, -0.2, -0.1, +0.0},
-	{+2.3, +1.8, +0.5, -0.1, -0.1},
-	{+3.7, +3.2, +1.3, +0.0, -0.1},
-	{+4.7, +4.2, +2.2, +0.2, +0.0},
-	{+5.4, +5.0, +3.0, +0.5, +0.0},
-	{+6.2, +5.8, +3.9, +0.8, +0.1},
-	{+6.4, +6.2, +4.4, +1.2, +0.1},
-	{+6.8, +6.5, +4.8, +1.5, +0.0},
-	{+6.9, +6.7, +5.1, +1.7, +0.1},
+	{+0.0, +0.0, +0.0, +0.0, +0.0},
+	{+2.3, +1.9, +0.9, +0.2, +0.0},
+	{+3.7, +3.2, +1.6, +0.4, +0.1},
+	{+4.7, +4.1, +2.1, +0.6, +0.2},
+	{+5.4, +4.8, +2.7, +0.8, +0.3},
+	{+6.2, +5.6, +3.3, +1.0, +0.4},
+	{+6.4, +5.8, +3.6, +1.2, +0.4},
+	{+6.8, +6.1, +3.8, +1.3, +0.4},
+	{+6.9, +6.4, +4.0, +1.4, +0.4},
 }
 
 filter_ladder_gain :: proc(resonance, saturation: int) -> f32 {

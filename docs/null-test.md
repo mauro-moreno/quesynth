@@ -9672,3 +9672,57 @@ margin -- -12.62, -7.13, -6.87 and -6.71 dB against a worst regression of +4.65.
 What is left on this control is small and unexplained: the 24 dB path is 2.4 dB
 out at cutoff 20 with the knob at the top, and its open-filter level surface has
 drifted to -1.1 dB at high resonance now that the curve beneath it has changed.
+
+
+### Both loose ends from the curve (2026-08-28)
+
+The curve section closed with two small things: the 24 dB path 2.4 dB out at
+cutoff 20 with the knob at the top, and its open-filter level surface drifted to
+-1.1 dB at high resonance. Both are closed, and the first turned out to be a
+reading rather than a mechanism.
+
+**The level surface** was fitted underneath the old curve, so replacing the curve
+moved it -- into a shallow bowl, worst -1.1 dB at resonance 115 and saturation 64.
+Its saturation-0 column did not move at all, which is the check that it should
+not: that column is the ladder's own DC loss and has nothing to do with the
+shaping. Re-measured and folded back in, the surface is exact at every knot again.
+
+**The top of the drive table was read through the wrong window.** The curve was
+fitted from a scatter taken with the filter open, and there the scatter's loop
+width runs from 0.004 at the bottom of the control to 0.18 at the top -- the top
+of the knob is where that reading is worst, and it is also where the open filter
+constrains the drive least, since the curve is already clipping and the parameter
+stops changing what comes out.
+
+Now that the corner opening is gone, the two renders differ by nothing but the
+shaping at *any* cutoff, so the same scatter can be taken through a closed filter,
+where the loop is 0.006 to 0.012 and the sine sits on the steep part of the curve
+that actually sets the level. That is a much better constraint, and it disagreed:
+converted to the same units the open reading puts the knee at 166 and the closed
+one at 224, a factor of 1.35, which is the 2.6 dB.
+
+The closed-filter reading is also an independent check on the retraction two
+sections above. A corner that moved with drive would make the two renders differ
+by a filter as well as a curve, and the scatter would open into a loop. At cutoff
+34 it does not.
+
+Corrected from the closed reading, the last five knots only -- every state up to
+96 was already exact:
+
+```
+   state        96    104    112    120    127
+   error      +0.2   +0.5   +0.8   +1.4   +2.3 dB   before
+              +0.2   +0.0   +0.0   +0.1   +0.2      after
+```
+
+and the open control does not move, THD within 0.1 dB and the peak still matching,
+because at those states it cannot: that is the same degeneracy that made the
+original fit unreliable, working the right way round for once.
+
+Across both filter types the whole surface is now within 0.5 dB nearly everywhere,
+the exceptions being the 24 dB path's harmonics at cutoff 8 and 20 at low drive,
+which are 1.4 dB short with the level exact.
+
+Gated: percussion spectral better on 22 patches against 9 and level on 36 against
+12, with the driven subset going 5.932 to 5.852 and 3.168 to 3.077. The factory
+bank has two patches driven that hard and does not move.

@@ -371,10 +371,10 @@ test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 	p := default_patch()
 	p.values[23] = 109
 	p.present[23] = true
-	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 34.9339) < 0.00001,
+	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 37.6) < 0.00001,
 		"stored 109 did not bind to its measured drive")
 	p.values[23] = 122
-	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 62.0371) < 0.00001,
+	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 75.3) < 0.00001,
 		"stored 122 did not bind to its measured drive")
 }
 
