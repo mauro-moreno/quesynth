@@ -8888,3 +8888,106 @@ periods -- that fxcompare's spectral column cannot see a sweep rate -- arriving
 from the other side, and it is a better argument than the one made at the time.
 The periods themselves are unchanged by the rebase: six of eight exact, with the
 same two, ctl2 104 and 112, off by a single block.
+
+
+### Measuring the percussion, and what could be fixed (2026-08-28)
+
+The previous section ended on the instrument: the corpus gate reads a
+steady-state window, a hi-hat is over before that window opens, and half the
+corpus's hats therefore had no spectral reading at all. That is fixed first,
+because nothing else could be measured until it was.
+
+`compare --hold` shortens the note. Below about a third of a second the steady
+window cannot hold the transform and `compare_renders` already falls back to
+measuring from the first sample, which is the window a percussion patch occupies.
+At 0.4 seconds that window is both filled and early. Over the 381 percussion
+patches:
+
+```
+   patches the spectral gate cannot read     26.0%  ->  1.6%
+     hats                                    49.2%  ->  3.2%
+     snares                                  31.1%  ->  0.0%
+     kicks                                   12.6%  ->  0.0%
+   spectral error, on those it can read       7.35  ->  6.88 dB
+```
+
+The readings that already existed barely moved, which is the reassuring part: the
+window change is not a rescaling, it is the difference between measuring a patch
+and not measuring it.
+
+**One bug in that, worth keeping.** A directory run spawns a child process per
+patch, and the child was not being passed the flag. So the first corpus run came
+back byte-identical to the run it was meant to differ from -- every patch quietly
+measured on the default 1.5 seconds. It looked like a null result and was a
+dropped argument.
+
+### What the percussion error is not
+
+With the instrument fixed, the obvious causes were measured and are not it:
+
+```
+   the noise oscillator, swept to full        +0.00 to +0.55 dB
+   filter type 2, the hats' high pass         within 0.44 dB over seven octaves
+   filter type 3 at the patch's own setting   within 0.50 dB
+   the filter envelope's decay, over time     within 0.80 dB
+   keyboard tracking, swept                   within 1.50 dB
+   attack and release times, 381 patches      median difference 0 ms
+```
+
+`Closed Hihat` reads 1.62 dB of spectral error and a centroid within 0.08 octaves
+-- the timbre is right -- while sitting 8.5 dB quiet, which the peak ratio
+independently confirms. Its neighbour `close HH` is the opposite: level within 1
+dB and a centroid **0.91 octaves** too bright. Two patches from the same bank
+failing in two different directions is not one law being wrong.
+
+### The one thing found and fixed: the 12 dB low pass
+
+Measured along the way, and real: our 12 dB low pass passes 2.9 dB too much in
+its stopband. The passband agrees, the slope agrees at 12.7 dB per octave against
+12.96, and a uniform stopband offset with a matching slope is a corner in the
+wrong place -- a quarter of an octave high.
+
+The 24 dB path already carries exactly this correction and says why: the table is
+the reference's audible corner, and a section's own -3 dB point is not where its
+coefficient is. The 12 dB path had none. It is applied to the low pass alone,
+because the high pass off the same section measures within 0.44 dB and the band
+pass within 0.5 -- scaling the shared coefficient would fix one and break two.
+
+```
+   type 0 stopband, cutoff 40    +2.86 dB  ->  -0.07
+   type 0 stopband, cutoff 64    +3.00     ->  -0.20
+   type 2 high pass              -0.40     ->  -0.40  (untouched)
+```
+
+It was first written into `bind_patch`, where it did nothing at all: that
+function fills a field no one reads, and the cutoff a voice runs on is resolved
+again in `filter_cutoff_at_state`. The measurement not moving is what caught it.
+
+Over 48 factory patches this is neutral to slightly better -- spectral 5.56 to
+5.54, envelope 1.44 to 1.41, null -9.33 to -9.72 dB, with the level error 0.81 to
+0.95 -- and over the percussion corpus it changes nothing at all, 6.88 to 6.89.
+That is expected and worth saying plainly: **it is a correctness fix, not a
+percussion fix.** Hats use the high pass and the band pass, which were already
+right.
+
+### Where the percussion error actually sits
+
+Split by how hard the filter saturation is driven, on the transient window:
+
+```
+   saturation 0        n=162 (43.2%)   spectral 6.34 dB
+   1..63               n=102 (27.2%)            7.15
+   64..95              n= 44 (11.7%)            9.34
+   96 and over         n= 67 (17.9%)            6.22
+```
+
+Three decibels of penalty on the middle of that knob, and a direct sweep agrees:
+driven at stored 96 the spectral error is 4.16 dB and at 127 it is 13.88, against
+0.18 with the saturation off. The worst sixty transient patches also carry a low
+cutoff, oscillator FM and the modulation envelope where the best sixty carry
+none of them.
+
+So the remaining percussion error is not one law but a cluster, and the
+saturation curve at three quarters of its travel is the largest single piece of
+it. That is the next thing to measure, and it can now be measured, which is what
+this pass was for.

@@ -116,6 +116,20 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	if p.filter_mode == .Band_Pass {
 		cutoff *= BAND_PASS_CENTRE_RATIO
 	}
+	// And the 12 dB low pass needs its own, which it did not have.
+	//
+	// The table is the reference's audible corner; our section's -3 dB point is
+	// not where its coefficient is, exactly as the 24 dB path documents for
+	// itself. Measured as the gain our stopband carries over the reference's:
+	// +2.86 dB at cutoff 40 and +3.00 at 64 with the resonance off, up to +3.69
+	// at resonance 96. On a 12 dB per octave slope that is a quarter of an octave.
+	//
+	// Only this output. The high pass off the same section measures within 0.44
+	// dB across seven octaves and the band pass within 0.5, so scaling the shared
+	// coefficient would fix one and break two.
+	if p.filter_mode == .Low_Pass {
+		cutoff *= FILTER_CUTOFF_12_LOW_PASS_RATIO
+	}
 	return cutoff
 }
 

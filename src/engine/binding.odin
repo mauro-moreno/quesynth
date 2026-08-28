@@ -202,6 +202,15 @@ FILTER_CUTOFF_24_RESONANCE_BLEND := [?]f32{0.0, 0.2405, 0.4332, 0.7000, 0.8773, 
 // ratio, anchors the response.
 FILTER_CUTOFF_24_TOPOLOGY_SCALE := [?]f32{1.255, 1.259, 1.264, 1.267, 1.165, 1.0, 1.0}
 
+// The same conversion for the 12 dB low pass, which had none.
+//
+// Measured as the gain our stopband carries over the reference's: +2.86 dB at
+// cutoff 40 and +3.00 at 64 with the resonance off, running to +3.69 at
+// resonance 96. On a 12 dB per octave slope that is 0.24 octaves of corner, and
+// 2^-0.24 is the factor below. The passband agrees to within half a decibel
+// either side of the change, which is what says this is a corner and not a gain.
+FILTER_CUTOFF_12_LOW_PASS_RATIO :: f32(0.846)
+
 filter_cutoff_24_resonance_blend :: proc(stored: int) -> f32 {
 	state := resolved_position(20, stored)
 	if state <= FILTER_CUTOFF_24_RESONANCE_STATES[0] {
@@ -791,6 +800,11 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.filter_cutoff_surface_blend = 0
 		e.filter_cutoff_topology_scale = 1
 		e.filter_cutoff_hz = FILTER_CUTOFF_HZ[cutoff_state]
+		// See FILTER_CUTOFF_12_LOW_PASS_RATIO and `filter_cutoff_at_state`, which
+		// is where the cutoff a voice actually runs on is resolved.
+		if e.filter_mode == .Low_Pass {
+			e.filter_cutoff_hz *= FILTER_CUTOFF_12_LOW_PASS_RATIO
+		}
 	}
 	// That table is the low pass's corner, and the band pass does not centre on
 	// it. See the constant.
