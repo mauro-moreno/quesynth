@@ -137,27 +137,222 @@ pow_f32 :: proc(base, exponent: f32) -> f32 {
 
 // Parameter 23's measured drive curve.
 //
-// A sine through an open, non-resonant filter identifies both halves of the
-// law independently. The reference keeps the waveform's peak fixed at every
-// setting and every downstream gain, while its harmonic series approaches a
-// square wave. That is a peak-normalised tanh:
+// The saturation control's drive, read off the curve itself.
 //
-//     y = tanh(drive * x) / tanh(drive)
+// The earlier version of this table was fitted by inverting the reference's THD
+// through an open filter, against a `tanh`. That is one operating point, and it
+// does not identify a curve: it was exact open and up to 23 dB short of the
+// reference's harmonics closed, and docs/null-test.md records the three ways of
+// patching that which do not work.
 //
-// The values below invert the measured THD at each knot. Linear interpolation
-// is deliberate: the knots are at most eight states apart across the curved
-// part of the control, making the interpolation error smaller than the probe's
-// 0.1 dB THD resolution. Stored 109 and 122 are included because the two worst
-// factory outliers use those exact settings.
+// `s1probe filtercurve` reads the curve instead of inferring it. The same patch
+// is rendered with the saturation control off and on; both come from the same
+// synth, sample for sample, so the second scattered against the first is the
+// transfer curve, one point per sample. The filter is left open so that the
+// corner opening cannot make the two renders differ by anything but the shaping,
+// and the scatter's loop width confirms it -- 0.004 to 0.014 across the lower two
+// thirds of the control, which is a line and not a loop.
+//
+// The values below are that curve's own parameter at each knot, fitted to
+// `x*(1+d)/(1+|x*d|)` -- see `dsp.filter_saturate` -- at 0.0002 to 0.011 rms.
+//
+// The last five are corrected from a second reading taken through a *closed*
+// filter. Once the corner opening was removed the two renders differ by nothing
+// but the shaping at any cutoff, so the scatter is clean there too -- loop width
+// 0.006 to 0.012 against 0.08 to 0.18 open -- and a closed filter samples the
+// steep part of the curve, which is what sets the level and what the open reading
+// constrains worst. Left at their open-filter values the top of the control came
+// out 0.5, 0.8, 1.4 and 2.3 dB quiet at cutoff 20 while every state up to 96 was
+// exact.
 FILTER_SATURATION_STATES := [?]int{
 	0, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64,
 	72, 80, 88, 96, 104, 109, 112, 120, 122, 124, 127,
 }
 FILTER_SATURATION_DRIVE := [?]f32{
-	0.0, 0.110344, 0.156102, 0.238590, 0.319932, 0.403366,
-	0.588754, 0.812051, 1.088197, 1.418726, 1.827576, 2.321027,
-	2.917104, 3.711868, 4.771326, 6.096842, 8.177998, 9.634074,
-	10.250473, 13.854322, 15.213064, 15.9, 16.879008,
+	0.0, 0.0085, 0.0149, 0.0309, 0.0528, 0.0832,
+	0.1731, 0.3328, 0.5910, 1.0290, 1.7220, 2.8250,
+	4.5439, 7.3086, 11.5249, 17.8173, 28.6600, 37.6000,
+	44.0800, 67.5000, 75.3000, 83.8000, 96.9000,
+}
+// What the saturation control does to the level once the filter is resonant.
+//
+// The corner-opening tables above were fitted at resonance 0 and are exact
+// there. They are not the whole control. Through a *fully open* filter, where no
+// corner is in play at all, the reference gains 10.5 dB from the saturation knob
+// at resonance 115 and 1.7 dB at resonance 0, while this engine gains about 2 dB
+// either way -- 8.4 dB short at the corner of the surface. Open filter and one
+// note means the resonant peak is far above what is being measured, so this is a
+// broadband gain and not a peak height, which is what makes it separable from
+// everything else here and correctable as a gain.
+//
+// Each row is referenced to its own saturation-0 value, so this table is what
+// the saturation control does and nothing else. The raw surface also showed the
+// 24 dB path short by up to 3.8 dB at saturation 0, which is its resonance output
+// gain rather than saturation, and correcting that from an open-filter reading
+// was wrong: those patches play closed, where the deficit is not there, and four
+// factory patches at saturation 0 went about 3.5 dB loud when it was included.
+// It is a real error and it is left for a measurement taken where it applies.
+//
+// Measured at the knots below, as decibels the reference has over this engine.
+FILTER_OUTPUT_CORRECTION_RESONANCE := [?]int{0, 32, 64, 96, 115, 127}
+FILTER_OUTPUT_CORRECTION_SATURATION := [?]int{0, 32, 64, 96, 127}
+
+FILTER_OUTPUT_CORRECTION_DB_12 := [6][5]f32 {
+	{+0.0, +0.0, -0.2, -0.1, +0.0},
+	{+0.0, +0.3, +1.0, +1.5, +1.7},
+	{+0.0, +0.7, +2.3, +3.4, +3.7},
+	{+0.0, +1.0, +3.8, +5.7, +6.4},
+	{+0.0, +1.2, +4.8, +7.6, +8.4},
+	{+0.0, +1.3, +5.5, +9.0, +10.1},
+}
+
+// The ladder's own level, which replaces the surface the two biquads needed.
+//
+// A ladder loses gain at DC as its feedback rises. The reference loses less than
+// a raw one does -- 5.4 dB less at resonance 64, where the raw loss is 9.5 -- so
+// it compensates, though not fully. Measured through an open filter, where the
+// pole is far above the note and what is left is the DC region:
+//
+//   res      0     16     32     48     64     80     96    107    115
+//   dB     0.0   +2.3   +3.7   +4.7   +5.4   +6.2   +6.4   +6.8   +6.9
+//
+// The saturation columns fall away because the output curve pins the level once
+// it is driven, so this is a surface in both and not a curve in one. They were
+// re-measured after the curve underneath them was replaced -- the old ones had
+// drifted into a shallow bowl reaching -1.1 dB at resonance 115 -- and the
+// saturation-0 column is untouched by that, being the ladder's own DC loss and
+// nothing to do with the shaping.
+//
+// Held flat above resonance 115. The 24 dB filter self-oscillates at 127, where
+// the reference collapses by 15 to 34 dB, but only at open cutoffs -- at cutoff
+// 34 it still matches the ordinary ladder to 0.06 dB rms. A flat correction
+// cannot be both, so that state keeps the resonance-115 value and its own error
+// is recorded rather than papered over.
+FILTER_LADDER_GAIN_RESONANCE := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115}
+FILTER_LADDER_GAIN_SATURATION := [?]int{0, 32, 64, 96, 127}
+FILTER_LADDER_GAIN_DB := [9][5]f32 {
+	{+0.0, +0.0, +0.0, +0.0, +0.0},
+	{+2.3, +1.9, +0.9, +0.2, +0.0},
+	{+3.7, +3.2, +1.6, +0.4, +0.1},
+	{+4.7, +4.1, +2.1, +0.6, +0.2},
+	{+5.4, +4.8, +2.7, +0.8, +0.3},
+	{+6.2, +5.6, +3.3, +1.0, +0.4},
+	{+6.4, +5.8, +3.6, +1.2, +0.4},
+	{+6.8, +6.1, +3.8, +1.3, +0.4},
+	{+6.9, +6.4, +4.0, +1.4, +0.4},
+}
+
+filter_ladder_gain :: proc(resonance, saturation: int) -> f32 {
+	r := resolved_position(20, resonance)
+	sa := resolved_position(23, saturation)
+	ri, rt := correction_axis(FILTER_LADDER_GAIN_RESONANCE[:], r)
+	si, st := correction_axis(FILTER_LADDER_GAIN_SATURATION[:], sa)
+	lo := dsp.lerp32(FILTER_LADDER_GAIN_DB[ri][si], FILTER_LADDER_GAIN_DB[ri][si + 1], st)
+	hi := dsp.lerp32(FILTER_LADDER_GAIN_DB[ri + 1][si], FILTER_LADDER_GAIN_DB[ri + 1][si + 1], st)
+	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
+}
+
+@(private = "file")
+correction_axis :: proc(knots: []int, state: int) -> (index: int, t: f32) {
+	last := len(knots) - 1
+	if state <= knots[0] {
+		return 0, 0
+	}
+	if state >= knots[last] {
+		return last - 1, 1
+	}
+	for i in 0 ..< last {
+		if state <= knots[i + 1] {
+			return i, f32(state - knots[i]) / f32(knots[i + 1] - knots[i])
+		}
+	}
+	return last - 1, 1
+}
+
+filter_output_correction :: proc(resonance, saturation: int) -> f32 {
+	r := resolved_position(20, resonance)
+	s := resolved_position(23, saturation)
+	ri, rt := correction_axis(FILTER_OUTPUT_CORRECTION_RESONANCE[:], r)
+	si, stt := correction_axis(FILTER_OUTPUT_CORRECTION_SATURATION[:], s)
+	table := &FILTER_OUTPUT_CORRECTION_DB_12
+	lo := dsp.lerp32(table[ri][si], table[ri][si + 1], stt)
+	hi := dsp.lerp32(table[ri + 1][si], table[ri + 1][si + 1], stt)
+	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
+}
+
+// The ladder's feedback, which is what parameter 20 actually controls.
+//
+// Fitted from the reference's own magnitude response: held at cutoff 34 and swept
+// across notes 36 to 90, the pole frequency stays at 110.4 Hz at every resonance
+// from 0 to 115 while the feedback rises, at 0.03 to 0.06 dB rms. The same
+// feedback comes back at cutoff 64 -- 0.00, 1.95 and 3.15 against 0.00, 2.00 and
+// 3.35 -- so it is a function of the knob and of nothing else.
+//
+// It is very nearly the knob over 32, and it stops rising near the top.
+FILTER_LADDER_FEEDBACK_STATES := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115, 127}
+FILTER_LADDER_FEEDBACK := [?]f32{
+	0.00, 0.50, 1.00, 1.50, 2.00, 2.55, 3.00, 3.35, 3.60, 3.70,
+}
+
+// A few per cent of pole, which the peak surface does not carry.
+//
+// `FILTER_CUTOFF_HZ_24` was measured from the resonant peak, and for a four-pole
+// ladder that is the pole -- but measured at resonance 107, through a filter that
+// is ringing. Fitting the pole instead against the reference's whole magnitude
+// response at resonance 0, where the fit is a pure `G^4` and lands at 0.02 to
+// 0.04 dB rms, it comes out consistently above the table: 1.024, 0.998, 1.028,
+// 1.006, 1.000, 1.024, 1.053, 1.003, 1.035, 1.062, 1.052, 1.054, 1.036 and 1.023
+// across states 8 to 64.
+//
+// Those are the states whose transition is actually inside the swept notes; above
+// 64 the response is flat across the sweep and the fit stops constraining
+// anything, so the correction returns to one there rather than following numbers
+// that mean nothing. The curve is smoothed: the state-to-state scatter is the
+// table's own noise, and chasing it would be fitting that instead of the filter.
+//
+// It is worth 1.8 dB at state 34, where four decibels of output per decibel of
+// corner turns 5 per cent into exactly the offset measured there.
+FILTER_LADDER_POLE_STATES := [?]int{0, 8, 16, 24, 34, 44, 52, 60, 64, 72, 80, 127}
+FILTER_LADDER_POLE := [?]f32{
+	1.00, 1.01, 1.01, 1.01, 1.04, 1.05, 1.05, 1.04, 1.02, 1.01, 1.00, 1.00,
+}
+
+filter_ladder_pole :: proc "contextless" (state: f32) -> f32 {
+	last := len(FILTER_LADDER_POLE_STATES) - 1
+	if state <= f32(FILTER_LADDER_POLE_STATES[0]) {
+		return FILTER_LADDER_POLE[0]
+	}
+	if state >= f32(FILTER_LADDER_POLE_STATES[last]) {
+		return FILTER_LADDER_POLE[last]
+	}
+	for i in 0 ..< last {
+		lo := f32(FILTER_LADDER_POLE_STATES[i])
+		hi := f32(FILTER_LADDER_POLE_STATES[i + 1])
+		if state <= hi {
+			return dsp.lerp32(FILTER_LADDER_POLE[i], FILTER_LADDER_POLE[i + 1], (state - lo) / (hi - lo))
+		}
+	}
+	return FILTER_LADDER_POLE[last]
+}
+
+filter_ladder_feedback :: proc(stored: int) -> f32 {
+	state := resolved_position(20, stored)
+	last := len(FILTER_LADDER_FEEDBACK_STATES) - 1
+	if state <= FILTER_LADDER_FEEDBACK_STATES[0] {
+		return FILTER_LADDER_FEEDBACK[0]
+	}
+	if state >= FILTER_LADDER_FEEDBACK_STATES[last] {
+		return FILTER_LADDER_FEEDBACK[last]
+	}
+	for i in 0 ..< last {
+		lo := FILTER_LADDER_FEEDBACK_STATES[i]
+		hi := FILTER_LADDER_FEEDBACK_STATES[i + 1]
+		if state <= hi {
+			t := f32(state - lo) / f32(hi - lo)
+			return dsp.lerp32(FILTER_LADDER_FEEDBACK[i], FILTER_LADDER_FEEDBACK[i + 1], t)
+		}
+	}
+	return FILTER_LADDER_FEEDBACK[last]
 }
 
 filter_saturation_drive :: proc(stored: int) -> f32 {
@@ -201,6 +396,74 @@ FILTER_CUTOFF_24_RESONANCE_BLEND := [?]f32{0.0, 0.2405, 0.4332, 0.7000, 0.8773, 
 // it reaches unity once the resonant peak, rather than the cascade's corner
 // ratio, anchors the response.
 FILTER_CUTOFF_24_TOPOLOGY_SCALE := [?]f32{1.255, 1.259, 1.264, 1.267, 1.165, 1.0, 1.0}
+
+// The same conversion for the 12 dB low pass, which had none.
+//
+// Measured as the gain our stopband carries over the reference's: +2.86 dB at
+// cutoff 40 and +3.00 at 64 with the resonance off, running to +3.69 at
+// resonance 96. On a 12 dB per octave slope that is 0.24 octaves of corner, and
+// 2^-0.24 is the factor below. The passband agrees to within half a decibel
+// either side of the change, which is what says this is a corner and not a gain.
+FILTER_CUTOFF_12_LOW_PASS_RATIO :: f32(0.846)
+
+// Correcting the resonance-0 corner surface, which was measured at one note.
+//
+// `filter_table_24_low.odin` is generated by `s1probe filtertable`, and against a
+// held sine it is 19 dB out in the middle of its range: at cutoff 44, resonance
+// 0, the reference passes a 262 Hz note at 11.0 dB where we pass it at -1.9. Our
+// own corner is exactly where the table puts it -- inverting the attenuation
+// returns 108.0 Hz against the table's 108.0 -- so the filter is doing what it is
+// told and the table is what is wrong.
+//
+// It is wrong because the reference's shape is not ours. Swept across notes 42 to
+// 78 at cutoff 34, the reference falls 19.0 dB per octave where we fall 23.4; at
+// cutoff 8, where both are far into the stopband, they agree at 23.6 and 24.1. So
+// the reference leaves its pass band at 12 dB per octave and reaches 24 only well
+// out, which is two sections at different corners rather than the two at one
+// corner this engine cascades. Fitting that topology directly gets the residual
+// from 9.67 dB rms to 5.90, and a four-pole ladder to 6.32, neither of which is
+// close enough to justify rebuilding the path on it -- the ladder is 16 dB out at
+// cutoff 8, where what is here already agrees.
+//
+// So this is a correction and not a model: the factor that best places our corner
+// against the reference across seven notes at each state, fitted on max error so
+// that no note is traded away for the one the harness happens to play. It takes
+// the worst state from 19.1 dB to 6.5 and leaves the shape mismatch behind, which
+// is the part that needs the topology and is recorded in docs/null-test.md as
+// still open.
+//
+// Only the resonance-0 surface. `FILTER_CUTOFF_HZ_24` is measured from the
+// resonant peak instead, and the blend between them is measured separately.
+FILTER_CUTOFF_24_LOW_CORRECTION_STATES := [?]int{
+	0, 8, 12, 16, 20, 24, 28, 34, 40, 44, 48, 52, 56, 60, 64, 72, 80, 88, 127,
+}
+FILTER_CUTOFF_24_LOW_CORRECTION := [?]f32{
+	1.00, 1.00, 1.03, 1.11, 1.21, 1.32, 1.38, 1.39, 1.41, 1.44,
+	1.49, 1.51, 1.49, 1.45, 1.39, 1.25, 1.03, 1.00, 1.00,
+}
+
+filter_cutoff_24_low_correction :: proc "contextless" (state: f32) -> f32 {
+	last := len(FILTER_CUTOFF_24_LOW_CORRECTION_STATES) - 1
+	if state <= f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[0]) {
+		return FILTER_CUTOFF_24_LOW_CORRECTION[0]
+	}
+	if state >= f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[last]) {
+		return FILTER_CUTOFF_24_LOW_CORRECTION[last]
+	}
+	for i in 0 ..< last {
+		lo := f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[i])
+		hi := f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[i + 1])
+		if state <= hi {
+			t := (state - lo) / (hi - lo)
+			return dsp.lerp32(
+				FILTER_CUTOFF_24_LOW_CORRECTION[i],
+				FILTER_CUTOFF_24_LOW_CORRECTION[i + 1],
+				t,
+			)
+		}
+	}
+	return FILTER_CUTOFF_24_LOW_CORRECTION[last]
+}
 
 filter_cutoff_24_resonance_blend :: proc(stored: int) -> f32 {
 	state := resolved_position(20, stored)
@@ -791,6 +1054,11 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.filter_cutoff_surface_blend = 0
 		e.filter_cutoff_topology_scale = 1
 		e.filter_cutoff_hz = FILTER_CUTOFF_HZ[cutoff_state]
+		// See FILTER_CUTOFF_12_LOW_PASS_RATIO and `filter_cutoff_at_state`, which
+		// is where the cutoff a voice actually runs on is resolved.
+		if e.filter_mode == .Low_Pass {
+			e.filter_cutoff_hz *= FILTER_CUTOFF_12_LOW_PASS_RATIO
+		}
 	}
 	// That table is the low pass's corner, and the band pass does not centre on
 	// it. See the constant.
@@ -815,6 +1083,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.filter_damping = e.filter_slope == .Slope_24 ? FILTER_DAMPING_24[state] : FILTER_DAMPING[state]
 		e.filter_output_gain =
 			e.filter_slope == .Slope_24 ? FILTER_OUTPUT_GAIN_24[state] : FILTER_OUTPUT_GAIN[state]
+		// See `filter_output_correction`: what the saturation control does to the
+		// level once the filter is resonant, plus the 24 dB path's own resonance
+		// gain error, which is that surface's saturation-0 column.
+		e.filter_output_gain *= filter_output_correction(p.values[20], p.values[23])
 	}
 
 	// Parameter 21 displays -63..64, with stored 63 as zero. Controlled sweeps
@@ -830,6 +1102,8 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// documented one.
 	e.filter_key_track = unit_position(22, p.values[22])
 	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
+	e.filter_ladder_feedback = filter_ladder_feedback(p.values[20])
+	e.filter_ladder_gain = filter_ladder_gain(p.values[20], p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 
 	// -- amplifier -----------------------------------------------------------

@@ -26,6 +26,7 @@ Unison_Voice :: struct {
 	sub:             dsp.Oscillator,
 	sub_satellites:  [8]dsp.Oscillator,
 	filter:          dsp.Filter,
+	ladder:          dsp.Ladder,
 	// Parameter 75's offset in cents from the outer voice's pitch.
 	detune:          f32,
 	// -1..1.
@@ -90,12 +91,25 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	hi := clamp_int(lo + 1, 0, FILTER_TABLE_SIZE - 1)
 	fraction := bounded - f32(lo)
 
+	if p.filter_slope == .Slope_24 && p.filter_mode == .Low_Pass {
+		// The ladder's pole is where the reference's resonant peak is, and
+		// `FILTER_CUTOFF_HZ_24` is exactly that, measured from the peak at
+		// resonance 107: 105.3 and 576.1 Hz at states 34 and 64, against 110.4 and
+		// 582.6 fitted from the response. A ladder needs one surface at every
+		// resonance, so none of the blending below applies to it.
+		// See `filter_ladder_pole`: the peak surface is a few per cent low.
+		return exp_map(fraction, FILTER_CUTOFF_HZ_24[lo], FILTER_CUTOFF_HZ_24[hi]) *
+			filter_ladder_pole(bounded)
+	}
+
 	if p.filter_slope == .Slope_24 {
+		// See `filter_cutoff_24_low_correction`: the generated resonance-0 surface
+		// is out by up to a factor of 1.51 in the middle of its range.
 		low_q := exp_map(
 			fraction,
 			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[lo],
 			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[hi],
-		)
+		) * filter_cutoff_24_low_correction(bounded)
 		high_q := exp_map(
 			fraction,
 			FILTER_CUTOFF_HZ_24[lo],
@@ -115,6 +129,20 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	cutoff := exp_map(fraction, FILTER_CUTOFF_HZ[lo], FILTER_CUTOFF_HZ[hi])
 	if p.filter_mode == .Band_Pass {
 		cutoff *= BAND_PASS_CENTRE_RATIO
+	}
+	// And the 12 dB low pass needs its own, which it did not have.
+	//
+	// The table is the reference's audible corner; our section's -3 dB point is
+	// not where its coefficient is, exactly as the 24 dB path documents for
+	// itself. Measured as the gain our stopband carries over the reference's:
+	// +2.86 dB at cutoff 40 and +3.00 at 64 with the resonance off, up to +3.69
+	// at resonance 96. On a 12 dB per octave slope that is a quarter of an octave.
+	//
+	// Only this output. The high pass off the same section measures within 0.44
+	// dB across seven octaves and the band pass within 0.5, so scaling the shared
+	// coefficient would fix one and break two.
+	if p.filter_mode == .Low_Pass {
+		cutoff *= FILTER_CUTOFF_12_LOW_PASS_RATIO
 	}
 	return cutoff
 }
@@ -326,6 +354,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				)
 			}
 			dsp.filter_init(&u.filter)
+			dsp.ladder_reset(&u.ladder)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
 			// at note on, and turned fully down it does not fix anything at all.
@@ -915,16 +944,52 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		dsp.filter_set_damping(&u.filter, cutoff, p.filter_damping, sample_rate, p.filter_slope)
-		filtered := dsp.filter_process(
-			&u.filter,
-			mixed,
-			p.filter_mode,
-			p.filter_slope,
-			p.filter_saturation_drive,
-		)
+		// The 24 dB low pass is a ladder; see `dsp.Ladder`. Its level is its own
+		// measured surface -- `filter_ladder_gain` -- rather than the table that
+		// exists to undo two biquads' resonance gain.
+		filtered: f32
+		output_gain := p.filter_output_gain
+		if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
+			dsp.ladder_set(
+				&u.ladder,
+				cutoff,
+				p.filter_ladder_feedback,
+				sample_rate,
+			)
+			filtered = dsp.sanitize(
+				dsp.filter_saturate(
+					dsp.ladder_process(&u.ladder, mixed),
+					p.filter_saturation_drive,
+				),
+			)
+			// Only as far as the filter is open; see `FILTER_LADDER_GAIN_DB`. The
+			// raw ladder is already right at cutoff 64 and below -- within 0.4 dB
+			// across the whole resonance knob -- and falls behind only as the pole
+			// climbs past state 80, by 0.9, 2.1, 3.0, 4.2, 5.5 and 6.4 dB at states
+			// 80, 96, 104, 112, 120 and 127. That is a straight line in the state,
+			// so the correction is the surface raised to it.
+			output_gain = math.pow(
+				p.filter_ladder_gain,
+				dsp.clamp32((cutoff_state - 80.0) / 47.0, 0, 1),
+			)
+		} else {
+			dsp.filter_set_damping(
+				&u.filter,
+				cutoff,
+				p.filter_damping,
+				sample_rate,
+				p.filter_slope,
+			)
+			filtered = dsp.filter_process(
+				&u.filter,
+				mixed,
+				p.filter_mode,
+				p.filter_slope,
+				p.filter_saturation_drive,
+			)
+		}
 
-		sample := filtered * p.filter_output_gain * gain * stack_scale
+		sample := filtered * output_gain * gain * stack_scale
 
 		// The reference's pan law: full level in both channels at the centre, and
 		// panning attenuates the channel you are moving away from.

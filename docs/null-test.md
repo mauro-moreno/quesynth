@@ -8974,3 +8974,840 @@ either way, while ours doubles from 0.1027 to 0.2092. Something in our filter
 envelope is doing work at the top of that knob that the reference's is not.
 Pursuing it needs an instrument that reads the first hundred milliseconds rather
 than the steady state, which is the same gap this section opened with.
+
+### Measuring the percussion, and what could be fixed (2026-08-28)
+
+The previous section ended on the instrument: the corpus gate reads a
+steady-state window, a hi-hat is over before that window opens, and half the
+corpus's hats therefore had no spectral reading at all. That is fixed first,
+because nothing else could be measured until it was.
+
+`compare --hold` shortens the note. Below about a third of a second the steady
+window cannot hold the transform and `compare_renders` already falls back to
+measuring from the first sample, which is the window a percussion patch occupies.
+At 0.4 seconds that window is both filled and early. Over the 381 percussion
+patches:
+
+```
+   patches the spectral gate cannot read     26.0%  ->  1.6%
+     hats                                    49.2%  ->  3.2%
+     snares                                  31.1%  ->  0.0%
+     kicks                                   12.6%  ->  0.0%
+   spectral error, on those it can read       7.35  ->  6.88 dB
+```
+
+The readings that already existed barely moved, which is the reassuring part: the
+window change is not a rescaling, it is the difference between measuring a patch
+and not measuring it.
+
+**One bug in that, worth keeping.** A directory run spawns a child process per
+patch, and the child was not being passed the flag. So the first corpus run came
+back byte-identical to the run it was meant to differ from -- every patch quietly
+measured on the default 1.5 seconds. It looked like a null result and was a
+dropped argument.
+
+### What the percussion error is not
+
+With the instrument fixed, the obvious causes were measured and are not it:
+
+```
+   the noise oscillator, swept to full        +0.00 to +0.55 dB
+   filter type 2, the hats' high pass         within 0.44 dB over seven octaves
+   filter type 3 at the patch's own setting   within 0.50 dB
+   the filter envelope's decay, over time     within 0.80 dB
+   keyboard tracking, swept                   within 1.50 dB
+   attack and release times, 381 patches      median difference 0 ms
+```
+
+`Closed Hihat` reads 1.62 dB of spectral error and a centroid within 0.08 octaves
+-- the timbre is right -- while sitting 8.5 dB quiet, which the peak ratio
+independently confirms. Its neighbour `close HH` is the opposite: level within 1
+dB and a centroid **0.91 octaves** too bright. Two patches from the same bank
+failing in two different directions is not one law being wrong.
+
+### The one thing found and fixed: the 12 dB low pass
+
+Measured along the way, and real: our 12 dB low pass passes 2.9 dB too much in
+its stopband. The passband agrees, the slope agrees at 12.7 dB per octave against
+12.96, and a uniform stopband offset with a matching slope is a corner in the
+wrong place -- a quarter of an octave high.
+
+The 24 dB path already carries exactly this correction and says why: the table is
+the reference's audible corner, and a section's own -3 dB point is not where its
+coefficient is. The 12 dB path had none. It is applied to the low pass alone,
+because the high pass off the same section measures within 0.44 dB and the band
+pass within 0.5 -- scaling the shared coefficient would fix one and break two.
+
+```
+   type 0 stopband, cutoff 40    +2.86 dB  ->  -0.07
+   type 0 stopband, cutoff 64    +3.00     ->  -0.20
+   type 2 high pass              -0.40     ->  -0.40  (untouched)
+```
+
+It was first written into `bind_patch`, where it did nothing at all: that
+function fills a field no one reads, and the cutoff a voice runs on is resolved
+again in `filter_cutoff_at_state`. The measurement not moving is what caught it.
+
+Over 48 factory patches this is neutral to slightly better -- spectral 5.56 to
+5.54, envelope 1.44 to 1.41, null -9.33 to -9.72 dB, with the level error 0.81 to
+0.95 -- and over the percussion corpus it changes nothing at all, 6.88 to 6.89.
+That is expected and worth saying plainly: **it is a correctness fix, not a
+percussion fix.** Hats use the high pass and the band pass, which were already
+right.
+
+### Where the percussion error actually sits
+
+Split by how hard the filter saturation is driven, on the transient window:
+
+```
+   saturation 0        n=162 (43.2%)   spectral 6.34 dB
+   1..63               n=102 (27.2%)            7.15
+   64..95              n= 44 (11.7%)            9.34
+   96 and over         n= 67 (17.9%)            6.22
+```
+
+Three decibels of penalty on the middle of that knob, and a direct sweep agrees:
+driven at stored 96 the spectral error is 4.16 dB and at 127 it is 13.88, against
+0.18 with the saturation off. The worst sixty transient patches also carry a low
+cutoff, oscillator FM and the modulation envelope where the best sixty carry
+none of them.
+
+So the remaining percussion error is not one law but a cluster, and the
+saturation curve at three quarters of its travel is the largest single piece of
+it. That is the next thing to measure, and it can now be measured, which is what
+this pass was for.
+
+
+### The filter saturation, measured (2026-08-28)
+
+The previous section named this as the largest remaining piece of the percussion
+error: on the transient window, patches driving the saturation between stored 64
+and 95 carry 9.34 dB of spectral error against 6.34 for those with it off.
+
+**Through an open filter it is already exact.** Sixty rows of `filtersaturation`
+at input gains 96 and 127, from stored 0 to 127, and the two engines agree to the
+digit: THD -9.7 against -9.7 at stored 88, -7.2 against -7.2 at 127, the
+fundamental within 0.1 dB and the peak within 0.0001. Whatever is wrong is not
+the curve and not the drive table.
+
+**Through a closed filter it is not.** With the cutoff at stored 34, where the
+worst percussion patches sit, ours makes far too little distortion:
+
+```
+   sat        0      32      64      96     127
+   ref     -66.0   -42.0   -24.9   -14.2    -9.3 dB THD
+   ours    -67.4   -58.8   -41.4   -25.9   -13.8
+   short     1.4    16.8    16.5    11.7     4.5
+```
+
+Resonance compounds it. At stored 80 the peak at full saturation is 0.786 for the
+reference and 0.465 for us, 4.5 dB of level on top of the missing harmonics.
+
+### Where the saturator sits, which is the whole question
+
+Ours takes the finished filter output. With the cutoff low that output is a small
+clean sine -- the filter has already removed what there was to distort -- so a
+soft curve barely bends it. Three placements were built and measured:
+
+```
+                        mid-knob THD (ref -42.0)   peak at full (ref 0.787)
+   the output, as now          -58.8                      0.822
+   the filter's input          -46.1                      0.310
+   the integrator's input      -43.2                      0.338
+```
+
+The analogue placement, on `x - ic2eq` inside the state-variable loop, very nearly
+lands the harmonics -- -43.2 against -42.0 -- and loses the level completely. The
+output placement is the only one that reproduces the level, because the
+peak-normalised curve maps a small input to nearly full scale and that is where
+the reference's ten decibels of level gain come from.
+
+So the reference does both, and no single placement of one curve does both. It
+generates its harmonics where the signal is still large and it applies a gain that
+only an output-side normalisation gives.
+
+There is a number for how large "still large" is. Matching the closed-filter THD
+at stored 64 requires the saturator to see about 0.35, where the filter's output
+is 0.24 and its unfiltered input is 0.83. Not either end of the filter: a point
+inside it.
+
+The reverted experiments are the useful part of this section. The next attempt
+should be a saturator in the loop **with** the output normalisation the curve
+already carries, rather than a fourth guess at where one curve goes -- and it can
+be checked in a minute, because `filtersaturation` compares both engines directly
+and the open-filter rows are a control that must not move.
+
+
+### Doing it: a saturator in the loop with the output normalisation (2026-08-28)
+
+The section above proposed exactly that, and it is worth writing down what
+happened, because the first thing it produced was a correction to its own
+reasoning.
+
+**The open-filter control does not test what it was said to test.** It was
+offered as the thing that must not move, on the grounds that it pins the
+placement. It does not: with the filter open the input and the output are the
+same signal, so *every* placement gives the same answer. Measured rather than
+assumed -- input-side saturation through an open filter returns -26.5, -13.9,
+-8.9 and -7.2 dB of THD against the reference's -26.5, -13.9, -8.9 and -7.2. The
+control pins the curve and the drive table, and says nothing at all about where
+the curve sits.
+
+### The attempt
+
+In the loop on `x - ic2eq` *and* at the output, which is what was proposed:
+
+```
+   cutoff 34            sat 32    64      96     127
+   reference            -42.0   -24.9   -14.2    -9.3 dB THD
+   output only          -58.8   -41.4   -25.9   -13.8
+   loop and output      -42.4   -29.9   -21.4   -12.4
+   peak, reference      0.288   0.467   0.666   0.787
+   peak, loop+output    0.279   0.536   0.804   0.825
+```
+
+The shortfall goes from 16.8, 16.5, 11.7 and 4.5 dB to 0.4, 5.0, 7.2 and 3.1, and
+the level tracks within 1.6 dB where it used to be out by 4.5. On the closed
+filter it is better in every column.
+
+**And the open case degrades, which is what stops it.** Two saturators in series
+compress before the second one sees the signal, so at stored 96 the THD comes
+back -19.4 against the reference's -8.9, having been exact. Ten decibels lost
+where the patch is loudest to buy seven where it is quietest is not a trade worth
+taking, and it is not what the reference does.
+
+### The resonance path, which is where the arithmetic pointed
+
+Matching the closed-filter harmonics needs a saturator seeing about 0.35 where
+the output is 0.24 and the unfiltered input is 0.83. The band-pass amplitude at
+that setting computes to 0.32 -- the only signal in the section of the right
+size -- so that is where it was tried next.
+
+Twice, and the first was a mistake worth recording: saturating the returned `bp`
+changes nothing at all, because the states update from the unsaturated `v1` and
+`v2`. The measurement coming back byte-identical to the unmodified engine is what
+caught it, the same way the dropped `--hold` argument was caught.
+
+Put on the integrator state, where it really is in the loop, it runs away: the
+peak goes to 1.23 against the reference's 0.29 and the THD overshoots by 19 dB.
+The reason is in the curve rather than the placement. `tanh(x d)/tanh(d)` is
+peak-normalised, so its small-signal gain is `d/tanh(d)`, which is greater than
+one -- fine on an output, unstable inside a feedback path.
+
+### What that leaves, stated precisely
+
+The reference needs harmonics generated where the signal is still large and a
+level that only an output-side normalisation gives, and the two cannot both come
+from one placement of one curve. Everything tried is reverted; the engine still
+saturates its output.
+
+The next attempt has a specification rather than a guess:
+
+  * in the loop, a limiter with **unity small-signal gain** -- `tanh(x d)/d`
+    rather than `tanh(x d)/tanh(d)` -- since a gain-carrying curve in a feedback
+    path is what ran away above.
+  * at the output, the normalisation that already exists, whose job is the ten
+    decibels of level rise and the top of the knob, both of which it already gets.
+  * the drive split between them fitted so that the closed-filter THD lands at
+    -42.0, -24.9, -14.2 and -9.3 dB **while** the open-filter rows stay at -26.5,
+    -13.9, -8.9 and -7.2. Two conditions, one free parameter each, and both are a
+    minute's measurement away.
+
+
+### Where the saturation defect starts, which narrows it a lot
+
+Two more measurements, both cheap, both worth having before the next attempt.
+
+**The unity-gain limiter does not disturb the control.** Put on the resonance
+integrator at loop drives of 1.0 and 0.4 of the saturation drive, the open-filter
+rows stay exactly where they were -- -26.5, -13.9 and -7.2 dB against the
+reference's identical three, peak 0.8253 against 0.8253. That is worth knowing on
+its own: a loop-side term can be fitted freely without touching the case that
+pins the curve.
+
+What it cannot do is buy harmonics without spending level. At stored 64 the
+closed-filter THD improves from -41.4 to -29.4 dB as the loop drive goes from
+nothing to full, and the peak falls from 0.442 to 0.234 against the reference's
+0.467. The exchange is about one for one, and the reference pays neither.
+
+**The defect is a cliff, not a curve.** Holding the saturation at stored 64 and
+closing the filter:
+
+```
+   cutoff      127     96     64     48     34
+   ref THD   -13.9  -13.9  -13.5  -15.3  -24.9 dB
+   ours      -13.9  -13.9  -12.9  -16.8  -41.4
+   short       0.0    0.0    0.6   -1.5  -16.5
+```
+
+Nothing at all until the filter starts attenuating the note, and then sixteen
+decibels. At cutoff 48 the corner is about 250 Hz against the probe's 262 Hz note
+-- the filter has barely begun -- and the two engines agree. At cutoff 34 the
+corner is near 110 Hz, the fundamental is down 8.9 dB, and they do not.
+
+That last pair of numbers is the useful one. The drive multiplier the closed case
+needs is about 1.45, which is 3.2 dB, against 8.9 dB of attenuation on the
+fundamental: **half of it, in decibels**. A signal that loses half the decibels
+the low pass loses is the band pass, which rolls off at 6 dB per octave where the
+low pass rolls off at 12 -- and the band-pass amplitude at that setting computes
+to 0.32 against the 0.35 the harmonics require.
+
+Three separate arguments now land on the same node, so the next attempt should
+put the nonlinearity between the two integrators rather than on either end of the
+section. The TPT form does not expose that point -- its low pass is computed
+directly rather than integrated from its band pass -- so it needs the explicit
+form, which is a restructuring rather than an insertion and is why it was not
+simply tried here.
+
+
+### The saturation control opens the filter (2026-08-28)
+
+The previous section left the nonlinearity's position as the open question and
+argued for the band-pass node on three grounds. Taking it settled the question,
+though not the way the argument expected.
+
+**Restructuring first.** The solved form computes the low pass directly, as
+`ic2eq + a2*ic1eq + a3*v3`. Since `a2 = g*a1` and `a3 = g*a2` that is
+`ic2eq + g*v1` term for term, so the low pass can be integrated from the band
+pass instead, leaving that node exposed with every coefficient unchanged.
+
+The node behaves as predicted. A limiter there leaves the open-filter control
+**exactly** intact -- -26.5, -13.9, -8.9, -7.2 dB and peak 0.4467 against the
+reference's identical five -- at every loop drive from 0 to 4, because with the
+corner above the note the band pass is too small for the limiter to reach. No
+earlier placement managed that. Driven at twice the saturation drive it closed
+most of the harmonic gap as well, and normalised by `sqrt(d * tanh d)` it tracked
+the reference's closed-filter fundamental across a 16 dB climb: 7.3, 14.6, 20.4
+and 22.7 dB against 7.5, 14.4, 21.1 and 23.5.
+
+**And the corpus refused it.** Percussion spectral error went from 5.975 to 6.603
+dB, worse on 87 patches against 65 better. The normalisation that recovers the
+level has a small-signal gain of `sqrt(d/tanh d)`, up to 4.1, so quiet passages
+run at a corner up to two octaves high; the probe never saw it because the probe
+holds loud steady tones. Compensating that shift turns the curve back into the
+unity-gain one that loses 6.5 dB of fundamental. The two cannot both be had from
+a static curve on that node, and the reference pays neither.
+
+### What the fundamental was saying
+
+The clue was in the numbers the placements were being judged against rather than
+in the placements. Through a filter closed to cutoff 34, the reference's
+fundamental climbs 16 dB across the saturation knob, 7.5 to 23.5 dB, arriving
+within 0.7 dB of what the same note measures through a fully open filter. Through
+an open filter it climbs 1.7 dB. Through a half-open one, 1.0.
+
+A control that does nothing once the corner is above the note and lifts the note
+to its open-filter value when the corner is below it is not a nonlinearity. It is
+the corner itself moving -- and that is the cliff, which was absent at cutoff 127,
+96, 64 and 48 and worth 16.5 dB at 34, exactly where the corner first falls below
+the note being played.
+
+**The slope test confirms it.** A corner moving by G lifts a 24 dB slope by twice
+the decibels it lifts a 12 dB one, while a gain lifts both equally. Removing the
+common rise our own output saturator already produces:
+
+```
+   LP12   reference +29.4 dB   ours +24.1   residual  +5.3 dB
+   LP24   reference +39.1 dB   ours +24.6   residual +14.5 dB
+```
+
+The residual is 2.7 times larger on the steeper slope, against 2 for a corner and
+1 for a gain, with the LP12 figure understated because its corner reaches the note
+before the knob ends. Independently, the gap between the two slopes narrows from
+26.6 to 16.9 dB across the knob, which places the corner at 56.6 Hz and then 98.5,
+a factor of 1.74. Fitting the LP12 asymptote at cutoff 8, where the corner sits
+2.7 octaves below the note and stays there, gives 1.9. Three routes, one answer.
+
+The table is that measurement rather than the formula it resembles: the
+`sqrt(d/tanh d)` the drive's own normalisation suggests reaches 4.1 and overshoots
+the fundamental by 4.9 dB in the middle of the knob.
+
+### Gated
+
+```
+                       before    after
+   percussion spectral   5.975    5.861   68 patches better, 45 worse
+   percussion envelope   3.501    3.459
+   factory bank          5.820    5.846   3 better, 1 worse, 115 unchanged
+```
+
+The factory bank barely moves because few of its patches drive the control. The
+open-filter case stays exact, cutoff 64 lands within 0.1 dB, and cutoff 34's
+sat-64 shortfall falls from 16.5 dB to 1.4.
+
+**Three residuals, left open rather than papered over.** The harmonics at very
+closed cutoffs are still short -- the corner explains the fundamental, not the
+distortion, which is a separate mechanism. The 24 dB filter is 8.1 dB short at a
+closed cutoff with the saturation control at zero, so that error predates this and
+is not saturation at all. And the correction the reference wants grows with
+resonance, from 5.4 dB at resonance 0 to 10.4 at 115, while the table is fitted at
+resonance 0.
+
+That last one has a name in the bank. `083.sy1`, "Solo Lead", is the single
+factory regression, 5.61 to 7.17 dB, and it is a 24 dB filter at cutoff 33 with
+resonance 115 and saturation 122 -- every one of the three residuals at once.
+Moving a resonance that sharp by a factor of 1.9 relocates it across the
+sixth-octave bands the metric scores, so a correction in the right direction still
+reads worse there until the resonance dependence is fitted too.
+
+
+### The 24 dB corner surface was out by half an octave (2026-08-28)
+
+One of the three residuals left by the corner-opening work was that the 24 dB low
+pass is 8.1 dB short at a closed cutoff with the saturation control at zero, which
+made it a linear error and nothing to do with saturation. It is larger than that
+reading suggested. Swept across cutoff at resonance 0, a 262 Hz note comes out:
+
+```
+   cutoff       12     20     28     34     44     52     64     96
+   short      +1.8   +8.1  +13.8  +14.6  +12.9   +6.9   +0.1   -0.1 dB
+```
+
+A bump, worth up to 14.6 dB, over a region 27 per cent of the factory bank and 49
+percussion patches sit in. The 12 dB path measures within 1.0 dB everywhere across
+the same sweep, so this is the 24 dB path alone.
+
+**Our filter is doing what it is told.** Inverting each attenuation back to the
+corner that produced it returns, against what the table supplies:
+
+```
+   state          20      28      34      44      52
+   ours         40.1    51.3    67.1   108.0   168.3 Hz
+   table x1.255 40.1    51.3    67.1   108.0   168.2
+   reference    50.6    76.5   102.7   160.6   217.6
+```
+
+Ours lands on the table to three figures at every state. The table is what is
+wrong, and `filter_table_24_low.odin` is generated, so the generator is.
+
+**Why it is wrong: the shape is not ours.** A corner error cannot make a bump --
+it would be largest deep in the stopband, where this one is smallest. Sweeping
+notes 42 to 78 instead of cutoff, the reference falls 19.0 dB per octave at cutoff
+34 where we fall 23.4, while at cutoff 8, with both far into the stopband, they
+agree at 23.6 and 24.1. The reference leaves its pass band at 12 dB per octave and
+reaches 24 only well out. That is two sections at different corners; this engine
+cascades two at one corner, which leaves the pass band already near 24.
+
+Fitting the topology directly, over 101 measured points:
+
+```
+   two matched biquads, as now                       9.67 dB rms
+   four cascaded one-poles, fc = 1.78 x table        6.32
+   two biquads staggered 1.11 and 2.40, k = 1.27     5.90
+```
+
+Neither candidate earns a rebuild of the path. The ladder is 16 dB out at cutoff
+8, where what is already here agrees to 2 dB, so it trades a region that works for
+one that does not.
+
+**So the correction is a correction and not a model.** For each cutoff state, the
+factor that best places our corner against the reference across all seven notes,
+chosen on worst-note error so that no note is traded for the one the harness
+happens to play. It runs 1.00 at both ends and peaks at 1.51 at state 52, and it
+applies to the resonance-0 surface only -- `FILTER_CUTOFF_HZ_24` is measured from
+the resonant peak instead and is not touched.
+
+```
+   worst note error by state
+   state      16    20    24    28    34    40    44    48    52    56    64    72
+   before    5.0   8.7  12.7  15.2  17.1  18.7  19.1  18.8  17.5  16.5  13.0   6.8
+   after     1.6   2.2   3.1   4.1   5.9   6.8   6.5   5.1   3.3   3.1   2.4   1.4
+```
+
+Gated, against the state at the end of the corner-opening work:
+
+```
+                         all patches        LP24 at cutoff 10-60
+   factory mean       6.544 -> 6.489        8.195 -> 8.008   15 better, 4 worse
+   percussion mean    7.393 -> 7.350        8.147 -> 8.047   19 better, 13 worse
+   factory spectral   21 better, 8 worse
+```
+
+What is left is the shape, and it is the larger half: the residual after the
+correction still reaches 6.8 dB at cutoff 40, and it is signed -- too loud below
+the corner, too quiet above -- because a single factor cannot change a slope. That
+needs the topology the fits above could not find, and it stays open.
+
+
+### What saturation does to a resonant filter's level (2026-08-28)
+
+The second residual said the corner opening needed more correction as resonance
+rose, from 5.4 dB at resonance 0 to 10.4 at 115. Fitting a multiplier on the
+opening failed, and usefully: at cutoff 34, resonance 115 and saturation 127 the
+opened corner is already past the note, so our fundamental is sitting at its own
+pass-band ceiling and widening it further changes nothing. For the reference to be
+6.9 dB above that, it is not a corner at all.
+
+Opening the filter completely removes the corner from the question, and the effect
+survives:
+
+```
+   open filter, resonance 115, saturation 127
+   reference 30.9 dB    ours 22.5    short 8.4
+   open filter, resonance   0, saturation 127
+   reference 24.2 dB    ours 24.2    short 0.0
+```
+
+The reference gains 10.5 dB from the saturation knob at resonance 115 and 1.7 dB
+at resonance 0. This engine gains about 2 dB either way. With the filter open the
+resonant peak is far above the note being measured, so what this measures is a
+broadband gain and not a peak, which is what makes it separable and correctable.
+
+The surface is clean -- zero along both axes, monotone in both, and near enough
+separable that the saturation profile is the same shape at every resonance:
+
+```
+   ref - ours, dB, 12 dB low pass, open filter
+   res \ sat      0     16     32     48     64     80     96    112    127
+      0        +0.0   +0.0   +0.0   -0.1   -0.2   -0.1   -0.1   -0.1   +0.0
+     32        -0.1   +0.0   +0.2   +0.5   +0.9   +1.2   +1.4   +1.6   +1.6
+     64        -0.1   +0.1   +0.6   +1.3   +2.2   +2.9   +3.3   +3.5   +3.6
+     96        -0.1   +0.2   +0.9   +2.2   +3.7   +4.9   +5.6   +6.1   +6.3
+    115        +0.0   +0.2   +1.2   +2.8   +4.8   +6.4   +7.6   +8.1   +8.4
+```
+
+Each row is referenced to its own saturation-0 value before use, and the two
+things that forced that are worth recording, because both were caught by the bank
+rather than by the probe.
+
+**The 24 dB path is also short at saturation 0**, by up to 3.8 dB, which is its
+resonance output gain and has nothing to do with saturation. Correcting it from
+this reading made four factory patches about 3.5 dB loud -- 121, 077, 064 and 108
+are all 24 dB filters with resonance 65 to 89 and the saturation control at zero,
+and they play at cutoff 10 to 34, where the deficit measured with the filter open
+is not there. It is a real error awaiting a measurement taken where it applies.
+
+**The 24 dB filter self-oscillates at the top of its resonance knob.** The raw
+deficit runs +3.8, +3.6, +3.2, +3.3, +3.7, +4.0, +4.6 from resonance 96 to 124 and
+then falls to -19.0 at 127, one state wide, where we are far louder rather than
+quieter. Applied as a saturation correction it cost `123.sy1` -- a 24 dB patch at
+resonance 127 with saturation at zero -- 19 dB. Referenced to its own
+saturation-0 value the row becomes mild and only affects patches that are actually
+saturated.
+
+Gated:
+
+```
+                        median          mean
+   percussion level   2.765 -> 2.425   3.918 -> 3.306   97 better, 30 worse
+   percussion envelope 3.459 -> 3.436
+   factory level      0.937 -> 0.935   1.287 -> 1.252    3 better,  1 worse
+   spectral, both     unchanged
+```
+
+Level is the metric a gain law should move and it moves; spectral does not, which
+is the right signature. `083.sy1`, the single regression from the corner-opening
+commit, improves 9.4 dB here.
+
+One patch still regresses: `032.sy1`, a 12 dB filter at cutoff 39 with resonance 71
+and saturation 109, goes 4.07 dB loud. It is the closed-cutoff case, where the
+correction was fitted with the filter open and over-applies -- measured directly,
+the same setting reads -5.5 dB at cutoff 34 where it reads 0.0 open. The law is a
+gain and the residual is not; that stays open.
+
+
+### The 24 dB low pass is a ladder (2026-08-28)
+
+The shape residual left open above -- the reference falling 19.0 dB per octave
+where we fell 23.4, meeting us only deep in the stopband -- had a topology behind
+it, and the topology is identifiable rather than guessable.
+
+**The experiment that settles it** is to fit candidate shapes with the corner left
+*free* at each cutoff state. That separates the shape from the cutoff table, which
+was the flaw in the earlier attempt: forced through the table, four one-poles
+scored 6.32 dB rms and looked hopeless. Freed, over notes 24 to 100:
+
+```
+   two matched biquads, as shipped          1.53 dB rms
+   four cascaded one-poles                  0.48
+   two staggered biquads, ratio 2.10        0.38
+```
+
+Fitted state by state the one-pole cascade holds between 0.03 and 0.68 dB across
+the whole usable range, where the biquad pair reaches 1.48.
+
+**What resonance does is the proof.** Held at cutoff 34 and swept from resonance 0
+to 115, the fitted pole frequency does not move:
+
+```
+   res      0     16     32     48     64     80     96    107    115
+   pole 110.4  110.4  110.4  110.4  110.4  110.4  110.4  110.4  110.4 Hz
+   k     0.00   0.50   1.00   1.50   2.00   2.55   3.00   3.35   3.60
+   rms   0.05   0.03   0.03   0.04   0.04   0.04   0.05   0.05   0.04
+```
+
+A ladder resonates by feeding its output back and leaves its poles where they are.
+A pair of biquads resonates by reducing damping, which moves the -3 dB point.
+The reference is plainly the first, at 0.03 to 0.05 dB rms, and the same feedback
+comes back at a different cutoff -- 0.00, 1.95 and 3.15 at cutoff 64 against 0.00,
+2.00 and 3.35 at cutoff 34 -- so it is a function of the knob alone. It is very
+nearly the knob over 32.
+
+**And the pole table already existed.** For a four-pole ladder the resonant peak
+sits exactly at the pole frequency, and `FILTER_CUTOFF_HZ_24` was measured from
+that peak: 105.3 and 576.1 Hz at states 34 and 64, against 110.4 and 582.6 fitted
+from the response. So the ladder needs one surface at every resonance, and the
+two-surface blend, the topology scale and the low-resonance correction fitted
+earlier exist only because the wrong topology needed different corners at
+different resonances.
+
+### What it cost to get the level right
+
+Two corrections, each one caught by a measurement that contradicted the previous
+guess.
+
+The ladder loses `1/(1+k)` at DC. Undoing that was wrong: it multiplies the stop
+band as readily as the pass band, and a note above the pole went to +8.3 dB where
+the reference sits at -3.6 at every resonance. Removed, the raw ladder matches the
+reference across the entire resonance knob at cutoff 34 -- 25.4, 24.3 and 21.5
+against 25.4, 23.8 and 21.0 below the pole.
+
+But through an *open* filter the reference is up to 6.9 dB louder than a raw
+ladder, so it does compensate, only not everywhere. The deficit turned out to
+depend on how open the filter is, not on where the note sits:
+
+```
+   cutoff       64     80     96    104    112    120    127
+   deficit     0.4    0.9    2.1    3.0    4.2    5.5    6.4 dB   (resonance 96)
+   ramp        0.0    0.0    2.1    3.2    4.3    5.3    6.4
+```
+
+A straight line in the cutoff state from 80 to 127, so the correction is the
+measured resonance-by-saturation surface raised to that ramp. With it the ladder
+lands within 0.4 dB at every cutoff from 64 up and at every resonance.
+
+### Gated
+
+```
+                          median            mean         24 dB patches
+   factory spectral   5.820 -> 5.485   6.489 -> 6.150   7.044 -> 6.513   63 better, 7 worse
+   factory envelope   1.638 -> 1.538   2.000 -> 1.948   2.151 -> 2.069
+   percussion spectr  5.914 -> 5.789   7.353 -> 7.236   8.075 -> 7.784   63 better, 56 worse
+   percussion level   2.425 -> 2.218   3.306 -> 3.162   3.273 -> 2.935   70 better, 45 worse
+```
+
+Spectral improves on 63 factory patches against 7, which is the largest single
+movement in this file, and the 24 dB subset carries it.
+
+**Factory level is the exception, and it is one patch.** The mean goes 1.252 to
+1.532 with `123.sy1` and 1.261 to 1.334 without it. That patch is a 24 dB filter
+at cutoff 5 with resonance 127, where a four-pole ladder self-oscillates: the
+reference emits its own tone and we do not, leaving us 24.8 dB quiet in RMS.
+Raising the feedback to 3.97 recovers 7.5 dB of it and costs 0.4 dB of spectral
+error, and still does not reproduce the oscillation, so the measured 3.70 stays
+and the state is left open. Three factory patches sit at resonance 120 or above.
+
+The other residual that stays open is the closed-cutoff shape: the ladder is
++1.5 to +2.9 dB at cutoff 34 to 48 where it is within 0.4 above cutoff 64. And
+the harmonics at very closed cutoffs are unchanged by any of this -- the
+saturation curve still sits after the filter, where a ladder's belongs inside the
+loop, which is the next thing this points at.
+
+
+### The two residuals after the ladder (2026-08-28)
+
+**The shape one is closed.** `FILTER_CUTOFF_HZ_24` was measured from the resonant
+peak, which for a four-pole ladder is the pole -- but measured at resonance 107,
+through a filter that is ringing. Fitting the pole instead against the whole
+magnitude response at resonance 0, where the model is a pure `G^4` and the fit
+lands at 0.02 to 0.04 dB rms, it sits consistently above the table:
+
+```
+   state    8     12     16     20     24     28     34     40     44     48     52     56     60     64
+   ratio 1.024  0.998  1.028  1.006  1.000  1.024  1.053  1.003  1.035  1.062  1.052  1.054  1.036  1.023
+```
+
+Only those states constrain anything -- above 64 the response is flat across the
+swept notes and the fit will accept any pole, so the correction returns to one
+there instead of following numbers that mean nothing. Smoothed, because the
+state-to-state scatter is the table's own noise.
+
+Four decibels of output per decibel of corner turns five per cent into 1.8 dB,
+which is what state 34 was showing. Applied, the resonance-0 error goes from
++1.5 dB to within 0.4 across every cutoff and every resonance. Factory spectral
+better on 20 patches against 7; percussion envelope median 3.511 to 3.433 and
+level better on 20 against 9.
+
+**The harmonic one is not**, but it is now cornered rather than merely open.
+Three things were tried, and each failed in a way that removes a possibility.
+
+*A ladder's nonlinearity belongs in its stages* -- which is what the previous
+commit predicted -- **is wrong**. Per-stage curves, with the drive refitted for
+them, reproduce the open-filter control beautifully: THD within 0.5 dB and peak
+within 3 per cent at every saturation state, and the scale the refit wanted came
+out 0.48 to 0.67 across the whole knob, one factor within a few per cent, which
+says the old table's shape was right all along. Closed to cutoff 34 they are 31.5
+dB short of the reference at the top of the knob, where the same curve placed
+after the filter is 0.9 dB *over*. The saturation is a post-filter waveshaper.
+The reason is visible in the fundamental: closed and driven, the reference reaches
+27.3 dB, within two of its own open-filter pass band, which is what a
+peak-normalised curve does when its input is small and it runs at its full
+`d/tanh(d)` makeup. Nothing inside the filter does that.
+
+*The drive fit is degenerate* -- true, and not enough. Once `a*d` is deep in
+clipping, doubling `d` changes neither THD nor peak, so the open-filter
+measurement cannot pin the drive at the top of the control, and the closed-filter
+shortfall grows exactly with the saturation state: -1.5, -5.2, -18.7 and -23.4 dB
+at states 32, 64, 96 and 127. Breaking the degeneracy on a closed filter:
+
+```
+   state 127   closed THD lands at scale 4.0, and costs 0.6 dB of the open control
+   state  96   lands at 8.5, costs 2.3
+   state  64   lands at 20,  costs 7.2
+```
+
+So the branch is real at the very top and useless in the middle. No single drive
+table satisfies both ends, which means the reference's curve is a different
+*shape* and not a differently driven `tanh`.
+
+*Opening the corner further* buys harmonics and overshoots the fundamental, and
+the two cannot be had at once. Fitted to the fundamental, the ladder wants a
+gentler opening than the 12 dB path's -- 1.589 against 1.905 at the top -- and
+that lands the fundamental within 0.3 dB at cutoff 12 and 20 while costing 5 dB of
+THD, and the bank rejects it: percussion spectral better on 13 patches and worse
+on 28. The corpus prefers the harmonics to the fundamental, so the committed curve
+stays.
+
+What is left is a curve that matches `tanh` where the signal is large and makes
+more distortion than `tanh` where it is small, with the same drive law. That is a
+shape question, and it is the one open thing on this path.
+
+
+### The saturation curve, read instead of inferred (2026-08-28)
+
+Everything above about this control was fitted from THD through an open filter,
+and the previous section closed by saying what was left: a curve matching `tanh`
+where the signal is large and bending harder where it is small. That is a
+description of a shape, and a shape can be measured.
+
+`s1probe filtercurve` does it the way `fxshape` does the effect unit. Render one
+patch twice, saturation off and on; both come from the same synth, sample for
+sample, so the second scattered against the first **is** the transfer curve, one
+point per sample, no fitting and no assumed family. The filter is left open so
+that nothing but the shaping differs between the two renders, and a sine sweeps
+its whole range on the way past, so the bottom of the curve -- the part in
+question -- is sampled as densely as the top.
+
+**It is not a tanh.** Against nine families at three settings:
+
+```
+                        sat 32    sat 64    sat 96
+   x d / (1 + |x d|)   0.00022   0.00068   0.00241   rms
+   atan(x d)           0.00261   0.00814   0.00629
+   tanh(x d)           0.00306   0.01707   0.02559
+   hard clip           0.01309   0.04170   0.03845
+```
+
+The algebraic saturator wins every setting by an order of magnitude, and at
+saturation 32 it lands at 0.00022 -- the measurement's own floor. Normalised to
+pass one unchanged it is `x(1+d)/(1+|x d|)`, whose small-signal gain is `1 + d`
+where a peak-normalised tanh gives `d/tanh(d)`. That is the whole difference: half
+again as steep at the middle of the knob, and a closed filter is exactly what puts
+the signal down there.
+
+The drive table is now the curve's own parameter at each knot rather than an
+inversion of THD, fitted at 0.0002 to 0.011 rms across the whole control, and it
+runs to 74 where the tanh law stopped at 16.9.
+
+### Which retracts the corner opening
+
+Two sections above, this file recorded that the saturation control opens the
+filter's corner, with three arguments: a defect that was a cliff rather than a
+curve, a fundamental that climbed 16 dB at a closed cutoff to arrive at its own
+open-filter value, and a residual twice as large on the 24 dB slope as the 12 dB
+one. A table was fitted for it, and later a second table for the ladder.
+
+**All of it was the wrong curve.** With the algebraic saturator in place and the
+corner opening switched off entirely:
+
+```
+   cutoff 34, THD and fundamental error, dB
+   12 dB path   +0.2/+0.3   +0.3/+0.4   +0.3/+0.2   +0.6/+0.3
+   24 dB path   +0.4/+0.3   +0.4/+0.3   +0.5/+0.5   +1.6/+1.2
+```
+
+against 16.5 and 23 dB short before. The fundamental climbs because `1 + d`
+reaches 75 at the top of the control, which is the makeup a peak-normalised curve
+applies to a small input -- not because the filter opens. The cliff was a cliff
+because that makeup only shows once the filter has attenuated the signal enough to
+reach the steep part of the curve. And the slope dependence followed because the
+24 dB filter attenuates faster, putting its signal further down the curve at the
+same cutoff.
+
+Both corner tables are deleted. The three arguments were consistent with each
+other and with a mechanism that is not there, which is the failure mode worth
+naming: they were all measurements of the same missing steepness, read through
+whatever model was to hand.
+
+### Gated
+
+```
+                         median            mean          driven patches
+   percussion spectral 5.827 -> 5.458   7.234 -> 6.863   7.713 -> 7.053
+   percussion level    2.197 -> 2.005   3.132 -> 2.862   3.414 -> 2.933
+   factory driven      spectral 6.491 -> 4.836, level 2.270 -> 1.397,
+                       envelope 2.527 -> 2.151, correlation 0.572 -> 0.681
+```
+
+Percussion spectral better on 87 patches against 54 and level on 79 against 43;
+the two saturation bands improve together, 5.116 to 4.346 above stored 112 and
+5.750 to 5.362 below it. The largest single movements are improvements by a wide
+margin -- -12.62, -7.13, -6.87 and -6.71 dB against a worst regression of +4.65.
+
+What is left on this control is small and unexplained: the 24 dB path is 2.4 dB
+out at cutoff 20 with the knob at the top, and its open-filter level surface has
+drifted to -1.1 dB at high resonance now that the curve beneath it has changed.
+
+
+### Both loose ends from the curve (2026-08-28)
+
+The curve section closed with two small things: the 24 dB path 2.4 dB out at
+cutoff 20 with the knob at the top, and its open-filter level surface drifted to
+-1.1 dB at high resonance. Both are closed, and the first turned out to be a
+reading rather than a mechanism.
+
+**The level surface** was fitted underneath the old curve, so replacing the curve
+moved it -- into a shallow bowl, worst -1.1 dB at resonance 115 and saturation 64.
+Its saturation-0 column did not move at all, which is the check that it should
+not: that column is the ladder's own DC loss and has nothing to do with the
+shaping. Re-measured and folded back in, the surface is exact at every knot again.
+
+**The top of the drive table was read through the wrong window.** The curve was
+fitted from a scatter taken with the filter open, and there the scatter's loop
+width runs from 0.004 at the bottom of the control to 0.18 at the top -- the top
+of the knob is where that reading is worst, and it is also where the open filter
+constrains the drive least, since the curve is already clipping and the parameter
+stops changing what comes out.
+
+Now that the corner opening is gone, the two renders differ by nothing but the
+shaping at *any* cutoff, so the same scatter can be taken through a closed filter,
+where the loop is 0.006 to 0.012 and the sine sits on the steep part of the curve
+that actually sets the level. That is a much better constraint, and it disagreed:
+converted to the same units the open reading puts the knee at 166 and the closed
+one at 224, a factor of 1.35, which is the 2.6 dB.
+
+The closed-filter reading is also an independent check on the retraction two
+sections above. A corner that moved with drive would make the two renders differ
+by a filter as well as a curve, and the scatter would open into a loop. At cutoff
+34 it does not.
+
+Corrected from the closed reading, the last five knots only -- every state up to
+96 was already exact:
+
+```
+   state        96    104    112    120    127
+   error      +0.2   +0.5   +0.8   +1.4   +2.3 dB   before
+              +0.2   +0.0   +0.0   +0.1   +0.2      after
+```
+
+and the open control does not move, THD within 0.1 dB and the peak still matching,
+because at those states it cannot: that is the same degeneracy that made the
+original fit unreliable, working the right way round for once.
+
+Across both filter types the whole surface is now within 0.5 dB nearly everywhere,
+the exceptions being the 24 dB path's harmonics at cutoff 8 and 20 at low drive,
+which are 1.4 dB short with the level exact.
+
+Gated: percussion spectral better on 22 patches against 9 and level on 36 against
+12, with the driven subset going 5.932 to 5.852 and 3.168 to 3.077. The factory
+bank has two patches driven that hard and does not move.

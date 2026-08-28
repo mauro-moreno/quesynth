@@ -75,6 +75,13 @@ run_isolated :: proc(exe, dll, patch_path: string, opt: Compare_Options) -> (u32
 	if opt.block != 0 {
 		fmt.sbprintf(&b, "--block %v ", opt.block)
 	}
+	// The hold has to travel. Left off, a directory run silently measures every
+	// patch on the default 1.5 seconds however it was invoked -- which is how a
+	// whole corpus of percussion came back byte-identical to the run it was
+	// supposed to differ from.
+	if opt.hold != 0 {
+		fmt.sbprintf(&b, "--hold %v ", opt.hold)
+	}
 	if opt.no_floor {
 		strings.write_string(&b, "--no-floor ")
 	}

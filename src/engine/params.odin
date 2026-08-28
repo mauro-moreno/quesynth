@@ -408,6 +408,8 @@ Engine_Params :: struct {
 	filter_key_track:   f32,
 	// Parameter 23 resolved to the measured peak-normalised tanh drive.
 	filter_saturation_drive: f32,
+	filter_ladder_feedback:   f32,
+	filter_ladder_gain:       f32,
 	filter_velocity:    bool,
 	filter_attack:      f32,
 	filter_decay:       f32,
