@@ -8524,3 +8524,82 @@ what a spectral comparison sees is how dense that broadband content is, which th
 larger depths get right and the null-matched ones do not. A feature can be
 reproduced exactly and still be the wrong feature to fit. The extrapolation
 stands, and the loose end stands with it.
+
+### The level error is not the post chain (2026-08-27)
+
+The defect list carried "eq + delay + chorus level response +4.31 combined on
+s016". Two things in that are wrong, and the second is the useful one.
+
+The +4.31 is not s016. It is 043, and s016 reads +2.38. That is a transcription
+slip and would not matter on its own.
+
+**The post chain is innocent.** A patch is not a fixed thing -- every parameter of
+it can be set in both engines at once from the same code path the bank run uses --
+so the claim is answerable by subtraction. `sectionlevel` renders a patch with
+each section switched out and reads what the level error does:
+
+```
+   patch    everything on   delay off   chorus off   eq flat   all three out
+   039          +4.47 dB      +4.47       +4.47       +4.47        +4.47
+   043          +4.31         +4.31       +4.36       +4.31        +4.36
+   008          +3.31         +3.31       +3.28       +3.31        +3.28
+   016          +2.38         +2.38       +2.07       +2.38        +2.07
+```
+
+Removing the equaliser, the delay and the chorus *together* moves the error by at
+most 0.05 dB on three of the four and 0.31 dB on the fourth. On s016 the reason is
+visible in the patch: its delay is on but at 3/127 wet, and its equaliser is at 64
+on every control, which is flat. The sections were never spending anything.
+
+### It is the 24 dB filter, and the resonance
+
+Sweeping one parameter at a time on 039 finds it in one pass. The filter envelope
+amount does nothing to the error -- flat at about +4 dB from 0 to 127 -- and
+neither does keyboard tracking. Resonance does all of it:
+
+```
+   resonance     0     16     32     48     64     80     96    112
+   error     +0.47  +2.18  +3.39  +4.47  +5.17  +5.35  +4.98  +4.43 dB
+```
+
+The reference *loses* level as the resonance comes up and ours does not. Driven
+with noise instead of a patch, the 12 dB responses are within half a decibel
+across the whole knob and the 24 dB one is not:
+
+```
+   resonance      0     16     32     48     64     80     96    112
+   12 dB      +0.19  +0.20  +0.22  +0.23  +0.23  +0.24  +0.45  +0.53 dB
+   24 dB      -0.99  +1.37  +1.67  +2.07  +2.24  +2.40  +1.94  -0.02
+```
+
+The engine has one output-gain curve for every response and both slopes, on the
+recorded finding that they all need the same correction to within a decibel. They
+do not: our 24 dB path is two cascaded two-pole sections and the reference's is
+one four-pole design, and ours gains level with resonance where the reference
+loses it. That is the same mismatch the damping already carries a separate 24 dB
+column for; the output gain now does too.
+
+```
+   24 dB error after      res 0    32    64    96   112
+   cutoff 32              +0.38  +0.60  +0.87  +1.44  +2.06 dB
+   cutoff 63              -0.10  +0.34  +0.37  +0.35  +0.42
+   cutoff 96              -0.27  -0.93  -1.24  -1.80  -2.54
+```
+
+At the middle of the cutoff range, where most of the bank sits, the error falls
+from 2.73 dB to 0.42. What is left is a dependence on cutoff that a curve of the
+resonance knob cannot hold -- about 2.5 dB between cutoff 32 and 96 -- and the
+table is the mean of the three.
+
+```
+   48 factory patches      before    after
+   level, mean            +0.56 dB  +0.32
+   level, mean magnitude   1.17      0.96
+   spectral, mean          5.56      5.56
+   043                    +4.31     +2.09
+   039                    +4.47     +2.40
+   008                    +3.31     +1.34
+```
+
+Three patches move the other way by about a decibel -- 005, 010 and 012 -- which
+is the cutoff dependence showing up as the price of a single curve.

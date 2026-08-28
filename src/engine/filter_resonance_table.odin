@@ -172,3 +172,61 @@ FILTER_OUTPUT_GAIN := [FILTER_RESONANCE_TABLE_SIZE]f32{
 	0.336505, 0.329277, 0.321544, 0.313359,
 	0.304423, 0.291687, 0.291261, 0.363214,
 }
+
+// The 24 dB path needs its own, which the single table above assumed it did not.
+//
+// That assumption is recorded above as a measurement -- "the low pass, the high
+// pass, the band pass and the 24 dB low pass all need the same correction to
+// within about a decibel" -- and it does not survive being checked with the
+// filter type the bank actually uses. Driven with noise at three cutoffs four
+// octaves apart, the 12 dB responses come back within 0.5 dB across the knob and
+// the 24 dB one does not:
+//
+//   resonance      0     16     32     48     64     80     96    112
+//   12 dB      +0.19  +0.20  +0.22  +0.23  +0.23  +0.24  +0.45  +0.53 dB
+//   24 dB      -0.99  +1.37  +1.67  +2.07  +2.24  +2.40  +1.94  -0.02
+//
+// The shapes of the two curves differ as well as their size: ours *gains* level
+// as the resonance comes up where the reference *loses* it, which is what a
+// four-pole design does and what two cascaded two-pole sections do not. That is
+// the same mismatch the damping table already carries its own 24 dB column for.
+//
+// What is left after this correction is a dependence on cutoff that a curve of
+// the resonance knob cannot hold: the error at a given resonance spans about
+// 2.5 dB between cutoff 32 and 96, and the entries below are the mean of the
+// three. Above stored 112 the reference is at or past self-oscillation and the
+// reading is not a level, so the correction is held at unity there.
+FILTER_OUTPUT_GAIN_24 := [FILTER_RESONANCE_TABLE_SIZE]f32{
+	1.120297, 1.090054, 1.060590, 1.031892,
+	1.003935, 0.976710, 0.950197, 0.924376,
+	0.899226, 0.883463, 0.867944, 0.852672,
+	0.837638, 0.822843, 0.808279, 0.793947,
+	0.779842, 0.775870, 0.771891, 0.767906,
+	0.763912, 0.759915, 0.755906, 0.751894,
+	0.747866, 0.739312, 0.730828, 0.722415,
+	0.714071, 0.705798, 0.697591, 0.689446,
+	0.681361, 0.674634, 0.667947, 0.661298,
+	0.654688, 0.648117, 0.641583, 0.635071,
+	0.628596, 0.622724, 0.616882, 0.611071,
+	0.605284, 0.599520, 0.593760, 0.588026,
+	0.582324, 0.577090, 0.571880, 0.566687,
+	0.561481, 0.556296, 0.551131, 0.545988,
+	0.540867, 0.536170, 0.531452, 0.526749,
+	0.522059, 0.517386, 0.512731, 0.508049,
+	0.503374, 0.498286, 0.493227, 0.488195,
+	0.483126, 0.478087, 0.473078, 0.468094,
+	0.463108, 0.458647, 0.454207, 0.449787,
+	0.445366, 0.440914, 0.436486, 0.432081,
+	0.427664, 0.424161, 0.420673, 0.417192,
+	0.413642, 0.410101, 0.406570, 0.402994,
+	0.399407, 0.397169, 0.394860, 0.392525,
+	0.390188, 0.387767, 0.385341, 0.382881,
+	0.380359, 0.379690, 0.378898, 0.378116,
+	0.377222, 0.376332, 0.375321, 0.374312,
+	0.373170, 0.375216, 0.377180, 0.379068,
+	0.380901, 0.382638, 0.384257, 0.385783,
+	0.386299, 0.380477, 0.374601, 0.368629,
+	0.362579, 0.356369, 0.349999, 0.343410,
+	0.336505, 0.329277, 0.321544, 0.313359,
+	0.304423, 0.291687, 0.291261, 0.363214,
+}

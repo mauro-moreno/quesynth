@@ -813,7 +813,8 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		state := clamp_int(resolved_position(20, p.values[20]), 0, FILTER_RESONANCE_TABLE_SIZE - 1)
 		e.filter_resonance = unit_position(20, p.values[20])
 		e.filter_damping = e.filter_slope == .Slope_24 ? FILTER_DAMPING_24[state] : FILTER_DAMPING[state]
-		e.filter_output_gain = FILTER_OUTPUT_GAIN[state]
+		e.filter_output_gain =
+			e.filter_slope == .Slope_24 ? FILTER_OUTPUT_GAIN_24[state] : FILTER_OUTPUT_GAIN[state]
 	}
 
 	// Parameter 21 displays -63..64, with stored 63 as zero. Controlled sweeps

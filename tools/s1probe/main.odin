@@ -690,7 +690,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" || cmd == "sectionlevel" || cmd == "paramlevel" {
         if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -1045,6 +1045,69 @@ main :: proc() {
 		}
 		set_fx_note(fcnote)
 		cmd_fxcurve(dll, fctype, 0, fcctl2, fclevel, fcnote, fcgain, parse_env_values(fcdrives), fccsv)
+	case "paramlevel":
+		plnote, plparam := 60, 19
+		plblock := COMPARE_BLOCK_DEFAULT
+		plvals := "0,16,32,48,64,80,96,112,127"
+		plset := ""
+		plpath := ""
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &plnote) {usage()}
+					i += 2
+				case "--param":
+					if !parse_probe_int(rest, i + 1, &plparam) {usage()}
+					i += 2
+				case "--values":
+					if i + 1 >= len(rest) {usage()}
+					plvals = rest[i + 1]
+					i += 2
+				case "--set":
+					if i + 1 >= len(rest) {usage()}
+					plset = rest[i + 1]
+					i += 2
+				case:
+					if plpath == "" {
+						plpath = rest[i]
+						i += 1
+					} else {usage()}
+				}
+			}
+		}
+		if plpath == "" {usage()}
+		{
+			// An empty list means "nothing held fixed"; parse_env_values reads it as
+			// its own default spread, which would be taken for parameter/value pairs.
+			presets := plset == "" ? []int{} : parse_env_values(plset)
+			cmd_paramlevel(dll, plpath, plparam, parse_env_values(plvals), plnote, plblock, presets)
+		}
+	case "sectionlevel":
+		slnote := 60
+		slblock := COMPARE_BLOCK_DEFAULT
+		slpath := ""
+		{
+			i := 0
+			for i < len(rest) {
+				switch rest[i] {
+				case "--note":
+					if !parse_probe_int(rest, i + 1, &slnote) {usage()}
+					i += 2
+				case "--block":
+					if !parse_probe_int(rest, i + 1, &slblock) {usage()}
+					i += 2
+				case:
+					if slpath == "" {
+						slpath = rest[i]
+						i += 1
+					} else {usage()}
+				}
+			}
+		}
+		if slpath == "" {usage()}
+		cmd_sectionlevel(dll, slpath, slnote, slblock)
 	case "fxshape":
 		fstype, fsctl2, fslevel, fsnote := 0, 127, 127, 48
 		fsgain := 127
