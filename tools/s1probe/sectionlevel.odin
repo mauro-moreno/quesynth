@@ -37,22 +37,32 @@ Section_Case :: struct {
 // error does. A parameter the error does not depend on leaves it flat.
 cmd_paramlevel :: proc(dll: string, path: string, param: int, values: []int, note, block: int, presets: []int) {
 	set_compare_timing(block)
-	data, read_err := os.read_entire_file(path, context.allocator)
-	if read_err != nil {
-		fmt.eprintfln("paramlevel: cannot read %s: %v", path, read_err)
-		return
-	}
-	defer delete(data, context.allocator)
-	base, parse_err := cpatch.parse_sy1(data)
-	if parse_err != .None {
-		fmt.eprintfln("paramlevel: cannot parse %s: %v", path, parse_err)
-		return
+	base: cpatch.Patch
+	// "-" reads the probe's own neutral patch instead of a file, so a control can
+	// be measured without a factory patch's filter and equaliser in front of it.
+	if path == "-" {
+		base = neutral_probe_patch()
+		set_param(&base, 19, 127) // filter wide open
+		set_param(&base, 29, 100) // amp gain short of the top, so nothing clips
+	} else {
+		data, read_err := os.read_entire_file(path, context.allocator)
+		if read_err != nil {
+			fmt.eprintfln("paramlevel: cannot read %s: %v", path, read_err)
+			return
+		}
+		defer delete(data, context.allocator)
+		parse_err: cpatch.Sy1_Error
+		base, parse_err = cpatch.parse_sy1(data)
+		if parse_err != .None {
+			fmt.eprintfln("paramlevel: cannot parse %s: %v", path, parse_err)
+			return
+		}
 	}
 	pristine, work := probe_open_chunk(dll)
 	defer delete(pristine)
 	defer delete(work)
 
-	fmt.printfln("parameter %d on %s, note %d", param, path, note)
+	fmt.printfln("parameter %d on %s, note %d", param, path, path == "-" ? "the neutral probe patch" : path)
 	fmt.println("  value    ref rms    our rms     level      spectral")
 	for v in values {
 		p := base

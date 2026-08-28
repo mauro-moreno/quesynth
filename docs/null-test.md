@@ -8603,3 +8603,88 @@ table is the mean of the three.
 
 Three patches move the other way by about a decibel -- 005, 010 and 012 -- which
 is the cutoff dependence showing up as the price of a single curve.
+
+### The large-sub over-response is the equaliser's tone (2026-08-27)
+
+The last item on the defect list read "voice-path large-sub over-response -- the
+sub-level normalisation isn't clean at high p95, s075 = +1.51 with the entire post
+chain off". The +1.51 reproduces exactly: with the delay, chorus and equaliser
+taken out, s075 reads +1.50 dB. Everything else in the sentence is wrong, and
+usefully so.
+
+**s075 does not use the sub.** Parameter 95 is absent from the file, so it takes
+its default of zero -- and so does every other factory patch. Not one of the 128
+raises the sub oscillator at all, so the sub cannot be responsible for anything
+the bank run reports.
+
+**The sub-level normalisation is clean.** Swept from 0 to 127 on a neutral patch
+with the filter open, the level error is +0.99, +0.99, +0.99, +0.99, +0.99, +0.98,
++0.98, +0.98, +0.98 dB and the spectral error is 0.06 dB at every setting. There
+is nothing wrong with it.
+
+**What is wrong is the equaliser's tone, and the sub only revealed it.** Swept on
+s075 the error climbed +1.70 to +4.82 dB with the sub gain, which looked like a
+sub defect and is not: put s075's filter on a neutral patch and the error is large
+but flat across the sub, and put its *equaliser* on instead and the climb comes
+back exactly. The sub is an octave-down oscillator and s075's tone is at 103,
+which is the setting that removes bass. The reference removes it and ours did not.
+
+### The tilt is one pole, and it sweeps
+
+Measured by sweeping a sine across seven octaves at each setting and reading the
+gain against the knob's own centre, every setting is a single pole to within 0.05
+dB across the whole sweep:
+
+```
+   tone  96   high pass at   283.6 Hz      tone   0   low pass at   200.3 Hz
+   tone 112   high pass at  1503.6 Hz      tone  16   low pass at   643.3 Hz
+   tone 127   high pass at  7198.2 Hz      tone  32   low pass at  2091.4 Hz
+```
+
+The corner is exponential in the knob and the halves do not share a rate: 9.482
+octaves across the upper half, 6.663 across the lower. At the centre both sit
+outside the audible band, 10 Hz one way and 22 kHz the other, which is what makes
+the centre flat.
+
+The old code had one fixed corner per side -- 700 and 900 Hz, marked in the file
+as chosen rather than measured -- with the knob mixing dry against it. That is the
+wrong shape as well as the wrong size: a mix can never reach past the corner it
+was given, so the top of the knob reached 900 Hz where the reference reaches
+seven kilohertz.
+
+### And the coefficient could not have got there anyway
+
+Writing the sweep in first put the error at the top of the knob from +12.1 dB to
+-22.6: now far too much cut instead of far too little. `one_pole_coef` is the
+linear approximation to `1 - exp(-2*pi*f/fs)`, and its own comment says it is
+accurate well below Nyquist. Seven kilohertz is not well below Nyquist -- the
+coefficient comes out 0.94, which is very nearly no filter at all, and subtracting
+that from the input leaves a high pass far steeper than the one asked for. The
+tilt is a pre-warped first-order section now, exact at any fraction of the rate.
+
+```
+   tone            0     16     32     48     64     80     96    112    127
+   before      +2.58  +1.26  +1.03  +0.99  +0.98  -0.84  +1.78  +7.30  +12.13 dB
+   after       +1.17  +1.01  +0.99  +0.98  +0.98  +0.98  +0.96  +0.89   +0.12
+   spectral     0.19   0.19   0.13   0.08   0.06   0.17   0.17   0.19    0.19
+```
+
+Flat to a tenth of a decibel of its own centre across the whole knob, where the
+spectral error used to reach 5.67 dB. The sub sweep on s075 goes from +1.70..+4.82
+to +0.87..+0.79, and s075 itself from +1.70 dB to +0.87.
+
+Twenty-two of the 128 factory patches move the tone off centre and only one of
+them is in the first 48, which is why the bank run is unchanged at 5.56 dB. On the
+patches that use it:
+
+```
+   patch  tone    spectral        level          null
+   055      90   4.70 -> 3.29   -2.77 -> -0.58   -4.29 ->  -4.35 dB
+   059     103   1.44 -> 1.15   -0.57 -> +0.13   -6.72 -> -16.49
+   069     110   8.35 -> 6.57   +6.34 -> +2.88   -2.98 ->  -5.61
+   070     110   5.98 -> 4.57
+   071     117   7.28 -> 5.41   +8.77 -> +1.04  -10.41 -> -10.42
+```
+
+No factory patch moves the delay's tone off centre, so the same law reaching that
+control through the shared `Tone` is unmeasured there rather than confirmed.

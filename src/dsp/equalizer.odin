@@ -21,20 +21,68 @@ import "core:math"
 // Extracted rather than written twice. It is the same control in the reference --
 // the manual describes parameter 60 and parameter 98 in the same words -- and two
 // copies of one law is how they drift apart.
+// A first-order section, bilinear rather than the shared one-pole coefficient.
+//
+// `one_pole_coef` is the linear approximation to 1 - exp(-2*pi*f/fs), which its
+// own comment calls accurate well below Nyquist. The top of this knob is not well
+// below Nyquist: at 7.2 kHz the coefficient comes out 0.94, which is very nearly
+// no filter at all, and taking that away from the input leaves a high pass far
+// steeper than the one asked for -- 22.6 dB too much on a patch with the sub up.
+// Pre-warping the corner with a tangent instead puts the -3 dB point where the
+// measurement says, at any fraction of the sample rate.
 Tone :: struct {
-	low:  f32,
-	high: f32,
+	x_prev:   f32,
+	y_prev:   f32,
+	a0:       f32,
+	a1:       f32,
+	b1:       f32,
+	coef_for: f32,
+	coef_sr:  f32,
 }
 
-// Corner frequencies for the tilt. Chosen, not measured: both displays are a bare
-// 0..127 and carry no frequency. Placed so the extremes are clearly audible
-// without either end silencing the signal.
-TONE_LOW_HZ :: f32(700.0)
-TONE_HIGH_HZ :: f32(900.0)
+// The tilt is one pole whose corner sweeps, and both halves are measured.
+//
+// It used to be one fixed corner per side with the knob mixing dry against it,
+// which is the wrong shape as well as the wrong size: at the top of the knob a
+// mix can only reach the corner it was given, and ours reached 900 Hz where the
+// reference reaches seven kilohertz. On a patch with the sub oscillator up -- all
+// of its energy an octave down, exactly what this control is there to remove --
+// that read as 12.1 dB too loud.
+//
+// Measured by sweeping a sine across seven octaves at each setting and reading
+// the gain against the knob's own centre. Every setting is a single pole to
+// within 0.05 dB across the whole sweep, so the shape is not in doubt:
+//
+//   tone  96   high pass at   283.6 Hz      tone   0   low pass at   200.3 Hz
+//   tone 112   high pass at  1503.6 Hz      tone  16   low pass at   643.3 Hz
+//   tone 127   high pass at  7198.2 Hz      tone  32   low pass at  2091.4 Hz
+//
+// The corner is exponential in the knob and the two halves do not share a rate:
+// upward it moves 9.482 octaves across the half-knob, downward 6.663. At the
+// centre both are past the audible band -- 10 Hz one way, 22 kHz the other --
+// which is what makes the centre flat.
+TONE_HIGHPASS_BASE_HZ :: f32(10.06)
+TONE_HIGHPASS_OCTAVES :: f32(9.482)
+TONE_LOWPASS_TOP_HZ :: f32(21798.0)
+TONE_LOWPASS_OCTAVES :: f32(6.663)
 
 tone_reset :: proc "contextless" (t: ^Tone) {
-	t.low = 0
-	t.high = 0
+	t.x_prev = 0
+	t.y_prev = 0
+	t.a0 = 1
+	t.a1 = 0
+	t.b1 = 0
+	t.coef_for = 0
+	t.coef_sr = 0
+}
+
+// The corner for one setting of the knob, in hertz.
+tone_corner_hz :: proc "contextless" (amount: f32) -> f32 {
+	a := clamp32(amount, -1, 1)
+	if a >= 0 {
+		return TONE_HIGHPASS_BASE_HZ * math.pow(f32(2.0), TONE_HIGHPASS_OCTAVES * a)
+	}
+	return TONE_LOWPASS_TOP_HZ * math.pow(f32(2.0), TONE_LOWPASS_OCTAVES * a)
 }
 
 // `amount` is -1..1: negative cuts the highs, positive cuts the lows, zero is
@@ -44,20 +92,25 @@ tone_process :: proc "contextless" (t: ^Tone, x, amount, sample_rate: f32) -> f3
 	if a == 0 {
 		return x
 	}
-
-	if a < 0 {
-		mix := -a
-		coef := one_pole_coef(TONE_LOW_HZ, sample_rate)
-		// A stronger setting moves the corner down, so the cut deepens.
-		t.low += (x - t.low) * (coef + (1.0 - coef) * (1.0 - mix))
-		t.low = flush_denormal(t.low)
-		return lerp32(x, t.low, mix)
+	if t.coef_for != a || t.coef_sr != sample_rate {
+		hz := clamp32(tone_corner_hz(a), 1.0, sample_rate * 0.49)
+		k := math.tan(0.5 * TAU * hz / sample_rate)
+		t.b1 = (1.0 - k) / (1.0 + k)
+		if a < 0 {
+			t.a0 = k / (1.0 + k)
+			t.a1 = t.a0
+		} else {
+			t.a0 = 1.0 / (1.0 + k)
+			t.a1 = -t.a0
+		}
+		t.coef_for = a
+		t.coef_sr = sample_rate
 	}
 
-	coef := one_pole_coef(TONE_HIGH_HZ, sample_rate)
-	t.high += (x - t.high) * coef
-	t.high = flush_denormal(t.high)
-	return lerp32(x, x - t.high, a)
+	y := t.a0 * x + t.a1 * t.x_prev + t.b1 * t.y_prev
+	t.x_prev = x
+	t.y_prev = flush_denormal(y)
+	return y
 }
 
 // One channel of a peaking biquad, direct form I.
