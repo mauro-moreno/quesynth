@@ -1050,6 +1050,7 @@ main :: proc() {
 		plblock := COMPARE_BLOCK_DEFAULT
 		plvals := "0,16,32,48,64,80,96,112,127"
 		plset := ""
+		plhold := 0.0
 		plpath := ""
 		{
 			i := 0
@@ -1069,6 +1070,9 @@ main :: proc() {
 					if i + 1 >= len(rest) {usage()}
 					plset = rest[i + 1]
 					i += 2
+				case "--hold":
+					if !parse_probe_f64(rest, i + 1, &plhold) {usage()}
+					i += 2
 				case:
 					if plpath == "" {
 						plpath = rest[i]
@@ -1082,7 +1086,7 @@ main :: proc() {
 			// An empty list means "nothing held fixed"; parse_env_values reads it as
 			// its own default spread, which would be taken for parameter/value pairs.
 			presets := plset == "" ? []int{} : parse_env_values(plset)
-			cmd_paramlevel(dll, plpath, plparam, parse_env_values(plvals), plnote, plblock, presets)
+			cmd_paramlevel(dll, plpath, plparam, parse_env_values(plvals), plnote, plblock, presets, plhold)
 		}
 	case "sectionlevel":
 		slnote := 60

@@ -75,9 +75,26 @@ g_block: int = COMPARE_BLOCK_DEFAULT
 g_hold_frames: int
 g_total_frames: int
 
-set_compare_timing :: proc(block: int) {
+// How long the note is held, which for most of this project is the constant
+// above and for percussion cannot be.
+//
+// The steady-state window opens at 0.40 seconds, and a hi-hat is over before it:
+// on `Closed Hihat` the reference's steady RMS is 0.00000 and so is ours, so the
+// level column compares silence with silence and the spectral column has nothing
+// to normalise. Half the corpus's hats have no valid spectral reading at all for
+// this reason -- the instrument that drives the tuning is blind to exactly the
+// patches whose transient is the whole sound.
+//
+// Shortening the hold moves the analysis onto the transient instead. Below about
+// a third of a second the steady window cannot hold an FFT, and `compare_renders`
+// falls back to measuring from the first sample -- which is the window a
+// percussion patch actually occupies.
+g_hold_seconds: f64 = COMPARE_HOLD_SECONDS
+
+set_compare_timing :: proc(block: int, hold_seconds: f64 = COMPARE_HOLD_SECONDS) {
 	g_block = max(block, 1)
-	blocks_held := (int(COMPARE_HOLD_SECONDS * SAMPLE_RATE) + g_block - 1) / g_block
+	g_hold_seconds = hold_seconds > 0 ? hold_seconds : COMPARE_HOLD_SECONDS
+	blocks_held := (int(g_hold_seconds * SAMPLE_RATE) + g_block - 1) / g_block
 	blocks_tail := (int(COMPARE_TAIL_SECONDS * SAMPLE_RATE) + g_block - 1) / g_block
 	g_hold_frames = blocks_held * g_block
 	g_total_frames = (blocks_held + blocks_tail) * g_block
@@ -1024,6 +1041,10 @@ Compare_Options :: struct {
 	child:    bool,
 	// Frames per process() call. 0 uses the size the plugin was told at load.
 	block:    int,
+	// How long the note is held, in seconds. Zero means the default; a short one
+	// puts the analysis on the transient, which is the only window a percussion
+	// patch occupies.
+	hold:     f64,
 	// Control mode: render the reference twice instead of comparing against our
 	// engine. Every number it prints is the harness's own noise floor -- the
 	// error this test reports for two renders that are by definition identical
@@ -1041,7 +1062,7 @@ cmd_compare :: proc(dll, target: string, opt: Compare_Options) {
 	if opt.child {
 		g_quiet_load = true
 	}
-	set_compare_timing(opt.block > 0 ? opt.block : COMPARE_BLOCK_DEFAULT)
+	set_compare_timing(opt.block > 0 ? opt.block : COMPARE_BLOCK_DEFAULT, opt.hold)
 
 	// One load up front, purely to read the factory state chunk that every patch
 	// is written into and to report the plugin's latency. It is unloaded again
@@ -1446,6 +1467,12 @@ parse_compare_args :: proc(args: []string) -> (target: string, opt: Compare_Opti
 			if i + 1 >= len(args) {return "", opt, false}
 			n, _ := strconv.parse_int(args[i + 1])
 			opt.note = u8(clamp(n, 0, 127))
+			i += 2
+		case "--hold":
+			if i + 1 >= len(args) {return "", opt, false}
+			v, ok := strconv.parse_f64(args[i + 1])
+			if !ok {return "", opt, false}
+			opt.hold = v
 			i += 2
 		case "--limit":
 			if i + 1 >= len(args) {return "", opt, false}

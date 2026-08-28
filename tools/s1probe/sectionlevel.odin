@@ -35,8 +35,10 @@ Section_Case :: struct {
 // The same subtraction, against one parameter instead of the three sections:
 // set it to each of a list of values in both engines and watch what the level
 // error does. A parameter the error does not depend on leaves it flat.
-cmd_paramlevel :: proc(dll: string, path: string, param: int, values: []int, note, block: int, presets: []int) {
-	set_compare_timing(block)
+cmd_paramlevel :: proc(dll: string, path: string, param: int, values: []int, note, block: int, presets: []int, hold: f64 = 0) {
+	// A short hold puts the analysis on the transient, which is the only window a
+	// percussion patch occupies.
+	set_compare_timing(block, hold > 0 ? hold : COMPARE_HOLD_SECONDS)
 	base: cpatch.Patch
 	// "-" reads the probe's own neutral patch instead of a file, so a control can
 	// be measured without a factory patch's filter and equaliser in front of it.

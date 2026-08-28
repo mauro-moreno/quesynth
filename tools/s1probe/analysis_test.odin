@@ -817,3 +817,46 @@ test_csv_row_has_exactly_as_many_fields_as_the_header :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, row_fields, header_fields)
 }
+
+// The hold has to be settable, and the default has to survive it.
+//
+// The steady-state window opens at 0.40 seconds and a hi-hat is over before it,
+// so every percussion patch in the corpus was being measured after its own sound
+// had gone -- on `Closed Hihat` the window RMS is 0.00000 for both engines, which
+// is a level column comparing silence with silence. Shortening the hold moves the
+// analysis onto the transient. What must not happen is that it moves for anything
+// else, so the default is asserted here beside it.
+@(test)
+compare_timing_honours_a_shortened_hold :: proc(t: ^testing.T) {
+	set_compare_timing(COMPARE_BLOCK_DEFAULT)
+	full := g_hold_frames
+	testing.expect(
+		t,
+		abs(f64(full) / f64(SAMPLE_RATE) - COMPARE_HOLD_SECONDS) < 0.01,
+		fmt.tprintf("the default hold moved: %.3f s", f64(full) / f64(SAMPLE_RATE)),
+	)
+
+	set_compare_timing(COMPARE_BLOCK_DEFAULT, 0.4)
+	short := g_hold_frames
+	testing.expect(
+		t,
+		abs(f64(short) / f64(SAMPLE_RATE) - 0.4) < 0.01,
+		fmt.tprintf("a 0.4 s hold rendered %.3f s", f64(short) / f64(SAMPLE_RATE)),
+	)
+	testing.expect(t, short < full, "the short hold is not shorter")
+
+	// Long enough to fill the transform, which is what makes the window
+	// analysable at all: below FFT_SIZE the spectrum has nothing to report and
+	// the patch comes back "not comparable" exactly as it did before.
+	testing.expect(
+		t,
+		short >= FFT_SIZE,
+		fmt.tprintf("a 0.4 s hold is %d frames, under the %d the transform needs", short, FFT_SIZE),
+	)
+
+	// Zero means "leave it alone", so a caller that does not care is not
+	// silently given a quarter-second note.
+	set_compare_timing(COMPARE_BLOCK_DEFAULT, 0)
+	testing.expect_value(t, g_hold_frames, full)
+	set_compare_timing(COMPARE_BLOCK_DEFAULT)
+}
