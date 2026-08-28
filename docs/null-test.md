@@ -9264,3 +9264,81 @@ resonance 115 and saturation 122 -- every one of the three residuals at once.
 Moving a resonance that sharp by a factor of 1.9 relocates it across the
 sixth-octave bands the metric scores, so a correction in the right direction still
 reads worse there until the resonance dependence is fitted too.
+
+
+### The 24 dB corner surface was out by half an octave (2026-08-28)
+
+One of the three residuals left by the corner-opening work was that the 24 dB low
+pass is 8.1 dB short at a closed cutoff with the saturation control at zero, which
+made it a linear error and nothing to do with saturation. It is larger than that
+reading suggested. Swept across cutoff at resonance 0, a 262 Hz note comes out:
+
+```
+   cutoff       12     20     28     34     44     52     64     96
+   short      +1.8   +8.1  +13.8  +14.6  +12.9   +6.9   +0.1   -0.1 dB
+```
+
+A bump, worth up to 14.6 dB, over a region 27 per cent of the factory bank and 49
+percussion patches sit in. The 12 dB path measures within 1.0 dB everywhere across
+the same sweep, so this is the 24 dB path alone.
+
+**Our filter is doing what it is told.** Inverting each attenuation back to the
+corner that produced it returns, against what the table supplies:
+
+```
+   state          20      28      34      44      52
+   ours         40.1    51.3    67.1   108.0   168.3 Hz
+   table x1.255 40.1    51.3    67.1   108.0   168.2
+   reference    50.6    76.5   102.7   160.6   217.6
+```
+
+Ours lands on the table to three figures at every state. The table is what is
+wrong, and `filter_table_24_low.odin` is generated, so the generator is.
+
+**Why it is wrong: the shape is not ours.** A corner error cannot make a bump --
+it would be largest deep in the stopband, where this one is smallest. Sweeping
+notes 42 to 78 instead of cutoff, the reference falls 19.0 dB per octave at cutoff
+34 where we fall 23.4, while at cutoff 8, with both far into the stopband, they
+agree at 23.6 and 24.1. The reference leaves its pass band at 12 dB per octave and
+reaches 24 only well out. That is two sections at different corners; this engine
+cascades two at one corner, which leaves the pass band already near 24.
+
+Fitting the topology directly, over 101 measured points:
+
+```
+   two matched biquads, as now                       9.67 dB rms
+   four cascaded one-poles, fc = 1.78 x table        6.32
+   two biquads staggered 1.11 and 2.40, k = 1.27     5.90
+```
+
+Neither candidate earns a rebuild of the path. The ladder is 16 dB out at cutoff
+8, where what is already here agrees to 2 dB, so it trades a region that works for
+one that does not.
+
+**So the correction is a correction and not a model.** For each cutoff state, the
+factor that best places our corner against the reference across all seven notes,
+chosen on worst-note error so that no note is traded for the one the harness
+happens to play. It runs 1.00 at both ends and peaks at 1.51 at state 52, and it
+applies to the resonance-0 surface only -- `FILTER_CUTOFF_HZ_24` is measured from
+the resonant peak instead and is not touched.
+
+```
+   worst note error by state
+   state      16    20    24    28    34    40    44    48    52    56    64    72
+   before    5.0   8.7  12.7  15.2  17.1  18.7  19.1  18.8  17.5  16.5  13.0   6.8
+   after     1.6   2.2   3.1   4.1   5.9   6.8   6.5   5.1   3.3   3.1   2.4   1.4
+```
+
+Gated, against the state at the end of the corner-opening work:
+
+```
+                         all patches        LP24 at cutoff 10-60
+   factory mean       6.544 -> 6.489        8.195 -> 8.008   15 better, 4 worse
+   percussion mean    7.393 -> 7.350        8.147 -> 8.047   19 better, 13 worse
+   factory spectral   21 better, 8 worse
+```
+
+What is left is the shape, and it is the larger half: the residual after the
+correction still reaches 6.8 dB at cutoff 40, and it is signed -- too loud below
+the corner, too quiet above -- because a single factor cannot change a slope. That
+needs the topology the fits above could not find, and it stays open.

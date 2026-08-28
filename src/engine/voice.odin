@@ -91,11 +91,13 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	fraction := bounded - f32(lo)
 
 	if p.filter_slope == .Slope_24 {
+		// See `filter_cutoff_24_low_correction`: the generated resonance-0 surface
+		// is out by up to a factor of 1.51 in the middle of its range.
 		low_q := exp_map(
 			fraction,
 			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[lo],
 			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[hi],
-		)
+		) * filter_cutoff_24_low_correction(bounded)
 		high_q := exp_map(
 			fraction,
 			FILTER_CUTOFF_HZ_24[lo],
