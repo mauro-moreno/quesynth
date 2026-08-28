@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Quesynth Pad</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="pad-body">
+
+<nav id="nav" aria-label="Sections">
+  <div class="brand">Quesynth Pad</div>
+  <div class="nav-inner"></div>
+  <button type="button" id="midi-toggle" class="keys-toggle">MIDI</button>
+  <button type="button" id="keys-toggle" class="keys-toggle" aria-expanded="false"
+          aria-controls="keyboard">Keys</button>
+</nav>
+
+<!-- The instrument itself. Sixteen cells, each a whole Quesynth: what the panel
+     below edits is whichever one is selected, so the editor is the same editor
+     the synth page has rather than a reduced copy of it. -->
+<section id="pads" class="pads" aria-label="Pads">
+  <div class="pad-grid" id="pad-grid"></div>
+  <div class="pad-bar">
+    <span class="pad-bar-label" id="pad-selected">Pad 1</span>
+    <label class="pad-note">
+      <span>Note</span>
+      <input type="range" id="pad-note" min="24" max="96" value="60"
+             aria-label="Note this pad plays">
+      <span class="pad-note-read" id="pad-note-read">C3</span>
+    </label>
+    <button type="button" class="pad-action" id="pad-copy">COPY</button>
+    <button type="button" class="pad-action" id="pad-paste" disabled>PASTE</button>
+  </div>
+</section>
+
+<main id="panels"></main>
+
+<div id="bank" class="bank">
+  <button type="button" class="bank-step" data-step="-1" aria-label="Previous patch">‹</button>
+  <div class="bank-read">
+    <span class="bank-patch" id="bank-patch">000:Init</span>
+    <span class="bank-name" id="bank-name">00:soundbank00</span>
+  </div>
+  <button type="button" class="bank-step" data-step="1" aria-label="Next patch">›</button>
+  <button type="button" id="write-toggle" class="bank-write"
+          aria-label="Write this sound into a slot">WRITE</button>
+  <button type="button" id="config-toggle" class="bank-write" hidden
+          aria-label="Configure the controllers">CONFIG</button>
+  <div class="bank-vol">
+    <label for="master-vol">Vol</label>
+    <input type="range" id="master-vol" min="0" max="100" value="80"
+           aria-label="Master volume">
+    <span class="bank-vol-read" id="master-vol-read">80</span>
+  </div>
+</div>
+
+<section id="keyboard" class="keyboard" hidden aria-label="Keyboard">
+  <div class="keys-bar">
+    <button type="button" class="oct" data-step="-1" aria-label="Down an octave">−</button>
+    <span class="oct-label" id="oct-label"></span>
+    <button type="button" class="oct" data-step="1" aria-label="Up an octave">+</button>
+  </div>
+  <div class="keys-row">
+    <div class="wheels" id="wheels"></div>
+    <div class="keys-scroll" id="keys-scroll">
+      <div class="keys" id="keys"></div>
+    </div>
+  </div>
+</section>
+
+<!-- The same files the synth panel loads, in the same order, so the two pages
+     are one interface with two shells. `pad-boot.js` runs before the host so it
+     can ask for sixteen instruments instead of one; `pad.js` runs last so it can
+     wrap the bridge the panel has already taken hold of.
+
+     `store.js` is deliberately absent. It remembers one sound, and this page has
+     sixteen -- `pad.js` does its own remembering rather than fighting it. -->
+<script src="pad-boot.js"></script>
+<script src="host.js" onerror="void 0"></script>
+<script src="params.js"></script>
+<script src="bank.js" onerror="void 0"></script>
+<script src="layout.js"></script>
+<script src="bridge.js"></script>
+<script src="app.js"></script>
+<script src="midi.js"></script>
+<script src="sy1.js"></script>
+<script src="midimap.js"></script>
+<script src="patchfile.js"></script>
+<script src="modal.js"></script>
+<script src="browser.js"></script>
+<script src="options.js"></script>
+<script src="pad.js"></script>
+</body>
+</html>

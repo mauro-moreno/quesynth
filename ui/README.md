@@ -4,6 +4,11 @@ An HTML panel for the synth, meant to be the *only* interface: the same files ar
 loaded by a web view on the desktop, on a phone, and inside the plugin. Nothing
 here is specific to any of the three.
 
+There are two shells over it. `index.html` is the synth: one instrument, a
+keyboard along the foot. `pad.html` is **Quesynth Pad**, a four by four grid with
+a whole instrument behind every cell -- the same panel underneath, editing
+whichever cell is selected.
+
 Open `index.html` and the panel works. There is no build step, no bundler and no
 module loader, because a web view opening a page off the filesystem is the case
 that has to work everywhere and it is the one most easily broken by tooling.
@@ -289,3 +294,28 @@ turns into a position along whichever axis it is currently lying on.
   control from anything here.
 - Nothing is wired into `hosts/clap` or `hosts/standalone` yet — this is the
   panel and the protocol, not the host side of either.
+
+## Two shells, one panel
+
+`pad.html` loads the same files in the same order as `index.html` and adds two:
+`pad-boot.js`, which asks the host for sixteen instruments instead of one, and
+`pad.js`, which puts the grid above the panel and tags everything the panel sends
+with the cell it is for. It omits `store.js`, which remembers one sound where the
+pad has sixteen.
+
+The panel itself is untouched, and that is the whole design. `app.js` holds one
+array of stored integers and refreshes its controls when a *host* hands it a new
+one -- a path that already existed, because a plugin host has to be able to say
+"the project loaded, here is the patch". Selecting a pad is that same event:
+`pad.js` delivers a `state` message and the panel repaints itself. It has no idea
+there are sixteen of anything, so a control improved for the synth is improved for
+the pad in the same edit, and neither page has a copy of the other's layout.
+
+The styling follows from the same rule. A cell is the `.panel` surface with the
+`.knob` metal on its rim, written against the tokens in `:root`, so restyling the
+instrument restyles the pad with it.
+
+`node ui/check-pages.js` guards the arrangement. The way two shells over one panel
+fail is quiet -- a file added to one page and not the other leaves the second
+working but silently lacking the feature -- so the two script lists are compared,
+and any difference has to be one that file knows the reason for.

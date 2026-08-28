@@ -42,6 +42,13 @@
     return;
   }
 
+  // How many instruments the page wants. The synth panel says nothing and gets
+  // one; the pad sets this before loading and gets sixteen.
+  function slotCount() {
+    var n = window.QUESYNTH_SLOTS | 0;
+    return n > 0 ? n : 1;
+  }
+
   var node = null;      // the AudioWorkletNode, once running
   var ctx = null;
   // Master volume, which is deliberately *not* an engine parameter.
@@ -68,6 +75,9 @@
         break;
       case "note":
         out = { type: "note", on: msg.on, note: msg.note, velocity: msg.velocity };
+        break;
+      case "panic":
+        out = { type: "panic" };
         break;
       case "wheel":
         if (msg.which === "pitch") {
@@ -105,6 +115,9 @@
         return;
     }
     if (!out) return;
+    // Which instrument it is for, carried straight through. The panel does not
+    // set this and gets slot zero; the pad tags every message with its cell.
+    if (typeof msg.slot === "number") out.slot = msg.slot;
 
     if (node) {
       node.port.postMessage(out);
@@ -196,7 +209,7 @@
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [2],
-        processorOptions: { wasm: bytes, blockSize: 128 },
+        processorOptions: { wasm: bytes, blockSize: 128, slots: slotCount() },
       });
 
       // The engine used to report its sample rate into the strip. Nothing shows

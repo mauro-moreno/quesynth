@@ -17,10 +17,14 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (e) => this.onMessage(e.data);
 
     const bytes = options.processorOptions && options.processorOptions.wasm;
-    if (bytes) this.boot(bytes, options.processorOptions.blockSize || 128);
+    // How many instruments this page wants behind the one output. One for the
+    // synth panel; sixteen for the pad, whose sixteen cells are sixteen whole
+    // engines summed here rather than one engine switched between sounds.
+    const slots = (options.processorOptions && options.processorOptions.slots) || 1;
+    if (bytes) this.boot(bytes, options.processorOptions.blockSize || 128, slots);
   }
 
-  boot(bytes, blockSize) {
+  boot(bytes, blockSize, slots) {
     // Everything the module asks the host for, and it is a short list: two
     // runtime hooks and the five libm functions the browser does not provide.
     // Odin's own JavaScript runtime is not needed for a module this small, and
@@ -56,7 +60,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       this.wasm._start();
 
       this.blockSize = blockSize;
-      const ptr = this.wasm.synth_init(sampleRate, blockSize);
+      const ptr = this.wasm.synth_init(sampleRate, blockSize, slots);
       // Two planes, left then right, in the module's own memory. Rebuilt whenever
       // the memory grows, since growing detaches every view onto it.
       this.audioPtr = ptr;
@@ -65,7 +69,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       this.ready = true;
       this.pending.forEach((m) => this.apply(m));
       this.pending.length = 0;
-      this.port.postMessage({ type: "ready", sampleRate });
+      this.port.postMessage({ type: "ready", sampleRate, slots: this.wasm.synth_slot_count() });
     }).catch((err) => {
       this.port.postMessage({ type: "error", message: String(err) });
     });
@@ -87,12 +91,15 @@ class SynthProcessor extends AudioWorkletProcessor {
 
   apply(m) {
     const w = this.wasm;
+    // Which instrument the message is for. Absent means the first, so the synth
+    // panel needs to know nothing about slots.
+    const slot = m.slot | 0;
     switch (m.type) {
-      case "note":      m.on ? w.synth_note_on(m.note, m.velocity) : w.synth_note_off(m.note); break;
-      case "set":       w.synth_set_param(m.index, m.value); break;
-      case "cc":        w.synth_control_change(m.cc, m.value); break;
-      case "bend":      w.synth_pitch_bend(m.value); break;
-      case "tempo":     w.synth_set_tempo(m.bpm); break;
+      case "note":      m.on ? w.synth_note_on(slot, m.note, m.velocity) : w.synth_note_off(slot, m.note); break;
+      case "set":       w.synth_set_param(slot, m.index, m.value); break;
+      case "cc":        w.synth_control_change(slot, m.cc, m.value); break;
+      case "bend":      w.synth_pitch_bend(slot, m.value); break;
+      case "tempo":     w.synth_set_tempo(slot, m.bpm); break;
       case "panic":     w.synth_all_notes_off(); break;
       case "state": {
         // A whole patch, written into the module's own buffer and applied once.
@@ -100,7 +107,7 @@ class SynthProcessor extends AudioWorkletProcessor {
         // times on the way to one sound.
         const buf = new Int32Array(this.memory.buffer, w.synth_patch_buffer(), m.values.length);
         buf.set(m.values);
-        w.synth_apply_patch();
+        w.synth_apply_patch(slot);
         break;
       }
     }

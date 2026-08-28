@@ -1111,7 +1111,12 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   font-variant-numeric: tabular-nums;
 }
 
-.bank-vol input[type="range"] {
+/* The one slider this interface has, wherever it appears: the master volume in
+ * the strip at the foot and the note a pad plays. Written once for both rather
+ * than copied, because a second copy of a control is how two of them end up
+ * looking almost the same. The width is the only thing that differs. */
+.bank-vol input[type="range"],
+.pad-note input[type="range"] {
   appearance: none;
   -webkit-appearance: none;
   width: 84px;
@@ -1120,19 +1125,22 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   cursor: pointer;
 }
 
-.bank-vol input[type="range"]::-webkit-slider-runnable-track {
+.bank-vol input[type="range"]::-webkit-slider-runnable-track,
+.pad-note input[type="range"]::-webkit-slider-runnable-track {
   height: 2px;
   background: var(--panel-edge);
   border-radius: 1px;
 }
 
-.bank-vol input[type="range"]::-moz-range-track {
+.bank-vol input[type="range"]::-moz-range-track,
+.pad-note input[type="range"]::-moz-range-track {
   height: 2px;
   background: var(--panel-edge);
   border-radius: 1px;
 }
 
-.bank-vol input[type="range"]::-webkit-slider-thumb {
+.bank-vol input[type="range"]::-webkit-slider-thumb,
+.pad-note input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
   width: 11px;
@@ -1143,7 +1151,8 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   border: 0;
 }
 
-.bank-vol input[type="range"]::-moz-range-thumb {
+.bank-vol input[type="range"]::-moz-range-thumb,
+.pad-note input[type="range"]::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border-radius: 50%;
@@ -1151,7 +1160,8 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   border: 0;
 }
 
-.bank-vol input[type="range"]:focus-visible { outline: 1px solid var(--ink-faint); }
+.bank-vol input[type="range"]:focus-visible,
+.pad-note input[type="range"]:focus-visible { outline: 1px solid var(--ink-faint); }
 
 /* On a phone the bar is tight; the readout is the first thing to go. */
 @media (max-width: 560px) {
@@ -1648,3 +1658,156 @@ body.modal-open { overflow: hidden; }
   font-size: 12px;
   word-break: break-all;
 }
+
+
+/* ---------------------------------------------------------------- the pad ---
+ *
+ * The four by four grid on `pad.html`, and nothing else on that page: the panel
+ * under it is the panel `index.html` shows, built by the same `app.js` from the
+ * same layout, so everything below reaches only the grid and the strip beneath
+ * it. Written against the same tokens as the rest of the sheet -- a cell is the
+ * `.panel` surface with the `.knob` metal on its rim -- so that restyling the
+ * instrument restyles the pad with it. */
+
+.pads {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: var(--gap);
+}
+
+.pad-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  /* Capped, and this is the whole layout decision on the page. Square cells at
+   * the full width of a desktop window are 190px each and the grid is then 770px
+   * tall, which pushes the panel off the bottom -- and the panel is the point:
+   * the grid is for striking a sound, the panel for making one, and a pad that
+   * hides its own editor is a worse instrument than one with smaller pads.
+   *
+   * On a phone the cap is never reached and the grid fills the width, which puts
+   * the cells at about 80px -- comfortably past the 44px a thumb needs. */
+  max-width: 460px;
+  width: 100%;
+}
+
+/* Square cells at any width. `aspect-ratio` rather than a padding trick because
+ * the grid has to stay square on a phone held either way up, and the fallback
+ * min-height keeps it usable where that property is missing. */
+.pad-cell {
+  position: relative;
+  appearance: none;
+  aspect-ratio: 1 / 1;
+  min-height: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  /* Touch: a pad is struck, not scrolled off, and a long press on a phone must
+   * not offer to select the label. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.pad-cell:hover { border-color: var(--metal-dark); color: var(--ink); }
+
+/* Which cell the panel below is editing. An outline rather than a fill: the fill
+ * is what a strike uses, and the two have to be legible at the same time. */
+.pad-cell.sel {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+/* Struck. Held for a moment by the script rather than tied to :active, so a
+ * quick tap is visible and a roll keeps flashing. */
+.pad-cell.lit {
+  background: linear-gradient(180deg, var(--metal-lit), var(--metal));
+  border-color: var(--metal-lit);
+  color: #0b0b0d;
+  transition: none;
+}
+
+.pad-cell-name {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.pad-cell-note {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+}
+
+.pad-cell.lit .pad-cell-note { color: #2a2a30; }
+
+/* The strip under the grid: which cell is selected, what it plays, and moving a
+ * sound from one cell to another. */
+.pad-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+.pad-bar-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  flex: 0 0 auto;
+}
+
+.pad-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+}
+
+.pad-note input[type="range"] { flex: 1 1 auto; width: auto; min-width: 0; }
+
+.pad-note-read {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--ink-dim);
+}
+
+/* The same object as `.bank-write`, which is the page's one small button. */
+.pad-action {
+  flex: 0 0 auto;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.pad-action:hover:not(:disabled) { color: var(--ink); border-color: var(--metal-dark); }
+.pad-action:disabled { opacity: 0.4; cursor: default; }
