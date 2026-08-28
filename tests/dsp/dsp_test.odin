@@ -393,8 +393,11 @@ test_24db_cutoff_binding_tracks_resonance_surface :: proc(t: ^testing.T) {
 	low_expected := engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] * f32(1.255)
 	testing.expectf(t, abs(low.filter_cutoff_hz - low_expected) < 0.001,
 		"resonance-0 cutoff did not use the low-Q surface: %v", low.filter_cutoff_hz)
-	testing.expectf(t, abs(engine.filter_cutoff_at_state(&low, 0) - engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[0]) < 0.001,
-		"resonance-0 floor did not follow the low-Q surface")
+	// The voice runs a ladder on this path, and a ladder has one pole surface at
+	// every resonance -- the peak surface -- rather than a blend of two. The
+	// blended field above is still what `bind_patch` reports.
+	testing.expectf(t, abs(engine.filter_cutoff_at_state(&low, 0) - engine.FILTER_CUTOFF_HZ_24[0]) < 0.001,
+		"resonance-0 ladder pole did not follow the peak surface")
 	testing.expectf(t, abs(low.filter_env_cutoff_states - f32(20 - 63) * 2.0) < 0.001,
 		"filter envelope amount did not resolve to two cutoff states per step")
 	testing.expect_value(t, low.filter_cutoff_state, f32(64))
@@ -414,6 +417,16 @@ test_24db_cutoff_binding_tracks_resonance_surface :: proc(t: ^testing.T) {
 		"resonance-107 cutoff did not reach the high-Q surface: %v", high.filter_cutoff_hz)
 	testing.expectf(t, abs(engine.filter_cutoff_at_state(&high, f32(engine.FILTER_TABLE_SIZE - 1)) - engine.FILTER_CUTOFF_HZ_24[engine.FILTER_TABLE_SIZE - 1]) < 0.001,
 		"resonance-107 ceiling did not follow the high-Q surface")
+	// And the pole must not move when only the resonance does, which is the
+	// property that separates a ladder from a pair of biquads and the one the
+	// reference was identified by.
+	testing.expectf(
+		t,
+		abs(engine.filter_cutoff_at_state(&low, 64) - engine.filter_cutoff_at_state(&high, 64)) < 0.001,
+		"ladder pole moved with resonance: %v vs %v",
+		engine.filter_cutoff_at_state(&low, 64),
+		engine.filter_cutoff_at_state(&high, 64),
+	)
 
 	p.values[20] = 127
 	at_top := engine.bind_patch(p)
@@ -4392,4 +4405,51 @@ test_effect_phaser_period_is_whole_control_blocks :: proc(t: ^testing.T) {
 		abs(top - 6.0) < 1.0e-3,
 		fmt.tprintf("ctl2 127 should sweep in 6 blocks, not %.3f", top),
 	)
+}
+
+// The ladder's feedback is what parameter 20 controls, and it must reach the
+// measured endpoints without passing the point where a four-pole ladder
+// oscillates on its own.
+@(test)
+test_ladder_feedback_follows_the_measured_law :: proc(t: ^testing.T) {
+	testing.expect_value(t, engine.filter_ladder_feedback(0), f32(0))
+	testing.expectf(t, abs(engine.filter_ladder_feedback(64) - 2.00) < 0.01,
+		"resonance 64 did not give the measured feedback: %v", engine.filter_ladder_feedback(64))
+	testing.expectf(t, abs(engine.filter_ladder_feedback(96) - 3.00) < 0.01,
+		"resonance 96 did not give the measured feedback: %v", engine.filter_ladder_feedback(96))
+	last := engine.filter_ladder_feedback(127)
+	testing.expectf(t, last > 3.5 && last < 4.0,
+		"top of the resonance knob left the measured range or reached oscillation: %v", last)
+}
+
+// A ladder run at full feedback must stay bounded and finite: at the pole its
+// loop gain is at its largest, and that is where a solved feedback path either
+// holds or runs away.
+@(test)
+test_ladder_is_stable_at_full_feedback :: proc(t: ^testing.T) {
+	l: dsp.Ladder
+	dsp.ladder_reset(&l)
+	dsp.ladder_set(&l, 500.0, 3.7, 48000.0)
+	peak := f32(0)
+	for i in 0 ..< 48000 {
+		x := math.sin(2.0 * math.PI * 500.0 * f32(i) / 48000.0)
+		y := dsp.ladder_process(&l, x)
+		testing.expectf(t, dsp.is_finite(y), "ladder produced a non-finite sample at %v", i)
+		if abs(y) > peak {peak = abs(y)}
+	}
+	testing.expectf(t, peak < 40, "ladder ran away at its own pole: peak %v", peak)
+}
+
+// And a bad sample must not lodge in its state, exactly as for the section it
+// sits beside.
+@(test)
+test_ladder_recovers_from_non_finite_input :: proc(t: ^testing.T) {
+	l: dsp.Ladder
+	dsp.ladder_reset(&l)
+	dsp.ladder_set(&l, 1000.0, 2.0, 48000.0)
+	dsp.ladder_process(&l, math.inf_f32(1))
+	for i in 0 ..< 64 {
+		y := dsp.ladder_process(&l, 0.25)
+		testing.expectf(t, dsp.is_finite(y), "ladder stayed poisoned at %v", i)
+	}
 }

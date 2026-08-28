@@ -223,20 +223,46 @@ FILTER_OUTPUT_CORRECTION_DB_12 := [6][5]f32 {
 	{+0.0, +1.3, +5.5, +9.0, +10.1},
 }
 
-// The last row still turns over: the 24 dB filter self-oscillates at the very top
-// of its resonance knob, where the raw deficit runs +3.8 through +4.6 across
-// resonance 96 to 124 and then falls to -19.0 at 127. Referenced to its own
-// saturation-0 value that becomes the mild negative row below, which is the part
-// that belongs to saturation. The -19 dB itself is not saturation and must not be
-// applied as though it were -- 123.sy1 is a 24 dB patch at resonance 127 with the
-// saturation control at zero, and it lost 19 dB when the raw row was used.
-FILTER_OUTPUT_CORRECTION_DB_24 := [6][5]f32 {
+// The ladder's own level, which replaces the surface the two biquads needed.
+//
+// A ladder loses gain at DC as its feedback rises. The reference loses less than
+// a raw one does -- 5.4 dB less at resonance 64, where the raw loss is 9.5 -- so
+// it compensates, though not fully. Measured through an open filter, where the
+// pole is far above the note and what is left is the DC region:
+//
+//   res      0     16     32     48     64     80     96    107    115
+//   dB     0.0   +2.3   +3.7   +4.7   +5.4   +6.2   +6.4   +6.8   +6.9
+//
+// The saturation columns fall away to nothing because the output curve pins the
+// level once it is driven, so this is a surface in both and not a curve in one.
+//
+// Held flat above resonance 115. The 24 dB filter self-oscillates at 127, where
+// the reference collapses by 15 to 34 dB, but only at open cutoffs -- at cutoff
+// 34 it still matches the ordinary ladder to 0.06 dB rms. A flat correction
+// cannot be both, so that state keeps the resonance-115 value and its own error
+// is recorded rather than papered over.
+FILTER_LADDER_GAIN_RESONANCE := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115}
+FILTER_LADDER_GAIN_SATURATION := [?]int{0, 32, 64, 96, 127}
+FILTER_LADDER_GAIN_DB := [9][5]f32 {
 	{+0.0, +0.0, -0.2, -0.1, +0.0},
-	{+0.0, +0.4, +1.4, +2.0, +2.2},
-	{+0.0, +0.7, +2.5, +3.6, +4.0},
-	{+0.0, +0.9, +3.3, +5.0, +5.5},
-	{+0.0, +1.0, +3.7, +5.6, +6.2},
-	{+0.0, -1.4, -3.9, -5.0, -5.3},
+	{+2.3, +1.8, +0.5, -0.1, -0.1},
+	{+3.7, +3.2, +1.3, +0.0, -0.1},
+	{+4.7, +4.2, +2.2, +0.2, +0.0},
+	{+5.4, +5.0, +3.0, +0.5, +0.0},
+	{+6.2, +5.8, +3.9, +0.8, +0.1},
+	{+6.4, +6.2, +4.4, +1.2, +0.1},
+	{+6.8, +6.5, +4.8, +1.5, +0.0},
+	{+6.9, +6.7, +5.1, +1.7, +0.1},
+}
+
+filter_ladder_gain :: proc(resonance, saturation: int) -> f32 {
+	r := resolved_position(20, resonance)
+	sa := resolved_position(23, saturation)
+	ri, rt := correction_axis(FILTER_LADDER_GAIN_RESONANCE[:], r)
+	si, st := correction_axis(FILTER_LADDER_GAIN_SATURATION[:], sa)
+	lo := dsp.lerp32(FILTER_LADDER_GAIN_DB[ri][si], FILTER_LADDER_GAIN_DB[ri][si + 1], st)
+	hi := dsp.lerp32(FILTER_LADDER_GAIN_DB[ri + 1][si], FILTER_LADDER_GAIN_DB[ri + 1][si + 1], st)
+	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
 }
 
 @(private = "file")
@@ -256,15 +282,49 @@ correction_axis :: proc(knots: []int, state: int) -> (index: int, t: f32) {
 	return last - 1, 1
 }
 
-filter_output_correction :: proc(slope: dsp.Filter_Slope, resonance, saturation: int) -> f32 {
+filter_output_correction :: proc(resonance, saturation: int) -> f32 {
 	r := resolved_position(20, resonance)
 	s := resolved_position(23, saturation)
 	ri, rt := correction_axis(FILTER_OUTPUT_CORRECTION_RESONANCE[:], r)
 	si, stt := correction_axis(FILTER_OUTPUT_CORRECTION_SATURATION[:], s)
-	table := slope == .Slope_24 ? &FILTER_OUTPUT_CORRECTION_DB_24 : &FILTER_OUTPUT_CORRECTION_DB_12
+	table := &FILTER_OUTPUT_CORRECTION_DB_12
 	lo := dsp.lerp32(table[ri][si], table[ri][si + 1], stt)
 	hi := dsp.lerp32(table[ri + 1][si], table[ri + 1][si + 1], stt)
 	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
+}
+
+// The ladder's feedback, which is what parameter 20 actually controls.
+//
+// Fitted from the reference's own magnitude response: held at cutoff 34 and swept
+// across notes 36 to 90, the pole frequency stays at 110.4 Hz at every resonance
+// from 0 to 115 while the feedback rises, at 0.03 to 0.06 dB rms. The same
+// feedback comes back at cutoff 64 -- 0.00, 1.95 and 3.15 against 0.00, 2.00 and
+// 3.35 -- so it is a function of the knob and of nothing else.
+//
+// It is very nearly the knob over 32, and it stops rising near the top.
+FILTER_LADDER_FEEDBACK_STATES := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115, 127}
+FILTER_LADDER_FEEDBACK := [?]f32{
+	0.00, 0.50, 1.00, 1.50, 2.00, 2.55, 3.00, 3.35, 3.60, 3.70,
+}
+
+filter_ladder_feedback :: proc(stored: int) -> f32 {
+	state := resolved_position(20, stored)
+	last := len(FILTER_LADDER_FEEDBACK_STATES) - 1
+	if state <= FILTER_LADDER_FEEDBACK_STATES[0] {
+		return FILTER_LADDER_FEEDBACK[0]
+	}
+	if state >= FILTER_LADDER_FEEDBACK_STATES[last] {
+		return FILTER_LADDER_FEEDBACK[last]
+	}
+	for i in 0 ..< last {
+		lo := FILTER_LADDER_FEEDBACK_STATES[i]
+		hi := FILTER_LADDER_FEEDBACK_STATES[i + 1]
+		if state <= hi {
+			t := f32(state - lo) / f32(hi - lo)
+			return dsp.lerp32(FILTER_LADDER_FEEDBACK[i], FILTER_LADDER_FEEDBACK[i + 1], t)
+		}
+	}
+	return FILTER_LADDER_FEEDBACK[last]
 }
 
 filter_saturation_corner :: proc(stored: int) -> f32 {
@@ -1018,11 +1078,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		// See `filter_output_correction`: what the saturation control does to the
 		// level once the filter is resonant, plus the 24 dB path's own resonance
 		// gain error, which is that surface's saturation-0 column.
-		e.filter_output_gain *= filter_output_correction(
-			e.filter_slope,
-			p.values[20],
-			p.values[23],
-		)
+		e.filter_output_gain *= filter_output_correction(p.values[20], p.values[23])
 	}
 
 	// Parameter 21 displays -63..64, with stored 63 as zero. Controlled sweeps
@@ -1038,6 +1094,8 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// documented one.
 	e.filter_key_track = unit_position(22, p.values[22])
 	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
+	e.filter_ladder_feedback = filter_ladder_feedback(p.values[20])
+	e.filter_ladder_gain = filter_ladder_gain(p.values[20], p.values[23])
 	e.filter_saturation_corner = filter_saturation_corner(p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 

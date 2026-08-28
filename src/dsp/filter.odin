@@ -245,3 +245,94 @@ filter_process :: proc "contextless" (f: ^Filter, x: f32, mode: Filter_Mode, slo
 
 	return sanitize(filter_saturate(out, saturation_drive))
 }
+
+// A four-pole ladder, which is what the reference's 24 dB low pass is.
+//
+// Identified rather than assumed. Sweeping the reference across notes 24 to 100
+// and fitting shapes with the corner left free -- so the fit tests the shape and
+// not the cutoff table -- a cascade of four one-poles lands at 0.48 dB rms where
+// the two cascaded biquads this engine used land at 1.53. Fitted state by state
+// the ladder holds between 0.03 and 0.68 dB across the whole usable range.
+//
+// The decisive part is what resonance does. Held at cutoff 34 and swept from
+// resonance 0 to 107, the fitted pole frequency stays at 114.2, 111.9 and 113.1
+// Hz while the feedback runs 0.30, 2.10 and 3.20. A ladder resonates by feeding
+// its output back, leaving its poles where they are; a pair of biquads resonates
+// by reducing damping, which moves the -3 dB point. That is a structural
+// difference and the reference is plainly on the ladder side of it.
+//
+// Zero-delay feedback, solved rather than iterated. Each one-pole contributes
+// `y = G*x + (1-G)*s`, so the cascade is `y4 = A*u + B` with `A = G^4` and B the
+// states' share, and with `u = x - k*y4` that closes to
+//
+//     y4 = (A*x + B) / (1 + A*k)
+//
+// which is exact for any feedback and needs no per-sample iteration.
+LADDER_MAX_FEEDBACK :: f32(4.4)
+
+Ladder :: struct {
+	s: [4]f32,
+	g: f32,
+	G: f32,
+	k: f32,
+}
+
+ladder_set :: proc "contextless" (l: ^Ladder, cutoff_hz, feedback, sample_rate: f32) {
+	sr := sample_rate
+	if !is_finite(sr) || sr <= 0 {
+		sr = 48000.0
+	}
+	fc := cutoff_hz
+	if !is_finite(fc) {
+		fc = MIN_CUTOFF_HZ
+	}
+	fc = clamp32(fc, MIN_CUTOFF_HZ, sr * MAX_CUTOFF_RATIO)
+
+	l.g = math.tan(math.PI * fc / sr)
+	l.G = l.g / (1.0 + l.g)
+	k := feedback
+	if !is_finite(k) {
+		k = 0
+	}
+	l.k = clamp32(k, 0, LADDER_MAX_FEEDBACK)
+}
+
+ladder_reset :: proc "contextless" (l: ^Ladder) {
+	l.s = {}
+}
+
+// No output normalisation, which is a correction to a first guess. A ladder loses
+// `1/(1+k)` at DC as its feedback rises, and it was tempting to undo that. The
+// reference does not undo it: its response fits `G^4/(1+k G^4)` with a *constant*
+// gain at every resonance, to within 0.06 dB, and a constant gain against that
+// model is exactly a filter whose DC falls away as it resonates. Measured
+// directly, a note above the pole comes out at -3.6 dB at every resonance from 0
+// to 127, where undoing the loss would have lifted it to +8.3 -- the compensation
+// multiplies the stop band as readily as the pass band, and above the pole there
+// is nothing else left to multiply.
+ladder_process :: proc "contextless" (l: ^Ladder, x: f32) -> f32 {
+	G := l.G
+	one := 1.0 - G
+	a := G * G * G * G
+	b := one * (G * G * G * l.s[0] + G * G * l.s[1] + G * l.s[2] + l.s[3])
+
+	input := x
+	if !is_finite(input) {
+		input = 0
+	}
+	y := (a * input + b) / (1.0 + a * l.k)
+	u := input - l.k * y
+
+	v := u
+	for i in 0 ..< 4 {
+		out := G * v + one * l.s[i]
+		l.s[i] = flush_denormal(out + G * (v - l.s[i]))
+		v = out
+	}
+
+	if !is_finite(l.s[0]) || !is_finite(l.s[1]) || !is_finite(l.s[2]) || !is_finite(l.s[3]) {
+		l.s = {}
+		return 0
+	}
+	return v
+}

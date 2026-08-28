@@ -9419,3 +9419,101 @@ and saturation 109, goes 4.07 dB loud. It is the closed-cutoff case, where the
 correction was fitted with the filter open and over-applies -- measured directly,
 the same setting reads -5.5 dB at cutoff 34 where it reads 0.0 open. The law is a
 gain and the residual is not; that stays open.
+
+
+### The 24 dB low pass is a ladder (2026-08-28)
+
+The shape residual left open above -- the reference falling 19.0 dB per octave
+where we fell 23.4, meeting us only deep in the stopband -- had a topology behind
+it, and the topology is identifiable rather than guessable.
+
+**The experiment that settles it** is to fit candidate shapes with the corner left
+*free* at each cutoff state. That separates the shape from the cutoff table, which
+was the flaw in the earlier attempt: forced through the table, four one-poles
+scored 6.32 dB rms and looked hopeless. Freed, over notes 24 to 100:
+
+```
+   two matched biquads, as shipped          1.53 dB rms
+   four cascaded one-poles                  0.48
+   two staggered biquads, ratio 2.10        0.38
+```
+
+Fitted state by state the one-pole cascade holds between 0.03 and 0.68 dB across
+the whole usable range, where the biquad pair reaches 1.48.
+
+**What resonance does is the proof.** Held at cutoff 34 and swept from resonance 0
+to 115, the fitted pole frequency does not move:
+
+```
+   res      0     16     32     48     64     80     96    107    115
+   pole 110.4  110.4  110.4  110.4  110.4  110.4  110.4  110.4  110.4 Hz
+   k     0.00   0.50   1.00   1.50   2.00   2.55   3.00   3.35   3.60
+   rms   0.05   0.03   0.03   0.04   0.04   0.04   0.05   0.05   0.04
+```
+
+A ladder resonates by feeding its output back and leaves its poles where they are.
+A pair of biquads resonates by reducing damping, which moves the -3 dB point.
+The reference is plainly the first, at 0.03 to 0.05 dB rms, and the same feedback
+comes back at a different cutoff -- 0.00, 1.95 and 3.15 at cutoff 64 against 0.00,
+2.00 and 3.35 at cutoff 34 -- so it is a function of the knob alone. It is very
+nearly the knob over 32.
+
+**And the pole table already existed.** For a four-pole ladder the resonant peak
+sits exactly at the pole frequency, and `FILTER_CUTOFF_HZ_24` was measured from
+that peak: 105.3 and 576.1 Hz at states 34 and 64, against 110.4 and 582.6 fitted
+from the response. So the ladder needs one surface at every resonance, and the
+two-surface blend, the topology scale and the low-resonance correction fitted
+earlier exist only because the wrong topology needed different corners at
+different resonances.
+
+### What it cost to get the level right
+
+Two corrections, each one caught by a measurement that contradicted the previous
+guess.
+
+The ladder loses `1/(1+k)` at DC. Undoing that was wrong: it multiplies the stop
+band as readily as the pass band, and a note above the pole went to +8.3 dB where
+the reference sits at -3.6 at every resonance. Removed, the raw ladder matches the
+reference across the entire resonance knob at cutoff 34 -- 25.4, 24.3 and 21.5
+against 25.4, 23.8 and 21.0 below the pole.
+
+But through an *open* filter the reference is up to 6.9 dB louder than a raw
+ladder, so it does compensate, only not everywhere. The deficit turned out to
+depend on how open the filter is, not on where the note sits:
+
+```
+   cutoff       64     80     96    104    112    120    127
+   deficit     0.4    0.9    2.1    3.0    4.2    5.5    6.4 dB   (resonance 96)
+   ramp        0.0    0.0    2.1    3.2    4.3    5.3    6.4
+```
+
+A straight line in the cutoff state from 80 to 127, so the correction is the
+measured resonance-by-saturation surface raised to that ramp. With it the ladder
+lands within 0.4 dB at every cutoff from 64 up and at every resonance.
+
+### Gated
+
+```
+                          median            mean         24 dB patches
+   factory spectral   5.820 -> 5.485   6.489 -> 6.150   7.044 -> 6.513   63 better, 7 worse
+   factory envelope   1.638 -> 1.538   2.000 -> 1.948   2.151 -> 2.069
+   percussion spectr  5.914 -> 5.789   7.353 -> 7.236   8.075 -> 7.784   63 better, 56 worse
+   percussion level   2.425 -> 2.218   3.306 -> 3.162   3.273 -> 2.935   70 better, 45 worse
+```
+
+Spectral improves on 63 factory patches against 7, which is the largest single
+movement in this file, and the 24 dB subset carries it.
+
+**Factory level is the exception, and it is one patch.** The mean goes 1.252 to
+1.532 with `123.sy1` and 1.261 to 1.334 without it. That patch is a 24 dB filter
+at cutoff 5 with resonance 127, where a four-pole ladder self-oscillates: the
+reference emits its own tone and we do not, leaving us 24.8 dB quiet in RMS.
+Raising the feedback to 3.97 recovers 7.5 dB of it and costs 0.4 dB of spectral
+error, and still does not reproduce the oscillation, so the measured 3.70 stays
+and the state is left open. Three factory patches sit at resonance 120 or above.
+
+The other residual that stays open is the closed-cutoff shape: the ladder is
++1.5 to +2.9 dB at cutoff 34 to 48 where it is within 0.4 above cutoff 64. And
+the harmonics at very closed cutoffs are unchanged by any of this -- the
+saturation curve still sits after the filter, where a ladder's belongs inside the
+loop, which is the next thing this points at.

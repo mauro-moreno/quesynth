@@ -26,6 +26,7 @@ Unison_Voice :: struct {
 	sub:             dsp.Oscillator,
 	sub_satellites:  [8]dsp.Oscillator,
 	filter:          dsp.Filter,
+	ladder:          dsp.Ladder,
 	// Parameter 75's offset in cents from the outer voice's pitch.
 	detune:          f32,
 	// -1..1.
@@ -89,6 +90,15 @@ filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
 	lo := int(math.floor(bounded))
 	hi := clamp_int(lo + 1, 0, FILTER_TABLE_SIZE - 1)
 	fraction := bounded - f32(lo)
+
+	if p.filter_slope == .Slope_24 && p.filter_mode == .Low_Pass {
+		// The ladder's pole is where the reference's resonant peak is, and
+		// `FILTER_CUTOFF_HZ_24` is exactly that, measured from the peak at
+		// resonance 107: 105.3 and 576.1 Hz at states 34 and 64, against 110.4 and
+		// 582.6 fitted from the response. A ladder needs one surface at every
+		// resonance, so none of the blending below applies to it.
+		return exp_map(fraction, FILTER_CUTOFF_HZ_24[lo], FILTER_CUTOFF_HZ_24[hi])
+	}
 
 	if p.filter_slope == .Slope_24 {
 		// See `filter_cutoff_24_low_correction`: the generated resonance-0 surface
@@ -342,6 +352,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				)
 			}
 			dsp.filter_init(&u.filter)
+			dsp.ladder_reset(&u.ladder)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
 			// at note on, and turned fully down it does not fix anything at all.
@@ -931,23 +942,53 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		// Saturation opens the corner; see `filter_saturation_corner`.
-		dsp.filter_set_damping(
-			&u.filter,
-			cutoff * p.filter_saturation_corner,
-			p.filter_damping,
-			sample_rate,
-			p.filter_slope,
-		)
-		filtered := dsp.filter_process(
-			&u.filter,
-			mixed,
-			p.filter_mode,
-			p.filter_slope,
-			p.filter_saturation_drive,
-		)
+		// The 24 dB low pass is a ladder; see `dsp.Ladder`. Its level is its own
+		// measured surface -- `filter_ladder_gain` -- rather than the table that
+		// exists to undo two biquads' resonance gain.
+		filtered: f32
+		output_gain := p.filter_output_gain
+		if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
+			// Saturation opens the corner; see `filter_saturation_corner`.
+			dsp.ladder_set(
+				&u.ladder,
+				cutoff * p.filter_saturation_corner,
+				p.filter_ladder_feedback,
+				sample_rate,
+			)
+			filtered = dsp.sanitize(
+				dsp.filter_saturate(
+					dsp.ladder_process(&u.ladder, mixed),
+					p.filter_saturation_drive,
+				),
+			)
+			// Only as far as the filter is open; see `FILTER_LADDER_GAIN_DB`. The
+			// raw ladder is already right at cutoff 64 and below -- within 0.4 dB
+			// across the whole resonance knob -- and falls behind only as the pole
+			// climbs past state 80, by 0.9, 2.1, 3.0, 4.2, 5.5 and 6.4 dB at states
+			// 80, 96, 104, 112, 120 and 127. That is a straight line in the state,
+			// so the correction is the surface raised to it.
+			output_gain = math.pow(
+				p.filter_ladder_gain,
+				dsp.clamp32((cutoff_state - 80.0) / 47.0, 0, 1),
+			)
+		} else {
+			dsp.filter_set_damping(
+				&u.filter,
+				cutoff * p.filter_saturation_corner,
+				p.filter_damping,
+				sample_rate,
+				p.filter_slope,
+			)
+			filtered = dsp.filter_process(
+				&u.filter,
+				mixed,
+				p.filter_mode,
+				p.filter_slope,
+				p.filter_saturation_drive,
+			)
+		}
 
-		sample := filtered * p.filter_output_gain * gain * stack_scale
+		sample := filtered * output_gain * gain * stack_scale
 
 		// The reference's pan law: full level in both channels at the centre, and
 		// panning attenuates the channel you are moving away from.
