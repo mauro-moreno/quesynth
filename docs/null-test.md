@@ -9173,3 +9173,94 @@ section. The TPT form does not expose that point -- its low pass is computed
 directly rather than integrated from its band pass -- so it needs the explicit
 form, which is a restructuring rather than an insertion and is why it was not
 simply tried here.
+
+
+### The saturation control opens the filter (2026-08-28)
+
+The previous section left the nonlinearity's position as the open question and
+argued for the band-pass node on three grounds. Taking it settled the question,
+though not the way the argument expected.
+
+**Restructuring first.** The solved form computes the low pass directly, as
+`ic2eq + a2*ic1eq + a3*v3`. Since `a2 = g*a1` and `a3 = g*a2` that is
+`ic2eq + g*v1` term for term, so the low pass can be integrated from the band
+pass instead, leaving that node exposed with every coefficient unchanged.
+
+The node behaves as predicted. A limiter there leaves the open-filter control
+**exactly** intact -- -26.5, -13.9, -8.9, -7.2 dB and peak 0.4467 against the
+reference's identical five -- at every loop drive from 0 to 4, because with the
+corner above the note the band pass is too small for the limiter to reach. No
+earlier placement managed that. Driven at twice the saturation drive it closed
+most of the harmonic gap as well, and normalised by `sqrt(d * tanh d)` it tracked
+the reference's closed-filter fundamental across a 16 dB climb: 7.3, 14.6, 20.4
+and 22.7 dB against 7.5, 14.4, 21.1 and 23.5.
+
+**And the corpus refused it.** Percussion spectral error went from 5.975 to 6.603
+dB, worse on 87 patches against 65 better. The normalisation that recovers the
+level has a small-signal gain of `sqrt(d/tanh d)`, up to 4.1, so quiet passages
+run at a corner up to two octaves high; the probe never saw it because the probe
+holds loud steady tones. Compensating that shift turns the curve back into the
+unity-gain one that loses 6.5 dB of fundamental. The two cannot both be had from
+a static curve on that node, and the reference pays neither.
+
+### What the fundamental was saying
+
+The clue was in the numbers the placements were being judged against rather than
+in the placements. Through a filter closed to cutoff 34, the reference's
+fundamental climbs 16 dB across the saturation knob, 7.5 to 23.5 dB, arriving
+within 0.7 dB of what the same note measures through a fully open filter. Through
+an open filter it climbs 1.7 dB. Through a half-open one, 1.0.
+
+A control that does nothing once the corner is above the note and lifts the note
+to its open-filter value when the corner is below it is not a nonlinearity. It is
+the corner itself moving -- and that is the cliff, which was absent at cutoff 127,
+96, 64 and 48 and worth 16.5 dB at 34, exactly where the corner first falls below
+the note being played.
+
+**The slope test confirms it.** A corner moving by G lifts a 24 dB slope by twice
+the decibels it lifts a 12 dB one, while a gain lifts both equally. Removing the
+common rise our own output saturator already produces:
+
+```
+   LP12   reference +29.4 dB   ours +24.1   residual  +5.3 dB
+   LP24   reference +39.1 dB   ours +24.6   residual +14.5 dB
+```
+
+The residual is 2.7 times larger on the steeper slope, against 2 for a corner and
+1 for a gain, with the LP12 figure understated because its corner reaches the note
+before the knob ends. Independently, the gap between the two slopes narrows from
+26.6 to 16.9 dB across the knob, which places the corner at 56.6 Hz and then 98.5,
+a factor of 1.74. Fitting the LP12 asymptote at cutoff 8, where the corner sits
+2.7 octaves below the note and stays there, gives 1.9. Three routes, one answer.
+
+The table is that measurement rather than the formula it resembles: the
+`sqrt(d/tanh d)` the drive's own normalisation suggests reaches 4.1 and overshoots
+the fundamental by 4.9 dB in the middle of the knob.
+
+### Gated
+
+```
+                       before    after
+   percussion spectral   5.975    5.861   68 patches better, 45 worse
+   percussion envelope   3.501    3.459
+   factory bank          5.820    5.846   3 better, 1 worse, 115 unchanged
+```
+
+The factory bank barely moves because few of its patches drive the control. The
+open-filter case stays exact, cutoff 64 lands within 0.1 dB, and cutoff 34's
+sat-64 shortfall falls from 16.5 dB to 1.4.
+
+**Three residuals, left open rather than papered over.** The harmonics at very
+closed cutoffs are still short -- the corner explains the fundamental, not the
+distortion, which is a separate mechanism. The 24 dB filter is 8.1 dB short at a
+closed cutoff with the saturation control at zero, so that error predates this and
+is not saturation at all. And the correction the reference wants grows with
+resonance, from 5.4 dB at resonance 0 to 10.4 at 115, while the table is fitted at
+resonance 0.
+
+That last one has a name in the bank. `083.sy1`, "Solo Lead", is the single
+factory regression, 5.61 to 7.17 dB, and it is a 24 dB filter at cutoff 33 with
+resonance 115 and saturation 122 -- every one of the three residuals at once.
+Moving a resonance that sharp by a factor of 1.9 relocates it across the
+sixth-octave bands the metric scores, so a correction in the right direction still
+reads worse there until the resonance dependence is fitted too.

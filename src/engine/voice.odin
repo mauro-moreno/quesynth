@@ -929,7 +929,14 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		dsp.filter_set_damping(&u.filter, cutoff, p.filter_damping, sample_rate, p.filter_slope)
+		// Saturation opens the corner; see `filter_saturation_corner`.
+		dsp.filter_set_damping(
+			&u.filter,
+			cutoff * p.filter_saturation_corner,
+			p.filter_damping,
+			sample_rate,
+			p.filter_slope,
+		)
 		filtered := dsp.filter_process(
 			&u.filter,
 			mixed,

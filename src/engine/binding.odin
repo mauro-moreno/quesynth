@@ -160,6 +160,57 @@ FILTER_SATURATION_DRIVE := [?]f32{
 	10.250473, 13.854322, 15.213064, 15.9, 16.879008,
 }
 
+// How far the saturation control opens the corner.
+//
+// The drive table above was fitted through an open filter, where it is exact.
+// Through a closed one it was 16.5 dB short of the reference's harmonics at
+// cutoff 34, and the shortfall was a cliff rather than a curve -- nothing at
+// cutoff 127, 96, 64 or 48, all of it at 34, which is where the corner first
+// falls below the note being played. What moves at a closed cutoff and cannot
+// move at an open one is the corner.
+//
+// The reference's fundamental confirms it directly. At cutoff 34 it climbs 16 dB
+// across the knob, 7.5 to 23.5 dB, arriving within 0.7 dB of the value the same
+// note measures through a fully open filter; through an open filter it climbs
+// 1.7 dB and through a half-open one 1.0. The saturation control opens the
+// filter.
+//
+// The amount is read where the reading is unambiguous. At cutoff 8 the corner
+// sits about 2.7 octaves below the note, so the 12 dB per octave asymptote holds
+// across the whole knob and the excess fundamental converts straight to corner
+// gain, at half a decibel of corner per decibel of output. Measured that way it
+// reaches 1.9 at the top of the control. The obvious closed form, the
+// `sqrt(d/tanh d)` that the drive's own normalisation suggests, reaches 4.1 and
+// overshoots the fundamental by 4.9 dB at the middle of the knob, so the table is
+// the measurement rather than the formula.
+FILTER_SATURATION_CORNER_STATES := [?]int{
+	0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127,
+}
+FILTER_SATURATION_CORNER := [?]f32{
+	1.000, 1.000, 1.006, 1.023, 1.041, 1.078, 1.117, 1.181, 1.259,
+	1.355, 1.467, 1.573, 1.679, 1.738, 1.845, 1.858, 1.905,
+}
+
+filter_saturation_corner :: proc(stored: int) -> f32 {
+	state := resolved_position(23, stored)
+	last := len(FILTER_SATURATION_CORNER_STATES) - 1
+	if state <= FILTER_SATURATION_CORNER_STATES[0] {
+		return FILTER_SATURATION_CORNER[0]
+	}
+	if state >= FILTER_SATURATION_CORNER_STATES[last] {
+		return FILTER_SATURATION_CORNER[last]
+	}
+	for i in 0 ..< last {
+		lo := FILTER_SATURATION_CORNER_STATES[i]
+		hi := FILTER_SATURATION_CORNER_STATES[i + 1]
+		if state <= hi {
+			t := f32(state - lo) / f32(hi - lo)
+			return dsp.lerp32(FILTER_SATURATION_CORNER[i], FILTER_SATURATION_CORNER[i + 1], t)
+		}
+	}
+	return FILTER_SATURATION_CORNER[last]
+}
+
 filter_saturation_drive :: proc(stored: int) -> f32 {
 	state := resolved_position(23, stored)
 	if state <= FILTER_SATURATION_STATES[0] {
@@ -844,6 +895,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// documented one.
 	e.filter_key_track = unit_position(22, p.values[22])
 	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
+	e.filter_saturation_corner = filter_saturation_corner(p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 
 	// -- amplifier -----------------------------------------------------------
