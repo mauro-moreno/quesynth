@@ -297,11 +297,10 @@ turns into a position along whichever axis it is currently lying on.
 
 ## Two shells, one panel
 
-`pad.html` loads the same files in the same order as `index.html` and adds two:
-`pad-boot.js`, which asks the host for sixteen instruments instead of one, and
-`pad.js`, which puts the grid above the panel and tags everything the panel sends
-with the cell it is for. It omits `store.js`, which remembers one sound where the
-pad has sixteen.
+`pad.html` loads the same files in the same order as `index.html` and adds three:
+`pad-boot.js`, which asks the host for sixteen instruments; `pad-model.js`, the
+DOM-free kit schema and routing rules; and `pad.js`, the browser controller. It
+omits `store.js`, which remembers one sound where the pad has sixteen.
 
 The panel itself is untouched, and that is the whole design. `app.js` holds one
 array of stored integers and refreshes its controls when a *host* hands it a new
@@ -315,7 +314,33 @@ The styling follows from the same rule. A cell is the `.panel` surface with the
 `.knob` metal on its rim, written against the tokens in `:root`, so restyling the
 instrument restyles the pad with it.
 
+The rack keeps trigger and pitch separate. An incoming MIDI note selects every
+cell assigned to it, while the cell's root note is what its engine sounds.
+Assignments can be chromatic, General MIDI (channel 10), or custom; MIDI Learn
+captures the next Note On. Each cell also owns velocity scaling, gate/one-shot
+mode, choke group, volume, pan, enabled/mute/solo state, and its Synth1 parameter
+array. The browser autosaves the same validated schema exported as `.qkit`.
+
+The synth editor starts collapsed and is still exactly the shared editor. Opening
+it and selecting a cell sends that cell's state and remembered bank identity down
+the ordinary host-to-panel path, so both the controls and bank strip follow the
+selection.
+
 `node ui/check-pages.js` guards the arrangement. The way two shells over one panel
 fail is quiet -- a file added to one page and not the other leaves the second
 working but silently lacking the feature -- so the two script lists are compared,
 and any difference has to be one that file knows the reason for.
+
+## Pad tests and production bundle
+
+The rack model and bundler use only Node's built-ins:
+
+```text
+node --test tests/ui/pad-model.test.cjs tests/ui/bundle-pad.test.mjs
+node tools/bundle-pad.mjs --output build/quesynth-pad
+node tools/check-pad-bundle.mjs build/quesynth-pad
+```
+
+Source stays as classic scripts for native WebViews. The production step combines
+those scripts in their page order and copies the separate AudioWorklet and WASM
+binary into `build/quesynth-pad/`; those two cannot be folded into JavaScript.

@@ -73,18 +73,38 @@ WebAssembly.instantiate(bytes, {
 
   // And a parameter set on one cell must not move another. Cutoff shut on slot
   // 5 and left open on slot 6: strike both and the second must be the louder.
-  w.synth_all_notes_off();
+  w.synth_all_notes_off(-1);
   w.synth_set_param(SLOT, 19, 0);
   w.synth_note_on(SLOT, 60, 100);
   let shut = 0;
   for (let b = 0; b < 200; b++) { w.synth_render(); shut = Math.max(shut, rms(view()[0])); }
-  w.synth_all_notes_off();
+  w.synth_all_notes_off(-1);
   for (let b = 0; b < 400; b++) w.synth_render();
 
   w.synth_note_on(SLOT + 1, 60, 100);
   let open = 0;
   for (let b = 0; b < 200; b++) { w.synth_render(); open = Math.max(open, rms(view()[0])); }
-  w.synth_all_notes_off();
+  w.synth_all_notes_off(-1);
+
+  // Rack mixer state belongs to one slot and can silence it without changing
+  // the patch stored in that slot.
+  for (let b = 0; b < 400; b++) w.synth_render();
+  w.synth_set_mix(SLOT + 1, 0, 0);
+  w.synth_note_on(SLOT + 1, 60, 100);
+  let muted = 0;
+  for (let b = 0; b < 120; b++) { w.synth_render(); muted = Math.max(muted, rms(view()[0])); }
+  w.synth_all_notes_off(-1);
+  w.synth_set_mix(SLOT + 1, 1, 0);
+
+  // A one-shot must return its voice without a Note Off from the controller.
+  const ONE_SHOT = SLOT + 2;
+  w.synth_set_param(ONE_SHOT, 25, 0);
+  w.synth_set_param(ONE_SHOT, 26, 0);
+  w.synth_set_param(ONE_SHOT, 27, 0);
+  w.synth_set_param(ONE_SHOT, 28, 0);
+  w.synth_trigger(ONE_SHOT, 60, 100);
+  for (let b = 0; b < 32; b++) w.synth_render();
+  const oneShotVoices = w.synth_active_voices(ONE_SHOT);
 
   const lines = [
     "  slots reported            " + count,
@@ -93,6 +113,8 @@ WebAssembly.instantiate(bytes, {
     "  engines with a voice      [" + sounding.join(", ") + "]",
     "  slot " + SLOT + " with cutoff shut  " + shut.toFixed(6),
     "  slot " + (SLOT + 1) + " with cutoff open  " + open.toFixed(6),
+    "  slot " + (SLOT + 1) + " muted by mixer    " + muted.toFixed(6),
+    "  one-shot voices after tail  " + oneShotVoices,
   ];
   console.log(lines.join("\n"));
 
@@ -106,6 +128,8 @@ WebAssembly.instantiate(bytes, {
     fail.push("a parameter set on one slot reached another (shut " +
       shut.toFixed(6) + " vs open " + open.toFixed(6) + ")");
   }
+  if (muted > 1e-6) fail.push("a zero-volume slot reached the rack output");
+  if (oneShotVoices !== 0) fail.push("one-shot kept a voice gated without Note Off");
 
   if (fail.length) {
     console.error("\nFAILED:\n  " + fail.join("\n  "));

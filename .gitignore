@@ -70,5 +70,3 @@ ui/bank.js
 # CLI, written beside whatever was being checked. Evidence for one session, not
 # a record of anything measured.
 .playwright-cli/
-
-research/

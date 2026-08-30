@@ -7,7 +7,7 @@
 <title>Quesynth Pad</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body class="pad-body">
+<body class="pad-body rack-editor-closed">
 
 <nav id="nav" aria-label="Sections">
   <div class="brand">Quesynth Pad</div>
@@ -17,25 +17,80 @@
           aria-controls="keyboard">Keys</button>
 </nav>
 
-<!-- The instrument itself. Sixteen cells, each a whole Quesynth: what the panel
-     below edits is whichever one is selected, so the editor is the same editor
-     the synth page has rather than a reduced copy of it. -->
-<section id="pads" class="pads" aria-label="Pads">
-  <div class="pad-grid" id="pad-grid"></div>
-  <div class="pad-bar">
-    <span class="pad-bar-label" id="pad-selected">Pad 1</span>
-    <label class="pad-note">
-      <span>Note</span>
-      <input type="range" id="pad-note" min="24" max="96" value="60"
-             aria-label="Note this pad plays">
-      <span class="pad-note-read" id="pad-note-read">C3</span>
+<!-- One rack, sixteen logical instruments, and one reused synth editor. -->
+<section id="pads" class="pads" aria-label="Quesynth rack">
+  <header class="rack-toolbar">
+    <label class="rack-kit-name">
+      <span>Kit</span>
+      <input id="kit-name" type="text" value="Untitled Kit" maxlength="80"
+             aria-label="Kit name">
     </label>
-    <button type="button" class="pad-action" id="pad-copy">COPY</button>
-    <button type="button" class="pad-action" id="pad-paste" disabled>PASTE</button>
+    <label class="rack-compact">
+      <span>Mapping</span>
+      <select id="kit-mapping" aria-label="Pad mapping">
+        <option value="chromatic">Chromatic 36–51</option>
+        <option value="gm">General MIDI</option>
+        <option value="custom">Custom</option>
+      </select>
+    </label>
+    <label class="rack-compact">
+      <span>Channel</span>
+      <select id="kit-channel" aria-label="MIDI channel"><option value="omni">Omni</option></select>
+    </label>
+    <div class="rack-file-actions" aria-label="Kit file actions">
+      <button type="button" class="pad-action" id="kit-new">NEW</button>
+      <button type="button" class="pad-action" id="kit-open">OPEN</button>
+      <button type="button" class="pad-action primary" id="kit-save">SAVE .QKIT</button>
+      <input id="kit-file" type="file" accept=".qkit,application/json" hidden>
+    </div>
+  </header>
+
+  <div class="rack-workspace">
+    <div class="pad-grid" id="pad-grid" role="grid" aria-label="16 instrument pads"></div>
+
+    <aside class="pad-inspector" aria-labelledby="pad-selected">
+      <div class="pad-inspector-head">
+        <div>
+          <span class="eyebrow">Selected instrument</span>
+          <strong id="pad-selected">01 · Pad 1</strong>
+        </div>
+        <button type="button" class="pad-action" id="pad-learn">MIDI LEARN</button>
+      </div>
+
+      <label class="rack-field wide"><span>Name</span><input id="pad-name" type="text" maxlength="48"></label>
+      <div class="rack-fields two">
+        <label class="rack-field"><span>Trigger note</span><input id="pad-note" type="number" min="0" max="127"><output id="pad-note-read">C2 · 36</output></label>
+        <label class="rack-field"><span>Engine root</span><input id="pad-root" type="number" min="0" max="127"><output id="pad-root-read">C4 · 60</output></label>
+        <label class="rack-field"><span>Trigger mode</span><select id="pad-mode"><option value="gate">Gate</option><option value="one-shot">One shot</option></select></label>
+        <label class="rack-field"><span>Choke group</span><select id="pad-choke"><option value="0">Off</option></select></label>
+      </div>
+
+      <div class="rack-sliders">
+        <label class="rack-slider"><span>Velocity</span><input id="pad-velocity" type="range" min="0" max="200" value="100"><output id="pad-velocity-read">100%</output></label>
+        <label class="rack-slider"><span>Volume</span><input id="pad-volume" type="range" min="0" max="150" value="100"><output id="pad-volume-read">0.0 dB</output></label>
+        <label class="rack-slider"><span>Pan</span><input id="pad-pan" type="range" min="-100" max="100" value="0"><output id="pad-pan-read">Center</output></label>
+      </div>
+
+      <div class="rack-toggles" aria-label="Pad state">
+        <button type="button" id="pad-enabled" aria-pressed="true">ENABLED</button>
+        <button type="button" id="pad-mute" aria-pressed="false">MUTE</button>
+        <button type="button" id="pad-solo" aria-pressed="false">SOLO</button>
+      </div>
+      <div class="pad-inspector-actions">
+        <button type="button" class="pad-action" id="pad-copy">COPY SLOT</button>
+        <button type="button" class="pad-action" id="pad-paste" disabled>PASTE SLOT</button>
+        <button type="button" class="pad-action primary" id="pad-edit"
+                aria-expanded="false" aria-controls="rack-editor">EDIT SYNTH ↓</button>
+      </div>
+      <p class="rack-hint" id="rack-hint">Incoming notes select a pad; its root note sets the pitch sent to Quesynth.</p>
+    </aside>
   </div>
 </section>
 
-<main id="panels"></main>
+<section class="rack-editor" id="rack-editor" aria-label="Selected pad synth editor" hidden>
+  <div class="rack-editor-title"><span>Sound design</span><strong id="rack-editor-pad">Pad 1</strong></div>
+  <main id="panels"></main>
+</section>
 
 <div id="bank" class="bank">
   <button type="button" class="bank-step" data-step="-1" aria-label="Previous patch">‹</button>
@@ -81,6 +136,7 @@
 <script src="host.js" onerror="void 0"></script>
 <script src="params.js"></script>
 <script src="bank.js" onerror="void 0"></script>
+<script src="pad-model.js"></script>
 <script src="layout.js"></script>
 <script src="bridge.js"></script>
 <script src="app.js"></script>

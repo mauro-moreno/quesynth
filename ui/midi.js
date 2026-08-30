@@ -60,24 +60,34 @@
     var d = e.data;
     if (!d || d.length < 2) return;
     var status = d[0] & 0xF0;
+    var channel = d[0] & 0x0F;
     var bridge = window.SynthBridge;
     if (!bridge) return;
+
+    // The rack needs the channel as well as the note for filtering and learn.
+    // Ordinary synth pages keep using the bridge directly.
+    function note(on, number, velocity) {
+      if (window.QuesynthPad && typeof window.QuesynthPad.routeMidi === "function") {
+        return window.QuesynthPad.routeMidi(on, number, velocity, channel);
+      }
+      return bridge.note(on, number, velocity, channel);
+    }
 
     switch (status) {
       case 0x90:
         // A note on with zero velocity is a note off, and plenty of keyboards
         // only ever send it that way.
         if (d[2] > 0) {
-          bridge.note(true, d[1], d[2]);
+          note(true, d[1], d[2]);
           flashVelocity(d[2]);
           if (window.SynthKeys) window.SynthKeys.down(d[1]);
         } else {
-          bridge.note(false, d[1], 0);
+          note(false, d[1], 0);
           if (window.SynthKeys) window.SynthKeys.up(d[1]);
         }
         break;
       case 0x80:
-        bridge.note(false, d[1], 0);
+        note(false, d[1], 0);
         if (window.SynthKeys) window.SynthKeys.up(d[1]);
         break;
       case 0xC0:

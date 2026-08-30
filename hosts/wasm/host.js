@@ -76,6 +76,15 @@
       case "note":
         out = { type: "note", on: msg.on, note: msg.note, velocity: msg.velocity };
         break;
+      case "trigger":
+        // A rack one-shot: the engine runs attack and decay, then releases
+        // itself without waiting for a hardware Note Off.
+        out = { type: "trigger", note: msg.note, velocity: msg.velocity };
+        break;
+      case "mix":
+        // Rack mixer state is deliberately outside the Synth1 patch.
+        out = { type: "mix", volume: msg.volume, pan: msg.pan };
+        break;
       case "panic":
         out = { type: "panic" };
         break;

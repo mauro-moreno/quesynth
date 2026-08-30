@@ -96,11 +96,13 @@ class SynthProcessor extends AudioWorkletProcessor {
     const slot = m.slot | 0;
     switch (m.type) {
       case "note":      m.on ? w.synth_note_on(slot, m.note, m.velocity) : w.synth_note_off(slot, m.note); break;
+      case "trigger":   w.synth_trigger(slot, m.note, m.velocity); break;
       case "set":       w.synth_set_param(slot, m.index, m.value); break;
+      case "mix":       w.synth_set_mix(slot, m.volume, m.pan); break;
       case "cc":        w.synth_control_change(slot, m.cc, m.value); break;
       case "bend":      w.synth_pitch_bend(slot, m.value); break;
       case "tempo":     w.synth_set_tempo(slot, m.bpm); break;
-      case "panic":     w.synth_all_notes_off(); break;
+      case "panic":     w.synth_all_notes_off(Number.isInteger(m.slot) ? slot : -1); break;
       case "state": {
         // A whole patch, written into the module's own buffer and applied once.
         // Setting each parameter in turn would rebind the instrument ninety-nine

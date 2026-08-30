@@ -52,6 +52,12 @@ factory bank of its own:
 | **standalone** | desktop shell, WASAPI out and winmm MIDI in |
 | **WebAssembly** | the same engine in a browser — that is what the demo link is |
 
+The browser build also includes **Quesynth Pad**: a 16-cell synth rack with one
+Quesynth engine per active cell, MIDI note routing, root-note translation,
+velocity, gate/one-shot triggers, choke groups, mute/solo, per-cell mix controls,
+MIDI Learn, GM/chromatic maps, and portable `.qkit` files. It reuses the same
+synth editor rather than maintaining sixteen copies of it.
+
 One HTML interface serves all four. The panel a browser shows, a phone shows and a
 DAW shows are the same files: the plugin embeds them in a WebView2 control, and
 `ui/bridge.js` absorbs the difference between hosts so nothing above it knows

@@ -35,6 +35,9 @@ MAX_SLOTS :: 16
 // The instruments, and the patches they were loaded from.
 g_engines: [MAX_SLOTS]engine.Engine
 g_patches: [MAX_SLOTS]patch.Patch
+g_slot_initialized: [MAX_SLOTS]bool
+g_slot_volume: [MAX_SLOTS]f32
+g_slot_pan: [MAX_SLOTS]f32
 g_slots: int
 g_ready: bool
 
@@ -59,11 +62,21 @@ slot_ok :: proc "contextless" (slot: i32) -> bool {
 	return slot >= 0 && int(slot) < g_slots
 }
 
+// Allocation happens on a control message / hit, never in synth_render. A rack
+// opens with sixteen logical pads but pays the large delay/chorus buffers only
+// for instruments it actually touches.
+slot_initialize :: proc(slot: int) {
+	if slot < 0 || slot >= g_slots || g_slot_initialized[slot] {return}
+	engine.engine_load_patch(&g_engines[slot], g_patches[slot], g_sample_rate)
+	g_slot_initialized[slot] = true
+}
+
 // The block the audio callback reads. Planar, left then right, because that is
 // the shape an AudioWorklet hands out and converting on either side would be work
 // done for nothing.
 g_block: int
 g_audio: []f32
+g_sample_rate: f32
 
 // The sample rate is whatever the browser's audio context decided, which is 44100
 // on some machines and 48000 on others. Nothing here assumes either.
@@ -83,6 +96,7 @@ synth_init :: proc "c" (sample_rate: f32, block: i32, slots: i32) -> [^]f32 {
 		delete(g_slot_right)
 	}
 	g_block = int(block)
+	g_sample_rate = sample_rate
 	g_audio = make([]f32, g_block * 2)
 	g_slot_left = make([]f32, g_block)
 	g_slot_right = make([]f32, g_block)
@@ -97,9 +111,14 @@ synth_init :: proc "c" (sample_rate: f32, block: i32, slots: i32) -> [^]f32 {
 			g_patches[s].values[i] = patch.PARAMETERS[i].default
 			g_patches[s].present[i] = true
 		}
-		engine.engine_load_patch(&g_engines[s], g_patches[s], sample_rate)
+		g_slot_initialized[s] = false
+		g_slot_volume[s] = 1
+		g_slot_pan[s] = 0
 		g_slot_tail[s] = 0
 	}
+	// The ordinary synth is always one slot and should be ready before its first
+	// performance event. Rack pages initialize each cell on first use.
+	if g_slots == 1 {slot_initialize(0)}
 	g_ready = true
 	return raw_data(g_audio)
 }
@@ -124,7 +143,9 @@ synth_set_param :: proc "c" (slot: i32, index: i32, stored: i32) {
 	}
 	g_patches[slot].values[index] = int(stored)
 	g_patches[slot].present[index] = true
-	engine.engine_apply_patch(&g_engines[slot], g_patches[slot])
+	if g_slot_initialized[slot] {
+		engine.engine_apply_patch(&g_engines[slot], g_patches[slot])
+	}
 }
 
 // Where a whole patch is written before `synth_apply_patch` reads it.
@@ -149,13 +170,16 @@ synth_apply_patch :: proc "c" (slot: i32) {
 	}
 	// A whole patch, so the smoothed parameters snap rather than sweeping in
 	// from whatever the last patch left them at.
-	engine.engine_apply_patch(&g_engines[slot], g_patches[slot], true)
+	if g_slot_initialized[slot] {
+		engine.engine_apply_patch(&g_engines[slot], g_patches[slot], true)
+	}
 }
 
 @(export)
 synth_note_on :: proc "c" (slot: i32, note: i32, velocity: i32) {
 	context = wasm_context()
 	if !g_ready || !slot_ok(slot) {return}
+	slot_initialize(int(slot))
 	engine.engine_note_on(&g_engines[slot], int(note), f32(velocity) / 127.0)
 	// A hit restarts the slot's tail, so it is rendered again even if it had
 	// fallen silent and been skipped.
@@ -163,19 +187,39 @@ synth_note_on :: proc "c" (slot: i32, note: i32, velocity: i32) {
 }
 
 @(export)
-synth_note_off :: proc "c" (slot: i32, note: i32) {
+synth_trigger :: proc "c" (slot: i32, note: i32, velocity: i32) {
 	context = wasm_context()
 	if !g_ready || !slot_ok(slot) {return}
+	slot_initialize(int(slot))
+	engine.engine_trigger(&g_engines[slot], int(note), f32(velocity) / 127.0)
+	g_slot_tail[slot] = g_tail_blocks
+}
+
+@(export)
+synth_note_off :: proc "c" (slot: i32, note: i32) {
+	context = wasm_context()
+	if !g_ready || !slot_ok(slot) || !g_slot_initialized[slot] {return}
 	engine.engine_note_off(&g_engines[slot], int(note))
 }
 
 @(export)
-synth_all_notes_off :: proc "c" () {
+synth_all_notes_off :: proc "c" (slot: i32) {
 	context = wasm_context()
 	if !g_ready {return}
-	for s in 0 ..< g_slots {
-		engine.engine_all_notes_off(&g_engines[s])
+	if slot_ok(slot) {
+		if g_slot_initialized[slot] {engine.engine_all_notes_off(&g_engines[slot])}
+		return
 	}
+	for s in 0 ..< g_slots {
+		if g_slot_initialized[s] {engine.engine_all_notes_off(&g_engines[s])}
+	}
+}
+
+@(export)
+synth_set_mix :: proc "c" (slot: i32, volume, pan: f32) {
+	if !g_ready || !slot_ok(slot) {return}
+	g_slot_volume[slot] = clamp(volume, f32(0), f32(1.5))
+	g_slot_pan[slot] = clamp(pan, f32(-1), f32(1))
 }
 
 // The pitch wheel, on -1..1. How far that bends is parameter 40's business.
@@ -183,6 +227,7 @@ synth_all_notes_off :: proc "c" () {
 synth_pitch_bend :: proc "c" (slot: i32, bend: f32) {
 	context = wasm_context()
 	if !g_ready || !slot_ok(slot) {return}
+	slot_initialize(int(slot))
 	engine.engine_set_pitch_bend(&g_engines[slot], bend)
 }
 
@@ -192,6 +237,7 @@ synth_pitch_bend :: proc "c" (slot: i32, bend: f32) {
 synth_control_change :: proc "c" (slot: i32, cc: i32, value: i32) {
 	context = wasm_context()
 	if !g_ready || !slot_ok(slot) {return}
+	slot_initialize(int(slot))
 	engine.engine_control_change(&g_engines[slot], int(cc), int(value))
 }
 
@@ -199,6 +245,7 @@ synth_control_change :: proc "c" (slot: i32, cc: i32, value: i32) {
 synth_set_tempo :: proc "c" (slot: i32, bpm: f32) {
 	context = wasm_context()
 	if !g_ready || !slot_ok(slot) {return}
+	slot_initialize(int(slot))
 	engine.engine_set_tempo(&g_engines[slot], bpm)
 }
 
@@ -225,6 +272,7 @@ synth_render :: proc "c" () {
 		right[i] = 0
 	}
 	for s in 0 ..< g_slots {
+		if !g_slot_initialized[s] {continue}
 		if engine.engine_active_voice_count(&g_engines[s]) > 0 {
 			g_slot_tail[s] = g_tail_blocks
 		} else if g_slot_tail[s] > 0 {
@@ -235,9 +283,11 @@ synth_render :: proc "c" () {
 			continue
 		}
 		engine.engine_process(&g_engines[s], g_slot_left, g_slot_right)
+		left_gain := g_slot_volume[s] * (g_slot_pan[s] > 0 ? 1 - g_slot_pan[s] : 1)
+		right_gain := g_slot_volume[s] * (g_slot_pan[s] < 0 ? 1 + g_slot_pan[s] : 1)
 		for i in 0 ..< g_block {
-			left[i] += g_slot_left[i]
-			right[i] += g_slot_right[i]
+			left[i] += g_slot_left[i] * left_gain
+			right[i] += g_slot_right[i] * right_gain
 		}
 	}
 }
@@ -245,7 +295,7 @@ synth_render :: proc "c" () {
 @(export)
 synth_active_voices :: proc "c" (slot: i32) -> i32 {
 	context = wasm_context()
-	if !g_ready || !slot_ok(slot) {return 0}
+	if !g_ready || !slot_ok(slot) || !g_slot_initialized[slot] {return 0}
 	return i32(engine.engine_active_voice_count(&g_engines[slot]))
 }
 

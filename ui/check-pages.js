@@ -23,6 +23,7 @@ const ONLY_INDEX = {
 };
 const ONLY_PAD = {
   "pad-boot.js": "asks the host for sixteen instruments instead of one",
+  "pad-model.js": "the reusable kit schema and rack routing rules",
   "pad.js": "the grid, and the tagging that sends each cell to its own engine",
 };
 

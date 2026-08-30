@@ -1,370 +1,383 @@
-// The pad: sixteen instruments behind one editor.
-//
-// Nothing here is a second interface. `app.js` builds the same panel it builds on
-// the synth page, out of the same `params.js` and `layout.js`, and this file does
-// three things around it:
-//
-//   * puts a four by four grid above it, one cell per instrument
-//   * tags everything the panel sends with which instrument it is for
-//   * hands the panel a different set of values when the selection moves
-//
-// The third is what makes the reuse work. `app.js` holds exactly one array of
-// stored integers and refreshes its controls when a *host* sends it a new one --
-// that path already exists, because a plugin host has to be able to say "the
-// project loaded, here is the patch". Selecting a pad is the same event: this
-// file delivers a `state` message and the panel repaints itself. The panel has
-// no idea there are sixteen of anything, which is what makes editing it improve
-// both pages at once.
-
+// Quesynth Pad browser controller. Rack rules live in pad-model.js; this file
+// only adapts them to the shared synth editor, SynthBridge, and the DOM.
 (function () {
   "use strict";
 
-  var ROWS = 4, COLS = 4;
-  var COUNT = ROWS * COLS;
-  // Bumped from v1 because the notes changed meaning rather than merely changing.
-  // v1 opened with every cell on C4, which was harmless while a note only ever
-  // played the selected cell and is not now that a note addresses the cells that
-  // answer to it: sixteen pads all listening to C4 would sound sixteen at once.
-  // A stored grid from then is discarded rather than migrated -- it is a minute
-  // old and holds nothing but defaults.
-  var KEY = "quesynth.pad.v2";
-  var NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-
+  var Model = window.QuesynthPadModel;
   var PARAMS = window.SYNTH1_PARAMS || [];
   var bridge = window.SynthBridge;
-  if (!bridge || !PARAMS.length) return;
+  if (!Model || !bridge || !PARAMS.length) return;
 
-  function noteName(n) {
-    return NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
-  }
-
-  // One patch per cell, as the array of stored integers the panel and the .sy1
-  // format both speak. Seeded from the reference's own defaults so every cell
-  // opens on a real instrument rather than on zeros.
-  function defaults() {
-    var v = [];
-    PARAMS.forEach(function (p) { v[p.i] = p.def; });
-    return v;
-  }
-
-  // Which note each cell answers to: sixteen chromatic steps up from MIDI 36,
-  // read left to right and top to bottom.
-  //
-  // 36 because that is where every drum machine and every drum rack starts, so a
-  // controller made for one already lines up with this without being told to.
-  // The strip below the grid names it C2, which is what the rest of this
-  // interface calls it -- middle C is C4 here.
-  var FIRST_NOTE = 36;
-
-  var pads = [];
-  for (var i = 0; i < COUNT; i++) {
-    pads.push({ values: defaults(), note: FIRST_NOTE + i, name: "" });
-  }
+  var STORAGE_KEY = "quesynth.pad.kit.v1";
+  var LEGACY_KEY = "quesynth.pad.v2";
+  var kit = Model.createKit(PARAMS);
   var selected = 0;
   var clipboard = null;
-  var applying = false;   // true while a selection is being pushed into the panel
+  var applying = false;
+  var learning = false;
   var cells = [];
+  var routed = Object.create(null);
+  var previewed = Object.create(null);
+  var heldPads = Object.create(null);
+  var saveTimer = null;
+  var originalSend = bridge.send.bind(bridge);
 
-  // ---------------------------------------------------------------- the engine
-
-  // Which instrument a message is for. The panel never sets this; everything it
-  // sends is for whichever cell is selected, and the pads themselves say so
-  // explicitly when they are struck.
-  var send = bridge.send.bind(bridge);
-
-  function tagged(msg, slot) {
-    msg.slot = (typeof slot === "number") ? slot : selected;
-    return send(msg);
+  function byId(id) { return document.getElementById(id); }
+  function pad() { return kit.pads[selected]; }
+  function boundedInt(value, fallback) {
+    value = Number(value);
+    return isFinite(value) ? Math.max(0, Math.min(127, Math.round(value))) : fallback;
   }
-
-  // The methods are replaced on the object rather than the object being replaced,
-  // because `app.js` took hold of it when it loaded and holds it still.
-  bridge.send = function (msg) {
-    // A whole patch on its way out -- a bank patch being loaded, most often.
-    // Recorded here as well as sent, or the cell would sound like the new patch
-    // and remember the old one.
-    if (msg && msg.type === "state" && Array.isArray(msg.values) && !applying) {
-      msg.values.forEach(function (v, i) {
-        if (typeof v === "number") pads[selected].values[i] = v;
-      });
-      save();
-    }
-    return tagged(msg);
-  };
-
-  bridge.setParam = function (index, value) {
-    if (!applying) {
-      pads[selected].values[index] = value;
-      save();
-    }
-    return tagged({ type: "set", index: index, value: value });
-  };
-
-  // A note addresses the cell that answers to it, wherever the note came from --
-  // a MIDI keyboard, the keys along the foot, a controller's own pads.
-  //
-  // Sending it to whichever cell happened to be selected is the obvious thing and
-  // it is wrong: selecting is how you choose what to *edit*, and clicking a pad
-  // both selects and strikes it, so a bar into a session every note played would
-  // be arriving at whichever pad was last touched. On a grid of sixteen
-  // instruments the note is the address.
-  //
-  // A note no cell answers to falls back to the selected one, which is what makes
-  // the keyboard still useful: it plays the sound being worked on, chromatically,
-  // without having to be assigned anywhere first.
-  var routed = {};   // note -> the cells it was sent to, so its note off matches
-
-  function cellsAnswering(note) {
-    var out = [];
-    for (var i = 0; i < COUNT; i++) if (pads[i].note === note) out.push(i);
+  function eventKey(note, channel) {
+    return (channel === undefined || channel === null ? "*" : channel) + ":" + note;
+  }
+  function copyMessage(message) {
+    var out = {};
+    Object.keys(message || {}).forEach(function (key) { out[key] = message[key]; });
     return out;
   }
-
-  bridge.note = function (on, note, velocity) {
-    if (!on) {
-      var previous = routed[note] || [selected];
-      delete routed[note];
-      previous.forEach(function (s) {
-        tagged({ type: "note", on: false, note: note, velocity: 0 }, s);
-      });
-      return true;
-    }
-    var targets = cellsAnswering(note);
-    if (!targets.length) targets = [selected];
-    routed[note] = targets;
-    targets.forEach(function (s) {
-      tagged({ type: "note", on: true, note: note, velocity: velocity || 100 }, s);
-      flash(s);
+  function sendTo(message, slot) {
+    var out = copyMessage(message);
+    out.slot = typeof slot === "number" ? slot : selected;
+    return originalSend(out);
+  }
+  function sendPatch(slot) {
+    sendTo({ type: "state", values: kit.pads[slot].values.slice() }, slot);
+  }
+  function sendMix(slot) {
+    var item = kit.pads[slot];
+    sendTo({ type: "mix", volume: item.volume, pan: item.pan }, slot);
+  }
+  function panicSlot(slot) {
+    sendTo({ type: "panic" }, slot);
+    delete heldPads[slot];
+  }
+  function dispatch(events) {
+    events.forEach(function (event) {
+      if (event.type === "panic") { panicSlot(event.slot); return; }
+      if (event.type !== "note") return;
+      var message = event.trigger_mode === "one-shot" && event.on
+        ? { type: "trigger", note: event.note, velocity: event.velocity }
+        : { type: "note", on: event.on, note: event.note, velocity: event.velocity };
+      sendTo(message, event.slot);
+      if (event.on) flash(event.slot);
     });
+  }
+
+  // Parameter/state edits target the selected rack slot. Notes from the shared
+  // on-screen keyboard preview it chromatically; Web MIDI uses routeMidi below.
+  bridge.send = function (message) {
+    if (message && message.type === "state" && Array.isArray(message.values) && !applying) {
+      pad().values = Model.normalizePad({ values: message.values }, selected, PARAMS).values;
+      // The bank strip is shared UI too. Keep its identity beside the values so
+      // selecting another pad restores both the sound and the patch it came
+      // from, rather than leaving the previous pad's bank label on screen.
+      if (window.SynthPatch) pad().patch_name = window.SynthPatch.name();
+      if (window.SynthBank) {
+        pad().patch_bank = window.SynthBank.label();
+        pad().patch_index = window.SynthBank.index();
+      }
+      scheduleSave();
+    }
+    return sendTo(message, selected);
+  };
+  bridge.setParam = function (index, value) {
+    if (!applying) { pad().values[index] = value; scheduleSave(); }
+    return sendTo({ type: "set", index: index, value: value }, selected);
+  };
+  bridge.note = function (on, note, velocity) {
+    var key = String(note);
+    if (on) {
+      previewed[key] = { slot: selected, note: note };
+      sendTo({ type: "note", on: true, note: note, velocity: velocity || 100 }, selected);
+      flash(selected);
+    } else {
+      var prior = previewed[key] || { slot: selected, note: note };
+      delete previewed[key];
+      sendTo({ type: "note", on: false, note: prior.note, velocity: 0 }, prior.slot);
+    }
     return true;
   };
+  bridge.beginEdit = function (index) { sendTo({ type: "edit", index: index, begin: true }, selected); };
+  bridge.endEdit = function (index) { sendTo({ type: "edit", index: index, begin: false }, selected); };
+  bridge.wheel = function (which, value) { sendTo({ type: "wheel", which: which, value: value }, selected); };
 
-  bridge.beginEdit = function (index) { tagged({ type: "edit", index: index, begin: true }); };
-  bridge.endEdit = function (index) { tagged({ type: "edit", index: index, begin: false }); };
-  bridge.wheel = function (which, value) { tagged({ type: "wheel", which: which, value: value }); };
+  function routeMidi(on, note, velocity, channel) {
+    note = boundedInt(note, 60);
+    var key = eventKey(note, channel);
+    if (!on) {
+      var previous = routed[key] || [];
+      delete routed[key];
+      dispatch(Model.noteOffEvents(previous));
+      return previous.length > 0;
+    }
+    if (learning) {
+      learning = false;
+      pad().note = note;
+      kit.mapping = "custom";
+      paintAll(); syncControls(); scheduleSave();
+      return true;
+    }
+    if (routed[key]) dispatch(Model.noteOffEvents(routed[key]));
+    var events = Model.noteOnEvents(kit, note, velocity || 100, channel);
+    dispatch(events);
+    routed[key] = events.filter(function (event) { return event.type === "note"; });
+    return events.length > 0;
+  }
 
-  // ------------------------------------------------------------- the selection
+  function triggerSlot(index, velocity) {
+    var item = kit.pads[index];
+    if (!item.enabled || item.mute) return;
+    var hasSolo = kit.pads.some(function (candidate) { return candidate.enabled && candidate.solo; });
+    if (hasSolo && !item.solo) return;
+    if (item.choke_group > 0) {
+      kit.pads.forEach(function (other, otherIndex) {
+        if (otherIndex !== index && other.choke_group === item.choke_group) panicSlot(otherIndex);
+      });
+    }
+    var event = {
+      type: "note", on: true, slot: index, note: item.root_note,
+      velocity: Math.max(1, Math.min(127, Math.round((velocity || 110) * item.velocity))),
+      trigger_mode: item.trigger_mode
+    };
+    dispatch([event]);
+    heldPads[index] = event;
+  }
+  function releaseSlot(index) {
+    var event = heldPads[index];
+    delete heldPads[index];
+    if (event) dispatch(Model.noteOffEvents([event]));
+  }
 
-  // Hand the panel a different instrument. This is the whole trick: the message
-  // is the one a host sends when a project loads, so the panel's own handler does
-  // the work and nothing here has to know what a control looks like.
-  function select(index) {
-    if (index < 0 || index >= COUNT) return;
+  function select(index, focus) {
+    if (index < 0 || index >= kit.pads.length) return;
     selected = index;
+    kit.selected = index;
     applying = true;
     try {
       if (window.synthReceive) {
-        window.synthReceive({ type: "state", values: pads[index].values.slice() });
-      }
-    } finally {
-      applying = false;
-    }
-    paintAll();
-    var label = document.getElementById("pad-selected");
-    if (label) label.textContent = "Pad " + (index + 1);
-    var slider = document.getElementById("pad-note");
-    if (slider) slider.value = String(pads[index].note);
-    showNote();
-    save();
-  }
-
-  function showNote() {
-    var read = document.getElementById("pad-note-read");
-    if (read) read.textContent = noteName(pads[selected].note);
-  }
-
-  // ------------------------------------------------------------------ striking
-
-  var held = {};   // cell -> the note it is currently sounding
-
-  // Lighting a cell, whoever struck it. A note arriving over MIDI has to show on
-  // the grid as plainly as a finger does, or there is no way to see which cell
-  // answered without listening for it.
-  function flash(index) {
-    var el = cells[index];
-    if (!el) return;
-    el.classList.add("lit");
-    // Restarted rather than accumulated, so a fast roll keeps lighting up.
-    clearTimeout(el._dim);
-    el._dim = setTimeout(function () { el.classList.remove("lit"); }, 110);
-  }
-
-  function strike(index, velocity) {
-    if (held[index] !== undefined) release(index);
-    var note = pads[index].note;
-    held[index] = note;
-    tagged({ type: "note", on: true, note: note, velocity: velocity || 110 }, index);
-    flash(index);
-  }
-
-  function release(index) {
-    if (held[index] === undefined) return;
-    tagged({ type: "note", on: false, note: held[index], velocity: 0 }, index);
-    delete held[index];
-  }
-
-  // --------------------------------------------------------------------- paint
-
-  function paint(index) {
-    var el = cells[index];
-    if (!el) return;
-    el.classList.toggle("sel", index === selected);
-    var name = el.querySelector(".pad-cell-name");
-    if (name) name.textContent = pads[index].name || ("Pad " + (index + 1));
-    var sub = el.querySelector(".pad-cell-note");
-    if (sub) sub.textContent = noteName(pads[index].note);
-  }
-
-  function paintAll() {
-    for (var i = 0; i < COUNT; i++) paint(i);
-  }
-
-  // --------------------------------------------------------------- remembering
-
-  // This page's own, under its own key. `store.js` is not loaded here: it
-  // remembers one sound and there are sixteen, and two things writing the same
-  // idea into local storage is how they end up disagreeing.
-  var saveTimer = null;
-
-  function save() {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(function () {
-      saveTimer = null;
-      try {
-        window.localStorage.setItem(KEY, JSON.stringify({
-          selected: selected,
-          pads: pads.map(function (p) {
-            return { values: p.values, note: p.note, name: p.name };
-          })
-        }));
-      } catch (e) { /* private browsing refuses the write; the page still works */ }
-    }, 400);
-  }
-
-  function restore() {
-    var raw;
-    try { raw = window.localStorage.getItem(KEY); } catch (e) { return false; }
-    if (!raw) return false;
-    var data;
-    try { data = JSON.parse(raw); } catch (e) { return false; }
-    if (!data || !Array.isArray(data.pads)) return false;
-    data.pads.forEach(function (p, i) {
-      if (i >= COUNT || !p) return;
-      if (Array.isArray(p.values)) {
-        p.values.forEach(function (v, j) {
-          if (typeof v === "number") pads[i].values[j] = v;
+        window.synthReceive({ type: "state", values: pad().values.slice(), slot: index });
+        window.synthReceive({
+          type: "patch",
+          name: pad().patch_name || pad().name,
+          bank: pad().patch_bank || "Rack",
+          index: pad().patch_index
         });
       }
-      if (typeof p.note === "number") pads[i].note = p.note;
-      if (typeof p.name === "string") pads[i].name = p.name;
+    } finally { applying = false; }
+    paintAll(); syncControls(); scheduleSave();
+    if (focus && cells[index]) cells[index].focus();
+  }
+  function flash(index) {
+    var cell = cells[index];
+    if (!cell) return;
+    cell.classList.add("lit");
+    clearTimeout(cell._dim);
+    cell._dim = setTimeout(function () { cell.classList.remove("lit"); }, 120);
+  }
+  function conflicts(index) {
+    var note = kit.pads[index].note;
+    return kit.pads.some(function (item, other) { return other !== index && item.note === note; });
+  }
+  function paint(index) {
+    var cell = cells[index];
+    if (!cell) return;
+    var item = kit.pads[index];
+    cell.classList.toggle("sel", index === selected);
+    cell.classList.toggle("muted", item.mute || !item.enabled);
+    cell.classList.toggle("solo", item.solo);
+    cell.classList.toggle("conflict", conflicts(index));
+    cell.setAttribute("aria-selected", index === selected ? "true" : "false");
+    cell.setAttribute("aria-label", (index + 1) + ", " + item.name + ", trigger " +
+      Model.noteName(item.note) + " " + item.note + (item.mute ? ", muted" : ""));
+    cell.tabIndex = index === selected ? 0 : -1;
+    cell.querySelector(".pad-cell-index").textContent = String(index + 1).padStart(2, "0");
+    cell.querySelector(".pad-cell-name").textContent = item.name;
+    cell.querySelector(".pad-cell-note").textContent = Model.noteName(item.note) + " · " + item.note;
+    cell.querySelector(".pad-cell-mode").textContent = item.trigger_mode === "one-shot" ? "ONE SHOT" : "GATE";
+  }
+  function paintAll() { for (var i = 0; i < kit.pads.length; i++) paint(i); }
+  function db(value) { return value <= 0 ? "−∞ dB" : (20 * Math.log(value) / Math.LN10).toFixed(1) + " dB"; }
+  function panText(value) {
+    var n = Math.round(value * 100);
+    return n === 0 ? "Center" : Math.abs(n) + "% " + (n < 0 ? "L" : "R");
+  }
+  function pressed(id, value) {
+    var element = byId(id);
+    element.setAttribute("aria-pressed", value ? "true" : "false");
+    element.classList.toggle("on", !!value);
+  }
+  function syncControls() {
+    var item = pad();
+    byId("kit-name").value = kit.name;
+    byId("kit-mapping").value = kit.mapping;
+    byId("kit-channel").value = String(kit.midi_channel);
+    byId("pad-selected").textContent = String(selected + 1).padStart(2, "0") + " · " + item.name;
+    byId("rack-editor-pad").textContent = item.name;
+    byId("pad-name").value = item.name;
+    byId("pad-note").value = item.note;
+    byId("pad-note-read").textContent = Model.noteName(item.note) + " · " + item.note;
+    byId("pad-root").value = item.root_note;
+    byId("pad-root-read").textContent = Model.noteName(item.root_note) + " · " + item.root_note;
+    byId("pad-mode").value = item.trigger_mode;
+    byId("pad-choke").value = String(item.choke_group);
+    byId("pad-velocity").value = Math.round(item.velocity * 100);
+    byId("pad-velocity-read").textContent = Math.round(item.velocity * 100) + "%";
+    byId("pad-volume").value = Math.round(item.volume * 100);
+    byId("pad-volume-read").textContent = db(item.volume);
+    byId("pad-pan").value = Math.round(item.pan * 100);
+    byId("pad-pan-read").textContent = panText(item.pan);
+    byId("pad-learn").classList.toggle("learning", learning);
+    byId("pad-learn").textContent = learning ? "HIT A PAD…" : "MIDI LEARN";
+    pressed("pad-enabled", item.enabled); pressed("pad-mute", item.mute); pressed("pad-solo", item.solo);
+  }
+
+  function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 250); }
+  function saveNow() {
+    clearTimeout(saveTimer); saveTimer = null; kit.selected = selected;
+    try { window.localStorage.setItem(STORAGE_KEY, Model.stringify(kit, PARAMS)); } catch (error) {}
+  }
+  function restore() {
+    var raw = null;
+    try { raw = window.localStorage.getItem(STORAGE_KEY); } catch (error) {}
+    if (raw) { try { kit = Model.parse(raw, PARAMS); } catch (error) { raw = null; } }
+    if (!raw) {
+      try { raw = window.localStorage.getItem(LEGACY_KEY); } catch (error) {}
+      if (raw) { try { kit = Model.normalizeKit(JSON.parse(raw), PARAMS); } catch (error) {} }
+    }
+    selected = kit.selected || 0;
+  }
+  function hydrate() {
+    kit.pads.forEach(function (_item, index) { sendPatch(index); sendMix(index); });
+  }
+  function downloadKit() {
+    var blob = new Blob([Model.stringify(kit, PARAMS)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = (kit.name || "quesynth-kit").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() + ".qkit";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+  }
+  function loadKit(file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        kit = Model.parse(String(reader.result), PARAMS); selected = kit.selected || 0;
+        hydrate(); select(selected);
+      } catch (error) { byId("rack-hint").textContent = error.message || "That file is not a valid .qkit"; }
+    };
+    reader.readAsText(file);
+  }
+  function setCustom() { kit.mapping = "custom"; byId("kit-mapping").value = "custom"; }
+  function bindInput(id, eventName, update) {
+    byId(id).addEventListener(eventName, function (event) {
+      update(event.target.value); paintAll(); syncControls(); scheduleSave();
     });
-    if (typeof data.selected === "number") {
-      selected = Math.max(0, Math.min(COUNT - 1, data.selected));
-    }
-    return true;
   }
 
-  // Every cell's patch has to reach its own engine, and only the selected one
-  // travels there through the panel. The other fifteen are sent straight out.
-  function pushAll() {
-    for (var i = 0; i < COUNT; i++) {
-      if (i === selected) continue;
-      tagged({ type: "state", values: pads[i].values.slice() }, i);
-    }
+  function buildGrid() {
+    var grid = byId("pad-grid");
+    kit.pads.forEach(function (_item, index) {
+      var cell = document.createElement("button");
+      cell.type = "button"; cell.className = "pad-cell"; cell.setAttribute("role", "gridcell");
+      cell.innerHTML = '<span class="pad-cell-top"><span class="pad-cell-index"></span><span class="pad-cell-mode"></span></span>' +
+        '<span class="pad-cell-name"></span><span class="pad-cell-note"></span>';
+      cell.addEventListener("pointerdown", function (event) {
+        event.preventDefault();
+        try { cell.setPointerCapture(event.pointerId); } catch (error) {}
+        select(index);
+        triggerSlot(index, event.pressure > 0 ? Math.round(event.pressure * 127) : 110);
+      });
+      ["pointerup", "pointercancel", "pointerleave"].forEach(function (name) {
+        cell.addEventListener(name, function () { releaseSlot(index); });
+      });
+      cell.addEventListener("keydown", function (event) {
+        var next = index;
+        if (event.key === "ArrowLeft") next = index % 4 ? index - 1 : index + 3;
+        if (event.key === "ArrowRight") next = index % 4 < 3 ? index + 1 : index - 3;
+        if (event.key === "ArrowUp") next = (index + 12) % 16;
+        if (event.key === "ArrowDown") next = (index + 4) % 16;
+        if (next !== index) { event.preventDefault(); select(next, true); return; }
+        if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+          event.preventDefault(); select(index); triggerSlot(index, 110);
+        }
+      });
+      cell.addEventListener("keyup", function (event) {
+        if (event.key === " " || event.key === "Enter") releaseSlot(index);
+      });
+      cells.push(cell); grid.appendChild(cell);
+    });
   }
 
-  // ------------------------------------------------------------------ the grid
+  function bindControls() {
+    for (var channel = 1; channel <= 16; channel++) {
+      var option = document.createElement("option"); option.value = String(channel - 1); option.textContent = String(channel);
+      byId("kit-channel").appendChild(option);
+    }
+    for (var group = 1; group <= 8; group++) {
+      var choke = document.createElement("option"); choke.value = String(group); choke.textContent = String(group);
+      byId("pad-choke").appendChild(choke);
+    }
+    bindInput("kit-name", "input", function (value) { kit.name = value.trim() || "Untitled Kit"; });
+    bindInput("kit-channel", "change", function (value) { kit.midi_channel = value === "omni" ? "omni" : Number(value); });
+    bindInput("kit-mapping", "change", function (value) { Model.applyMapping(kit, value); });
+    bindInput("pad-name", "input", function (value) { pad().name = value.trim() || ("Pad " + (selected + 1)); });
+    // Numeric fields update while they are edited. Waiting for `change` meant a
+    // click on a pad could sound the old root before the input lost focus.
+    bindInput("pad-note", "input", function (value) { pad().note = boundedInt(value, pad().note); setCustom(); });
+    bindInput("pad-root", "input", function (value) { pad().root_note = boundedInt(value, pad().root_note); });
+    bindInput("pad-mode", "change", function (value) { pad().trigger_mode = value === "one-shot" ? "one-shot" : "gate"; });
+    bindInput("pad-choke", "change", function (value) { pad().choke_group = Number(value) || 0; });
+    bindInput("pad-velocity", "input", function (value) { pad().velocity = Number(value) / 100; });
+    bindInput("pad-volume", "input", function (value) { pad().volume = Number(value) / 100; sendMix(selected); });
+    bindInput("pad-pan", "input", function (value) { pad().pan = Number(value) / 100; sendMix(selected); });
+    byId("pad-learn").addEventListener("click", function () { learning = !learning; syncControls(); });
+    byId("pad-enabled").addEventListener("click", function () { pad().enabled = !pad().enabled; if (!pad().enabled) panicSlot(selected); paintAll(); syncControls(); scheduleSave(); });
+    byId("pad-mute").addEventListener("click", function () { pad().mute = !pad().mute; if (pad().mute) panicSlot(selected); paintAll(); syncControls(); scheduleSave(); });
+    byId("pad-solo").addEventListener("click", function () {
+      pad().solo = !pad().solo;
+      if (kit.pads.some(function (item) { return item.solo; })) kit.pads.forEach(function (item, index) { if (!item.solo) panicSlot(index); });
+      paintAll(); syncControls(); scheduleSave();
+    });
+    byId("pad-copy").addEventListener("click", function () { clipboard = Model.clonePad(pad(), PARAMS); byId("pad-paste").disabled = false; });
+    byId("pad-paste").addEventListener("click", function () {
+      if (!clipboard) return;
+      var keptId = pad().id;
+      kit.pads[selected] = Model.clonePad(clipboard, PARAMS); kit.pads[selected].id = keptId;
+      sendPatch(selected); sendMix(selected); select(selected);
+    });
+    byId("pad-edit").addEventListener("click", function () {
+      var editor = byId("rack-editor");
+      editor.hidden = !editor.hidden;
+      document.body.classList.toggle("rack-editor-closed", editor.hidden);
+      this.textContent = editor.hidden ? "EDIT SYNTH ↓" : "CLOSE SYNTH ↑";
+      this.setAttribute("aria-expanded", editor.hidden ? "false" : "true");
+      if (!editor.hidden) editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    byId("kit-save").addEventListener("click", downloadKit);
+    byId("kit-open").addEventListener("click", function () { byId("kit-file").click(); });
+    byId("kit-file").addEventListener("change", function () { loadKit(this.files && this.files[0]); this.value = ""; });
+    byId("kit-new").addEventListener("click", function () {
+      kit.pads.forEach(function (_item, index) { panicSlot(index); });
+      kit = Model.createKit(PARAMS); selected = 0; hydrate(); select(0);
+    });
+    window.addEventListener("pagehide", saveNow);
+  }
 
   function build() {
-    var grid = document.getElementById("pad-grid");
-    if (!grid) return;
-
-    for (var i = 0; i < COUNT; i++) {
-      (function (index) {
-        var el = document.createElement("button");
-        el.type = "button";
-        el.className = "pad-cell";
-        el.setAttribute("aria-label", "Pad " + (index + 1));
-        var name = document.createElement("span");
-        name.className = "pad-cell-name";
-        var note = document.createElement("span");
-        note.className = "pad-cell-note";
-        el.appendChild(name);
-        el.appendChild(note);
-
-        // Pointer rather than click: a pad has to sound on the way down, and a
-        // click fires on the way up.
-        el.addEventListener("pointerdown", function (e) {
-          e.preventDefault();
-          try { el.setPointerCapture(e.pointerId); } catch (err) { /* still works */ }
-          select(index);
-          strike(index, 110);
-        });
-        el.addEventListener("pointerup", function () { release(index); });
-        el.addEventListener("pointercancel", function () { release(index); });
-        el.addEventListener("pointerleave", function () { release(index); });
-
-        // The keyboard reaches it too: the grid is sixteen buttons, and a button
-        // that cannot be worked from a keyboard is not a button.
-        el.addEventListener("keydown", function (e) {
-          if (e.key === " " || e.key === "Enter") {
-            e.preventDefault();
-            select(index);
-            strike(index, 110);
-          }
-        });
-        el.addEventListener("keyup", function (e) {
-          if (e.key === " " || e.key === "Enter") release(index);
-        });
-
-        cells.push(el);
-        grid.appendChild(el);
-      })(i);
-    }
-
-    var slider = document.getElementById("pad-note");
-    if (slider) {
-      slider.addEventListener("input", function () {
-        pads[selected].note = parseInt(slider.value, 10) || 60;
-        showNote();
-        paint(selected);
-        save();
-      });
-    }
-
-    var copy = document.getElementById("pad-copy");
-    var paste = document.getElementById("pad-paste");
-    if (copy && paste) {
-      copy.addEventListener("click", function () {
-        clipboard = { values: pads[selected].values.slice(), note: pads[selected].note };
-        paste.disabled = false;
-        copy.textContent = "COPIED";
-        setTimeout(function () { copy.textContent = "COPY"; }, 700);
-      });
-      paste.addEventListener("click", function () {
-        if (!clipboard) return;
-        pads[selected].values = clipboard.values.slice();
-        pads[selected].note = clipboard.note;
-        // Straight out as well as into the panel: the engine behind this cell
-        // has to hear the whole patch, not the ninety-nine edits that would
-        // otherwise arrive one at a time.
-        tagged({ type: "state", values: pads[selected].values.slice() }, selected);
-        select(selected);
-      });
-    }
-
-    restore();
-    paintAll();
-    select(selected);
-    pushAll();
+    restore(); buildGrid(); bindControls(); hydrate(); paintAll(); select(selected);
   }
 
-  // After `app.js`. Its own DOMContentLoaded handler builds the panel, and this
-  // one has to run against a panel that exists -- so it is registered later and,
-  // if the document is already parsed, deferred by a turn.
+  window.QuesynthPad = {
+    routeMidi: routeMidi,
+    trigger: triggerSlot,
+    release: releaseSlot,
+    select: select,
+    kit: function () { return kit; }
+  };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { setTimeout(build, 0); });
-  } else {
-    setTimeout(build, 0);
-  }
+  } else { setTimeout(build, 0); }
 })();
