@@ -1,166 +1,146 @@
 # Quesynth
 
-*keh-SINTH*
+*Pronounced “keh-synth”.*
 
-A virtual analogue synthesiser written in [Odin](https://odin-lang.org), built to
-match [Synth1](https://daichilab.sakura.ne.jp/) closely enough to load its `.sy1`
-patches and sound like them — verified by null-testing against the original
-plugin rather than by ear.
+Quesynth is a polyphonic virtual-analogue synthesizer written in
+[Odin](https://odin-lang.org). It recreates the sound and parameter model of
+[Synth1](https://daichilab.sakura.ne.jp/) through direct measurement, supports
+Synth1 `.sy1` patches, and runs as VST3, CLAP, a Windows standalone instrument,
+and WebAssembly.
 
-**[Try it in a browser →](https://mauro-moreno.github.io/quesynth/)**
+**[Open the browser instrument](https://mauro-moreno.github.io/quesynth/)**
 
-![The panel](docs/images/panel.png)
+![Quesynth panel](docs/images/panel.png)
 
----
+## Instrument overview
 
-## Please use Synth1 instead
+- Two main oscillators and a sub oscillator, with pulse-width control, frequency
+  modulation, ring modulation, and hard sync
+- State-variable and four-pole ladder filtering, resonance, key tracking,
+  envelope modulation, and saturation
+- Amplitude, filter, and modulation envelopes; two tempo-synchronizable LFOs
+- Polyphonic and monophonic playing modes, portamento, unison, and arpeggiation
+- Parametric equalization, ten effect algorithms, delay, and chorus
+- A shared HTML interface for browser, VST3, and CLAP hosts
+- Synth1 `.sy1` and bank import, plus Quesynth JSON patch and bank formats
 
-[Synth1](https://daichilab.sakura.ne.jp/) is free, has been refined since 2002,
-and has been used on an enormous amount of released music. It is stable, it is
-finished, and it is *good*. If you want to make music, download Synth1 and make
-music.
+Panel values are presented in musical or engineering units—including hertz,
+milliseconds, decibels, Q, semitones, cents, and rhythmic divisions—rather than
+only as stored integers.
 
-**Quesynth is an experiment, not a replacement.** It exists to find out how far a
-synthesiser can be reverse-engineered by measurement — feeding signals into the
-real plugin, measuring what comes out, and fitting the engine to the results. That
-is an interesting question, and answering it produced the tables in `src/engine`
-and the write-up in [`docs/null-test.md`](docs/null-test.md). It did not produce a
-finished instrument.
+## Quick start
 
-Concretely, what that means for you:
+The browser version requires no installation. Open the live instrument, select a
+patch, and play from a MIDI controller, the computer keyboard, or the on-screen
+keyboard. Audio begins after the first user interaction, as required by browser
+audio policy.
 
-- It is **not battle-tested**. Synth1 has two decades of users finding its edges.
-  This has me, a null test, and a few weeks.
-- It does **not** match the reference everywhere. Several patches are audibly off,
-  and the ones that are worst are named in the null-test write-up.
-- Anything may change. Parameter behaviour, state format, plugin identity — none
-  of it is stable yet.
-- There is no support, no release, and no promise that a session saved today opens
-  tomorrow.
+For plugin or standalone use, build the desired target as described below. The
+VST3 editor uses the Microsoft Edge WebView2 runtime. When WebView2 is unavailable,
+the audio engine still loads and the host may display its generic parameter view.
 
-Use it to read, to measure, to take apart. Do not put it on a deadline.
+| Target | Purpose | Platform |
+|---|---|---|
+| WebAssembly | Browser instrument and live demonstration | Modern browsers |
+| VST3 | DAW instrument with embedded Quesynth interface | Windows |
+| CLAP | DAW instrument with WebView2 editor | Windows CLAP hosts |
+| Standalone | WASAPI audio and WinMM MIDI instrument | Windows |
 
-## What works
+## Signal architecture
 
-An instrument that loads Synth1 patches and plays them, in four hosts, with a
-factory bank of its own:
-
-| host | |
-|---|---|
-| **VST3** | plugin, with the interface below as its editor. Tested in Ableton Live 11 |
-| **CLAP** | plugin |
-| **standalone** | desktop shell, WASAPI out and winmm MIDI in |
-| **WebAssembly** | the same engine in a browser — that is what the demo link is |
-
-One HTML interface serves all four. The panel a browser shows, a phone shows and a
-DAW shows are the same files: the plugin embeds them in a WebView2 control, and
-`ui/bridge.js` absorbs the difference between hosts so nothing above it knows
-which one it is in.
-
-![The keyboard](docs/images/keyboard.png)
-
-The panel reads in **units rather than in `0..127`**. Synth1's own display shows a
-bare number for the cutoff, every envelope segment, the LFO speed and the
-resonance; here those read as hertz, milliseconds, Q and octaves, taken from the
-measurements in [`docs/null-test.md`](docs/null-test.md). Where the reference
-already shows a real unit, its own display string is used unchanged.
-
-> The live demo runs the real engine and ships this project's own factory bank —
-> sixteen patches written for it, in `patches/quesynth/factory.json`. Synth1's
-> banks are not redistributed here; point `tools/uibank` at your own Synth1
-> installation to load those instead.
-
-## How it is checked
-
-The interesting part of this project is not the DSP, it is the method.
-
-`tools/s1probe` is a small VST2 host that loads the real `Synth1 VST64.dll`,
-drives it and this engine with identical input, and compares the output —
-spectrum, envelope, level, stereo width, and the depth of the null when one is
-subtracted from the other. Every measured table in `src/engine` was produced by a
-probe in that directory, and every claim in the docs has a number behind it.
-
-That method has a failure mode worth knowing about, because it caught this project
-twice: **a test that builds its input with the same code that reads it cannot
-fail.** A null test comparing two engines cannot see an error in what the patch
-*file* means, because the error is upstream of both. The single largest
-improvement here — discovering that all 128 factory patches are stored in a
-pre-1.07 format whose parameters mean different things — was invisible to the null
-test for exactly that reason.
-
-## Building
-
-Needs [Odin](https://odin-lang.org). Windows for the VST3 and standalone hosts;
-the engine itself has no operating system in it.
-
+```text
+OSC 1 ─┐
+OSC 2 ─┼─ modulation/mix ─ filter ─ amplifier ─ EQ ─ effect ─ delay ─ chorus ─ output
+SUB   ─┘                         ▲          ▲
+                         filter envelope   amplitude envelope
+                                ▲
+                         LFO 1 · LFO 2 · modulation envelope
 ```
-odin test tests/dsp                                                  # the DSP suite
-odin build hosts/standalone -o:speed -out:build/quesynth.exe         # desktop
-odin build hosts/clap -build-mode:dll -o:speed -out:build/quesynth.clap
+
+Oscillators and filters are evaluated for every active unison layer. Envelopes
+and note-level modulation belong to the note voice. The effects chain processes
+the mixed stereo output once per sample. The [synthesis theory manual](https://github.com/mauro-moreno/quesynth/wiki/Synthesis-Theory)
+explains how these stages shape a sound; [the mathematics](https://github.com/mauro-moreno/quesynth/wiki/Mathematics)
+documents their discrete-time models and coefficients.
+
+## User manual
+
+The [Quesynth Wiki](https://github.com/mauro-moreno/quesynth/wiki) is the primary
+user manual.
+
+| Topic | Contents |
+|---|---|
+| [Getting started](https://github.com/mauro-moreno/quesynth/wiki/Getting-Started) | Browser, standalone, and plugin setup |
+| [The panel](https://github.com/mauro-moreno/quesynth/wiki/The-Panel) | Control-by-control reference |
+| [Banks and patches](https://github.com/mauro-moreno/quesynth/wiki/Banks-And-Patches) | Browsing, writing, importing, and persistence |
+| [MIDI control](https://github.com/mauro-moreno/quesynth/wiki/MIDI-Control) | Program changes, bank select, and controller assignments |
+| [Synthesis theory](https://github.com/mauro-moreno/quesynth/wiki/Synthesis-Theory) | Oscillators, spectra, filters, envelopes, modulation, and gain staging |
+| [Mathematics](https://github.com/mauro-moreno/quesynth/wiki/Mathematics) | Equations used by the audio engine |
+| [Patch archetypes](https://github.com/mauro-moreno/quesynth/wiki/Patch-Archetypes) | Practical starting points for sound design |
+| [Architecture](https://github.com/mauro-moreno/quesynth/wiki/Architecture) | DSP, engine, host, and interface boundaries |
+| [Verification](https://github.com/mauro-moreno/quesynth/wiki/Verification) | Measurement and null-test methodology |
+
+## Building and testing
+
+Install [Odin](https://odin-lang.org), then run commands from the repository root.
+
+```powershell
+odin test tests/dsp
+odin build hosts/standalone -o:speed -out:build/quesynth.exe
+pwsh tools/build-clap.ps1 -Output build/clap-stage
 pwsh tools/install-vst3.ps1 -Destination "C:\Program Files\Common Files\VST3"
 ```
 
-The VST3 install script assembles a bundle: the plugin, the WebView2 loader beside
-it, and the panel under `Contents/Resources/ui`. The editor needs the [Edge
-WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/), which
-is already present on current Windows; without it the plugin still loads and plays
-and the host draws its own generic parameter panel.
+Build and serve the browser target with:
 
-For the browser build:
-
-```
+```powershell
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
-node hosts/wasm/serve.js                                    # then open :8177
+node hosts/wasm/serve.js
 ```
 
-## Layout
+Then open `http://localhost:8177`. Additional build and platform details are in
+the host-specific README files under `hosts/`.
 
+## Compatibility and verification
+
+Quesynth is a measurement-driven compatibility project, not an official Synth1
+release. `tools/s1probe` hosts the reference plugin and Quesynth with identical
+events, then compares level, spectrum, envelope contour, stereo behavior, and
+sample-aligned null depth. The measured parameter tables live in `src/engine`;
+the methodology and known limitations are documented in
+[`docs/null-test.md`](docs/null-test.md).
+
+Synth1 binaries, manuals, and patch banks are not redistributed. Import tools
+operate on files supplied from the user's own Synth1 installation.
+
+## Repository layout
+
+```text
+src/dsp/           allocation-free DSP primitives
+src/engine/        voices, smoothing, modulation, and parameter binding
+src/patch/         Synth1 and Quesynth patch parsing
+src/clap/          CLAP ABI bindings
+src/vst3/          VST3 ABI bindings
+src/webview2/      Edge WebView2 ABI bindings
+ui/                shared instrument and pad interface
+hosts/             standalone, plugin, and WebAssembly adapters
+patches/quesynth/  Quesynth factory bank
+tools/             measurement, conversion, and installation utilities
+docs/              engineering specifications and verification reports
 ```
-src/dsp/          layer 0, pure DSP — no OS, no allocation on the audio path
-src/engine/       layer 1, voices, smoothing, patch binding
-src/patch/        .sy1 and .fxb parsing
-src/clap/         C ABI bindings: CLAP
-src/vst3/         C ABI bindings: VST3
-src/webview2/     C ABI bindings: Edge WebView2
-ui/               the panel — one interface, naming no host
-patches/quesynth/ the factory bank, sixteen patches in this project's JSON
-hosts/            CLAP, VST3, standalone, WebAssembly
-tools/            s1probe and the measurement tooling the tables came from
-docs/             measured ground truth and design notes
-```
 
-The layering is driven by wanting a mobile port to be a new adapter rather than a
-rewrite, so everything that makes sound sits in a layer with no operating system,
-plugin, or allocator dependency. [`docs/architecture.md`](docs/architecture.md)
-has the rules.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting audible changes.
+Compatibility claims must be supported by reproducible measurements or tests.
 
-## What is not included
+## Project status
 
-Synth1's own files are not in this repository and are not this project's to
-redistribute: the plugin binary, its factory patch banks, its manual, and the
-third-party banks used for testing are all ignored. `tools/s1probe` and
-`tools/uibank` read them from your own Synth1 installation.
+Quesynth is experimental software. Host integration, session compatibility, and
+sound matching continue to evolve, and some reference patches remain measurably
+or audibly different. Evaluate the current build before relying on it in a
+production session.
 
-## Contributing
+## License and attribution
 
-Welcome, and [`CONTRIBUTING.md`](CONTRIBUTING.md) is worth reading first: this
-project is checked by measurement rather than by argument, so a change to
-anything audible needs a null-test number behind it. That file also records the
-one mistake this project has made twice, which is worth knowing before you write
-a test here.
-
-## License
-
-[MIT](LICENSE), covering the work in this repository: the engine, the hosts, the
-interface, the tooling, and the measurements in `docs/`.
-
-Nothing of Synth1's is included, so nothing here is relicensed that is not mine
-to relicense: not the plugin binary, not the factory patch banks, not the
-manual. What this repository records about the reference is measurement and
-notes — facts about how it behaves, gathered by `tools/s1probe` — rather than
-any part of the thing itself.
-
-## Credits
-
-Synth1 is by **Daichi Kanenaga**. This project measures it, matches it, and is
-indebted to it. It is not affiliated with or endorsed by its author.
+Quesynth is available under the [MIT License](LICENSE). Synth1 was created by
+Daichi Kanenaga. Quesynth is an independent project and is not affiliated with or
+endorsed by the Synth1 author.
