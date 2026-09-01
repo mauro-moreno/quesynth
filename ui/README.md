@@ -52,6 +52,34 @@ table's suffix (`1.51 kHz`, `1.20 Q`). A reading is split into its number and it
 trailing unit, and the split only fires when what precedes the letters contains a
 digit, so `On`, `-inf` and the `L` in `L 100%` are not mistaken for units.
 
+### Five readings that depend on another control
+
+Some controls do not mean one thing. The two LFO depths mean semitones while the
+LFO drives pitch and nothing nameable while it drives cutoff, volume or pan. The
+effect unit's two controls and its level mean whatever the selected type makes
+them mean. A single suffix in the generated table would therefore be true at one
+setting and a lie at the rest, so those five carry no generated unit at all;
+`COND` in `layout.js` supplies a `formatValue` instead, and `app.js` prefers it
+over the table when it returns something.
+
+The rule that governs them is that **a unit is only shown where
+`docs/null-test.md` measured one**, and the fallback is the honest bare integer
+rather than a plausible suffix:
+
+| control | reads | and stays bare at |
+|---|---|---|
+| LFO 1 / 2 Depth | semitones, at the two pitch destinations | cutoff, volume, nothing, FM amount, pan — the file applies its curve to pitch alone |
+| Effect Control 1 | ring modulator hertz, compressor decibels, phaser octaves | distortion drive, which has no physical unit, and the decimator's hold, measured only at 48 kHz |
+| Effect Control 2 | distortion tone in hertz, phaser rate in hertz | decimator bit depth, whose table is bounded at both ends; compressor attack, given only as a range; the ring modulator's, which is inert |
+| Effect Level | percent, for the three distortions and the two crossfading types | the compressor, whose decibel slope has no anchor, and the phasers, whose feedback law is superseded |
+
+A formatter is handed its own position and a resolver for any other parameter's
+**position**, never the raw stored value: parameters 41 and 46 store 1..7 for
+positions 0..6, so comparing stored numbers would name the destination one place
+off. The knob speaks the same reading it prints — `aria-valuetext` comes from the
+formatter too, so a conditional unit is not silently dropped for a screen reader.
+Every law carries its `docs/null-test.md` line range at the point it is used.
+
 Names are spelled out. The reference abbreviates to fit a fixed bitmap panel; there
 is no reason to inherit `det`, `sprd`, `amt`, `PP` or `ST` here, so they read
 Detune, Spread, Amount, Ping-Pong and Normal Stereo.
@@ -205,35 +233,51 @@ a 128-step cutoff and a 3-state routing switch feel the same under the finger.
 
 ## Layout
 
-Each section is one full-width row, and the sticky strip at the top jumps between
-them. On a wide window that reads as a stack of labelled rows rather than columns
-the eye has to track up and down; on a phone the rows become a filling grid and
-the strip scrolls sideways.
+Each section is one full-width row inside the editor's own scrolling surface. On
+a wide window that reads as a stack of labelled rows rather than columns the eye
+has to track up and down; on a phone the rows become a filling grid.
 
-**The strip is the only chrome.** There is no header and no footer: in a plugin
-window every row given to a title is a row taken from the controls, and the strip
-has to be on screen anyway. The name sits at its left and the keyboard button at
-its right. Which host was found is on the name's hover title, so a build that
-failed to inject its bridge is still diagnosable without spending a line on it.
+The shell header carries identity and global actions only. The thirteen-section
+navigator belongs to the editor it moves through: it is a vertical, independently
+scrolling rail on a wide window and a horizontal strip on a narrow one. This is
+especially important in Quesynth Pad, where the navigator arrives and leaves with
+the editor drawer rather than occupying a dead band over the rack.
 
 Two details in here are less obvious than they look:
 
 - **The scroll offset is set in exactly one place.** `scroll-padding-top` on the
-  scroll container and `scroll-margin-top` on the sections look equivalent and
-  add, landing every jump a full bar-height too low — far enough to leave the
-  strip marking the section above the one that was asked for.
+  editor scroller is the sole offset. Adding `scroll-margin-top` on the sections
+  would add the two and land every jump too low.
 - **There is a spacer after the last section.** Without it the last two or three
   sections can never reach the top, so selecting one scrolls as far as it can and
-  then marks a different section. Special-casing the bottom only moves the
-  wrongness around: with three sections sharing the last screen there is no rule
-  that picks the one the player asked for. The spacer is sized to exactly what is
-  missing — including whatever the deployed keyboard is covering — so a tall last
-  section adds nothing.
+  then marks a different section. The spacer is sized from the editor scroller
+  itself. The keyboard changes that scroller through the published `--keys-h`
+  scalar, so it cannot make the last navigator entries unreachable.
 
 Scroll snapping was tried and removed. Sections run from four controls to
 seventeen, so a snap point lands as often in the middle of what is being read as
 at the top of it, and the strip navigates well enough without taking over the
 scroll.
+
+The type scale has five roles: 18px lead, 15px title, 13px readout, 12px body,
+and an 11px uppercase micro label with 0.14em tracking. Eleven pixels is a hard
+floor. Control labels stay on one line; when a label grows, its padding gives the
+space back so density does not drift.
+
+Chrome and waveform/filter choices share one hand-drawn inline SVG language.
+The strokes use `currentColor` and are created with `createElementNS`; there is no
+asset, library, module, or build step. An icon is paired with its text wherever
+there is text to pair it with; the stepper's two marks are the one place there is
+none, and there the button's `aria-label` carries the whole name. The SVG itself
+is always hidden from accessibility APIs, because the control keeps its ordinary
+accessible name either way. No Unicode glyph stands in for an icon anywhere,
+including the marks built at runtime.
+
+Every rendered interactive target clears 28px in both directions, and the primary
+actions, the bank and octave steps, and the stepper's two are 34px. The floor is
+measured on what the browser lays out, not on what a rule declares: a 24px-wide
+button with a 34px minimum height still fails it. The 88 piano keys are the
+instrument's own geometry and are sized by the keyboard, not by this ledger.
 
 ## The keyboard
 
@@ -241,12 +285,11 @@ Deployed from the button at the right of the strip, and fixed to the foot of the
 window when it is, so the panels are enclosed between the two. The page keeps
 enough padding beneath it that the last section can still be scrolled clear.
 
-Five octaves, C1 to C6, wider than any window on purpose: the strip scrolls and
-the octave buttons move it, rather than the range being cut to whatever fits. It
-opens centred on middle C, which is marked with a dot. On a phone the keys are big
-enough to play — this is the whole instrument there, not an accessory to a mouse —
-and the octave buttons sit at the two ends of the bar rather than together in the
-middle, so they fall under the thumbs.
+Exactly 88 notes, MIDI 21 through 108 (A0 through C8), are always present. On a
+desktop the 52 natural keys divide the available width without overflowing. On a
+narrow screen the same complete range keeps finger-width keys and scrolls; the
+octave buttons move the strip. It opens with middle C at the left edge, and the
+octave buttons sit at the two ends of the bar so they fall under the thumbs.
 
 **The keys are not ivory.** A bank of white keys under a black panel is the
 brightest thing on the screen and pulls the eye off the controls, so the keys are
@@ -286,12 +329,10 @@ The drag works either way round without a breakpoint written twice: the track re
 its own orientation from its shape, and publishes one fraction that the stylesheet
 turns into a position along whichever axis it is currently lying on.
 
-## Not done yet
+## Known exceptions
 
-- No on-screen keyboard; the `note` message exists but nothing sends it.
-- The four MIDI controller assignment parameters (86–89) have no controls. They
-  read back as a fraction rather than a state table and need a different kind of
-  control from anything here.
+- Parameters 86–89 remain the documented control-shape exception: unlike the
+  ordinary generated state tables, they carry raw MIDI source/destination values.
 - Nothing is wired into `hosts/clap` or `hosts/standalone` yet — this is the
   panel and the protocol, not the host side of either.
 
@@ -321,10 +362,14 @@ captures the next Note On. Each cell also owns velocity scaling, gate/one-shot
 mode, choke group, volume, pan, enabled/mute/solo state, and its Synth1 parameter
 array. The browser autosaves the same validated schema exported as `.qkit`.
 
-The synth editor starts collapsed and is still exactly the shared editor. Opening
-it and selecting a cell sends that cell's state and remembered bank identity down
-the ordinary host-to-panel path, so both the controls and bank strip follow the
-selection.
+The synth editor starts collapsed and is still exactly the shared editor. It is
+an overlay drawer over the rack, not content appended below it, so opening it
+does not make Quesynth Pad taller than the viewport. On a narrow screen the one
+bank transport moves to the top, keeping loaded bank/patch identity present only
+there while the keyboard alone docks to the bottom; desktop keeps the same
+transport at the foot. Opening the editor and selecting a cell sends that cell's
+state and remembered bank identity down the ordinary host-to-panel path, so both
+the controls and bank strip follow the selection.
 
 `node ui/check-pages.js` guards the arrangement. The way two shells over one panel
 fail is quiet -- a file added to one page and not the other leaves the second

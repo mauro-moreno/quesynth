@@ -2,8 +2,6 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- The viewport line is what makes the phone build usable rather than a shrunken
-     desktop page. `viewport-fit=cover` keeps the black ground under the notch. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Quesynth</title>
@@ -11,34 +9,40 @@
 </head>
 <body>
 
-<!-- The only chrome. There is no header and no footer: in a plugin window every
-     row given to a title is a row taken from the controls, and the section strip
-     has to be on screen anyway. -->
-<nav id="nav" aria-label="Sections">
+<!-- Page identity and actions belong to the shell. Section navigation belongs
+     to the editor below, so the two never compete for the same narrow strip. -->
+<header id="app-header">
   <div class="brand">Quesynth</div>
-  <div class="nav-inner"></div>
-  <button type="button" id="midi-toggle" class="keys-toggle">MIDI</button>
-  <button type="button" id="keys-toggle" class="keys-toggle" aria-expanded="false"
-          aria-controls="keyboard">Keys</button>
-</nav>
+  <div class="head-actions">
+    <button type="button" id="midi-toggle" class="keys-toggle" data-icon="midi">MIDI</button>
+    <button type="button" id="keys-toggle" class="keys-toggle" data-icon="keys"
+            aria-expanded="false" aria-controls="keyboard">Keys</button>
+    <button type="button" id="write-toggle" class="bank-write" data-icon="write"
+            aria-label="Write this sound into a slot">WRITE</button>
+    <button type="button" id="config-toggle" class="bank-write" data-icon="config" hidden
+            aria-label="Configure the controllers">CONFIG</button>
+  </div>
+</header>
 
-<main id="panels"></main>
+<!-- The synth shell contains only the complete editor. In the pad shell this
+     same structure is the drawer over the rack. -->
+<div id="surface">
+  <section class="rack-editor" id="rack-editor" data-mode="inline"
+           aria-label="Synth editor">
+    <div class="editor-body">
+      <nav id="navigator" aria-label="Editor sections"><div class="nav-inner"></div></nav>
+      <main id="panels"></main>
+    </div>
+  </section>
+</div>
 
-<!-- Which patch is loaded, and out of which bank. Fixed at the foot of the window
-     and always there: it is what the instrument *is* at this moment, not one of
-     the things it can be set to, so it does not belong in a section that scrolls
-     away. The keyboard pushes it up rather than covering it. -->
 <div id="bank" class="bank">
-  <button type="button" class="bank-step" data-step="-1" aria-label="Previous patch">‹</button>
+  <button type="button" class="bank-step" data-step="-1" data-icon="previous" aria-label="Previous patch">PREV</button>
   <div class="bank-read">
     <span class="bank-patch" id="bank-patch">000:Init</span>
     <span class="bank-name" id="bank-name">00:soundbank00</span>
   </div>
-  <button type="button" class="bank-step" data-step="1" aria-label="Next patch">›</button>
-  <button type="button" id="write-toggle" class="bank-write"
-          aria-label="Write this sound into a slot">WRITE</button>
-  <button type="button" id="config-toggle" class="bank-write" hidden
-          aria-label="Configure the controllers">CONFIG</button>
+  <button type="button" class="bank-step" data-step="1" data-icon="next" aria-label="Next patch">NEXT</button>
   <div class="bank-vol">
     <label for="master-vol">Vol</label>
     <input type="range" id="master-vol" min="0" max="100" value="80"
@@ -47,34 +51,20 @@
   </div>
 </div>
 
-<!-- Deployed from the strip above and fixed to the foot of the window, so the
-     panels are enclosed between the two rather than running underneath it. -->
 <section id="keyboard" class="keyboard" hidden aria-label="Keyboard">
-  <!-- The octave buttons sit at the two ends rather than beside each other in the
-       middle, so on a phone held in two hands they fall under the thumbs. -->
   <div class="keys-bar">
-    <button type="button" class="oct" data-step="-1" aria-label="Down an octave">−</button>
+    <button type="button" class="oct" data-step="-1" data-icon="down"
+            aria-label="Oct down, one octave lower">OCT DOWN</button>
     <span class="oct-label" id="oct-label"></span>
-    <button type="button" class="oct" data-step="1" aria-label="Up an octave">+</button>
+    <button type="button" class="oct" data-step="1" data-icon="up"
+            aria-label="Oct up, one octave higher">OCT UP</button>
   </div>
   <div class="keys-row">
     <div class="wheels" id="wheels"></div>
-    <div class="keys-scroll" id="keys-scroll">
-      <div class="keys" id="keys"></div>
-    </div>
+    <div class="keys-scroll" id="keys-scroll"><div class="keys" id="keys"></div></div>
   </div>
 </section>
 
-<!-- Order matters: the generated table and the layout are plain data and must be
-     defined before the code that reads them. No modules and no bundler, so the
-     page opens straight off the filesystem in a web view with no server.
-
-     `host.js` is whatever is hosting this panel, and it is optional. A host that
-     is native — the VST3 plugin, the desktop shell — has no page-side glue to
-     load and simply does not ship the file; the browser build supplies one that
-     runs the engine in WebAssembly. It loads first so that `bridge.js` finds it
-     already registered, and its absence is not an error, which is why nothing
-     above this line names a host. -->
 <script src="host.js" onerror="void 0"></script>
 <script src="params.js"></script>
 <script src="bank.js" onerror="void 0"></script>

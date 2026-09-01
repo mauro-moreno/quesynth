@@ -23,6 +23,13 @@
   var originalSend = bridge.send.bind(bridge);
 
   function byId(id) { return document.getElementById(id); }
+  // Rewrite only a button's trailing label text, leaving any inline icon intact.
+  function setTrailingText(el, text) {
+    if (!el) return;
+    var node = el.lastChild;
+    if (node && node.nodeType === 3) node.nodeValue = text;
+    else el.appendChild(document.createTextNode(text));
+  }
   function pad() { return kit.pads[selected]; }
   function boundedInt(value, fallback) {
     value = Number(value);
@@ -228,7 +235,7 @@
     byId("pad-pan").value = Math.round(item.pan * 100);
     byId("pad-pan-read").textContent = panText(item.pan);
     byId("pad-learn").classList.toggle("learning", learning);
-    byId("pad-learn").textContent = learning ? "HIT A PAD…" : "MIDI LEARN";
+    setTrailingText(byId("pad-learn"), learning ? "HIT A PAD…" : "MIDI LEARN");
     pressed("pad-enabled", item.enabled); pressed("pad-mute", item.mute); pressed("pad-solo", item.solo);
   }
 
@@ -348,13 +355,43 @@
       kit.pads[selected] = Model.clonePad(clipboard, PARAMS); kit.pads[selected].id = keptId;
       sendPatch(selected); sendMix(selected); select(selected);
     });
-    byId("pad-edit").addEventListener("click", function () {
-      var editor = byId("rack-editor");
-      editor.hidden = !editor.hidden;
-      document.body.classList.toggle("rack-editor-closed", editor.hidden);
-      this.textContent = editor.hidden ? "EDIT SYNTH ↓" : "CLOSE SYNTH ↑";
-      this.setAttribute("aria-expanded", editor.hidden ? "false" : "true");
-      if (!editor.hidden) editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    var editButton = byId("pad-edit");
+    var editor = byId("rack-editor");
+    function setEditor(open) {
+      editor.hidden = !open;
+      document.body.classList.toggle("rack-editor-closed", !open);
+      setTrailingText(editButton, open ? "CLOSE SYNTH" : "EDIT SYNTH");
+      editButton.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) byId("rack-editor-close").focus();
+      else editButton.focus();
+    }
+    editButton.addEventListener("click", function () { setEditor(editor.hidden); });
+    byId("rack-editor-close").addEventListener("click", function () { setEditor(false); });
+    // Escape belongs to whatever is on top, and the drawer is never that while a
+    // dialog or the information popover is open -- each of those closes itself on
+    // the same key. Handler order cannot settle it: every one of them listens on
+    // `document`, and this one is bound before either of theirs exists, so it is
+    // asked first and has to decline. Without the guard a single press shut the
+    // dialog *and* the whole editor under it, and two handlers then argued over
+    // where focus went.
+    function coveredByLayer() {
+      return !!(window.SynthModal && window.SynthModal.isOpen()) ||
+             !!(window.SynthInfo && window.SynthInfo.isOpen());
+    }
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape" || editor.hidden || coveredByLayer()) return;
+      event.preventDefault();
+      setEditor(false);
+    });
+    document.querySelector(".rack-views").addEventListener("click", function (event) {
+      var button = event.target.closest("[data-rack-view]");
+      if (!button) return;
+      byId("pads").setAttribute("data-view", button.getAttribute("data-rack-view"));
+      this.querySelectorAll("[data-rack-view]").forEach(function (candidate) {
+        var on = candidate === button;
+        candidate.classList.toggle("on", on);
+        candidate.setAttribute("aria-pressed", on ? "true" : "false");
+      });
     });
     byId("kit-save").addEventListener("click", downloadKit);
     byId("kit-open").addEventListener("click", function () { byId("kit-file").click(); });

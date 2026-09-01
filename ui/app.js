@@ -87,6 +87,20 @@
     return Math.max(0, Math.min(param.n - 1, position));
   }
 
+  // The position another parameter currently selects, by index.
+  //
+  // Conditional readings are handed this rather than the value map, because the
+  // two things they ask about are not stored as their positions: the LFO
+  // destinations of parameters 41 and 46 store 1..7 for positions 0..6, so a
+  // formatter comparing raw stored values would name the destination one place
+  // off and print semitones over a pan knob. -1 for a parameter this build does
+  // not have, which no position matches, so such a formatter falls through to
+  // the bare reading rather than guessing.
+  function positionAt(index) {
+    var p = byIndex[index];
+    return p ? positionOf(p, values[index]) : -1;
+  }
+
   function valueText(param, position) {
     if (!param.v) return String(position);
     return param.v[Math.max(0, Math.min(param.v.length - 1, position))];
@@ -130,6 +144,76 @@
   // --------------------------------------------------------------------- knob
 
   var SVG = "http://www.w3.org/2000/svg";
+
+  // One hand-drawn icon language for chrome and enumerated shapes. Every glyph
+  // is presentation-only: adjacent text and accessible names remain intact.
+  var ICON_PATHS = {
+    midi: ["M12 70V30h16v40M38 70V30h24v40M72 70V30h16v40"],
+    keys: ["M10 25h80v50H10z", "M28 25v28M45 25v28M62 25v28M79 25v28"],
+    write: ["M18 14h54l12 12v60H18z", "M31 14v26h38V14M34 86V57h32v29"],
+    config: ["M18 25h64M18 50h64M18 75h64", "M35 16v18M65 41v18M43 66v18"],
+    file: ["M20 12h42l18 18v58H20z", "M62 12v18h18"],
+    open: ["M12 32h31l8 10h37L75 82H18z"],
+    save: ["M18 14h64v72H18z", "M31 14v25h38V14M32 86V58h36v28"],
+    copy: ["M31 29h50v55H31z", "M19 71V16h50v13"],
+    paste: ["M26 24h48v62H26z", "M38 14h24v20H38z"],
+    learn: ["M18 22h64v56H18z", "M34 38l32 24M66 38L34 62"],
+    enabled: ["M20 52l18 18 42-44"],
+    mute: ["M18 43h18l20-18v50L36 57H18z", "M68 39l18 22M86 39L68 61"],
+    solo: ["M22 68c10 10 46 10 56-5 8-13-3-20-20-22l-16-2c-17-2-24-15-13-24 12-10 47-8 61 2"],
+    edit: ["M18 72l8-25 39-39 19 19-39 39z", "M26 47l19 19"],
+    close: ["M22 22l56 56M78 22L22 78"],
+    previous: ["M64 18L32 50l32 32"], next: ["M36 18l32 32-32 32"],
+    // The stepper's two, so a whole number's controls are drawn in the same hand
+    // as everything else rather than set in whatever the font has at "−".
+    minus: ["M24 50h52"], plus: ["M50 24v52M24 50h52"],
+    down: ["M50 18v64M25 57l25 25 25-25"], up: ["M50 82V18M25 43l25-25 25 25"],
+    sine: ["M8 50c14-34 28-34 42 0s28 34 42 0"],
+    saw: ["M8 70l35-40v40l41-40"], pulse: ["M8 68V34h38v34h38V34"],
+    triangle: ["M8 70l28-40 28 40 28-40"],
+    noise: ["M8 59l9-22 9 31 9-38 9 30 9-18 9 27 9-34 13 23"],
+    sample: ["M8 64h16V36h18v28h18V36h24"],
+    random: ["M8 63c12-4 14-31 28-20s19 27 28 8 14-20 28-10"],
+    lowpass: ["M8 28h27c16 0 18 42 57 42"],
+    highpass: ["M8 70h27c16 0 18-42 57-42"],
+    bandpass: ["M8 70c19 0 22-40 42-40s23 40 42 40"],
+  };
+
+  function makeIcon(name, extraClass) {
+    var svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("class", "icon" + (extraClass ? " " + extraClass : ""));
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    var paths = ICON_PATHS[name] || ICON_PATHS.config;
+    for (var i = 0; i < paths.length; i++) {
+      var path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", paths[i]);
+      path.setAttribute("class", "icon-stroke");
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+  window.QuesynthIcon = makeIcon;
+
+  function optionIcon(spec, param, position) {
+    if ([0, 1, 14, 42, 47, 96].indexOf(param.i) < 0) return null;
+    var label = ((spec.options && spec.options[position]) || valueText(param, position)).toLowerCase();
+    var name = label.indexOf("sample") >= 0 ? "sample" :
+      label.indexOf("random smooth") >= 0 ? "random" : label.indexOf("sine") >= 0 ? "sine" :
+      label.indexOf("saw") >= 0 ? "saw" : label.indexOf("pulse") >= 0 || label.indexOf("square") >= 0 ? "pulse" :
+      label.indexOf("triangle") >= 0 ? "triangle" : label.indexOf("noise") >= 0 ? "noise" :
+      label.indexOf("high pass") >= 0 ? "highpass" : label.indexOf("band pass") >= 0 ? "bandpass" : "lowpass";
+    return makeIcon(name, "option-icon");
+  }
+
+  function decorateIcons() {
+    var nodes = document.querySelectorAll("[data-icon]");
+    for (var i = 0; i < nodes.length; i++) {
+      if (!nodes[i].querySelector("svg.icon"))
+        nodes[i].insertBefore(makeIcon(nodes[i].getAttribute("data-icon")), nodes[i].firstChild);
+    }
+  }
 
   // The arc runs from seven o'clock to five o'clock, the 270 degrees a hardware
   // knob has, leaving the gap at the bottom where the pointer never goes.
@@ -212,7 +296,14 @@
       pointer.setAttribute("x2", outer[0].toFixed(2));
       pointer.setAttribute("y2", outer[1].toFixed(2));
       svg.setAttribute("aria-valuenow", String(position));
-      svg.setAttribute("aria-valuetext", valueText(param, position));
+      // Spoken from the same source the panel prints, so a conditional reading is
+      // not silently read out as a bare integer to anyone using a screen reader.
+      var f = typeof spec.formatValue === "function"
+        ? spec.formatValue(position, positionAt)
+        : null;
+      svg.setAttribute("aria-valuetext", f
+        ? (f.unit ? f.value + " " + f.unit : f.value)
+        : valueText(param, position));
     }
 
     // Dragging. Vertical, and the travel is scaled so the whole range takes about
@@ -316,6 +407,8 @@
 
         var dot = document.createElement("span");
         dot.className = "dot";
+        var glyph = optionIcon(spec, param, position);
+        if (glyph) { dot.classList.add("has-glyph"); dot.appendChild(glyph); }
         b.appendChild(dot);
 
         var text = document.createElement("span");
@@ -357,7 +450,9 @@
     function step(by) {
       var b = document.createElement("button");
       b.type = "button";
-      b.textContent = by < 0 ? "−" : "+";
+      // Drawn, not typed. The accessible name is on the button, and the glyph is
+      // hidden from it, so the only thing that changes is that the mark is ours.
+      b.appendChild(makeIcon(by < 0 ? "minus" : "plus"));
       b.setAttribute("aria-label", (by < 0 ? "Less " : "More ") + (spec.name || spec.label));
       b.addEventListener("click", function () {
         bridge.beginEdit(param.i);
@@ -533,32 +628,56 @@
 
     function refresh() {
       made.paint();
-      if (readout) {
-        var position = positionOf(param, values[param.i]);
-        // A switch reads out as a word. The stored value of a two-state parameter
-        // is 0 or 1, and printing that under a switch tells the player nothing
-        // they cannot already see from the switch itself.
-        var text = kind === "toggle"
-          ? (position > 0 ? "On" : "Off")
-          : valueText(param, position);
+      if (!readout) return;
+      var position = positionOf(param, values[param.i]);
 
-        // The number and its unit are separate elements so the unit can be greyed
-        // wherever it came from. Some readings carry their own unit inside the
-        // string the reference prints -- "15.12 msec", "+15 cent" -- and others
-        // get one from the generated table's suffix. Both end up in the same span
-        // rather than only the second, which is what made "cent" grey and "kHz"
-        // white before.
-        var parts = splitUnit(text);
+      // A control whose reading depends on another parameter supplies a
+      // formatter that returns the number and its unit already separated: the
+      // LFO depth in semitones only while it drives pitch, an effect control in
+      // the unit of the type currently selected. The formatter is handed the
+      // resolver above so it can ask what position the parameter it follows is
+      // on, and it returns
+      // nothing when the current setting has no measured unit -- then the honest
+      // bare integer below is shown instead of a suffix that would only be true
+      // for another setting.
+      var formatted = kind !== "toggle" && typeof spec.formatValue === "function"
+        ? spec.formatValue(position, positionAt)
+        : null;
+      if (formatted) {
         readout.textContent = "";
-        readout.appendChild(document.createTextNode(parts.value));
-
-        var unit = parts.unit || (param.unit && !/[a-zA-Z%]/.test(text) ? param.unit : "");
-        if (unit) {
-          var u = document.createElement("span");
-          u.className = "unit";
-          u.textContent = unit;
-          readout.appendChild(u);
+        readout.appendChild(document.createTextNode(formatted.value));
+        if (formatted.unit) {
+          var fu = document.createElement("span");
+          fu.className = "unit";
+          fu.textContent = formatted.unit;
+          readout.appendChild(fu);
         }
+        return;
+      }
+
+      // A switch reads out as a word. The stored value of a two-state parameter
+      // is 0 or 1, and printing that under a switch tells the player nothing
+      // they cannot already see from the switch itself.
+      var text = kind === "toggle"
+        ? (position > 0 ? "On" : "Off")
+        : valueText(param, position);
+
+      // The number and its unit are separate elements so the unit can be greyed
+      // wherever it came from. Some readings carry their own unit inside the
+      // string the reference prints -- "15.12 msec", "+15 cent" -- and others
+      // get one from the generated table's suffix. Both end up in the same span
+      // rather than only the second, which is what made "cent" grey and "kHz"
+      // white before.
+      var parts = splitUnit(text);
+      readout.textContent = "";
+      readout.appendChild(document.createTextNode(parts.value));
+
+      var unit = parts.unit || (param.unit && !/[a-zA-Z%]/.test(text) ? param.unit : "");
+      if (unit) {
+        var u = document.createElement("span");
+        u.className = "unit";
+        u.textContent = unit;
+        readout.appendChild(u);
       }
     }
 
@@ -576,11 +695,24 @@
         // A control the selected type does not read is switched off rather than
         // left looking operable.
         setDisabled(!!v.inert, "inert");
+        // The reading follows the type too: its unit is the selected effect's,
+        // so repaint it, not just the label.
+        refresh();
       };
       dependOn(spec.depends, relabel);
       // Once now, so the control opens with the label its current type calls for
       // rather than with the placeholder in the layout.
       relabel();
+    }
+
+    // A control whose label is fixed but whose reading follows another parameter
+    // -- the LFO depth's semitones track its destination -- repaints when that
+    // parameter moves. This is separate from `depends`, which also rewrites the
+    // label.
+    if (spec.valueDepends) {
+      for (var vd = 0; vd < spec.valueDepends.length; vd++) {
+        dependOn(spec.valueDepends[vd], refresh);
+      }
     }
 
     controls[spec.p] = refresh;
@@ -628,6 +760,14 @@
   function hideInfo() {
     if (popover) popover.classList.remove("open");
   }
+
+  // Whether the popover is the layer on top at this moment. The pad shell's
+  // editor drawer asks before it answers Escape: both listen on `document`, so
+  // without this one press would dismiss the popover and the editor beneath it.
+  function infoOpen() {
+    return !!popover && popover.classList.contains("open");
+  }
+  window.SynthInfo = { isOpen: infoOpen };
 
   function showInfo(anchor, title, desc, param) {
     if (!popover) {
@@ -773,8 +913,11 @@
   }
 
   function buildNav(sections) {
-    var inner = document.querySelector("#nav .nav-inner");
+    var inner = document.querySelector("#navigator .nav-inner");
+    var main = document.getElementById("panels");
+    if (!inner || !main || !sections.length) return;
     var buttons = {};
+    var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
 
     sections.forEach(function (s) {
       var b = document.createElement("button");
@@ -782,81 +925,41 @@
       b.textContent = s.title;
       b.setAttribute("aria-current", "false");
       b.addEventListener("click", function () {
-        s.el.scrollIntoView({ block: "start", behavior: "smooth" });
+        main.scrollTo({
+          top: s.el.offsetTop - main.offsetTop,
+          behavior: reduced.matches ? "auto" : "smooth",
+        });
+      });
+      b.addEventListener("focus", function () {
+        b.scrollIntoView({ block: "nearest", inline: "nearest" });
       });
       inner.appendChild(b);
       buttons[s.id] = b;
     });
 
-    // Which section is being looked at: the last one whose top has passed under
-    // the sticky bar.
-    //
-    // "The topmost section still on screen" is the obvious rule and it is wrong.
-    // Jumping to a section leaves the previous one's last row still poking into
-    // view, so the topmost thing on screen is the section you just left and the
-    // mark stays behind by one the whole way down the page.
-    // Read from the stylesheet rather than repeated here, so the bar's height is
-    // stated once and the scroll offset and this test cannot disagree. A section
-    // that has just been jumped to sits exactly on the bar, so the test needs a
-    // few pixels of slack under it.
-    var navH = parseInt(
-      getComputedStyle(document.documentElement).getPropertyValue("--nav-h"), 10) || 37;
-    var line = navH + 8;
     var marked = null;
-
     function updateCurrent() {
+      var line = main.getBoundingClientRect().top + 8;
       var current = sections[0].id;
       for (var i = 0; i < sections.length; i++) {
         if (sections[i].el.getBoundingClientRect().top <= line) current = sections[i].id;
       }
-
       if (current === marked) return;
       marked = current;
-
       sections.forEach(function (s) {
         buttons[s.id].setAttribute("aria-current", s.id === current ? "true" : "false");
       });
-
-      // Keep the marked entry inside the strip when the strip itself has scrolled.
-      var active = buttons[current];
-      var left = active.offsetLeft, right = left + active.offsetWidth;
-      if (left < inner.scrollLeft || right > inner.scrollLeft + inner.clientWidth) {
-        inner.scrollTo({ left: left - 12, behavior: "smooth" });
-      }
+      buttons[current].scrollIntoView({ block: "nearest", inline: "nearest" });
     }
 
-    // Driven by scroll, coalesced onto a frame.
-    //
-    // An IntersectionObserver was tried first and cannot do this on its own: the
-    // bottom-of-page case above needs to be re-evaluated while the page is still
-    // moving but no boundary is being crossed, and the observer stays silent
-    // through exactly that stretch. The cost of the scroll listener is nil where
-    // it would have mattered -- a knob sets `touch-action: none` and captures the
-    // pointer, so dragging one never scrolls the page and never runs this.
-    // Enough room after the last section that it can still reach the top.
-    //
-    // Without this the last two or three sections are unreachable in the only
-    // sense that matters here: the page runs out of scroll before their tops get
-    // to the bar, so selecting one scrolls as far as it can and then marks a
-    // different section, which reads as the navigation being broken. Special
-    // casing the bottom was tried and only moved the wrongness around -- with
-    // three sections sharing the last screen there is no rule that picks the one
-    // the player asked for. Giving them the room instead makes the ordinary rule
-    // correct everywhere.
-    //
-    // Sized to exactly what is missing, so a tall last section adds nothing and a
-    // short one adds only the difference.
-    var main = document.getElementById("panels");
-    var bank = document.getElementById("bank");
+    // Give a short final section exactly enough trailing room to reach the top
+    // of this editor's own scroller. The keyboard changes the editor height via
+    // --keys-h, so measuring the scroller here keeps one source of truth.
     function sizeTail() {
       main.style.paddingBottom = "0px";
       var last = sections[sections.length - 1].el;
-      // The bank bar and, when it is out, the keyboard both cover the foot of the
-      // window, so the room the last section has to climb into is smaller by both.
-      var below = keyboardHeight() + (bank ? bank.getBoundingClientRect().height : 0);
-      var missing = window.innerHeight - navH - below -
-        last.getBoundingClientRect().height;
-      main.style.paddingBottom = Math.max(0, Math.round(missing)) + "px";
+      var missing = main.clientHeight - last.getBoundingClientRect().height;
+      main.style.paddingBottom = Math.max(8, Math.round(missing)) + "px";
     }
 
     var queued = false;
@@ -868,12 +971,14 @@
         updateCurrent();
       });
     }
-
     function onResize() { sizeTail(); onScroll(); }
     relayout = onResize;
-
-    window.addEventListener("scroll", onScroll, { passive: true });
+    main.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onResize, { passive: true });
+    // In pad.html this scroller is initially inside a hidden drawer. Observe
+    // its own box so opening the drawer sizes the tail without duplicating an
+    // editor-height calculation in pad.js.
+    if (window.ResizeObserver) new ResizeObserver(onResize).observe(main);
     sizeTail();
     updateCurrent();
   }
@@ -899,8 +1004,7 @@
   // is being played with two hands rather than prodded with one thumb.
   var KEY_LANDSCAPE_OCTAVES = 2;
 
-  var KEY_PHONE_LOW = 24;   // C1
-  var KEY_PHONE_HIGH = 84;  // C6
+  // Every layout retains the complete piano range; narrow layouts scroll it.
   var WHITE_SEMITONES = [0, 2, 4, 5, 7, 9, 11];
   // Which white key each black one sits after, within an octave.
   var BLACK_AFTER = [0, 1, 3, 4, 5];
@@ -923,9 +1027,8 @@
     var panel = document.getElementById("keyboard");
     if (!host || !toggle) return;
 
-    var phone = window.matchMedia("(max-width: 560px)").matches;
-    var low = phone ? KEY_PHONE_LOW : KEY_FULL_LOW;
-    var high = phone ? KEY_PHONE_HIGH : KEY_FULL_HIGH;
+    var low = KEY_FULL_LOW;
+    var high = KEY_FULL_HIGH;
 
     var byNote = {};
     var whiteIndex = {};
@@ -1941,6 +2044,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    decorateIcons();
     build();
 
     buildBank();
@@ -1961,9 +2065,8 @@
         // by exactly the same amount.
         var h = Math.round(keys.height());
         document.documentElement.style.setProperty("--keys-h", h + "px");
-        var bank = document.getElementById("bank");
-        var bankH = bank ? bank.getBoundingClientRect().height : 0;
-        document.body.style.paddingBottom = Math.round(h + bankH + 8) + "px";
+        // The surface and drawer consume this published scalar directly; no
+        // second body-padding calculation is allowed to drift from it.
         relayout();
       });
     }

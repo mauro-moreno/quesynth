@@ -24,9 +24,17 @@
   var restingLabel = "MIDI";
   var flashTimer = null;
 
+  // Update only the trailing text of the button so the inline icon survives.
+  function setButtonText(text) {
+    if (!button) return;
+    var node = button.lastChild;
+    if (node && node.nodeType === 3) node.nodeValue = text;
+    else button.appendChild(document.createTextNode(text));
+  }
+
   function label(text) {
     restingLabel = text;
-    if (flashTimer === null && button) button.textContent = text;
+    if (flashTimer === null) setButtonText(text);
   }
 
   // Show the velocity of the note just played, then go back to the device name.
@@ -41,11 +49,11 @@
   // Watching this while playing soft and hard answers it in a second.
   function flashVelocity(v) {
     if (!button) return;
-    button.textContent = "v" + v;
+    setButtonText("v" + v);
     if (flashTimer !== null) clearTimeout(flashTimer);
     flashTimer = setTimeout(function () {
       flashTimer = null;
-      button.textContent = restingLabel;
+      setButtonText(restingLabel);
     }, 600);
   }
 

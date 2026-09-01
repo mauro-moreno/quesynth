@@ -55,6 +55,103 @@ var MIDI_DESTINATIONS = (function () {
   return out;
 })();
 
+// Conditional readings.
+//
+// A few controls read in a measured unit for only some settings of the parameter
+// they follow, and are honestly bare otherwise -- a suffix that is true for one
+// destination or one effect type would be a lie at the others. Each returns the
+// number and its unit already split, or nothing when the current setting has no
+// measured display law, in which case the panel shows the bare stored integer.
+//
+// `position` is this control's own 0..127. `at` resolves any parameter's index to
+// the *position* it currently selects, which is what has to be compared against a
+// destination or a type: the stored integers of parameters 41 and 46 run 1..7 for
+// positions 0..6, so reading their raw values here would name the wrong
+// destination. Every law is from docs/null-test.md, cited where it is used; none
+// is invented, and settings the file does not pin down are deliberately left to
+// fall through to bare.
+var COND = (function () {
+  // Frequency, in the generated table's own steps so a conditional reading and a
+  // fixed one look alike: three decimals below 1 Hz, two below 100, whole hertz
+  // below a kilohertz, and kilohertz above. Mirrors `format_hz` in
+  // tools/uiparams/main.odin.
+  function hz(v) {
+    if (v < 1) return { value: v.toFixed(3), unit: "Hz" };
+    if (v < 100) return { value: v.toFixed(2), unit: "Hz" };
+    if (v < 1000) return { value: v.toFixed(0), unit: "Hz" };
+    return { value: (v / 1000).toFixed(2), unit: "kHz" };
+  }
+
+  // LFO depth, parameters 44 and 49, following the destination (41 / 46). The
+  // depth curve is measured in semitones for the two pitch destinations only --
+  // position 0 "Oscillator 2 Pitch" and 1 "Both Oscillator Pitches". Cutoff,
+  // volume, nothing, FM amount and pan stay bare: the file applies the curve to
+  // pitch alone and declines to license the others (docs/null-test.md:2450-2481).
+  function lfoDepth(destIndex) {
+    return function (position, at) {
+      var dest = at(destIndex);
+      if (dest !== 0 && dest !== 1) return null;
+      var u = position / 127;
+      var semi = 60 * (Math.exp(2.3 * u) - 1) / (Math.exp(2.3) - 1);
+      return { value: semi.toFixed(2), unit: "semitones" };
+    };
+  }
+
+  // The effect unit's two controls and its level follow the type, parameter 78,
+  // by position: 0-2 distortions, 3 decimator, 4 ring modulator, 5 compressor,
+  // 6-9 phasers.
+  function fxControl1(position, at) {
+    var t = at(78);
+    // Ring modulator frequency, from the sideband positions: a constant ×1.762
+    // per 8 steps, anchored 92.7 Hz at ctl1 64 (docs/null-test.md:1615-1628).
+    if (t === 4) return hz(92.7 * Math.pow(1.762, (position - 64) / 8));
+    // Compressor depth is an input gain, linear in decibels:
+    // 10 + 40*(ctl1/127) dB (docs/null-test.md:6035-6049).
+    if (t === 5) return { value: (10 + 40 * (position / 127)).toFixed(2), unit: "dB" };
+    // Phaser depth is the notch sweep span in octaves, linear in depth and zero
+    // at zero: 0.0238 oct/step for Phaser 1, 0.050 for Phaser 2-4
+    // (docs/null-test.md:6825-6836,6863).
+    if (t >= 6 && t <= 9) {
+      var perStep = t === 6 ? 0.0238 : 0.050;
+      return { value: (perStep * position).toFixed(2), unit: "oct" };
+    }
+    // Distortion drive has no physical display unit; the decimator's hold is
+    // samples measured at 48 kHz only, so it is not a host-independent reading
+    // (docs/null-test.md:1630-1641). Both stay bare.
+    return null;
+  }
+
+  function fxControl2(position, at) {
+    var t = at(78);
+    // Distortion tone, the shared low-pass corner: a clean exponential at 0.0416
+    // octaves per step from 452 Hz (docs/null-test.md:1603-1613).
+    if (t >= 0 && t <= 2) return hz(452 * Math.pow(2, 0.0416 * position));
+    // Phaser rate: exponential, 2.33 per 16 steps, anchored 0.65 Hz at ctl2 64
+    // (docs/null-test.md:1809-1811).
+    if (t >= 6 && t <= 9) return hz(0.65 * Math.pow(2.33, (position - 64) / 16));
+    // Left bare on purpose: the decimator bit depth is a noisy seven-point table
+    // that is a lower bound below ctl2 32 and fits worst at the top, with no
+    // clean law (docs/null-test.md:8315-8327); the compressor attack is given
+    // only as a 2-190 ms range, no per-step law (docs/null-test.md:1654-1655);
+    // and the ring modulator's second control is inert (docs/null-test.md:1577).
+    return null;
+  }
+
+  function fxLevel(position, at) {
+    var t = at(78);
+    // Distortions are a wet-only output gain linear in amplitude (L/127) and the
+    // decimator and ring modulator crossfade dry to wet by the same L/127, so
+    // both read as a percent (docs/null-test.md:1657-1685).
+    if (t >= 0 && t <= 4) return { value: String(Math.round(100 * position / 127)), unit: "%" };
+    // The compressor level is linear in decibels but its measured slope carries
+    // no anchor, and the phaser feedback law is superseded, so both stay bare
+    // (docs/null-test.md:1686-1688,6859-6861).
+    return null;
+  }
+
+  return { lfoDepth: lfoDepth, fxControl1: fxControl1, fxControl2: fxControl2, fxLevel: fxLevel };
+})();
+
 window.SYNTH1_LAYOUT = [
   {
     // First, because it is about the instrument rather than about the sound: the
@@ -116,8 +213,8 @@ window.SYNTH1_LAYOUT = [
           { p: 0, label: "Waveform", name: "Oscillator 1 Waveform", kind: "radio",
             desc: "Waveform of the first oscillator, the carrier when FM is used.",
             options: ["Sine", "Sawtooth", "Pulse", "Triangle"] },
-          { p: 76, label: "Detune", name: "Oscillator 1 Detune",
-            desc: "Extra detune applied to oscillator 1 alone within a unison stack." },
+          { p: 76, label: "Detune", name: "Oscillator 1 Component Detune",
+            desc: "Base detune step for oscillator 1's nine-component field, in cents. At full amount the four pairs sit at ±20, ±60, ±100 and ±140 cents around the centre." },
         ],
       },
       {
@@ -153,7 +250,7 @@ window.SYNTH1_LAYOUT = [
         label: "Cross Modulation",
         controls: [
           { p: 45, label: "FM Amount", name: "FM Amount",
-            desc: "Oscillator 2 modulates oscillator 1's frequency. Full amount is half a cycle of displacement." },
+            desc: "Oscillator 2 modulates oscillator 1. The readout is peak frequency deviation in multiples of each carrier component's frequency." },
           { p: 6, label: "Sync", name: "Oscillator Sync", kind: "toggle",
             desc: "Oscillator 1 resets oscillator 2's phase, the hard sync tearing sound." },
           { p: 7, label: "Ring", name: "Ring Modulation", kind: "toggle",
@@ -182,9 +279,9 @@ window.SYNTH1_LAYOUT = [
         label: "Shape",
         controls: [
           { p: 14, label: "Type", name: "Filter Type", kind: "radio",
-            desc: "Response shape and steepness. The fourth is a band pass, not the high pass the English manual lists.",
-            options: ["Low Pass 12 dB/oct", "Low Pass 24 dB/oct", "High Pass 12 dB/oct",
-                      "Band Pass 12 dB/oct", "Low Pass Ladder"] },
+            desc: "Response shape and steepness. The 24 dB low pass uses the implemented ladder; LPDL currently uses that same path while its distinct diode-ladder model is pending.",
+            options: ["Low Pass 12 dB/oct", "Ladder Low Pass 24 dB/oct", "High Pass 12 dB/oct",
+                      "Band Pass 12 dB/oct", "LPDL (24 dB fallback)"] },
           { p: 19, label: "Cutoff", name: "Cutoff Frequency", wide: true,
             desc: "Corner frequency. Measured from the reference: 24 Hz to about 17 kHz, in steps of roughly one semitone." },
           { p: 20, label: "Resonance", name: "Resonance", wide: true,
@@ -295,7 +392,8 @@ window.SYNTH1_LAYOUT = [
           { p: 43, label: "Speed", name: "LFO 1 Speed",
             desc: "Modulation rate. Measured from the reference: 0.078 Hz to 125 Hz, so the top of the knob is audio rate." },
           { p: 44, label: "Depth", name: "LFO 1 Depth",
-            desc: "How far it moves the destination. Full depth is five octaves of pitch, five octaves of cutoff, or silence." },
+            desc: "How far it moves the destination. Full depth is five octaves of pitch, five octaves of cutoff, or silence.",
+            valueDepends: [41], formatValue: COND.lfoDepth(41) },
           { p: 67, label: "Tempo Sync", name: "LFO 1 Tempo Sync", kind: "toggle",
             desc: "Locks the rate to the host tempo instead of the speed knob." },
           { p: 68, label: "Key Sync", name: "LFO 1 Key Sync", kind: "toggle",
@@ -327,7 +425,8 @@ window.SYNTH1_LAYOUT = [
           { p: 48, label: "Speed", name: "LFO 2 Speed",
             desc: "Modulation rate, from 0.078 Hz to 125 Hz." },
           { p: 49, label: "Depth", name: "LFO 2 Depth",
-            desc: "How far it moves the destination." },
+            desc: "How far it moves the destination.",
+            valueDepends: [46], formatValue: COND.lfoDepth(46) },
           { p: 69, label: "Tempo Sync", name: "LFO 2 Tempo Sync", kind: "toggle",
             desc: "Locks the rate to the host tempo." },
           { p: 70, label: "Key Sync", name: "LFO 2 Key Sync", kind: "toggle",
@@ -433,7 +532,7 @@ window.SYNTH1_LAYOUT = [
           // the ring modulator's second control is inert at every setting -- five
           // of them render bit-identically -- so it is labelled and disabled
           // rather than left looking operable.
-          { p: 79, label: "Control 1", name: "Effect Control 1", depends: 78,
+          { p: 79, label: "Control 1", name: "Effect Control 1", depends: 78, formatValue: COND.fxControl1,
             desc: "First parameter of the selected effect; its meaning changes with the type.",
             variants: [
               { label: "Drive", name: "Distortion Drive",
@@ -457,7 +556,7 @@ window.SYNTH1_LAYOUT = [
               { label: "Depth", name: "Phaser Depth",
                 desc: "How far the notches sweep. At zero the notch stands still." },
             ] },
-          { p: 80, label: "Control 2", name: "Effect Control 2", depends: 78,
+          { p: 80, label: "Control 2", name: "Effect Control 2", depends: 78, formatValue: COND.fxControl2,
             desc: "Second parameter of the selected effect; its meaning changes with the type.",
             variants: [
               { label: "Tone", name: "Distortion Tone",
@@ -482,7 +581,8 @@ window.SYNTH1_LAYOUT = [
                 desc: "Sweep speed of the notches, in hertz." },
             ] },
           { p: 81, label: "Level", name: "Effect Level",
-            desc: "How much of the effect is mixed into the output." },
+            desc: "How much of the effect is mixed into the output.",
+            valueDepends: [78], formatValue: COND.fxLevel },
         ],
       },
     ],
