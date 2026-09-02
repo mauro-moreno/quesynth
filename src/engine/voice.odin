@@ -38,6 +38,9 @@ Voice :: struct {
 	// True while the key is held. A voice stays active after this goes false
 	// for as long as the amplitude envelope is still releasing.
 	gate:         bool,
+	// Rack one-shots release themselves when their attack/decay reaches sustain.
+	// Normal keyboard voices leave this false and retain ordinary Note Off rules.
+	one_shot:     bool,
 	note:         int,
 	velocity:     f32,
 	// Portamento glides `current_note` toward `target_note`; both are in MIDI
@@ -473,6 +476,7 @@ voice_note_on :: proc(
 ) {
 	v.active = true
 	v.gate = true
+	v.one_shot = false
 	v.note = note
 	v.velocity = dsp.clamp32(velocity, 0, 1)
 	v.target_note = f32(note)
@@ -529,6 +533,7 @@ voice_note_on :: proc(
 
 voice_note_off :: proc(v: ^Voice) {
 	v.gate = false
+	v.one_shot = false
 	dsp.envelope_gate_off(&v.amp_env)
 	dsp.envelope_gate_off(&v.filter_env)
 	dsp.envelope_gate_off(&v.mod_env)
@@ -575,6 +580,13 @@ voice_process :: proc(
 	mod_env: f32 = 0
 	if p.mod_env_on {
 		mod_env = dsp.envelope_process(&v.mod_env) * p.mod_env_amount
+	}
+	// A one-shot is a complete ADSR gesture initiated by one event: it traverses
+	// attack and decay normally, then enters release as soon as sustain is
+	// reached. This avoids a timer in the UI and cannot leak a permanently gated
+	// voice when a percussion patch has a non-zero sustain level.
+	if v.one_shot && v.gate && v.amp_env.stage == .Sustain {
+		voice_note_off(v)
 	}
 
 	// The modulation destinations, accumulated before anything uses them so a

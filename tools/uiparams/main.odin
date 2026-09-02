@@ -46,6 +46,10 @@ Unit_Kind :: enum {
 	Pulse_Width_Percent,
 	Track_Octaves,
 	Detune_Cents,
+	Fm_Carrier_Ratio,
+	Osc1_Component_Cents,
+	Osc_Phase_Turns,
+	Sub_Carrier_Ratio,
 }
 
 // Which parameters this project has measured a real unit for.
@@ -71,7 +75,7 @@ unit_for :: proc(index: int) -> Unit_Kind {
 		return .Gain_Db
 	case 27:
 		return .Amp_Sustain_Percent
-	case 17:
+	case 17, 34:
 		return .Linear_Percent
 	case 43, 48:
 		return .Lfo_Rate_Hz
@@ -81,6 +85,14 @@ unit_for :: proc(index: int) -> Unit_Kind {
 		return .Track_Octaves
 	case 75:
 		return .Detune_Cents
+	case 45:
+		return .Fm_Carrier_Ratio
+	case 76:
+		return .Osc1_Component_Cents
+	case 91:
+		return .Osc_Phase_Turns
+	case 95:
+		return .Sub_Carrier_Ratio
 	}
 	return .Reference
 }
@@ -104,8 +116,12 @@ unit_suffix :: proc(kind: Unit_Kind) -> string {
 		return "Hz"
 	case .Track_Octaves:
 		return "oct/oct"
-	case .Detune_Cents:
+	case .Detune_Cents, .Osc1_Component_Cents:
 		return "cents"
+	case .Fm_Carrier_Ratio, .Sub_Carrier_Ratio:
+		return "× carrier"
+	case .Osc_Phase_Turns:
+		return "turns"
 	case .Reference:
 		return ""
 	}
@@ -193,6 +209,21 @@ value_text :: proc(index, position: int, kind: Unit_Kind) -> string {
 		return fmt.tprintf("%.2f", unit_pos)
 	case .Detune_Cents:
 		return fmt.tprintf("%.1f", 50.0 * unit_pos)
+	case .Fm_Carrier_Ratio:
+		ratio := 96.0 * math.pow(unit_pos, 5.5)
+		if ratio < 1.0 {
+			return fmt.tprintf("%.3f", ratio)
+		}
+		return fmt.tprintf("%.2f", ratio)
+	case .Osc1_Component_Cents:
+		return fmt.tprintf("%.2f", 20.0 * unit_pos)
+	case .Osc_Phase_Turns:
+		if position == 0 {
+			return "free"
+		}
+		return fmt.tprintf("%.4f", 0.5 * f64(position - 1) / 126.0)
+	case .Sub_Carrier_Ratio:
+		return fmt.tprintf("%.2f", 4.0 * unit_pos)
 	case .Reference:
 		return states[position].display
 	}

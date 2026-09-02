@@ -8890,6 +8890,91 @@ The periods themselves are unchanged by the rebase: six of eight exact, with the
 same two, ctl2 104 and 112, off by a single block.
 
 
+### Are the percussion patches the worst? (2026-08-28)
+
+Asked of the 16,698-patch corpus in `zipbank.zip`, which is the licensed source
+the earlier corpus work names and which this checkout does hold. 381 of those
+patches are percussion by name -- 151 kicks, 82 assorted, 63 hats, 45 snares, 20
+toms, 20 cymbals, 2.3 per cent of the whole -- and they are compared here against
+400 drawn at random from the rest, seeded so the draw can be repeated.
+
+**As a class, no.** Percussion is not worse than the corpus it sits in, and on
+most readings it is slightly better:
+
+```
+                        percussion   control
+   spectral, mean          7.35 dB     7.82
+   transient, median       2.92        3.32
+   transient, 90th pct     9.56       11.44
+   loudness over 6 dB     23.6%       28.0%
+```
+
+**Hats and cymbals, yes.** Split by kind, one group is plainly worse than the
+corpus and one is plainly better:
+
+```
+   kind      n   no sustain   transient   over 6 dB   envelope   spectral
+   cymbal   20      5.0%       5.22 dB      31.6%       2.76       6.97
+   hat      63     49.2%       5.84         36.1%       2.96       6.05
+   snare    45     31.1%       4.18         22.2%       3.77       5.45
+   perc     82     37.8%       3.58         21.2%       4.12       7.05
+   kick    151     12.6%       3.61         20.5%       5.72       8.18
+   tom      20     15.0%       2.37          0.0%       3.65       8.12
+   control 400      6.5%       4.96         31.3%       3.96       7.82
+```
+
+The ear was right about the hats and wrong about the toms, which are the best
+percussion in the corpus and lose nothing to loudness at all. Kicks are middling
+on loudness and the worst thing in the table on **envelope** -- 5.72 dB of contour
+error against the control's 3.96 -- which for a kick is most of what there is to
+hear.
+
+The patches named are individually among the worst. `S1 Project Sound Library`
+holds them: Closed Hihat is 12.6 dB quiet at the transient, Open Hihat 2 is 14.1
+dB loud, close HH and open HH read -8.5 and -8.7 dB. The single worst percussion
+patch in the corpus is `Rydeen HiHat L`, at **+30.2 dB**, which appears in two
+banks and is wrong in both.
+
+### Two things the instrument cannot tell you, and one nearly reported as a defect
+
+**Correlation and null depth mean nothing for these patches.** Hats read 0.099
+correlation against the control's 0.477, which looks like the finding of the day
+and is not one: a hat is noise, our noise generator and the reference's are
+different random sequences, and two different random sequences do not correlate
+however correct the engine is. The control confirms it -- the 37 control patches
+with audible noise read 0.280 against 0.497 for the 363 without. That is the
+noise, not the engine, and it was very nearly written up the other way.
+
+**The corpus gate cannot see half of them.** Its spectral reading needs a sustain
+and its level is a steady-state RMS, and 49 per cent of hats have no valid
+spectral reading at all. On `Closed Hihat` the steady RMS is `0.00000` for *both*
+engines -- the window opens after the sound has gone, so the level column is
+comparing silence with silence, and the -8.54 dB it reports is a ratio of two
+numbers that are not there. The transient figures above are peak ratios instead,
+which is why they are what this section quotes.
+
+That is the part worth keeping. The metric that drives the tuning is blind to the
+patches in question, so a percussion defect can be plainly audible and leave the
+headline numbers looking average -- which is exactly the shape of the complaint.
+
+### What it is not, and where to look next
+
+Measured and ruled out:
+
+  * **not the noise oscillator.** Swept from a tone to full noise on a neutral
+    patch, the level error is +0.00 to +0.55 dB and the spectral error 1.32.
+  * **not the filter's level law.** Types 2, 3 and 4 at cutoff 98, where the hats
+    sit, run +1.8 to -2.9 dB across the resonance knob -- real, and nowhere near
+    the eight to thirty measured on the patches.
+
+The lead, not yet a cause: both named hats drive the **filter envelope at amount
+127**, the extreme of that control, over high resonance. `patchdiag` on Closed
+Hihat shows the reference unmoved by neutralising that envelope, 0.4410 peak
+either way, while ours doubles from 0.1027 to 0.2092. Something in our filter
+envelope is doing work at the top of that knob that the reference's is not.
+Pursuing it needs an instrument that reads the first hundred milliseconds rather
+than the steady state, which is the same gap this section opened with.
+
 ### Measuring the percussion, and what could be fixed (2026-08-28)
 
 The previous section ended on the instrument: the corpus gate reads a

@@ -563,6 +563,28 @@ engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
 	e.last_note = f32(note)
 }
 
+// Start a self-releasing voice for a drum-rack one-shot. This is an engine
+// gesture rather than a delayed Note Off in a UI: attack and decay retain their
+// exact patch timing, and the voice moves into release when it reaches sustain.
+engine_trigger :: proc(e: ^Engine, note: int, velocity: f32) {
+	if len(e.voices) == 0 {return}
+	if e.params.arp_on {
+		// A rack hit is a sound, not a held key used to construct an arpeggio.
+		engine_start_voice(e, note, velocity)
+	} else {
+		engine_note_on(e, note, velocity)
+		engine_mark_key_up(e, note)
+	}
+	newest: ^Voice = nil
+	for i in 0 ..< len(e.voices) {
+		v := &e.voices[i]
+		if v.active && v.gate && v.note == note && (newest == nil || v.age > newest.age) {
+			newest = v
+		}
+	}
+	if newest != nil {newest.one_shot = true}
+}
+
 engine_note_off :: proc(e: ^Engine, note: int) {
 	engine_mark_key_up(e, note)
 

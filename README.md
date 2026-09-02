@@ -35,6 +35,12 @@ patch, and play from a MIDI controller, the computer keyboard, or the on-screen
 keyboard. Audio begins after the first user interaction, as required by browser
 audio policy.
 
+The browser build also includes **Quesynth Pad**: a 16-cell synth rack with one
+Quesynth engine per active cell, MIDI note routing, root-note translation,
+velocity, gate/one-shot triggers, choke groups, mute/solo, per-cell mix controls,
+MIDI Learn, GM/chromatic maps, and portable `.qkit` files. It reuses the same
+synth editor rather than maintaining sixteen copies of it.
+
 For plugin or standalone use, build the desired target as described below. The
 VST3 editor uses the Microsoft Edge WebView2 runtime. When WebView2 is unavailable,
 the audio engine still loads and the host may display its generic parameter view.

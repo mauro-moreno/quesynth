@@ -39,11 +39,12 @@
   --accent: #cfd6e6;
 
   --gap: 14px;
-  /* Height of the sticky navigation strip. Referenced by the scroll offset and
-   * by the script that decides which section is current, so the three cannot
-   * drift apart. */
-  --nav-h: 37px;
   --radius: 10px;
+  --type-lead: 18px;
+  --type-title: 15px;
+  --type-read: 13px;
+  --type-body: 12px;
+  --type-micro: 11px;
 }
 
 * { box-sizing: border-box; }
@@ -53,7 +54,12 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  /* The platform UI face. Nothing here is downloaded: this UI ships no webfont
+   * and has no network, so naming a hosted family would only have described a
+   * font that never arrives. `system-ui` resolves to Segoe UI, San Francisco,
+   * or the desktop's own UI face, which is what a plugin editor should wear
+   * inside its host anyway. */
+  font-family: system-ui, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   /* A knob drag must not scroll the page underneath it on a touch screen. */
@@ -64,14 +70,7 @@ html {
   /* No scroll snapping. It was tried and taken out: sections vary from four
    * controls to seventeen, so a snap point is as often in the middle of what is
    * being read as at the top of it, and the strip navigates well enough without
-   * the scroll being taken over.
-   *
-   * Land below the sticky navigation rather than underneath it. This is the
-   * *only* place that offset is applied. Setting `scroll-margin-top` on the
-   * sections as well looks equivalent and is not: the two add, and a jump then
-   * lands the section a full bar-height too low, which is enough to leave the
-   * navigation marking the section above the one you asked for. */
-  scroll-padding-top: var(--nav-h);
+   * the scroll being taken over. */
   scroll-behavior: smooth;
 }
 
@@ -331,9 +330,7 @@ main {
 .radio button:hover { color: var(--ink-dim); }
 .radio button[aria-checked="true"] { color: var(--ink); }
 
-/* The lit mark. Dark and ringed when off, silver and softly haloed when on, which
- * is readable from across a room without being the only bright thing in the
- * panel. */
+/* The option mark uses the same silver state as its text, without a glow. */
 .radio .dot {
   flex: 0 0 auto;
   width: 8px;
@@ -347,7 +344,6 @@ main {
 .radio button[aria-checked="true"] .dot {
   background: var(--metal-lit);
   border-color: var(--metal-lit);
-  box-shadow: 0 0 7px rgba(220, 220, 226, 0.4);
 }
 
 .radio button:focus-visible { outline: 1px solid #3a4150; outline-offset: 2px; }
@@ -447,7 +443,7 @@ main {
   border: 1px solid #2a2a31;
   border-radius: 8px;
   padding: 12px 13px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  box-shadow: none;
   display: none;
 }
 
@@ -495,10 +491,15 @@ main {
 
 /* ------------------------------------------------------------------ toggle */
 
+/* 28 tall, not 26. The switch is an ordinary target and the approved ledger puts
+ * the floor at 28px everywhere, so the two pixels it was short of it are added
+ * here rather than only at the phone breakpoint below, which was already over.
+ * The pill's proportions are kept: the radius and the thumb grow with the track,
+ * and the travel is unchanged because the width did not move. */
 .toggle {
   width: 52px;
-  height: 26px;
-  border-radius: 13px;
+  height: 28px;
+  border-radius: 14px;
   border: 1px solid var(--panel-edge);
   background: #131317;
   position: relative;
@@ -513,8 +514,8 @@ main {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: linear-gradient(180deg, var(--metal-lit), var(--metal-dark));
   transition: transform 130ms cubic-bezier(0.3, 0.7, 0.4, 1);
@@ -678,7 +679,7 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   border: 1px solid #2a2a31;
   border-radius: 8px;
   padding: 6px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  box-shadow: none;
   display: none;
 }
 
@@ -952,6 +953,10 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
 @media (max-width: 560px) {
   :root { --gap: 10px; }
   body { padding: 10px 8px 24px; }
+  /* The phone body uses 8px side padding while --gap is 10px. Keep the sticky
+   * strip on that actual edge; using the desktop negative gap made the document
+   * two pixels wider than the viewport and exposed a horizontal scrollbar. */
+  nav { margin: 0 -8px var(--gap); padding-inline: 8px; }
 
   /* No snapping on a phone. Sections are far taller than the screen here, so a
    * snap has nothing useful to land on and only takes the scroll away from the
@@ -1111,7 +1116,12 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   font-variant-numeric: tabular-nums;
 }
 
-.bank-vol input[type="range"] {
+/* The one slider this interface has, wherever it appears: the master volume in
+ * the strip at the foot and the note a pad plays. Written once for both rather
+ * than copied, because a second copy of a control is how two of them end up
+ * looking almost the same. The width is the only thing that differs. */
+.bank-vol input[type="range"],
+.pad-note input[type="range"] {
   appearance: none;
   -webkit-appearance: none;
   width: 84px;
@@ -1120,19 +1130,22 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   cursor: pointer;
 }
 
-.bank-vol input[type="range"]::-webkit-slider-runnable-track {
+.bank-vol input[type="range"]::-webkit-slider-runnable-track,
+.pad-note input[type="range"]::-webkit-slider-runnable-track {
   height: 2px;
   background: var(--panel-edge);
   border-radius: 1px;
 }
 
-.bank-vol input[type="range"]::-moz-range-track {
+.bank-vol input[type="range"]::-moz-range-track,
+.pad-note input[type="range"]::-moz-range-track {
   height: 2px;
   background: var(--panel-edge);
   border-radius: 1px;
 }
 
-.bank-vol input[type="range"]::-webkit-slider-thumb {
+.bank-vol input[type="range"]::-webkit-slider-thumb,
+.pad-note input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
   width: 11px;
@@ -1143,7 +1156,8 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   border: 0;
 }
 
-.bank-vol input[type="range"]::-moz-range-thumb {
+.bank-vol input[type="range"]::-moz-range-thumb,
+.pad-note input[type="range"]::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border-radius: 50%;
@@ -1151,7 +1165,8 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   border: 0;
 }
 
-.bank-vol input[type="range"]:focus-visible { outline: 1px solid var(--ink-faint); }
+.bank-vol input[type="range"]:focus-visible,
+.pad-note input[type="range"]:focus-visible { outline: 1px solid var(--ink-faint); }
 
 /* On a phone the bar is tight; the readout is the first thing to go. */
 @media (max-width: 560px) {
@@ -1190,7 +1205,7 @@ body.modal-open { overflow: hidden; }
   background: var(--panel);
   border: 1px solid var(--panel-edge);
   border-radius: var(--radius);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -1647,4 +1662,465 @@ body.modal-open { overflow: hidden; }
   color: var(--ink-dim);
   font-size: 12px;
   word-break: break-all;
+}
+
+
+/* ---------------------------------------------------------------- the pad --- */
+.pad-body { --rack-accent-soft: color-mix(in srgb, var(--accent) 20%, transparent); }
+.pads { display: grid; gap: 12px; margin-bottom: 18px; }
+.rack-toolbar,
+.pad-inspector,
+.rack-editor-title {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+}
+.rack-toolbar { display: flex; align-items: end; gap: 12px; padding: 12px; }
+.rack-kit-name { flex: 1 1 240px; min-width: 150px; }
+.rack-compact { flex: 0 1 170px; }
+.rack-toolbar label,
+.rack-field,
+.rack-slider { display: grid; gap: 6px; }
+.rack-toolbar label > span,
+.rack-field > span,
+.rack-slider > span,
+.eyebrow {
+  color: var(--ink-faint); font-size: 8px; letter-spacing: .13em; text-transform: uppercase;
+}
+.rack-toolbar input,
+.rack-toolbar select,
+.rack-field input,
+.rack-field select {
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 8px;
+  border: 1px solid var(--panel-edge); border-radius: 5px; background: #0e0e11;
+  color: var(--ink); font: inherit; font-size: 11px;
+}
+.rack-kit-name input { font-size: 14px; font-weight: 650; letter-spacing: .02em; }
+.rack-file-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.rack-workspace { display: grid; grid-template-columns: minmax(360px, 1.45fr) minmax(290px, .85fr); gap: 12px; align-items: stretch; }
+.pad-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; min-width: 0; }
+.pad-cell {
+  position: relative; appearance: none; aspect-ratio: 1 / .78; min-height: 76px;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-end;
+  gap: 3px; padding: 9px; overflow: hidden; background: var(--panel);
+  border: 1px solid var(--panel-edge); border-radius: var(--radius); color: var(--ink-dim);
+  font: inherit; text-align: left; cursor: pointer; touch-action: none; user-select: none;
+  -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: transform 80ms ease, border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+.pad-cell::before { display: none; }
+.pad-cell:hover { border-color: var(--metal-dark); transform: translateY(-1px); color: var(--ink); }
+.pad-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pad-cell.sel { border-color: var(--accent); color: var(--ink); }
+.pad-cell.lit { background: var(--metal); border-color: var(--metal-lit); color: #09090b; transform: translateY(1px) scale(.985); transition: none; }
+.pad-cell.muted { opacity: .42; }
+.pad-cell.conflict .pad-cell-note::after { content: "  layered"; color: #c39a5e; }
+.pad-cell-top { position: absolute; inset: 8px 8px auto; display: flex; justify-content: space-between; align-items: center; }
+.pad-cell-index { color: var(--ink-faint); font-size: 8px; letter-spacing: .16em; }
+.pad-cell-mode { color: var(--ink-faint); font-size: 7px; letter-spacing: .11em; }
+.pad-cell-name { position: relative; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; letter-spacing: .025em; }
+.pad-cell-note { position: relative; color: var(--ink-faint); font-size: 8px; letter-spacing: .1em; }
+.pad-cell.lit .pad-cell-note, .pad-cell.lit .pad-cell-index, .pad-cell.lit .pad-cell-mode { color: #2a2a30; }
+.pad-inspector { display: flex; flex-direction: column; gap: 12px; padding: 14px; min-width: 0; }
+.pad-inspector-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.pad-inspector-head > div { display: grid; gap: 4px; min-width: 0; }
+.pad-inspector-head strong { overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 600; letter-spacing: .04em; text-overflow: ellipsis; white-space: nowrap; }
+.rack-fields { display: grid; gap: 10px; }
+.rack-fields.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.rack-field { position: relative; }
+.rack-field output { position: absolute; right: 7px; bottom: 8px; color: var(--ink-faint); font-size: 8px; pointer-events: none; }
+.rack-field input[type="number"] { padding-right: 66px; }
+.rack-sliders { display: grid; gap: 10px; padding-top: 2px; }
+.rack-slider { grid-template-columns: 58px minmax(70px, 1fr) 58px; align-items: center; }
+.rack-slider input { width: 100%; min-width: 0; }
+.rack-slider output { color: var(--ink-dim); font-size: 9px; text-align: right; }
+.rack-toggles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.rack-toggles button {
+  appearance: none; padding: 7px 5px; border: 1px solid var(--panel-edge); border-radius: 5px;
+  background: transparent; color: var(--ink-faint); font: inherit; font-size: 8px; letter-spacing: .1em; cursor: pointer;
+}
+.rack-toggles button.on { border-color: var(--accent); background: var(--rack-accent-soft); color: var(--ink); }
+.pad-inspector-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.pad-inspector-actions #pad-edit { margin-left: auto; }
+.rack-hint { margin: 0; color: var(--ink-faint); font-size: 9px; line-height: 1.5; text-transform: none; letter-spacing: .02em; }
+.pad-action {
+  flex: 0 0 auto; appearance: none; padding: 6px 9px; border: 1px solid var(--panel-edge);
+  border-radius: 5px; background: none; color: var(--ink-faint); font: inherit;
+  font-size: 8px; letter-spacing: .11em; cursor: pointer; transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.pad-action.primary { border-color: color-mix(in srgb, var(--accent) 65%, var(--panel-edge)); color: var(--ink); }
+.pad-action:hover:not(:disabled), .pad-action.learning { color: var(--ink); border-color: var(--accent); background: var(--rack-accent-soft); }
+.pad-action:disabled { opacity: .38; cursor: default; }
+.rack-editor-title { display: flex; justify-content: space-between; padding: 8px 12px; margin-bottom: var(--gap); color: var(--ink-faint); font-size: 8px; letter-spacing: .13em; text-transform: uppercase; }
+.rack-editor-title strong { color: var(--ink); font-weight: 500; }
+
+@media (max-width: 820px) {
+  .rack-toolbar { flex-wrap: wrap; }
+  .rack-file-actions { width: 100%; margin-left: 0; }
+  .rack-workspace { grid-template-columns: 1fr; }
+  .pad-cell { aspect-ratio: 1 / .82; }
+}
+@media (max-width: 520px) {
+  .pads { gap: 8px; }
+  .rack-toolbar { gap: 8px; padding: 10px; }
+  .rack-kit-name { flex-basis: 100%; }
+  .rack-compact { flex: 1 1 42%; }
+  .rack-file-actions { overflow-x: auto; }
+  .pad-grid { gap: 5px; }
+  .pad-cell { min-height: 68px; padding: 7px; }
+  .pad-cell-top { inset: 6px 6px auto; }
+  .pad-cell-name { font-size: 9px; }
+  .pad-cell-note, .pad-cell-mode { font-size: 7px; }
+  .pad-cell.conflict .pad-cell-note::after { content: " layered"; }
+  .pad-inspector { padding: 12px; }
+  .rack-fields.two { grid-template-columns: 1fr 1fr; }
+}
+
+/* ----------------------------------------------------- shell / viewport refit
+ * Identity and global actions live in the fixed shell header. The navigator is
+ * owned by the editor it moves through. Both pages use the same viewport grid;
+ * pad.html swaps the inline editor for a drawer over its rack. */
+:root {
+  --head-h: 40px;
+  --bank-h: 46px;
+  --rail-w: 150px;
+}
+
+[hidden] { display: none !important; }
+
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body,
+body.pad-body {
+  padding: 0;
+  display: grid;
+  grid-template-rows: var(--head-h) minmax(0, 1fr);
+}
+
+#app-header {
+  position: relative;
+  z-index: 30;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  background: rgba(8, 8, 10, 0.96);
+  border-bottom: 1px solid var(--panel-edge);
+}
+#app-header .brand { padding: 0; }
+.head-actions {
+  min-width: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+#app-header .bank-write { margin-left: 0; align-self: center; }
+
+#surface {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  /* The keyboard is a fixed foot that shows and hides instantly (display, not a
+   * slide), and `--keys-h` is added to the padding so the surface never runs
+   * under it. The padding is not animated: transitioning padding thrashes layout
+   * every frame, and with the keyboard itself popping in there is nothing for a
+   * smoothed pad to stay in step with. Both move at once instead. */
+  padding: 10px 10px calc(10px + var(--bank-h) + var(--keys-h, 0px));
+}
+
+.rack-editor {
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+}
+.rack-editor[data-mode="inline"] { height: 100%; }
+.rack-editor[data-mode="drawer"] {
+  position: absolute;
+  inset: 0 0 calc(var(--bank-h) + var(--keys-h, 0px)) 0;
+  z-index: 20;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-top: 1px solid var(--panel-edge);
+}
+.rack-editor-title {
+  margin: 0;
+  border-radius: 0;
+  align-items: center;
+}
+.rack-editor-title strong { margin-left: auto; }
+.rack-editor-title #rack-editor-close { margin-left: 8px; }
+.editor-body {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+}
+
+/* The editor navigator is independently scrollable. Its last entry therefore
+ * remains reachable even when the keyboard reduces the editor's height. */
+#navigator {
+  position: relative;
+  inset: auto;
+  z-index: 1;
+  min-height: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 6px;
+  display: block;
+  overflow: hidden;
+  background: var(--panel);
+  border-right: 1px solid var(--panel-edge);
+  border-bottom: 0;
+  backdrop-filter: none;
+}
+#navigator .nav-inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+#navigator .nav-inner button {
+  width: 100%;
+  min-height: 28px;
+  padding: 6px 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  text-align: left;
+}
+#navigator .nav-inner button[aria-current="true"] {
+  border-left-color: var(--metal);
+  border-bottom-color: transparent;
+}
+
+#panels {
+  min-height: 0;
+  min-width: 0;
+  padding: 0 0 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  overflow: auto;
+  overscroll-behavior: contain;
+  /* The sole scroll offset in the file, and it is zero on purpose: the
+   * navigator sits beside this scroller rather than over it, so nothing covers
+   * the top of a section. A `scroll-margin-top` on the sections would be a
+   * second source, the two would add, and every jump would land too low. */
+  scroll-padding-top: 0;
+}
+
+.bank {
+  height: var(--bank-h);
+  min-height: var(--bank-h);
+}
+
+/* The pad surface always consumes the space between header and bank/keyboard.
+ * Cells have no aspect ratio: four equal rows divide whatever height remains. */
+.pad-body .pads {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+.pad-body .rack-toolbar {
+  padding: 8px 10px;
+  gap: 10px;
+  background: var(--panel);
+}
+.pad-body .rack-workspace {
+  min-height: 0;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, .8fr);
+  gap: 8px;
+}
+.pad-body .pad-grid {
+  min-height: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.pad-body .pad-cell {
+  min-height: 0;
+  min-width: 0;
+  aspect-ratio: auto;
+}
+.pad-body .pad-inspector {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.rack-views { display: none; gap: 5px; }
+.rack-views .pad-action { flex: 1 1 0; }
+
+@media (max-width: 820px) {
+  .pad-body .pads { grid-template-rows: auto auto minmax(0, 1fr); }
+  .rack-views { display: flex; }
+  .pad-body .rack-workspace { grid-template-columns: minmax(0, 1fr); }
+  .pad-body .pads[data-view="grid"] .pad-inspector { display: none; }
+  .pad-body .pads[data-view="inspector"] .pad-grid { display: none; }
+
+  .editor-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  #navigator {
+    padding: 5px 6px;
+    border-right: 0;
+    border-bottom: 1px solid var(--panel-edge);
+  }
+  #navigator .nav-inner {
+    height: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  #navigator .nav-inner::-webkit-scrollbar { display: none; }
+  #navigator .nav-inner button {
+    width: auto;
+    flex: 0 0 auto;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+  }
+  #navigator .nav-inner button[aria-current="true"] {
+    border-left-color: transparent;
+    border-bottom-color: var(--metal);
+  }
+  #panels { padding-left: 0; padding-top: 8px; }
+}
+
+@media (max-width: 560px) {
+  body, body.pad-body { padding: 0; }
+  #surface { padding: 7px 7px calc(7px + var(--bank-h) + var(--keys-h, 0px)); }
+  #app-header { padding-inline: 8px; }
+  #app-header .brand { font-size: 11px; letter-spacing: .14em; }
+  .pad-body .rack-toolbar { padding: 7px; gap: 7px; }
+  .pad-body .rack-kit-name { flex-basis: 100%; }
+  .pad-body .rack-compact { flex: 1 1 40%; }
+  .pad-body .rack-file-actions { width: 100%; margin-left: 0; }
+  .pad-body .pad-cell { min-height: 0; aspect-ratio: auto; }
+}
+
+/* ------------------------------------------------ visual/accessibility refit */
+/* Five approved roles. The explicit selector ledger prevents inherited legacy
+ * 7–10px rules from slipping below the 11px floor.
+ *
+ * The micro role is for furniture only: labels, readouts, and button captions
+ * that are scanned, not read. `.rack-hint` is the one sentence of prose down
+ * here, so it takes the body role instead; a line you actually read does not
+ * belong at label size. */
+html, body { font-size: var(--type-body); }
+.rack-hint { font-size: var(--type-body); }
+.brand, .rack-kit-name input { font-size: var(--type-lead); }
+.panel > h2, .pad-inspector-head strong { font-size: var(--type-title); }
+.control .value, .stepper .num, .pad-cell-name { font-size: var(--type-read); }
+.nav-inner button, .group-label, .control .label, .control .value .unit,
+.radio button, .control .info, .popover-meta, .options, .bank-name,
+.bank-write, .keys-toggle, .oct-label, .wheel-label, .bank-vol label,
+.browser-save-label, .browser-group-label, .browser-source-count,
+.browser-bank-count, .browser-mini, .rack-toolbar label > span, .rack-field > span,
+.rack-slider > span, .pad-cell-index, .pad-cell-mode, .pad-cell-note,
+.rack-field output, .rack-slider output, .rack-toggles button,
+.pad-action, .rack-editor-title { font-size: var(--type-micro); }
+.control .label, .group-label, .rack-toolbar label > span,
+.rack-field > span, .rack-slider > span { white-space: nowrap; }
+.control .value .unit, .bank-name, .wheel-label, .pad-cell-index,
+.pad-cell-mode, .pad-cell-note, .rack-field output, .rack-hint { color: var(--ink-dim); }
+
+/* Inline SVG is presentation only. State and focus remain on the button. */
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+}
+.icon-stroke { fill: none; stroke: currentColor; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+[data-icon] { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.radio .dot.has-glyph { width: 28px; height: 20px; border: 0; background: none; }
+.radio .dot.has-glyph .option-icon { width: 28px; height: 20px; }
+.radio button[aria-checked="true"] .dot { background: var(--metal-lit); border-color: var(--metal-lit); box-shadow: none; }
+.radio button[aria-checked="true"] .dot.has-glyph { background: none; color: var(--metal-lit); }
+
+/* The approved finger ledger: ordinary targets 28px, primary actions and
+ * steppers 34px. Padding is reduced where type grew so rows do not grow twice. */
+.radio button { min-height: 28px; padding-block: 2px; }
+.control .info { top: -7px; right: -7px; width: 28px; height: 28px; }
+.pad-action, .rack-toggles button, .keys-toggle, .bank-write { min-height: 28px; padding-block: 3px; }
+.pad-action.primary, .bank-step, .oct, .stepper button { min-height: 34px; }
+/* The stepper's two are square: the ledger's 34px applies across as well as
+ * down, or a 24px-wide mark misses the floor in the one dimension nothing
+ * measured. Centred as a box, because the mark inside them is now an SVG. */
+.stepper button {
+  min-width: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.bank-step { font-size: var(--type-micro); padding-inline: 8px; }
+.oct { width: auto; min-width: 52px; height: 34px; font-size: var(--type-micro); }
+input[type="range"] { min-height: 28px; }
+.modal-close { min-height: 28px; font-size: var(--type-micro); letter-spacing: .1em; }
+.modal-action { min-height: 34px; }
+
+button:focus-visible, input:focus-visible, select:focus-visible,
+.knob:focus-visible, .options:focus, .browser-save-name:focus,
+.browser-search:focus, .options-target:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Flat selection: one border and colour, never a glow, shadow, or ornamental
+ * radial layer. The lit pad uses one solid metal tone. */
+.popover, .modal, .bank-list, .midi-list { box-shadow: none; }
+.pad-cell::before { display: none; }
+.pad-cell.sel { box-shadow: none; border-color: var(--accent); }
+.pad-cell.lit { background: var(--metal); }
+.pad-cell.conflict .pad-cell-note::after { content: "  layered"; color: var(--warn, #c39a5e); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* On a phone the single transport moves to the top. Its identity is therefore
+ * present once, above the instrument; the keyboard alone owns the bottom edge. */
+@media (max-width: 560px) {
+  :root { --head-h: 86px; }
+  body, body.pad-body { grid-template-rows: var(--head-h) minmax(0, 1fr); }
+  #app-header .brand { font-size: var(--type-micro); }
+  #app-header [data-icon] { gap: 3px; padding-inline: 4px; }
+  #app-header .icon { width: 13px; height: 13px; flex-basis: 13px; }
+  #app-header { height: 40px; align-self: start; }
+  .head-actions { overflow-x: auto; scrollbar-width: none; }
+  .head-actions::-webkit-scrollbar { display: none; }
+  .bank {
+    top: 40px;
+    bottom: auto;
+    z-index: 29;
+    border-top: 0;
+    border-bottom: 1px solid var(--panel-edge);
+    padding-bottom: 0;
+  }
+  body:not(.keys-open) .bank { padding-bottom: 0; }
+  #surface { padding-bottom: calc(7px + var(--keys-h, 0px)); }
+  .rack-editor[data-mode="drawer"] { bottom: var(--keys-h, 0px); }
+  .bank-read { justify-content: flex-start; gap: 7px; padding-inline: 4px; }
+  .bank-name { flex-basis: auto; }
+  .bank-step { padding-inline: 5px; }
+  .bank-vol input[type="range"] { width: 52px; }
+  .keyboard { bottom: 0; }
 }

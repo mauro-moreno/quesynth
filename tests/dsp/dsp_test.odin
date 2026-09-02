@@ -2256,6 +2256,33 @@ test_engine_frees_voices_after_release :: proc(t: ^testing.T) {
 	testing.expect_value(t, engine.engine_active_voice_count(&e), 0)
 }
 
+// A rack one-shot must finish without a matching Note Off. Leaving it gated at
+// sustain zero looks silent but still owns a voice forever, eventually starving
+// the pool after enough drum hits.
+@(test)
+test_engine_one_shot_releases_itself :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[25] = 0 // amp attack
+	p.values[26] = 0 // amp decay
+	p.values[27] = 0 // amp sustain
+	p.values[28] = 0 // amp release
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+
+	left := make([]f32, 128)
+	right := make([]f32, 128)
+	defer delete(left)
+	defer delete(right)
+
+	engine.engine_trigger(&e, 60, 1.0)
+	testing.expect_value(t, engine.engine_active_voice_count(&e), 1)
+	for _ in 0 ..< 32 {
+		engine.engine_process(&e, left, right)
+	}
+	testing.expect_value(t, engine.engine_active_voice_count(&e), 0)
+}
+
 // More notes than voices must steal rather than overflow, and the pool must
 // never exceed the size parameter 94 asked for.
 @(test)

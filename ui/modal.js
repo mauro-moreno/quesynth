@@ -75,7 +75,8 @@
     x.type = "button";
     x.className = "modal-close";
     x.setAttribute("aria-label", "Close");
-    x.textContent = "×";
+    if (window.QuesynthIcon) x.appendChild(window.QuesynthIcon("close"));
+    x.appendChild(document.createTextNode("CLOSE"));
     x.addEventListener("click", close);
     head.appendChild(h);
     head.appendChild(x);

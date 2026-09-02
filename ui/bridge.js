@@ -124,8 +124,10 @@
 
     requestState: function () { return this.send({ type: "sync" }); },
 
-    note: function (on, note, velocity) {
-      return this.send({ type: "note", on: on, note: note, velocity: velocity || 100 });
+    note: function (on, note, velocity, channel) {
+      var message = { type: "note", on: on, note: note, velocity: velocity || 100 };
+      if (typeof channel === "number") message.channel = channel;
+      return this.send(message);
     },
 
     // The two wheels, as normalised floats rather than as MIDI numbers: pitch on
