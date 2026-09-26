@@ -668,7 +668,7 @@ plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 	case clap.EXT_STATE:
 		return &STATE
 	case clap.EXT_GUI:
-		return &GUI
+		return gui_extension()
 	case clap.EXT_PRESET_LOAD, clap.EXT_PRESET_LOAD_COMPAT:
 		return &PRESET_LOAD
 	}

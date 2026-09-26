@@ -338,6 +338,16 @@ gui_volume :: proc(user: rawptr, amount: f32) {
 	s.volume = amount
 }
 
+// The GUI extension, or nothing on a platform without a web-view editor.
+//
+// plugin.odin answers EXT_GUI through this rather than naming GUI directly, so
+// the shared core compiles where GUI does not exist. gui_other.odin is the other
+// half. Returning the extension here is what makes a host offer the panel;
+// returning nil there is what makes it draw its own generic controls.
+gui_extension :: proc "c" () -> rawptr {
+	return &GUI
+}
+
 GUI := clap.Plugin_Gui {
 	is_api_supported  = gui_is_api_supported,
 	get_preferred_api = gui_get_preferred_api,
