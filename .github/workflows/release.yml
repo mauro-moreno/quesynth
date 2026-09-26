@@ -2,8 +2,9 @@
 #
 # One job per format, because they do not share a runner or a build command and
 # a matrix over things that differ in every step is a matrix in name only.
-# Today that is VST3 and CLAP, both on Windows. AudioUnit needs two things that
-# do not exist yet: a macOS runner, and hosts/au.
+# Today that is VST3 and CLAP on Windows, plus the standalone instrument on
+# Windows and Linux. AudioUnit needs two things that do not exist yet: a macOS
+# runner, and hosts/au.
 #
 # The two jobs look alike and are not the same. A VST3 is one self-contained
 # bundle; a CLAP on Windows is a bare file that has to travel with a folder
@@ -227,3 +228,147 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" "$env:ASSET" --clobber
+
+  standalone-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      # The suites the standalone actually links: the engine and the patch layer.
+      # It has no plugin wrapper and no panel, so the format-specific suites are
+      # not what would break it.
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      - name: Build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/stage | Out-Null
+          odin build hosts/standalone -o:speed -out:build/stage/quesynth.exe
+
+      # It renders before it ships. --selftest opens no device, so the build
+      # server can prove the engine produces finite samples without any audio
+      # hardware -- the same gate the other formats get from their host checks.
+      - name: It renders
+        shell: pwsh
+        run: |
+          ./build/stage/quesynth.exe --selftest tools/s1probe/fixtures/unison-four.sy1 build/stage/selftest.wav
+          if ($LASTEXITCODE -ne 0) { throw "the render self-test failed" }
+          Remove-Item build/stage/selftest.wav
+
+      - name: Write the install note
+        shell: pwsh
+        run: |
+          @"
+          Quesynth -- standalone instrument for Windows (64-bit)
+
+          This is a console program, not a plugin. Open a terminal in this folder
+          and run
+
+              quesynth.exe                 play live, output through WASAPI
+              quesynth.exe patch.sy1       load a Synth1 .sy1 patch and play it
+
+          It opens every MIDI input it finds, so a connected controller plays it;
+          with none attached it still runs, there is just nothing to play it with.
+          Press Ctrl-C to stop.
+
+          There is no panel: the standalone is the audio engine and MIDI, and the
+          interface is a plugin and browser feature.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          "@ | Out-File -FilePath build/stage/INSTALL.txt -Encoding utf8
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $asset = "Quesynth-$version-standalone-win64.zip"
+          Compress-Archive -Path build/stage/quesynth.exe, build/stage/INSTALL.txt -DestinationPath $asset
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-win64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$env:ASSET" --clobber
+
+  standalone-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      - name: Build
+        run: |
+          mkdir -p build/stage
+          odin build hosts/standalone -o:speed -out:build/stage/quesynth
+
+      # As on Windows, it renders before it ships. libasound is loaded at run
+      # time and --selftest never opens a device, so this needs neither the -dev
+      # package nor any sound server on the runner.
+      - name: It renders
+        run: ./build/stage/quesynth --selftest tools/s1probe/fixtures/unison-four.sy1 build/stage/selftest.wav
+
+      - name: Write the install note
+        run: |
+          cat > build/stage/INSTALL.txt <<'EOF'
+          Quesynth -- standalone instrument for Linux (64-bit)
+
+          This is a terminal program, not a plugin. Make it executable and run it:
+
+              chmod +x quesynth
+              ./quesynth                 play live, output through ALSA
+              ./quesynth patch.sy1       load a Synth1 .sy1 patch and play it
+
+          Audio goes through ALSA (libasound.so.2), which ships with essentially
+          every Linux desktop and also reaches a PipeWire or PulseAudio server, so
+          the default device is whatever you already hear sound through. It opens
+          every hardware MIDI input it finds; press Ctrl-C to stop.
+
+          There is no panel: the standalone is the audio engine and MIDI, and the
+          interface is a plugin and browser feature.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          EOF
+
+      - name: Zip
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          asset="Quesynth-$version-standalone-linux64.zip"
+          zip -j "$asset" build/stage/quesynth build/stage/INSTALL.txt
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-linux64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber

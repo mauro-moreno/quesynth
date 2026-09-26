@@ -7,9 +7,14 @@
 # push and every pull request, so a break is attached to the commit that caused
 # it.
 #
-# Windows, because that is what the plugins are. The engine and the patch layer
-# are portable and their tests would pass anywhere; the hosts are Win32, COM and
-# WebView2, and building them is a large part of what is worth checking.
+# Two runners. Windows, because that is what the plugins are: the engine and the
+# patch layer are portable and their tests would pass anywhere, but the plugin
+# hosts are Win32, COM and WebView2, and building them is a large part of what is
+# worth checking. Linux, because the standalone host now has an ALSA backend, and
+# a change under src/ or hosts/standalone that breaks the Linux build is invisible
+# from a Windows-only CI -- which is exactly how it broke silently once, the whole
+# hosts/panel package being #+build windows while the plugin cores used it
+# unconditionally.
 name: ci
 
 on:
@@ -117,3 +122,40 @@ jobs:
           odin build tools/vst3host -out:build/vst3host.exe
           ./build/vst3host.exe "build/ci-stage/Quesynth.vst3/Contents/x86_64-win/Quesynth.vst3"
           if ($LASTEXITCODE -ne 0) { throw "the host check failed" }
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same pin as every other workflow; see the note in pages.yml.
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      # Odin will not create the directory it writes into; the Windows job above
+      # carries the same line for the same reason.
+      - name: Somewhere to build into
+        run: mkdir -p build
+
+      # Only the two portable suites run here. tests/clap, tests/panel and
+      # tests/vst3 link the plugin wrappers, and those pull in hosts/panel, which
+      # is a WebView2 editor and builds on Windows alone -- so on Linux they would
+      # fail to compile for a reason that has nothing to do with this runner's job.
+      # The engine and the patch layer are the portable core, and they are what a
+      # Linux break would show up in.
+      - name: The portable suites
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      # The point of this runner. The standalone builds against the ALSA backend
+      # in hosts/standalone (libasound is loaded at run time, so nothing here
+      # needs the -dev package), and then renders a patch offline. --selftest
+      # opens no device, so it is a valid check on a machine with no audio: it
+      # proves the whole host links and the engine produces finite samples.
+      - name: The standalone host builds and renders
+        run: |
+          odin build hosts/standalone -o:speed -out:build/quesynth
+          ./build/quesynth --selftest tools/s1probe/fixtures/unison-four.sy1 build/linux-selftest.wav
