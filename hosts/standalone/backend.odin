@@ -10,7 +10,10 @@ package standalone
 //   audio_wasapi.odin      Windows, WASAPI shared-mode event-driven render
 //   midi_winmm.odin        Windows, multimedia API MIDI input
 //   platform_windows.odin  Windows, the constructors and the Ctrl-C handler
-//   platform_other.odin    every other target: honest "not implemented" stubs
+//   audio_alsa.odin        Linux, ALSA PCM render on a dedicated thread
+//   midi_alsa.odin         Linux, ALSA raw-MIDI input
+//   platform_linux.odin    Linux, the constructors and the signal handler
+//   platform_other.odin    every remaining target: honest "not implemented" stubs
 //
 // An iOS shell adds audio_audiounit.odin and midi_coremidi.odin beside those
 // and implements the same two structs; nothing in live.odin has to change. That

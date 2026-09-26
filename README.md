@@ -5,8 +5,8 @@
 Quesynth is a polyphonic virtual-analogue synthesizer written in
 [Odin](https://odin-lang.org). It recreates the sound and parameter model of
 [Synth1](https://daichilab.sakura.ne.jp/) through direct measurement, supports
-Synth1 `.sy1` patches, and runs as VST3, CLAP, a Windows standalone instrument,
-and WebAssembly.
+Synth1 `.sy1` patches, and runs as VST3, CLAP, a standalone instrument on Windows
+and Linux, and WebAssembly.
 
 **[Open the browser instrument](https://mauro-moreno.github.io/quesynth/)**
 
@@ -50,7 +50,7 @@ the audio engine still loads and the host may display its generic parameter view
 | WebAssembly | Browser instrument and live demonstration | Modern browsers |
 | VST3 | DAW instrument with embedded Quesynth interface | Windows |
 | CLAP | DAW instrument with WebView2 editor | Windows CLAP hosts |
-| Standalone | WASAPI audio and WinMM MIDI instrument | Windows |
+| Standalone | WASAPI/WinMM on Windows, ALSA on Linux | Windows, Linux |
 
 ## Signal architecture
 
@@ -95,6 +95,16 @@ odin test tests/dsp
 odin build hosts/standalone -o:speed -out:build/quesynth.exe
 pwsh tools/build-clap.ps1 -Output build/clap-stage
 pwsh tools/install-vst3.ps1 -Destination "C:\Program Files\Common Files\VST3"
+```
+
+On Linux the standalone target builds the same way and plays through ALSA
+(`libasound.so.2`, loaded at run time), which also reaches a PipeWire server:
+
+```sh
+odin build hosts/standalone -o:speed -out:build/quesynth
+./build/quesynth                 # play live through ALSA
+./build/quesynth patch.sy1       # play a patch
+./build/quesynth --selftest patch.sy1 out.wav   # render offline, open no device
 ```
 
 Build and serve the browser target with:

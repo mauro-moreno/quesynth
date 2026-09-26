@@ -1,4 +1,5 @@
 #+build !windows
+#+build !linux
 package standalone
 
 import "core:time"
