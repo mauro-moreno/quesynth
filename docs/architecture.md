@@ -121,10 +121,11 @@ src/vst3/         C ABI bindings: VST3
 src/audiounit/    C ABI bindings: Audio Unit (AUv2) + CoreFoundation, for the AU plugin
 src/webview2/     C ABI bindings: Edge WebView2, the Windows plugin editor
 src/webkitgtk/    C ABI bindings: WebKitGTK (GTK 3), the Linux plugin editor
+src/webkit/       Obj-C bindings: AppKit + WebKit (WKWebView), the macOS plugin editor
 ui/               layer 2 shared: the panel, one HTML interface for every host
 hosts/clap/       layer 2: CLAP plugin (Windows + Linux; panel via WebView2/WebKitGTK)
 hosts/vst3/       layer 2: VST3 plugin (Windows + Linux; panel via WebView2/WebKitGTK)
-hosts/au/         layer 2: Audio Unit plugin (macOS; no editor yet)
+hosts/au/         layer 2: Audio Unit plugin (macOS; panel via WKWebView Cocoa view)
 hosts/standalone/ layer 2: desktop shell, WASAPI/winmm on Windows, ALSA on Linux
 hosts/wasm/       layer 2: the browser, engine compiled to WebAssembly
 tools/s1probe     reference VST2 probe (development only)
