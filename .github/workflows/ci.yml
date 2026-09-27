@@ -205,13 +205,28 @@ jobs:
           odin test tests/patch
 
       # The point of this runner. The Audio Unit is macOS-only -- it cannot be
-      # cross-linked from Linux or Windows -- so this is where hosts/au is built
-      # at all. It is a pure C-ABI music device the host calls into, so it links
-      # against no framework and this is a self-contained dylib. Building is the
-      # check here; auval and DAW validation need the .component bundle and
-      # Info.plist, which are a later increment.
-      - name: The Audio Unit builds
-        run: odin build hosts/au -build-mode:dll -out:build/Quesynth-au.dylib
+      # cross-linked from Linux or Windows -- so this is where hosts/au is built at
+      # all. tools/build-au.sh assembles the .component bundle (the dylib plus the
+      # Info.plist that registers the AudioComponent and names the factory), and
+      # auval then instantiates it, renders through it and checks its properties
+      # and parameters. That is a real functional gate, not just a link: it is the
+      # first thing to actually exercise the AU, so it is where an ABI mistake in
+      # the hand-written bindings shows up.
+      - name: The Audio Unit builds and validates (auval)
+        run: |
+          bash tools/build-au.sh build/au-stage
+          dest="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$dest"
+          rm -rf "$dest/Quesynth.component"
+          cp -R build/au-stage/Quesynth.component "$dest/"
+          # An unsigned component the same machine built loads for auval once it
+          # carries an ad-hoc signature; without it recent macOS refuses to load it.
+          codesign --force --sign - "$dest/Quesynth.component"
+          # Make the registrar rescan, then confirm it is found before validating.
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          auval -a | grep -i quesynth || { echo "the Audio Unit did not register"; exit 1; }
+          auval -v aumu Qsy1 QSYT
 
       # The other plugin hosts build headless on macOS too -- the panel is Windows
       # and Linux only, so a host draws its generic view here -- which guards their
