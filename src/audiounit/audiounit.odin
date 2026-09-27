@@ -6,10 +6,11 @@ package audiounit
 // A modern AUv2 plugin is a plain C interface the host calls into: a factory
 // function named in the bundle's Info.plist returns an
 // AudioComponentPlugInInterface, whose Lookup hands the host a function pointer
-// for each selector it asks for. Nothing here calls back into AudioToolbox --
-// the host drives everything -- so, like src/vst3 and src/clap, this binds the
-// structures and constants from their documented layouts rather than importing a
-// framework, and the plugin links against nothing.
+// for each selector it asks for. Like src/vst3 and src/clap, this binds the
+// structures and constants from their documented layouts rather than importing
+// an SDK header. The host drives nearly everything; the few calls the unit makes
+// back are CoreFoundation's (corefoundation.odin) and, for the editor, two of
+// AudioToolbox's (audiotoolbox.odin), both frameworks every AU host has loaded.
 //
 // The layouts are from CoreAudioTypes.h and AudioUnitProperties.h. Where a
 // constant's exact value could not be confirmed without the SDK it is marked so;
@@ -122,6 +123,16 @@ PROP_SET_RENDER_CALLBACK :: u32(23)
 PROP_IN_PLACE_PROCESSING :: u32(29)
 PROP_SHOULD_ALLOCATE_BUFFER :: u32(51)
 PROP_PRESENT_PRESET :: u32(36)
+PROP_COCOA_UI :: u32(31)
+
+// AudioUnitCocoaViewInfo: where the view factory class lives and its name. The
+// host sizes the class array as (dataSize - sizeof(CFURLRef)) / sizeof(CFStringRef),
+// so one name makes it 16 bytes. Both references are +1; the host releases them.
+Audio_Unit_Cocoa_View_Info :: struct {
+	bundle_location: CF_URL_Ref,
+	class_names:     [1]CF_String_Ref,
+}
+#assert(size_of(Audio_Unit_Cocoa_View_Info) == 16)
 
 // -- audio formats and buffers (CoreAudioTypes.h) ----------------------------
 

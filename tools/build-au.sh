@@ -11,11 +11,16 @@
 #     Contents/
 #       MacOS/
 #         Quesynth        the dylib, exporting QuesynthAUFactory
+#       Resources/
+#         ui/             the panel the Cocoa view shows
 #       Info.plist        declares the AudioComponent + factoryFunction
 #       PkgInfo
 #
-# There is no framework to carry and, for now, no panel: the editor is not wired
-# into the AU yet, so this is the engine, its parameters and MIDI.
+# The editor is the same panel the VST3 bundle carries, in a WKWebView. The unit
+# finds it from its own binary as ../Resources/ui, which is the VST3 layout, so
+# hosts/panel's search needs no AU case. QUESYNTH_AU_EDITOR=false builds the
+# unit without a view and without the panel, for when a host or validator
+# cannot live with one.
 #
 # Usage: tools/build-au.sh [output-dir]   (default build/au-stage)
 set -euo pipefail
@@ -24,9 +29,18 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 name="Quesynth"
 output="${1:-build/au-stage}"
 case "$output" in /*) stage="$output" ;; *) stage="$root/$output" ;; esac
+editor="${QUESYNTH_AU_EDITOR:-true}"
+case "$editor" in
+	true | false) ;;
+	*)
+		echo "QUESYNTH_AU_EDITOR must be true or false: $editor" >&2
+		exit 1
+		;;
+esac
 
 bundle="$stage/$name.component"
 macos_dir="$bundle/Contents"/MacOS
+ui_dir="$bundle/Contents/Resources/ui"
 
 # Emptied, not added to: a stale binary must not be left behind a rebuild.
 rm -rf "$bundle"
@@ -37,8 +51,55 @@ echo "building the plugin..."
 # bundle's executable is named by CFBundleExecutable with no extension. Build to
 # the .dylib name odin will honour, then move it to the bare name the plist points
 # at.
-odin build "$root/hosts/au" -build-mode:dll -o:speed -out:"$macos_dir/$name.dylib"
+odin build "$root/hosts/au" -build-mode:dll -o:speed "-define:QUESYNTH_AU_EDITOR=$editor" -out:"$macos_dir/$name.dylib"
 mv -f "$macos_dir/$name.dylib" "$macos_dir/$name"
+
+if [[ "$editor" == true ]]; then
+	# WebKit has to be a load command of the binary, not merely a framework
+	# something else might have loaded: Odin resolves WKWebView once, when the
+	# image starts, and a nil it finds then is nil for good -- the unit would
+	# offer no view in every host. otool ships with the Xcode command-line tools.
+	if command -v otool >/dev/null 2>&1; then
+		if ! otool -L "$macos_dir/$name" | grep -q 'WebKit.framework'; then
+			echo "the AU does not link WebKit; its editor could never open" >&2
+			exit 1
+		fi
+		echo "  links WebKit.framework"
+	fi
+
+	# The panel: the same files the VST3 bundle carries, and deliberately not
+	# host.js or store.js -- in a plugin the host owns the audio and owns
+	# persistence. The rationale is written out in build-vst3.ps1.
+	mkdir -p "$ui_dir"
+	panel=(
+		index.html style.css
+		app.js bridge.js layout.js midi.js params.js
+		patchfile.js sy1.js modal.js browser.js
+		midimap.js options.js
+	)
+	for file in "${panel[@]}"; do
+		cp "$root/ui/$file" "$ui_dir/"
+	done
+
+	# The patch bank, generated from patches/quesynth/factory.json as the VST3
+	# build does, so the bundle can never carry a stale ui/bank.js.
+	factory="$root/patches/quesynth/factory.json"
+	if [[ -f "$factory" ]]; then
+		mkdir -p "$root/build"
+		odin run "$root/tools/uibank" -out:"$root/build/uibank" -- "$factory" >/dev/null
+	fi
+	if [[ -f "$root/ui/bank.js" ]]; then
+		cp "$root/ui/bank.js" "$ui_dir/"
+	else
+		echo "  no patch bank; the panel will be empty"
+	fi
+
+	if [[ ! -f "$ui_dir/index.html" ]]; then
+		echo "the panel did not reach $ui_dir" >&2
+		exit 1
+	fi
+	echo "  panel in Contents/Resources/ui ($(ls "$ui_dir" | wc -l | tr -d ' ') files, index.html present)"
+fi
 
 # The AudioComponent registration. The four-character codes match the ones in
 # hosts/au/plugin.odin; auval searches by exactly these. `factoryFunction` is the

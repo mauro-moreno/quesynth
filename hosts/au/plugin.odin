@@ -1,11 +1,13 @@
 #+build darwin
 package synth_au
 
+import "base:intrinsics"
 import "base:runtime"
 
 import au "../../src/audiounit"
 import "../../src/engine"
 import "../../src/patch"
+import "../panel"
 
 // Layer 2: the Audio Unit adapter, the macOS counterpart of hosts/clap and
 // hosts/vst3. It is a shell around src/engine and owns nothing that makes sound:
@@ -13,15 +15,16 @@ import "../../src/patch"
 // buffer conventions into the engine's, and nothing here allocates or locks on
 // the render path once the unit is initialised.
 //
-// This is a foundation: it builds and loads as a music-device AU with parameters,
-// MIDI input and stereo rendering. State save/restore (ClassInfo), factory
-// presets and the WebKitGTK editor are not wired in yet, and it has not been run
-// through auval or a DAW -- there is no macOS on the machine it was written on.
-// What it has is a macOS CI build; the rest is the next increment.
+// It builds and loads as a music-device AU with parameters, MIDI input, stereo
+// rendering and ClassInfo state, and CI puts it through auval and pluginval on
+// macOS. Factory presets are not wired in yet.
 //
-// On macOS the editor is a WKWebView, not WebKitGTK, and its seam is
-// hosts/panel/panel_macos.odin. Nothing here uses it yet: the unit does not
-// answer kAudioUnitProperty_CocoaUI, so the host draws its generic view.
+// The editor is the same panel the VST3 and CLAP plugins show, in a WKWebView:
+// the unit answers kAudioUnitProperty_CocoaUI with a view factory created at
+// run time, and editor.odin is that factory and the panel.Host over this
+// instance. A process where WebKit or the bundled panel cannot be found gets no
+// CocoaUI answer, and the host draws its generic view. On a Mac the editor is
+// exercised only by CI's auval and pluginval steps, not yet by hand in a DAW.
 
 MANUFACTURER :: u32(0x51535954) // 'QSYT'
 SUBTYPE :: u32(0x51737931) // 'Qsy1'
@@ -40,6 +43,8 @@ AU :: struct {
 	sample_rate:  f64,
 	max_frames:   int,
 	initialized:  bool,
+	// Written by the host's thread or the editor's, then released; the render
+	// takes it with an acquire exchange. See mark_params_dirty.
 	params_dirty: bool,
 
 	// Buffers the unit renders into when the host asks it to supply its own --
@@ -52,6 +57,23 @@ AU :: struct {
 	// Property-change listeners the host registers. A small fixed set: a host
 	// watches a handful of properties, not dozens.
 	listeners:     [32]Listener,
+
+	// The editor (editor.odin). `editor` and `slots` are main-thread only.
+	editor:        ^Au_Editor,
+	// Notes, bend and controllers from the panel: main thread in, render out.
+	ui_queue:      panel.Ui_Queue,
+	// Master volume, outside the patch as in the other plugins. Unity, which
+	// renders bit-for-bit as before, until a panel sends one; the page sends
+	// its stored setting as it loads, as it does in the VST3 and CLAP editors.
+	volume:        f32,
+	volume_smooth: engine.Smoother,
+	// One bit per parameter the host moved, and whether the whole state was
+	// replaced: set on any thread, drained by the editor's timer.
+	panel_dirty:   [PARAM_WORDS]u64,
+	panel_reload:  bool,
+	// The bank the panel shows, read when the editor first opens.
+	slots:         patch.Slots,
+	slots_loaded:  bool,
 }
 
 Listener :: struct {
@@ -155,6 +177,7 @@ au_close :: proc "c" (self: rawptr) -> au.OSStatus {
 		return au.NO_ERR
 	}
 	context = runtime.default_context()
+	editor_detach(s)
 	if s.initialized {
 		engine.engine_destroy(&s.eng)
 	}
@@ -185,7 +208,8 @@ au_initialize :: proc "c" (self: rawptr) -> au.OSStatus {
 	delete(s.scratch_right)
 	s.scratch_left = make([]f32, s.max_frames)
 	s.scratch_right = make([]f32, s.max_frames)
-	s.params_dirty = false
+	engine.smoother_init(&s.volume_smooth, s.volume, 0.01, f32(s.sample_rate))
+	intrinsics.atomic_store_explicit(&s.params_dirty, false, .Release)
 	s.initialized = true
 	return au.NO_ERR
 }
@@ -240,7 +264,8 @@ au_set_parameter :: proc "c" (self: rawptr, param: u32, scope: u32, element: u32
 	stored := i32(param_clamp(int(param), value))
 	if s.values[param] != stored {
 		s.values[param] = stored
-		s.params_dirty = true
+		mark_params_dirty(s)
+		mark_param_for_panel(s, int(param))
 	}
 	return au.NO_ERR
 }
@@ -291,9 +316,8 @@ au_render :: proc "c" (self: rawptr, flags: ^u32, timestamp: rawptr, bus: u32, f
 		return au.ERR_UNINITIALIZED
 	}
 
-	if s.params_dirty {
+	if intrinsics.atomic_exchange_explicit(&s.params_dirty, false, .Acquire) {
 		apply_params(s)
-		s.params_dirty = false
 	}
 
 	// Rendering more than the agreed MaximumFramesPerSlice is an error, not
@@ -329,8 +353,17 @@ au_render :: proc "c" (self: rawptr, flags: ^u32, timestamp: rawptr, bus: u32, f
 		return au.PARAM_ERR
 	}
 
+	// Notes played on the panel's keyboard, waiting since the last block.
+	panel.drain_events(&s.ui_queue, &s.eng)
 	if n > 0 {
 		engine.engine_process(&s.eng, left[:n], right[:n])
+		// Master volume over the finished block, through a smoother because the
+		// control is dragged and a step in gain is a click.
+		for i in 0 ..< n {
+			gain := engine.smoother_process(&s.volume_smooth, s.volume)
+			left[i] *= gain
+			right[i] *= gain
+		}
 	}
 	// Silence any frames beyond the clamp so a short block is a gap, not stale.
 	for i in n ..< int(frames) {
@@ -402,7 +435,8 @@ class_info_restore :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
 	for i in 0 ..< PARAM_COUNT {
 		s.values[i] = src[i]
 	}
-	s.params_dirty = true
+	mark_params_dirty(s)
+	mark_state_for_panel(s)
 }
 
 // A stereo, non-interleaved, 32-bit float stream at the current rate: the layout
@@ -477,6 +511,8 @@ au_get_property_info :: proc "c" (self: rawptr, prop: u32, scope: u32, element: 
 	case au.PROP_PRESENT_PRESET:
 		size = size_of(au.AU_Preset)
 		writable = 1
+	case au.PROP_COCOA_UI, PROP_INSTANCE:
+		size, status = editor_property_info(prop, scope)
 	case:
 		status = au.ERR_INVALID_PROPERTY
 	}
@@ -607,6 +643,8 @@ au_get_property :: proc "c" (self: rawptr, prop: u32, scope: u32, element: u32, 
 		preset.preset_name = au.CFStringCreateWithCString(nil, "Untitled", au.CF_STRING_ENCODING_UTF8)
 		io_size^ = size_of(au.AU_Preset)
 		return au.NO_ERR
+	case au.PROP_COCOA_UI, PROP_INSTANCE:
+		return editor_get_property(s, prop, scope, out_data, io_size)
 	}
 	return au.ERR_INVALID_PROPERTY
 }
@@ -731,6 +769,7 @@ au_factory :: proc "c" (desc: ^au.Audio_Component_Description) -> ^au.Audio_Comp
 	for i in 0 ..< PARAM_COUNT {
 		s.values[i] = i32(param_default(i))
 	}
+	s.volume = 1
 	s.sample_rate = 44100
 	s.max_frames = 1156
 	return &s.interface
