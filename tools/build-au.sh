@@ -33,7 +33,12 @@ rm -rf "$bundle"
 mkdir -p "$macos_dir"
 
 echo "building the plugin..."
-odin build "$root/hosts/au" -build-mode:dll -o:speed -out:"$macos_dir/$name"
+# On macOS, -build-mode:dll appends .dylib to a name without an extension, but a
+# bundle's executable is named by CFBundleExecutable with no extension. Build to
+# the .dylib name odin will honour, then move it to the bare name the plist points
+# at.
+odin build "$root/hosts/au" -build-mode:dll -o:speed -out:"$macos_dir/$name.dylib"
+mv -f "$macos_dir/$name.dylib" "$macos_dir/$name"
 
 # The AudioComponent registration. The four-character codes match the ones in
 # hosts/au/plugin.odin; auval searches by exactly these. `factoryFunction` is the
