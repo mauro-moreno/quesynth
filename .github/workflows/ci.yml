@@ -7,14 +7,15 @@
 # push and every pull request, so a break is attached to the commit that caused
 # it.
 #
-# Two runners. Windows, because that is what the plugins are: the engine and the
+# Three runners. Windows, because the plugins started there: the engine and the
 # patch layer are portable and their tests would pass anywhere, but the plugin
 # hosts are Win32, COM and WebView2, and building them is a large part of what is
-# worth checking. Linux, because the standalone host now has an ALSA backend, and
-# a change under src/ or hosts/standalone that breaks the Linux build is invisible
-# from a Windows-only CI -- which is exactly how it broke silently once, the whole
-# hosts/panel package being #+build windows while the plugin cores used it
-# unconditionally.
+# worth checking. Linux, because the standalone host has an ALSA backend and the
+# plugins carry a WebKitGTK editor, and a change that breaks the Linux build is
+# invisible from a Windows-only CI -- which is how it broke silently once, the
+# whole hosts/panel package being #+build windows while the plugin cores used it
+# unconditionally. macOS, because the Audio Unit is macOS-only and cannot be
+# cross-linked from anywhere else, so this is the only place it is built at all.
 name: ci
 
 on:
@@ -182,3 +183,40 @@ jobs:
           odin build hosts/vst3 -build-mode:dll -out:build/ci-vst3.so
           odin build tools/clapprobe -out:build/clapprobe
           ./build/clapprobe build/ci.clap
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same pin as every other workflow; see the note in pages.yml.
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      - name: Somewhere to build into
+        run: mkdir -p build
+
+      # The portable core, the same suites the other runners agree on.
+      - name: The portable suites
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      # The point of this runner. The Audio Unit is macOS-only -- it cannot be
+      # cross-linked from Linux or Windows -- so this is where hosts/au is built
+      # at all. It is a pure C-ABI music device the host calls into, so it links
+      # against no framework and this is a self-contained dylib. Building is the
+      # check here; auval and DAW validation need the .component bundle and
+      # Info.plist, which are a later increment.
+      - name: The Audio Unit builds
+        run: odin build hosts/au -build-mode:dll -out:build/Quesynth-au.dylib
+
+      # The other plugin hosts build headless on macOS too -- the panel is Windows
+      # and Linux only, so a host draws its generic view here -- which guards their
+      # darwin path against a change that only shows on this platform.
+      - name: The plugin hosts build headless
+        run: |
+          odin build hosts/clap -build-mode:dll -out:build/ci.clap
+          odin build hosts/vst3 -build-mode:dll -out:build/ci-vst3.so
