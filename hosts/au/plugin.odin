@@ -18,6 +18,10 @@ import "../../src/patch"
 // presets and the WebKitGTK editor are not wired in yet, and it has not been run
 // through auval or a DAW -- there is no macOS on the machine it was written on.
 // What it has is a macOS CI build; the rest is the next increment.
+//
+// On macOS the editor is a WKWebView, not WebKitGTK, and its seam is
+// hosts/panel/panel_macos.odin. Nothing here uses it yet: the unit does not
+// answer kAudioUnitProperty_CocoaUI, so the host draws its generic view.
 
 MANUFACTURER :: u32(0x51535954) // 'QSYT'
 SUBTYPE :: u32(0x51737931) // 'Qsy1'
