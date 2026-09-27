@@ -168,7 +168,17 @@ jobs:
       # for the split above -- the whole hosts/panel package was once #+build
       # windows while the plugin cores used it unconditionally, so the plugins did
       # not build on Linux at all and a Windows-only CI never noticed.
-      - name: The plugin hosts build headless
+      #
+      # The CLAP is then driven by tools/clapprobe, a headless host that loads it,
+      # creates an instance, activates it and reads the parameter list. Building a
+      # shared library is not the same as a host being able to load it: a plugin
+      # can link cleanly and still fault the moment it is dlopened, which is how a
+      # Linux DAW first exposed the missing module entry point, the un-run global
+      # initialisation and the Windows-only interface-id byte order. A build check
+      # sees none of those; this one does.
+      - name: The plugin hosts build headless and the CLAP loads
         run: |
           odin build hosts/clap -build-mode:dll -out:build/ci.clap
           odin build hosts/vst3 -build-mode:dll -out:build/ci-vst3.so
+          odin build tools/clapprobe -out:build/clapprobe
+          ./build/clapprobe build/ci.clap
