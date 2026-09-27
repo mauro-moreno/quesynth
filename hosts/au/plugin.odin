@@ -230,10 +230,14 @@ au_render :: proc "c" (self: rawptr, flags: ^u32, timestamp: rawptr, bus: u32, f
 		s.params_dirty = false
 	}
 
-	n := int(frames)
-	if n > len(s.scratch_left) {
-		n = len(s.scratch_left)
+	// Rendering more than the agreed MaximumFramesPerSlice is an error, not
+	// something to clamp: the host sized its buffers to that maximum, and auval
+	// checks that the unit refuses an over-long block rather than truncating it.
+	if int(frames) > s.max_frames {
+		s.last_error = au.ERR_TOO_MANY_FRAMES
+		return au.ERR_TOO_MANY_FRAMES
 	}
+	n := int(frames)
 
 	// Two non-interleaved channel buffers. The host may hand over its own
 	// buffers, or it may pass null mData and ask the unit to supply them -- both
