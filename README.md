@@ -44,16 +44,16 @@ synth editor rather than maintaining sixteen copies of it.
 Prebuilt plugins, the standalone, and the Audio Unit are attached to the
 [latest release](https://github.com/mauro-moreno/quesynth/releases); or build the
 target you want as described below. The plugin editor is the shared `ui/` panel
-hosted in a web view: Edge WebView2 on Windows and WebKitGTK on Linux. When
-neither is available the audio engine still loads and the host draws its own
-generic parameter view.
+hosted in a web view: Edge WebView2 on Windows, WebKitGTK on Linux, and a
+WKWebView on macOS (the Audio Unit's Cocoa view). When none is available the
+audio engine still loads and the host draws its own generic parameter view.
 
 | Target | Purpose | Platform |
 |---|---|---|
 | WebAssembly | Browser instrument and live demonstration | Modern browsers |
 | VST3 | DAW instrument; panel via WebView2 (Windows) or WebKitGTK (Linux) | Windows, Linux |
 | CLAP | DAW instrument; panel via WebView2 (Windows) or WebKitGTK (Linux) | Windows, Linux |
-| Audio Unit | DAW instrument; host's generic view (no custom editor yet) | macOS |
+| Audio Unit | DAW instrument; panel via WKWebView (the AU's Cocoa view) | macOS |
 | Standalone | WASAPI/WinMM on Windows, ALSA on Linux | Windows, Linux |
 
 ## Signal architecture
@@ -160,6 +160,7 @@ src/vst3/          VST3 ABI bindings
 src/audiounit/     Audio Unit (AUv2) ABI + CoreFoundation bindings
 src/webview2/      Edge WebView2 ABI bindings (Windows plugin editor)
 src/webkitgtk/     WebKitGTK ABI bindings (Linux plugin editor)
+src/webkit/        AppKit + WebKit (WKWebView) bindings (macOS plugin editor)
 ui/                shared instrument and pad interface
 hosts/             standalone, plugin (VST3, CLAP, Audio Unit), and WebAssembly adapters
 patches/quesynth/  Quesynth factory bank

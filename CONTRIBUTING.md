@@ -68,11 +68,13 @@ it through `pluginval` with `tools/validate-au.sh`, so if you touch `hosts/au`
 or `src/audiounit` without a Mac, lean on the macOS CI job.
 
 The panel smoke test above boots `ui/` in a stand-in DOM and needs nothing but
-Node. The macOS job goes further: it checks that the macOS editor seam in
-`hosts/panel/panel_macos.odin` compiles, then renders the panel in headless
-WebKit with `tools/ui-screenshot.mjs`, fails if the page did not build, and
-keeps the screenshot as the `macos-ui-panel-screenshot` artifact. To run that
-render yourself:
+Node. The macOS job goes further: it checks that the macOS editor -- the
+WKWebView in `hosts/panel/panel_macos.odin` and the AU's Cocoa view in
+`hosts/au/editor.odin` -- compiles, then renders the panel in headless WebKit
+with `tools/ui-screenshot.mjs`, fails if the page did not build, and keeps the
+screenshot as a `macos-ui-panel-screenshot-<runner>` artifact. `pluginval` opens
+that Cocoa view for real, and the whole macOS job runs on both Apple Silicon and
+Intel. To run the render yourself:
 
 ```
 npm install --no-save --no-package-lock playwright

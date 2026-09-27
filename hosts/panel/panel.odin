@@ -24,8 +24,7 @@ import "core:strings"
 // and WebKitGTK on Linux (panel_linux.odin), and each of those supplies the
 // Panel type, starting and stopping the view, and `post`, the one way a message
 // gets to the page. On macOS, panel_macos.odin supplies the same names around a
-// WKWebView that does not exist yet, so this file compiles there and the view
-// never opens.
+// WKWebView, hosted in the NSView the Audio Unit's Cocoa view hands over.
 
 // Big enough that no section starts out scrolled.
 WIDTH :: i32(1180)
