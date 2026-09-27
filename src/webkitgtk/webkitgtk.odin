@@ -259,6 +259,12 @@ start_gtk :: proc() -> bool {
 	if !load() {
 		return false
 	}
+	// WebKitGTK's DMABUF/GPU compositing path paints a blank page inside an
+	// embedded X11 window under XWayland -- which is exactly where a plugin
+	// editor lives, so without this the panel comes up empty. Turning the DMABUF
+	// renderer off makes it paint. Set without overwrite, so a host or a user who
+	// already chose a value keeps it.
+	posix.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", false)
 	api.gdk_set_allowed_backends("x11")
 	api.gtk_disable_setlocale()
 	if !api.gtk_init_check(nil, nil) {
