@@ -2,9 +2,8 @@
 #
 # One job per format, because they do not share a runner or a build command and
 # a matrix over things that differ in every step is a matrix in name only.
-# Today that is VST3 and CLAP on Windows and Linux, plus the standalone
-# instrument on Windows and Linux. AudioUnit needs two things that do not exist
-# yet: a macOS runner, and hosts/au.
+# Today that is VST3 and CLAP on Windows and Linux, the standalone instrument on
+# Windows and Linux, and the Audio Unit on macOS.
 #
 # The two jobs look alike and are not the same. A VST3 is one self-contained
 # bundle; a CLAP on Windows is a bare file that has to travel with a folder
@@ -543,6 +542,110 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: clap-linux64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber
+
+  au-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      # Assemble the .component (build-au.sh makes the native arm64 slice and the
+      # Info.plist), then add the x86_64 slice and lipo the two into one universal
+      # binary, so the release runs on both Apple Silicon and Intel.
+      - name: Build the bundle (universal)
+        run: |
+          mkdir -p build
+          bash tools/build-au.sh build/au-stage
+          bin="build/au-stage/Quesynth.component/Contents/MacOS/Quesynth"
+          odin build hosts/au -build-mode:dll -target:darwin_amd64 -o:speed -out:build/au-x86.dylib
+          lipo -create "$bin" build/au-x86.dylib -output build/au-universal
+          mv build/au-universal "$bin"
+          lipo -info "$bin"
+
+      # It validates before it ships. auval instantiates the unit and exercises
+      # its parameters, state, presets and render; a release that ships an AU that
+      # fails validation is worse than a release that does not happen. The same
+      # install/sign/register dance the ci workflow uses.
+      - name: Validate (auval)
+        run: |
+          dest="/Library/Audio/Plug-Ins/Components"
+          sudo mkdir -p "$dest"
+          sudo rm -rf "$dest/Quesynth.component"
+          sudo cp -R build/au-stage/Quesynth.component "$dest/"
+          sudo codesign --force --sign - "$dest/Quesynth.component/Contents/MacOS/Quesynth"
+          sudo codesign --force --sign - "$dest/Quesynth.component"
+          sudo killall -9 coreaudiod AudioComponentRegistrar 2>/dev/null || true
+          found=0
+          for i in $(seq 1 20); do
+            if auval -a 2>/dev/null | grep -qi 'Qsy1'; then found=1; break; fi
+            sleep 3
+          done
+          [ "$found" = 1 ] || { echo "the Audio Unit did not register for validation"; exit 1; }
+          auval -v aumu Qsy1 QSYT
+
+      # Ad-hoc sign what ships, so the component loads once its quarantine flag is
+      # cleared. It is not notarized; the note says how to clear quarantine.
+      - name: Sign the shipped bundle
+        run: |
+          bin="build/au-stage/Quesynth.component/Contents/MacOS/Quesynth"
+          codesign --force --sign - "$bin"
+          codesign --force --sign - "build/au-stage/Quesynth.component"
+
+      - name: Write the install note
+        run: |
+          cat > build/au-stage/INSTALL.txt <<'EOF'
+          Quesynth -- Audio Unit (AUv2) for macOS, universal (Apple Silicon + Intel)
+
+          To install, copy the folder
+
+              Quesynth.component
+
+          into your Audio Unit directory, which is
+
+              ~/Library/Audio/Plug-Ins/Components     (just you)
+              /Library/Audio/Plug-Ins/Components      (everyone)
+
+          then relaunch your host. Quesynth appears as an instrument (aumu Qsy1 QSYT)
+          in Logic, GarageBand, and other AU hosts.
+
+          It is ad-hoc signed, not notarized. If macOS refuses to load it, clear the
+          quarantine flag it was downloaded with:
+
+              xattr -dr com.apple.quarantine Quesynth.component
+
+          This build has no custom editor yet: the host draws its own generic
+          controls. The audio engine, parameters and MIDI are the plugin.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          EOF
+
+      - name: Zip
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          asset="Quesynth-$version-au-macos.zip"
+          ( cd build/au-stage && zip -r -y "$OLDPWD/$asset" Quesynth.component INSTALL.txt >/dev/null )
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: au-macos
           path: ${{ env.ASSET }}
 
       - name: Attach to the release
