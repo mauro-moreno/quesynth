@@ -86,15 +86,15 @@ SELECT_ADD_RENDER_NOTIFY :: i16(0x000F)
 SELECT_REMOVE_RENDER_NOTIFY :: i16(0x0010)
 SELECT_GET_PARAMETER :: i16(0x0006)
 SELECT_SET_PARAMETER :: i16(0x0007)
-SELECT_SCHEDULE_PARAMETERS :: i16(0x0008)
-SELECT_RENDER :: i16(0x0009)
-SELECT_RESET :: i16(0x000C)
+SELECT_SCHEDULE_PARAMETERS :: i16(0x0011)
+SELECT_RENDER :: i16(0x000E)
+SELECT_RESET :: i16(0x0009)
 
 // MusicDevice selectors (MusicDevice.h).
 SELECT_MIDI_EVENT :: i16(0x0101)
 SELECT_SYS_EX :: i16(0x0102)
-SELECT_START_NOTE :: i16(0x0103)
-SELECT_STOP_NOTE :: i16(0x0104)
+SELECT_START_NOTE :: i16(0x0105)
+SELECT_STOP_NOTE :: i16(0x0106)
 
 // -- scopes and properties ---------------------------------------------------
 
@@ -189,11 +189,11 @@ Audio_Unit_Parameter_Info :: struct {
 	flags:          u32,
 }
 
-PARAMETER_UNIT_INDEXED :: u32(18)
+PARAMETER_UNIT_INDEXED :: u32(1)
 PARAMETER_UNIT_GENERIC :: u32(0)
 
-PARAMETER_FLAG_IS_WRITABLE :: u32(1 << 30)
-PARAMETER_FLAG_IS_READABLE :: u32(1 << 29)
+PARAMETER_FLAG_IS_READABLE :: u32(1 << 30)
+PARAMETER_FLAG_IS_WRITABLE :: u32(1 << 31)
 
 // -- render callback ---------------------------------------------------------
 

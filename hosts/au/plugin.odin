@@ -286,6 +286,12 @@ au_get_property_info :: proc "c" (self: rawptr, prop: u32, scope: u32, element: 
 
 	switch prop {
 	case au.PROP_STREAM_FORMAT:
+		// Instrument: an output stream only. Refusing the input scope is what tells
+		// a host there is no input to feed, so it does not try to set a render
+		// callback for one.
+		if scope == au.SCOPE_INPUT {
+			return au.ERR_INVALID_SCOPE
+		}
 		size = size_of(au.Audio_Stream_Basic_Description)
 		writable = 1
 	case au.PROP_SAMPLE_RATE:
@@ -333,6 +339,9 @@ au_get_property :: proc "c" (self: rawptr, prop: u32, scope: u32, element: u32, 
 
 	switch prop {
 	case au.PROP_STREAM_FORMAT:
+		if scope == au.SCOPE_INPUT {
+			return au.ERR_INVALID_SCOPE
+		}
 		if io_size^ < size_of(au.Audio_Stream_Basic_Description) {
 			return au.PARAM_ERR
 		}
@@ -434,6 +443,9 @@ au_set_property :: proc "c" (self: rawptr, prop: u32, scope: u32, element: u32, 
 
 	switch prop {
 	case au.PROP_STREAM_FORMAT:
+		if scope == au.SCOPE_INPUT {
+			return au.ERR_INVALID_SCOPE
+		}
 		if in_data == nil || in_size < size_of(au.Audio_Stream_Basic_Description) {
 			return au.PARAM_ERR
 		}

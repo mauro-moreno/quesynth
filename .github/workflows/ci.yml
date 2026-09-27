@@ -204,27 +204,6 @@ jobs:
           odin test tests/dsp
           odin test tests/patch
 
-      # TEMPORARY: dump the authoritative AU constants from the installed SDK, so
-      # the hand-written src/audiounit values (selectors, parameter units and
-      # flags, property ids) can be corrected against the headers rather than from
-      # memory. Removed once the bindings match.
-      - name: Dump AU SDK constants
-        run: |
-          sdk=$(xcrun --sdk macosx --show-sdk-path)
-          hdr="$sdk/System/Library/Frameworks/AudioToolbox.framework/Headers"
-          echo "=== AUComponent.h selectors + errors ==="
-          grep -E 'Select[[:space:]]*=|kAudioUnitErr_' "$hdr/AUComponent.h" || true
-          echo "=== MusicDevice.h selectors ==="
-          grep -E 'Select[[:space:]]*=' "$hdr/MusicDevice.h" || true
-          echo "=== parameter units ==="
-          grep -E 'kAudioUnitParameterUnit_[A-Za-z]+[[:space:]]*=' "$hdr/AudioUnitProperties.h" || true
-          echo "=== parameter flags ==="
-          grep -E 'kAudioUnitParameterFlag_[A-Za-z]+[[:space:]]*=' "$hdr/AudioUnitProperties.h" || true
-          echo "=== property ids (subset) ==="
-          grep -E 'kAudioUnitProperty_(ClassInfo|SampleRate|ParameterList|ParameterInfo|StreamFormat|ElementCount|Latency|SupportedNumChannels|MaximumFramesPerSlice|TailTime|LastRenderError|SetRenderCallback|InPlaceProcessing|ShouldAllocateBuffer)[[:space:]]*=' "$hdr/AudioUnitProperties.h" || true
-          echo "=== scopes ==="
-          grep -E 'kAudioUnitScope_[A-Za-z]+[[:space:]]*=' "$hdr/AudioUnitProperties.h" || true
-
       # The point of this runner. The Audio Unit is macOS-only -- it cannot be
       # cross-linked from Linux or Windows -- so this is where hosts/au is built at
       # all. tools/build-au.sh assembles the .component bundle (the dylib plus the
