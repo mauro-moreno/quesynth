@@ -38,9 +38,12 @@ AU :: struct {
 	initialized:  bool,
 	params_dirty: bool,
 
-	// De-interleave scratch is not needed: AU hands the engine separate
-	// non-interleaved channel buffers, which is the layout engine_process writes.
-	last_error:   au.OSStatus,
+	// Buffers the unit renders into when the host asks it to supply its own --
+	// an AudioBufferList arriving with null mData -- which is a render contract
+	// auval exercises. Allocated in Initialize, sized to max_frames.
+	scratch_left:  []f32,
+	scratch_right: []f32,
+	last_error:    au.OSStatus,
 }
 
 au_of :: proc "contextless" (self: rawptr) -> ^AU {
@@ -89,6 +92,8 @@ au_close :: proc "c" (self: rawptr) -> au.OSStatus {
 	if s.initialized {
 		engine.engine_destroy(&s.eng)
 	}
+	delete(s.scratch_left)
+	delete(s.scratch_right)
 	free(s)
 	return au.NO_ERR
 }
@@ -110,6 +115,10 @@ au_initialize :: proc "c" (self: rawptr) -> au.OSStatus {
 		s.mirror.present[i] = true
 	}
 	engine.engine_load_patch(&s.eng, s.mirror, f32(s.sample_rate))
+	delete(s.scratch_left)
+	delete(s.scratch_right)
+	s.scratch_left = make([]f32, s.max_frames)
+	s.scratch_right = make([]f32, s.max_frames)
 	s.params_dirty = false
 	s.initialized = true
 	return au.NO_ERR
@@ -222,19 +231,30 @@ au_render :: proc "c" (self: rawptr, flags: ^u32, timestamp: rawptr, bus: u32, f
 	}
 
 	n := int(frames)
-	if n > s.max_frames {
-		n = s.max_frames
+	if n > len(s.scratch_left) {
+		n = len(s.scratch_left)
 	}
 
-	// The stereo output as two non-interleaved channel buffers. A host that
-	// hands fewer than two, or null pointers, has broken the contract the stream
-	// format states; rendering half a signal would hide that.
-	buffers := ([^]au.Audio_Buffer)(&data.buffers[0])
+	// Two non-interleaved channel buffers. The host may hand over its own
+	// buffers, or it may pass null mData and ask the unit to supply them -- both
+	// are the render contract, and auval tests the second. When mData is null the
+	// unit renders into its own scratch and hands back the pointer.
 	if data.number_buffers < 2 {
 		return au.PARAM_ERR
 	}
+	buffers := ([^]au.Audio_Buffer)(&data.buffers[0])
 	left := ([^]f32)(buffers[0].data)
+	if left == nil {
+		left = raw_data(s.scratch_left)
+		buffers[0].data = left
+		buffers[0].data_byte_size = u32(frames) * 4
+	}
 	right := ([^]f32)(buffers[1].data)
+	if right == nil {
+		right = raw_data(s.scratch_right)
+		buffers[1].data = right
+		buffers[1].data_byte_size = u32(frames) * 4
+	}
 	if left == nil || right == nil {
 		return au.PARAM_ERR
 	}
