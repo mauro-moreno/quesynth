@@ -121,6 +121,7 @@ PROP_LAST_RENDER_ERROR :: u32(22)
 PROP_SET_RENDER_CALLBACK :: u32(23)
 PROP_IN_PLACE_PROCESSING :: u32(29)
 PROP_SHOULD_ALLOCATE_BUFFER :: u32(51)
+PROP_PRESENT_PRESET :: u32(36)
 
 // -- audio formats and buffers (CoreAudioTypes.h) ----------------------------
 
@@ -204,3 +205,17 @@ AU_Render_Callback_Struct :: struct {
 	input_proc:         AU_Render_Callback,
 	input_proc_ref_con: rawptr,
 }
+
+// -- presets and property listeners ------------------------------------------
+
+// AUPreset: a factory or user preset, identified by a number and a CFString name.
+// A number of -1 means "no factory preset", which is what this unit reports.
+AU_Preset :: struct {
+	preset_number: i32,
+	preset_name:   CF_String_Ref,
+}
+
+// AudioUnitPropertyListenerProc: the host registers one of these to hear when a
+// property changes, and it is called back with the unit and the property that
+// moved. auval registers one on MaximumFramesPerSlice and checks it fires.
+Property_Listener_Proc :: proc "c" (ref_con: rawptr, unit: rawptr, prop_id: u32, scope: u32, element: u32)

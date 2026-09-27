@@ -44,10 +44,72 @@ AU :: struct {
 	scratch_left:  []f32,
 	scratch_right: []f32,
 	last_error:    au.OSStatus,
+
+	// Property-change listeners the host registers. A small fixed set: a host
+	// watches a handful of properties, not dozens.
+	listeners:     [32]Listener,
+}
+
+Listener :: struct {
+	prop:   u32,
+	callback: au.Property_Listener_Proc,
+	user:   rawptr,
+	active: bool,
 }
 
 au_of :: proc "contextless" (self: rawptr) -> ^AU {
 	return (^AU)(self)
+}
+
+// -- property listeners ------------------------------------------------------
+
+au_add_property_listener :: proc "c" (self: rawptr, prop: u32, listener: au.Property_Listener_Proc, user: rawptr) -> au.OSStatus {
+	s := au_of(self)
+	if s == nil || listener == nil {
+		return au.PARAM_ERR
+	}
+	for &l in s.listeners {
+		if !l.active {
+			l = Listener{prop = prop, callback = listener, user = user, active = true}
+			return au.NO_ERR
+		}
+	}
+	return au.NO_ERR
+}
+
+au_remove_property_listener :: proc "c" (self: rawptr, prop: u32, listener: au.Property_Listener_Proc) -> au.OSStatus {
+	s := au_of(self)
+	if s == nil {
+		return au.PARAM_ERR
+	}
+	for &l in s.listeners {
+		if l.active && l.prop == prop && l.callback == listener {
+			l.active = false
+		}
+	}
+	return au.NO_ERR
+}
+
+au_remove_property_listener_with_user_data :: proc "c" (self: rawptr, prop: u32, listener: au.Property_Listener_Proc, user: rawptr) -> au.OSStatus {
+	s := au_of(self)
+	if s == nil {
+		return au.PARAM_ERR
+	}
+	for &l in s.listeners {
+		if l.active && l.prop == prop && l.callback == listener && l.user == user {
+			l.active = false
+		}
+	}
+	return au.NO_ERR
+}
+
+// Tell every listener watching this property that it changed.
+notify_property :: proc "c" (s: ^AU, prop: u32, scope: u32, element: u32) {
+	for &l in s.listeners {
+		if l.active && l.prop == prop && l.callback != nil {
+			l.callback(l.user, s.instance, prop, scope, element)
+		}
+	}
 }
 
 // -- parameter binding -------------------------------------------------------
@@ -276,6 +338,69 @@ au_render :: proc "c" (self: rawptr, flags: ^u32, timestamp: rawptr, bus: u32, f
 
 // -- properties --------------------------------------------------------------
 
+// -- class info (saved state) ------------------------------------------------
+
+@(private = "file")
+dict_set_number :: proc "c" (dict: rawptr, key_name: cstring, value: i32) {
+	v := value
+	key := au.CFStringCreateWithCString(nil, key_name, au.CF_STRING_ENCODING_UTF8)
+	num := au.CFNumberCreate(nil, au.CF_NUMBER_SINT32_TYPE, &v)
+	au.CFDictionarySetValue(dict, key, num)
+	au.CFRelease(key)
+	au.CFRelease(num)
+}
+
+@(private = "file")
+dict_set_string :: proc "c" (dict: rawptr, key_name: cstring, value: cstring) {
+	key := au.CFStringCreateWithCString(nil, key_name, au.CF_STRING_ENCODING_UTF8)
+	val := au.CFStringCreateWithCString(nil, value, au.CF_STRING_ENCODING_UTF8)
+	au.CFDictionarySetValue(dict, key, val)
+	au.CFRelease(key)
+	au.CFRelease(val)
+}
+
+// The unit's state as a CFDictionary the host can save and hand back: the
+// component identity plus a data blob of the stored parameter integers. The
+// caller owns the returned dictionary and releases it.
+class_info_dict :: proc "c" (s: ^AU) -> au.CF_Dictionary_Ref {
+	dict := au.CFDictionaryCreateMutable(nil, 0, &au.kCFTypeDictionaryKeyCallBacks, &au.kCFTypeDictionaryValueCallBacks)
+	if dict == nil {
+		return nil
+	}
+	dict_set_number(dict, "version", 0)
+	dict_set_number(dict, "type", i32(au.TYPE_MUSIC_DEVICE))
+	dict_set_number(dict, "subtype", i32(SUBTYPE))
+	dict_set_number(dict, "manufacturer", i32(MANUFACTURER))
+	dict_set_string(dict, "name", "Quesynth")
+
+	key := au.CFStringCreateWithCString(nil, "data", au.CF_STRING_ENCODING_UTF8)
+	data := au.CFDataCreate(nil, ([^]u8)(&s.values[0]), au.CF_Index(PARAM_COUNT * size_of(i32)))
+	au.CFDictionarySetValue(dict, key, data)
+	au.CFRelease(key)
+	au.CFRelease(data)
+	return dict
+}
+
+// Restore the parameter values from a state dictionary's data blob.
+class_info_restore :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
+	key := au.CFStringCreateWithCString(nil, "data", au.CF_STRING_ENCODING_UTF8)
+	data := au.CFDictionaryGetValue(dict, key)
+	au.CFRelease(key)
+	if data == nil {
+		return
+	}
+	ptr := au.CFDataGetBytePtr(data)
+	n := int(au.CFDataGetLength(data))
+	if ptr == nil || n < PARAM_COUNT * size_of(i32) {
+		return
+	}
+	src := ([^]i32)(ptr)
+	for i in 0 ..< PARAM_COUNT {
+		s.values[i] = src[i]
+	}
+	s.params_dirty = true
+}
+
 // A stereo, non-interleaved, 32-bit float stream at the current rate: the layout
 // engine_process already writes, so the host and the engine agree with no
 // conversion.
@@ -342,6 +467,12 @@ au_get_property_info :: proc "c" (self: rawptr, prop: u32, scope: u32, element: 
 		}
 	case au.PROP_PARAMETER_INFO:
 		size = size_of(au.Audio_Unit_Parameter_Info)
+	case au.PROP_CLASS_INFO:
+		size = size_of(au.CF_Dictionary_Ref)
+		writable = 1
+	case au.PROP_PRESENT_PRESET:
+		size = size_of(au.AU_Preset)
+		writable = 1
 	case:
 		status = au.ERR_INVALID_PROPERTY
 	}
@@ -455,6 +586,23 @@ au_get_property :: proc "c" (self: rawptr, prop: u32, scope: u32, element: u32, 
 		info.flags = au.PARAMETER_FLAG_IS_READABLE | au.PARAMETER_FLAG_IS_WRITABLE
 		io_size^ = size_of(au.Audio_Unit_Parameter_Info)
 		return au.NO_ERR
+	case au.PROP_CLASS_INFO:
+		if io_size^ < size_of(au.CF_Dictionary_Ref) {
+			return au.PARAM_ERR
+		}
+		(^au.CF_Dictionary_Ref)(out_data)^ = class_info_dict(s)
+		io_size^ = size_of(au.CF_Dictionary_Ref)
+		return au.NO_ERR
+	case au.PROP_PRESENT_PRESET:
+		if io_size^ < size_of(au.AU_Preset) {
+			return au.PARAM_ERR
+		}
+		// No factory preset: number -1 and a name the caller owns and releases.
+		preset := (^au.AU_Preset)(out_data)
+		preset.preset_number = -1
+		preset.preset_name = au.CFStringCreateWithCString(nil, "Untitled", au.CF_STRING_ENCODING_UTF8)
+		io_size^ = size_of(au.AU_Preset)
+		return au.NO_ERR
 	}
 	return au.ERR_INVALID_PROPERTY
 }
@@ -497,6 +645,22 @@ au_set_property :: proc "c" (self: rawptr, prop: u32, scope: u32, element: u32, 
 			return au.PARAM_ERR
 		}
 		s.max_frames = int((^u32)(in_data)^)
+		// A host may be listening for this; it changed, so tell it.
+		notify_property(s, au.PROP_MAXIMUM_FRAMES_PER_SLICE, au.SCOPE_GLOBAL, 0)
+		return au.NO_ERR
+	case au.PROP_CLASS_INFO:
+		if in_data == nil || in_size < size_of(au.CF_Dictionary_Ref) {
+			return au.PARAM_ERR
+		}
+		dict := (^au.CF_Dictionary_Ref)(in_data)^
+		if dict == nil {
+			return au.PARAM_ERR
+		}
+		class_info_restore(s, dict)
+		return au.NO_ERR
+	case au.PROP_PRESENT_PRESET:
+		// Accepted: there are no factory presets to switch between, so there is
+		// nothing to store, but refusing it would fail validation.
 		return au.NO_ERR
 	}
 	return au.ERR_INVALID_PROPERTY
@@ -532,9 +696,13 @@ au_lookup :: proc "c" (selector: i16) -> au.Audio_Component_Method {
 		return rawptr(au_render)
 	case au.SELECT_MIDI_EVENT:
 		return rawptr(au_midi_event)
-	case au.SELECT_ADD_PROPERTY_LISTENER, au.SELECT_REMOVE_PROPERTY_LISTENER,
-	     au.SELECT_REMOVE_PROPERTY_LISTENER_WITH_USER_DATA,
-	     au.SELECT_ADD_RENDER_NOTIFY, au.SELECT_REMOVE_RENDER_NOTIFY:
+	case au.SELECT_ADD_PROPERTY_LISTENER:
+		return rawptr(au_add_property_listener)
+	case au.SELECT_REMOVE_PROPERTY_LISTENER:
+		return rawptr(au_remove_property_listener)
+	case au.SELECT_REMOVE_PROPERTY_LISTENER_WITH_USER_DATA:
+		return rawptr(au_remove_property_listener_with_user_data)
+	case au.SELECT_ADD_RENDER_NOTIFY, au.SELECT_REMOVE_RENDER_NOTIFY:
 		return rawptr(au_ok_stub)
 	}
 	return nil
