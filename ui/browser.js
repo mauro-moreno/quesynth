@@ -142,7 +142,12 @@
       add.title = "Open a .json bank, a .zip of patches, or one .sy1 patch";
       add.addEventListener("click", function () {
         if (files() && files().pick) {
-          files().pick(function () { paintSources(); paintSlots(); });
+          files().pick(function (err, what) {
+            if (err) { showStatus(err.message || "could not open that file", false); return; }
+            showStatus(what ? "Opened " + what : "", true);
+            paintSources();
+            paintSlots();
+          });
         }
       });
 
@@ -154,7 +159,12 @@
       folder.title = "Open a folder of .sy1 patches";
       folder.addEventListener("click", function () {
         if (files() && files().pickFolder) {
-          files().pickFolder(function () { paintSources(); paintSlots(); });
+          files().pickFolder(function (err, what) {
+            if (err) { showStatus(err.message || "could not open that folder", false); return; }
+            showStatus(what ? "Opened " + what : "", true);
+            paintSources();
+            paintSlots();
+          });
         }
       });
 
@@ -191,6 +201,21 @@
         }
       });
       left.appendChild(find);
+
+      // A place for the file pickers to say what happened. They fail quietly
+      // otherwise -- a patch that will not parse loaded nothing and said
+      // nothing, which is the one way a load can go wrong that leaves the
+      // player with no idea why.
+      var status = document.createElement("div");
+      status.className = "browser-status";
+      status.setAttribute("role", "status");
+      status.hidden = true;
+      left.appendChild(status);
+      function showStatus(message, ok) {
+        status.textContent = message || "";
+        status.hidden = !message;
+        status.className = "browser-status" + (ok ? " ok" : " error");
+      }
       left.appendChild(rows);
       left.appendChild(empty);
     }

@@ -1549,6 +1549,17 @@ body.modal-open { overflow: hidden; }
   color: var(--ink-faint);
 }
 
+/* What the Add/Folder pickers report. An error reads in the brightest ink tier
+   so it is not mistaken for the faint labels around it; a success stays quiet.
+   No new colour: the message text carries the meaning. */
+.browser-status {
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.browser-status.error { color: var(--ink); }
+.browser-status.ok { color: var(--ink-faint); }
+
 /* --------------------------------------------------------------- configure */
 
 .options {
