@@ -2,9 +2,9 @@
 #
 # One job per format, because they do not share a runner or a build command and
 # a matrix over things that differ in every step is a matrix in name only.
-# Today that is VST3 and CLAP on Windows, plus the standalone instrument on
-# Windows and Linux. AudioUnit needs two things that do not exist yet: a macOS
-# runner, and hosts/au.
+# Today that is VST3 and CLAP on Windows and Linux, plus the standalone
+# instrument on Windows and Linux. AudioUnit needs two things that do not exist
+# yet: a macOS runner, and hosts/au.
 #
 # The two jobs look alike and are not the same. A VST3 is one self-contained
 # bundle; a CLAP on Windows is a bare file that has to travel with a folder
@@ -365,6 +365,184 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: standalone-linux64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber
+
+  vst3-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      # The same script a developer runs locally, so the artifact is the one that
+      # was tested. It assembles the bundle: the .so under Contents/x86_64-linux
+      # and the panel under Contents/Resources/ui, with the bank generated in.
+      - name: Build the bundle
+        run: |
+          mkdir -p build
+          bash tools/build-vst3.sh build/stage
+
+      - name: Check the bundle is complete
+        run: |
+          bin="build/stage/Quesynth.vst3/Contents/x86_64-linux"
+          ui="build/stage/Quesynth.vst3/Contents/Resources/ui"
+          for f in "$bin/Quesynth.so" \
+                   "$ui/index.html" "$ui/app.js" "$ui/params.js" "$ui/bank.js" \
+                   "$ui/style.css" "$ui/bridge.js" "$ui/layout.js" \
+                   "$ui/modal.js" "$ui/browser.js" "$ui/midimap.js" "$ui/options.js"; do
+            [ -f "$f" ] || { echo "the bundle is missing: $f"; exit 1; }
+          done
+          # bank.js existing is not bank.js having anything in it, and the panel
+          # asks for it behind an onerror guard -- an empty one would ship silently.
+          count=$(grep -o 'n:"' "$ui/bank.js" | wc -l)
+          [ "$count" -ge 1 ] || { echo "the generated patch bank is empty"; exit 1; }
+          echo "bundle complete, $count patches in the bank"
+
+      - name: Write the install note
+        run: |
+          cat > build/stage/INSTALL.txt <<'EOF'
+          Quesynth -- VST3 for Linux (64-bit)
+
+          To install, copy the folder
+
+              Quesynth.vst3
+
+          into your VST3 directory, which is normally
+
+              ~/.vst3            (just for you)
+              /usr/lib/vst3      (for everyone)
+
+          then rescan plugins in your DAW. Quesynth appears as an instrument.
+
+          The whole folder is the plugin: the interface lives inside it under
+          Contents/Resources/ui, so copying only the .so out of it gives you an
+          instrument that plays and shows the host's generic controls instead of
+          its own panel.
+
+          The editor is drawn by WebKitGTK (GTK 3), loaded at run time; it is
+          present on essentially every desktop. Without it -- or in a host built
+          on GTK 2, such as Ardour, which cannot share a process with GTK 3 -- the
+          plugin still loads and plays, and the host draws its own controls.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          EOF
+
+      - name: Zip
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          asset="Quesynth-$version-vst3-linux64.zip"
+          ( cd build/stage && zip -r "$OLDPWD/$asset" Quesynth.vst3 INSTALL.txt >/dev/null )
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vst3-linux64
+          path: ${{ env.ASSET }}
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber
+
+  clap-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-05
+
+      - name: Test
+        run: |
+          odin test tests/dsp
+          odin test tests/patch
+
+      - name: Build
+        run: |
+          mkdir -p build
+          bash tools/build-clap.sh build/clap-stage
+
+      - name: Check it is complete
+        run: |
+          stage="build/clap-stage"
+          ui="$stage/Quesynth-ui"
+          for f in "$stage/Quesynth.clap" \
+                   "$ui/index.html" "$ui/app.js" "$ui/params.js" "$ui/bank.js" \
+                   "$ui/style.css" "$ui/bridge.js" "$ui/layout.js" \
+                   "$ui/modal.js" "$ui/browser.js" "$ui/midimap.js" "$ui/options.js"; do
+            [ -f "$f" ] || { echo "the build is missing: $f"; exit 1; }
+          done
+          count=$(grep -o 'n:"' "$ui/bank.js" | wc -l)
+          [ "$count" -ge 1 ] || { echo "the generated patch bank is empty"; exit 1; }
+          echo "build complete, $count patches in the bank"
+
+      # The CLAP is then driven by tools/clapprobe, which loads it, instantiates
+      # it and activates it -- proof a host can open what is about to ship, which
+      # a build alone does not give.
+      - name: A host can load it
+        run: |
+          odin build tools/clapprobe -out:build/clapprobe
+          ./build/clapprobe build/clap-stage/Quesynth.clap
+
+      - name: Write the install note
+        run: |
+          cat > build/clap-stage/INSTALL.txt <<'EOF'
+          Quesynth -- CLAP for Linux (64-bit)
+
+          To install, copy both of
+
+              Quesynth.clap
+              Quesynth-ui/
+
+          into your CLAP directory, which is normally
+
+              ~/.clap            (just for you)
+              /usr/lib/clap      (for everyone)
+
+          then rescan plugins in your DAW. Quesynth appears as an instrument.
+
+          Both, not just the .clap. Unlike a VST3 there is no bundle to put them
+          in: the plugin looks for its interface in the Quesynth-ui folder beside
+          it, and copying the .clap alone gives you an instrument that plays and
+          shows the host's generic controls instead of its own panel.
+
+          The editor is drawn by WebKitGTK (GTK 3), loaded at run time; it is
+          present on essentially every desktop. Without it -- or in a host built
+          on GTK 2, such as Ardour, which cannot share a process with GTK 3 -- the
+          plugin still loads and plays, and the host draws its own controls.
+
+          This is experimental software. Please read the disclaimer:
+          https://github.com/mauro-moreno/quesynth
+          EOF
+
+      - name: Zip
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          asset="Quesynth-$version-clap-linux64.zip"
+          ( cd build/clap-stage && zip -r "$OLDPWD/$asset" Quesynth.clap Quesynth-ui INSTALL.txt >/dev/null )
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clap-linux64
           path: ${{ env.ASSET }}
 
       - name: Attach to the release
