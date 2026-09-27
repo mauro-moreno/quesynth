@@ -41,10 +41,12 @@ velocity, gate/one-shot triggers, choke groups, mute/solo, per-cell mix controls
 MIDI Learn, GM/chromatic maps, and portable `.qkit` files. It reuses the same
 synth editor rather than maintaining sixteen copies of it.
 
-For plugin or standalone use, build the desired target as described below. The
-plugin editor is the shared `ui/` panel hosted in a web view: Edge WebView2 on
-Windows and WebKitGTK on Linux. When neither is available the audio engine still
-loads and the host draws its own generic parameter view.
+Prebuilt plugins, the standalone, and the Audio Unit are attached to the
+[latest release](https://github.com/mauro-moreno/quesynth/releases); or build the
+target you want as described below. The plugin editor is the shared `ui/` panel
+hosted in a web view: Edge WebView2 on Windows and WebKitGTK on Linux. When
+neither is available the audio engine still loads and the host draws its own
+generic parameter view.
 
 | Target | Purpose | Platform |
 |---|---|---|
