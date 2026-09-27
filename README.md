@@ -48,8 +48,8 @@ the audio engine still loads and the host may display its generic parameter view
 | Target | Purpose | Platform |
 |---|---|---|
 | WebAssembly | Browser instrument and live demonstration | Modern browsers |
-| VST3 | DAW instrument with embedded Quesynth interface | Windows |
-| CLAP | DAW instrument with WebView2 editor | Windows CLAP hosts |
+| VST3 | DAW instrument; embedded panel on Windows, host's generic view on Linux | Windows, Linux |
+| CLAP | DAW instrument; WebView2 panel on Windows, host's generic view on Linux | Windows, Linux |
 | Standalone | WASAPI/WinMM on Windows, ALSA on Linux | Windows, Linux |
 
 ## Signal architecture

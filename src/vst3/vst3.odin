@@ -46,18 +46,34 @@ String128 :: [128]u16 // UTF-16, as Steinberg_Vst_String128
 // Build an interface identifier from the four 32-bit words the header writes
 // them as.
 //
-// This is `SMTG_INLINE_UID` under `SMTG_COM_COMPATIBLE`, which is what Windows
-// compiles. The byte order is not one rule but three: the first word goes out
-// little-endian, the second swaps its 16-bit halves and writes each of those
-// little-endian, and the last two go out big-endian. That is Microsoft's GUID
-// layout, and it is why a UID transcribed by eye from the header's hex almost
-// never works.
+// The byte layout is `SMTG_INLINE_UID`, and it depends on `SMTG_COM_COMPATIBLE`,
+// which is 1 only on Windows:
+//
+//   - Windows (COM): Microsoft's GUID layout. The first word goes out
+//     little-endian, the second swaps its 16-bit halves and writes each of those
+//     little-endian, and the last two go out big-endian. A UID transcribed by
+//     eye from the header's hex almost never works.
+//   - Everywhere else: every word big-endian, MSB first, the same rule four
+//     times.
+//
+// Get this wrong and the host silently finds no interface, because
+// `queryInterface` compares raw bytes -- which is exactly how a Linux host
+// reported "Failed to create VST3 component" against UIDs built the Windows way.
 uid :: proc "contextless" (l1, l2, l3, l4: u32) -> TUID {
-	return TUID {
-		u8(l1 & 0xFF), u8((l1 >> 8) & 0xFF), u8((l1 >> 16) & 0xFF), u8((l1 >> 24) & 0xFF),
-		u8((l2 >> 16) & 0xFF), u8((l2 >> 24) & 0xFF), u8(l2 & 0xFF), u8((l2 >> 8) & 0xFF),
-		u8((l3 >> 24) & 0xFF), u8((l3 >> 16) & 0xFF), u8((l3 >> 8) & 0xFF), u8(l3 & 0xFF),
-		u8((l4 >> 24) & 0xFF), u8((l4 >> 16) & 0xFF), u8((l4 >> 8) & 0xFF), u8(l4 & 0xFF),
+	when ODIN_OS == .Windows {
+		return TUID {
+			u8(l1 & 0xFF), u8((l1 >> 8) & 0xFF), u8((l1 >> 16) & 0xFF), u8((l1 >> 24) & 0xFF),
+			u8((l2 >> 16) & 0xFF), u8((l2 >> 24) & 0xFF), u8(l2 & 0xFF), u8((l2 >> 8) & 0xFF),
+			u8((l3 >> 24) & 0xFF), u8((l3 >> 16) & 0xFF), u8((l3 >> 8) & 0xFF), u8(l3 & 0xFF),
+			u8((l4 >> 24) & 0xFF), u8((l4 >> 16) & 0xFF), u8((l4 >> 8) & 0xFF), u8(l4 & 0xFF),
+		}
+	} else {
+		return TUID {
+			u8((l1 >> 24) & 0xFF), u8((l1 >> 16) & 0xFF), u8((l1 >> 8) & 0xFF), u8(l1 & 0xFF),
+			u8((l2 >> 24) & 0xFF), u8((l2 >> 16) & 0xFF), u8((l2 >> 8) & 0xFF), u8(l2 & 0xFF),
+			u8((l3 >> 24) & 0xFF), u8((l3 >> 16) & 0xFF), u8((l3 >> 8) & 0xFF), u8(l3 & 0xFF),
+			u8((l4 >> 24) & 0xFF), u8((l4 >> 16) & 0xFF), u8((l4 >> 8) & 0xFF), u8(l4 & 0xFF),
+		}
 	}
 }
 

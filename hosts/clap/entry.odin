@@ -86,6 +86,37 @@ FACTORY := clap.Plugin_Factory {
 	},
 }
 
+// A non-Windows shared library has to run Odin's global initialisation itself:
+// the compiler emits _odin_entry_point -- the runtime startup plus every global
+// initialiser -- but, unlike the DllMain it generates for Windows, does not wire
+// it into the module's .init on Unix, so nothing runs it on dlopen. Left undone,
+// non-constant globals stay zero. The host calls init() before it asks for the
+// factory, so this is where it runs; the Windows build already had it done by
+// DllMain, which is why it never showed there.
+//
+// Only a dynamic-library build has _odin_entry_point to call: an executable, and
+// the test binary that links this package, runs the runtime from its own main,
+// so there start_runtime is a no-op.
+when ODIN_OS != .Windows && ODIN_BUILD_MODE == .Dynamic {
+	foreign {
+		@(link_name = "_odin_entry_point")
+		_odin_entry_point :: proc "c" () ---
+	}
+
+	@(private = "file")
+	runtime_started: bool
+
+	start_runtime :: proc "c" () {
+		if runtime_started {
+			return
+		}
+		runtime_started = true
+		_odin_entry_point()
+	}
+} else {
+	start_runtime :: proc "c" () {}
+}
+
 // CLAP 1.2 requires init/deinit to tolerate being called more than once and to
 // be matched in pairs, so the calls are counted. There is nothing expensive to
 // guard -- the factory and descriptor are static -- so a counter without a
@@ -93,6 +124,7 @@ FACTORY := clap.Plugin_Factory {
 entry_refcount: int
 
 entry_init :: proc "c" (plugin_path: cstring) -> bool {
+	start_runtime()
 	entry_refcount += 1
 	return true
 }

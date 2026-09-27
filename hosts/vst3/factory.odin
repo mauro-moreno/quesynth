@@ -6,10 +6,12 @@ import "../../src/vst3"
 
 // The shared library's entry points and its class factory.
 //
-// A VST3 module on Windows exports three symbols: `InitDll`, `ExitDll` and
-// `GetPluginFactory`. The first two are optional in the specification and
-// required in practice, because hosts call them when present and some refuse a
-// module that exports a factory without them.
+// A VST3 module exports a factory getter and an init/exit pair, and the pair is
+// named per platform: InitDll/ExitDll on Windows, ModuleEntry/ModuleExit on
+// Linux, bundleEntry/bundleExit on macOS. The init/exit functions are optional
+// in the specification and required in practice, because hosts call them when
+// present and some refuse a module that exports a factory without the pair their
+// platform uses. GetPluginFactory is the same symbol everywhere.
 
 PLUGIN_NAME :: "Quesynth"
 PLUGIN_VENDOR :: "quesynth"
@@ -197,15 +199,78 @@ FACTORY := vst3.IPluginFactory {
 }
 
 // -- module entry points -----------------------------------------------------
+//
+// The init/exit pair reports success and does nothing else: there is nothing to
+// set up here that create_instance does not do per instance. Only the names and,
+// on Linux and macOS, the handle argument differ by platform, so the host finds
+// the pair its own loader looks for -- which is exactly what a Linux host was
+// missing when it reported "Cannot load VST3 module" against a build that
+// exported the Windows names alone.
 
-@(export, link_name = "InitDll")
-init_dll :: proc "c" () -> bool {
-	return true
-}
+when ODIN_OS == .Windows {
+	@(export, link_name = "InitDll")
+	init_dll :: proc "c" () -> bool {
+		return true
+	}
 
-@(export, link_name = "ExitDll")
-exit_dll :: proc "c" () -> bool {
-	return true
+	@(export, link_name = "ExitDll")
+	exit_dll :: proc "c" () -> bool {
+		return true
+	}
+} else {
+	// A non-Windows shared library has to run Odin's global initialisation
+	// itself. The compiler emits _odin_entry_point -- which runs the runtime
+	// startup and every global initialiser -- but, unlike the DllMain it
+	// generates for a Windows DLL, does not wire it into the module's .init on
+	// Unix, so nothing calls it on dlopen. Without it FACTORY.vtbl and every
+	// other non-constant global stay zero, and the first method a host calls
+	// jumps through a null vtable. The module load hook is where it has to run.
+	// _odin_entry_point exists only in a dynamic-library build; an executable or
+	// the test binary that links this package runs the runtime from its own main,
+	// so there start_runtime is a no-op.
+	when ODIN_BUILD_MODE == .Dynamic {
+		foreign {
+			@(link_name = "_odin_entry_point")
+			_odin_entry_point :: proc "c" () ---
+		}
+
+		@(private = "file")
+		runtime_started: bool
+
+		start_runtime :: proc "c" () {
+			if runtime_started {
+				return
+			}
+			runtime_started = true
+			_odin_entry_point()
+		}
+	} else {
+		start_runtime :: proc "c" () {}
+	}
+
+	when ODIN_OS == .Linux {
+		@(export, link_name = "ModuleEntry")
+		module_entry :: proc "c" (shared_library_handle: rawptr) -> bool {
+			start_runtime()
+			return true
+		}
+
+		@(export, link_name = "ModuleExit")
+		module_exit :: proc "c" () -> bool {
+			return true
+		}
+	} else when ODIN_OS == .Darwin {
+		@(export, link_name = "bundleEntry")
+		bundle_entry :: proc "c" (bundle: rawptr) -> bool {
+			start_runtime()
+			return true
+		}
+
+		@(export, link_name = "bundleExit")
+		bundle_exit :: proc "c" () -> bool {
+			return true
+		}
+	}
 }
 
 @(export, link_name = "GetPluginFactory")
