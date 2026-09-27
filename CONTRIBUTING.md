@@ -47,14 +47,23 @@ layout — or it may only be checking that your code agrees with itself.
 
 ```
 odin test tests/dsp
-odin test tests/clap
 odin test tests/patch
-odin build hosts/standalone -o:speed -out:build/quesynth.exe
-odin build hosts/clap -build-mode:dll -o:speed -out:build/quesynth.clap
-odin build hosts/vst3 -build-mode:dll -o:speed -out:build/quesynth.vst3
+odin test tests/clap
+odin test tests/panel
+odin test tests/vst3
+odin build hosts/standalone -o:speed -out:build/quesynth
+odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
+odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
 ```
+
+CI runs these on Windows, Linux, and macOS. The VST3 and CLAP plugins build on
+Windows and Linux -- the Linux editor is WebKitGTK, loaded at run time, so no
+`-dev` package is needed -- and on Linux CI also drives the built CLAP with
+`tools/clapprobe` to prove a host can load it. The Audio Unit is macOS only: CI
+assembles it with `tools/build-au.sh` and validates it with `auval`, so if you
+touch `hosts/au` or `src/audiounit` without a Mac, lean on the macOS CI job.
 
 If you touched the measured tables in `src/engine`, regenerate the interface's
 parameter table too, or CI will fail on a stale one:

@@ -5,8 +5,8 @@
 Quesynth is a polyphonic virtual-analogue synthesizer written in
 [Odin](https://odin-lang.org). It recreates the sound and parameter model of
 [Synth1](https://daichilab.sakura.ne.jp/) through direct measurement, supports
-Synth1 `.sy1` patches, and runs as VST3, CLAP, a standalone instrument on Windows
-and Linux, and WebAssembly.
+Synth1 `.sy1` patches, and runs as a VST3 or CLAP plugin, an Audio Unit, a
+standalone instrument, and WebAssembly, across Windows, Linux, and macOS.
 
 **[Open the browser instrument](https://mauro-moreno.github.io/quesynth/)**
 
@@ -42,14 +42,16 @@ MIDI Learn, GM/chromatic maps, and portable `.qkit` files. It reuses the same
 synth editor rather than maintaining sixteen copies of it.
 
 For plugin or standalone use, build the desired target as described below. The
-VST3 editor uses the Microsoft Edge WebView2 runtime. When WebView2 is unavailable,
-the audio engine still loads and the host may display its generic parameter view.
+plugin editor is the shared `ui/` panel hosted in a web view: Edge WebView2 on
+Windows and WebKitGTK on Linux. When neither is available the audio engine still
+loads and the host draws its own generic parameter view.
 
 | Target | Purpose | Platform |
 |---|---|---|
 | WebAssembly | Browser instrument and live demonstration | Modern browsers |
-| VST3 | DAW instrument; embedded panel on Windows, host's generic view on Linux | Windows, Linux |
-| CLAP | DAW instrument; WebView2 panel on Windows, host's generic view on Linux | Windows, Linux |
+| VST3 | DAW instrument; panel via WebView2 (Windows) or WebKitGTK (Linux) | Windows, Linux |
+| CLAP | DAW instrument; panel via WebView2 (Windows) or WebKitGTK (Linux) | Windows, Linux |
+| Audio Unit | DAW instrument; host's generic view (no custom editor yet) | macOS |
 | Standalone | WASAPI/WinMM on Windows, ALSA on Linux | Windows, Linux |
 
 ## Signal architecture
@@ -93,6 +95,7 @@ Install [Odin](https://odin-lang.org), then run commands from the repository roo
 ```powershell
 odin test tests/dsp
 odin build hosts/standalone -o:speed -out:build/quesynth.exe
+pwsh tools/build-vst3.ps1 -Output build/stage
 pwsh tools/build-clap.ps1 -Output build/clap-stage
 pwsh tools/install-vst3.ps1 -Destination "C:\Program Files\Common Files\VST3"
 ```
@@ -105,6 +108,21 @@ odin build hosts/standalone -o:speed -out:build/quesynth
 ./build/quesynth                 # play live through ALSA
 ./build/quesynth patch.sy1       # play a patch
 ./build/quesynth --selftest patch.sy1 out.wav   # render offline, open no device
+```
+
+The Linux VST3 and CLAP plugins assemble the same way, panel and all
+(`libwebkit2gtk-4.1` is loaded at run time, so no `-dev` package is needed):
+
+```sh
+bash tools/build-vst3.sh build/stage        # Quesynth.vst3 bundle, with ui/
+bash tools/build-clap.sh build/clap-stage   # Quesynth.clap + Quesynth-ui/
+```
+
+The Audio Unit is macOS only. `tools/build-au.sh` assembles the `.component`,
+and CI validates it with `auval` before it ships:
+
+```sh
+bash tools/build-au.sh build/au-stage       # Quesynth.component
 ```
 
 Build and serve the browser target with:
@@ -137,11 +155,13 @@ src/engine/        voices, smoothing, modulation, and parameter binding
 src/patch/         Synth1 and Quesynth patch parsing
 src/clap/          CLAP ABI bindings
 src/vst3/          VST3 ABI bindings
-src/webview2/      Edge WebView2 ABI bindings
+src/audiounit/     Audio Unit (AUv2) ABI + CoreFoundation bindings
+src/webview2/      Edge WebView2 ABI bindings (Windows plugin editor)
+src/webkitgtk/     WebKitGTK ABI bindings (Linux plugin editor)
 ui/                shared instrument and pad interface
-hosts/             standalone, plugin, and WebAssembly adapters
+hosts/             standalone, plugin (VST3, CLAP, Audio Unit), and WebAssembly adapters
 patches/quesynth/  Quesynth factory bank
-tools/             measurement, conversion, and installation utilities
+tools/             measurement, conversion, build, and installation utilities
 docs/              engineering specifications and verification reports
 ```
 

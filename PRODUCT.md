@@ -52,13 +52,15 @@ produced these readouts.
 
 ## Operating Context
 
-One HTML interface serves four hosts, and nothing in `ui/` names a host:
+One HTML interface serves every host that shows a panel, and nothing in `ui/`
+names a host:
 
 | host | how the panel is loaded |
 |---|---|
-| VST3 | embedded in a WebView2 control as the plugin editor (tested in Ableton Live 11) |
-| CLAP | plugin |
-| standalone | desktop shell, WASAPI out, winmm MIDI in |
+| VST3 | a web view in the plugin editor: WebView2 on Windows (tested in Ableton Live 11), WebKitGTK on Linux (tested in Carla) |
+| CLAP | the same web view, the same two ways |
+| Audio Unit | macOS; no custom editor yet, so the host draws its generic view |
+| standalone | desktop shell, WASAPI/winmm on Windows, ALSA on Linux; no panel of its own |
 | WebAssembly | the browser demo at `mauro-moreno.github.io/quesynth/` |
 
 Two shells sit over one panel: `ui/index.html` (one instrument, keyboard along the
@@ -109,8 +111,9 @@ Amount, Ping-Pong, Normal Stereo. Labels are always one line, and the group head
 carries the context the short label drops.
 
 **Known gaps, not to be papered over:** parameters 86–89 (MIDI controller
-assignment) have no controls; `hosts/clap` and `hosts/standalone` are not wired to
-the panel; several patches are audibly off from the reference and are named in the
+assignment) have no controls; the standalone is audio-only by design and the
+macOS Audio Unit has no custom editor yet, so a host draws its generic controls
+there; several patches are audibly off from the reference and are named in the
 null-test write-up.
 
 ## Brand Commitments

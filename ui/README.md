@@ -333,8 +333,11 @@ turns into a position along whichever axis it is currently lying on.
 
 - Parameters 86–89 remain the documented control-shape exception: unlike the
   ordinary generated state tables, they carry raw MIDI source/destination values.
-- Nothing is wired into `hosts/clap` or `hosts/standalone` yet — this is the
-  panel and the protocol, not the host side of either.
+- `hosts/clap` and `hosts/vst3` now host this panel: on Windows in an Edge
+  WebView2 control, on Linux in a WebKitGTK view, both speaking the protocol
+  below. `hosts/standalone` has no panel by design -- it is the audio engine and
+  MIDI, played from the command line -- and the macOS Audio Unit (`hosts/au`) has
+  no custom editor yet, so a host draws its own generic controls there.
 
 ## Two shells, one panel
 
