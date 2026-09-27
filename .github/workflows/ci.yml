@@ -15,7 +15,9 @@
 # invisible from a Windows-only CI -- which is how it broke silently once, the
 # whole hosts/panel package being #+build windows while the plugin cores used it
 # unconditionally. macOS, because the Audio Unit is macOS-only and cannot be
-# cross-linked from anywhere else, so this is the only place it is built at all.
+# cross-linked from anywhere else, so this is the only place it is built at all --
+# on both Apple Silicon and Intel, because that is the one host whose users split
+# across two live CPU architectures.
 name: ci
 
 on:
@@ -194,8 +196,21 @@ jobs:
           odin build tools/clapprobe -out:build/clapprobe
           ./build/clapprobe build/ci.clap
 
+  # Two runners, one job definition, because the Audio Unit is the macOS-only
+  # host and a Mac user's machine is Apple Silicon or Intel -- and a fault in the
+  # hand-written AU bindings, the WebKit editor, or an Odin codegen path can bite
+  # one architecture and not the other. macos-latest is Apple Silicon; macos-13
+  # is the last Intel image GitHub offers. Everything below -- the AU build,
+  # auval, and pluginval's editor tests -- therefore runs natively on both, so
+  # the x86_64 slice release.yml ships is validated where it will actually run
+  # rather than only cross-compiled. fail-fast is off so one architecture's
+  # failure still lets the other report.
   macos:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-13]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -254,7 +269,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-ui-panel-screenshot
+          name: macos-ui-panel-screenshot-${{ matrix.os }}
           path: build/ui-smoke/panel.png
           if-no-files-found: warn
 
