@@ -219,15 +219,19 @@ jobs:
       - name: The panel builds (GUI smoke)
         run: node --test tests/ui/panel-smoke.test.mjs
 
-      # The editor seam. hosts/panel/panel_macos.odin gives panel.odin the names
-      # it needs on darwin without a WKWebView behind them yet, and nothing
-      # opens an editor on macOS, so the host builds below would still pass if
-      # the seam fell out of step with the other platforms. Checked for both
-      # architectures, because a Mac user's DAW may be either.
-      - name: The macOS editor seam compiles
+      # The macOS editor: src/webkit, the WKWebView panel in hosts/panel, and
+      # the AU's Cocoa view in hosts/au. The AU build below compiles hosts/au for
+      # this runner's architecture only; this checks both, because a Mac user's
+      # DAW may be either, and checks hosts/au without the editor as well, which
+      # is the QUESYNTH_AU_EDITOR=false escape hatch in tools/build-au.sh.
+      - name: The macOS editor compiles
         run: |
-          odin check hosts/panel -no-entry-point -target:darwin_arm64
-          odin check hosts/panel -no-entry-point -target:darwin_amd64
+          for target in darwin_arm64 darwin_amd64; do
+            odin check src/webkit -no-entry-point -target:$target
+            odin check hosts/panel -no-entry-point -target:$target
+            odin check hosts/au -no-entry-point -target:$target
+            odin check hosts/au -no-entry-point -target:$target -define:QUESYNTH_AU_EDITOR=false
+          done
 
       # The panel in WebKit, the engine a WKWebView editor will run it in. The
       # stand-in DOM above cannot say whether a real layout engine builds the
@@ -299,8 +303,14 @@ jobs:
           fi
 
           # Registered: now the real functional gate. A validation failure here is
-          # a fault in the unit and fails the job.
-          auval -v aumu Qsy1 QSYT
+          # a fault in the unit and fails the job. The log is kept because auval
+          # passes a unit that offers no view at all, so the Cocoa view has to be
+          # asserted from what auval printed ("VERIFYING CUSTOM UI").
+          auval -v aumu Qsy1 QSYT > build/auval.log 2>&1 || { cat build/auval.log; exit 1; }
+          cat build/auval.log
+          if [ "${QUESYNTH_AU_EDITOR:-true}" != false ]; then
+            grep -q "Cocoa Views Available: 1" build/auval.log || { echo "::error::auval found no Cocoa view"; exit 1; }
+          fi
 
       # pluginval, alongside auval rather than instead of it. auval is Apple's
       # gate and says whether a host will load the unit; pluginval puts the

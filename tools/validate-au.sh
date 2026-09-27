@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # auval is Apple's AU gate; pluginval adds external lifecycle, threading,
-# parameter and render fuzzing against the built component.
+# parameter and render fuzzing against the built component, and by default its
+# editor tests: open and close the unit's Cocoa view, and open it while
+# processing. PLUGINVAL_GUI=0 skips them, for a runner whose session cannot
+# host a WKWebView at all.
 set -euo pipefail
 
 component="${1:-build/au-stage/Quesynth.component}"
@@ -44,7 +47,11 @@ fi
 
 echo "pluginval version:"
 "$pluginval_bin" --version
-command=("$pluginval_bin" --strictness-level "$level" --timeout-ms 30000 --skip-gui-tests --validate "$component")
+command=("$pluginval_bin" --strictness-level "$level" --timeout-ms 30000)
+if [[ "${PLUGINVAL_GUI:-1}" != 1 ]]; then
+  command+=(--skip-gui-tests)
+fi
+command+=(--validate "$component")
 printf 'Running:'
 printf ' %q' "${command[@]}"
 printf '\n'

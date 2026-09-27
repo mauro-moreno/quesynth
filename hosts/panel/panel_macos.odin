@@ -2,48 +2,25 @@
 package panel
 
 import "base:runtime"
+import "core:os"
+import "core:path/filepath"
 
-// The macOS half of the panel, as a seam and not yet a view.
-//
-// panel.odin compiles on darwin against this file, so the editor, when it comes,
-// is one more platform file and not a second copy of the protocol. This file
-// owes panel.odin what panel_windows.odin and panel_linux.odin owe it: the Panel
-// type, with a `host` and a `view` that knows whether it is `ready`, and `post`,
-// the one way a message reaches the page. start, stop, resize and find_content
-// carry the names and signatures the other two use, and every field
-// hosts/vst3/editor.odin and hosts/clap/gui.odin touch is here, so widening those
-// two to darwin needs a platform file of their own and nothing new from this
-// package.
-//
-// Nothing here opens yet. find_content finds nothing and start returns false,
-// which is what the other platforms answer when their web-view runtime is
-// missing, so a host that asks gets no editor and draws its generic view.
-// `ready` never becomes true, so the sends that check it stop early, and `post`
-// drops whatever gets past them. And no host asks yet: the Audio Unit, the CLAP
-// and the VST3 all still offer no editor on macOS.
-//
-// The next increment is a WKWebView inside the NSView the host hands over,
-// speaking the transport ui/bridge.js already detects as "wkwebview". The page
-// sends through window.webkit.messageHandlers.synth, so the view registers a
-// script-message handler named `synth` and hands each message body to
-// on_message; the other way, `post` evaluates window.synthReceive(<json>) in the
-// page, as the WebKitGTK view does. That is not the `quesynth` handler and
-// window.synthPost that src/webkitgtk injects: WebKitGTK takes the generic
-// transport so bridge.js will not mistake it for a WKWebView.
+import "../../src/webkit"
 
-// What a WKWebView will be configured through: the fields the Windows and Linux
-// views are configured through, under the same names.
-Web_View :: struct {
-	// The NSView the host hands over.
-	parent:      rawptr,
-	content_dir: string,
-	on_message:  proc(user: rawptr, text: string),
-	user:        rawptr,
-	ready:       bool,
-}
+// The macOS half of the panel. The host hands over an NSView, a WKWebView goes
+// inside it, and everything it says is the protocol in panel.odin -- the same
+// one the Windows WebView2 and Linux WebKitGTK panels speak. Only the window,
+// the loader and the way a message reaches the page differ: the page posts
+// through window.webkit.messageHandlers.synth, which ui/bridge.js detects as
+// "wkwebview", and `post` evaluates window.synthReceive(<json>) in the page.
+//
+// Main thread only, as AppKit is. There is nothing to pump: WebKit runs on the
+// host's own run loop, and a message posted from another thread is dropped
+// rather than marshalled, so a host brings its off-thread changes to the main
+// thread itself.
 
 Panel :: struct {
-	view:   Web_View,
+	view:   webkit.View,
 	host:   Host,
 	width:  i32,
 	height: i32,
@@ -51,47 +28,84 @@ Panel :: struct {
 	ctx:    runtime.Context,
 }
 
-// Answering no here is what makes a host decline its editor before it allocates
-// anything, the same as a Windows machine with no WebView2. Walking `candidates`
-// from the plugin's own directory comes with the view: until there is one,
-// nothing found here could be shown.
+// dladdr finds the image an address belongs to, not the executable. The
+// executable is the DAW, and its directory is not where this plugin's panel
+// lives. The returned path belongs to the loader and is borrowed, not freed.
+module_dir :: proc() -> (string, bool) {
+	path, _, found := webkit.image()
+	if !found {
+		return "", false
+	}
+	return filepath.dir(string(path)), true
+}
+
+// Before offering an editor, rather than after opening an empty window. No
+// WebKit in the process means the host draws its generic controls.
+available :: proc() -> bool {
+	return webkit.available()
+}
+
+// The same ordered search as on Windows and Linux: candidates are relative to
+// the plugin binary, and the first directory that exists wins. A VST3 and an
+// Audio Unit both put the panel in Contents/Resources/ui, reached from
+// Contents/MacOS.
 find_content :: proc(candidates: []string) -> (content: string, ok: bool) {
+	dir, found := module_dir()
+	if !found || !available() {
+		return "", false
+	}
+	for candidate in candidates {
+		path, err := filepath.join({dir, candidate})
+		if err != nil {
+			continue
+		}
+		if os.exists(path) {
+			return path, true
+		}
+		delete(path)
+	}
 	return "", false
 }
 
-// Wired the way the other platforms wire theirs, then declined, because there is
-// no WKWebView to create. Creating one inside `parent`, loading
-// content_dir/index.html, registering the `synth` handler and setting
-// view.ready once the page has loaded is the next increment.
 start :: proc(p: ^Panel, parent: rawptr) -> bool {
 	if p == nil || p.open {
 		return false
 	}
 	p.view.parent = parent
+	p.view.width = p.width
+	p.view.height = p.height
+	p.view.start_page = "index.html"
 	p.view.on_message = on_message
 	p.view.user = p
-	return false
+
+	if !webkit.create(&p.view) {
+		return false
+	}
+	p.open = true
+	return true
 }
 
 stop :: proc(p: ^Panel) {
 	if p == nil || !p.open {
 		return
 	}
+	webkit.destroy(&p.view)
 	p.open = false
-	p.view.ready = false
 	p.view.parent = nil
 }
 
-// Remembered, so a host that asks for the size gets back what it set. There is
-// no view to move yet.
 resize :: proc(p: ^Panel, width, height: i32) {
 	if p == nil {
 		return
 	}
 	p.width = width
 	p.height = height
+	if p.open {
+		webkit.set_bounds(&p.view, width, height)
+	}
 }
 
-// Nowhere to send it until there is a page.
 @(private)
-post :: proc(p: ^Panel, text: string) {}
+post :: proc(p: ^Panel, text: string) {
+	webkit.post(&p.view, text)
+}
