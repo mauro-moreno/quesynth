@@ -1,4 +1,4 @@
-#+build windows
+#+build windows, linux
 package synth_clap
 
 import "base:runtime"
@@ -16,19 +16,19 @@ import "../panel"
 // view, the protocol, the parameter conversions -- is in hosts/panel and
 // shared.
 //
-// Windows only for now, and it says so rather than claiming otherwise:
-// is_api_supported answers false for anything but win32, and a host that asks
-// for something else gets no editor instead of an empty window.
+// Win32 on Windows, X11 on Linux. A host that asks for something else gets no
+// editor instead of an empty window. gui_windows.odin and gui_linux.odin carry
+// that choice and the Linux host-loop wiring; everything else is shared.
 
 // Where the panel is, relative to the plugin file.
 //
-// A CLAP plugin on Windows is a single file with no bundle around it, so there
+// A CLAP plugin on Windows or Linux is a single file with no bundle around it, so there
 // is nowhere *inside* it to put an interface. The convention here is a folder
 // beside it, which is what tools/build-clap.ps1 assembles:
 //
 //   synth.clap
 //   Quesynth-ui/          the panel
-//   WebView2Loader.dll
+//   WebView2Loader.dll    Windows only
 //
 // The VST3 layout is tried as well, so a build that puts both formats in one
 // bundle still finds it. First match wins.
@@ -44,7 +44,7 @@ gui_is_api_supported :: proc "c" (plugin: ^clap.Plugin, api: cstring, is_floatin
 	if is_floating {
 		return false
 	}
-	return string(api) == clap.WINDOW_API_WIN32
+	return string(api) == GUI_API && gui_host_supported(plugin)
 }
 
 gui_get_preferred_api :: proc "c" (plugin: ^clap.Plugin, api: ^cstring, is_floating: ^bool) -> bool {
@@ -53,7 +53,7 @@ gui_get_preferred_api :: proc "c" (plugin: ^clap.Plugin, api: ^cstring, is_float
 	}
 	// The constant itself, not a copy: the header asks for a pointer to one of
 	// the CLAP_WINDOW_API_ strings rather than a string the host must free.
-	api^ = clap.WINDOW_API_WIN32
+	api^ = GUI_API
 	is_floating^ = false
 	return true
 }
@@ -73,7 +73,7 @@ gui_create :: proc "c" (plugin: ^clap.Plugin, api: cstring, is_floating: bool) -
 	}
 
 	// The loader and the panel, before anything is allocated: a machine with no
-	// WebView2 costs nothing and simply has no editor.
+	// web-view runtime costs nothing and simply has no editor.
 	content, ok := panel.find_content(GUI_CONTENT)
 	if !ok {
 		return false
@@ -97,6 +97,7 @@ gui_create :: proc "c" (plugin: ^clap.Plugin, api: cstring, is_floating: bool) -
 		set_bank    = gui_set_bank,
 		read_bank   = gui_read_bank,
 	}
+	gui_prepare_loop(s)
 	s.panel_ready = true
 	return true
 }
@@ -179,7 +180,7 @@ gui_set_parent :: proc "c" (plugin: ^clap.Plugin, window: ^clap.Window) -> bool 
 	if s == nil || window == nil || window.handle == nil {
 		return false
 	}
-	if window.api == nil || string(window.api) != clap.WINDOW_API_WIN32 {
+	if window.api == nil || string(window.api) != GUI_API {
 		return false
 	}
 	context = runtime.default_context()
@@ -336,16 +337,6 @@ gui_volume :: proc(user: rawptr, amount: f32) {
 		return
 	}
 	s.volume = amount
-}
-
-// The GUI extension, or nothing on a platform without a web-view editor.
-//
-// plugin.odin answers EXT_GUI through this rather than naming GUI directly, so
-// the shared core compiles where GUI does not exist. gui_other.odin is the other
-// half. Returning the extension here is what makes a host offer the panel;
-// returning nil there is what makes it draw its own generic controls.
-gui_extension :: proc "c" () -> rawptr {
-	return &GUI
 }
 
 GUI := clap.Plugin_Gui {

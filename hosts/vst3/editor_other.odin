@@ -1,4 +1,5 @@
 #+build !windows
+#+build !linux
 package synth_vst3
 
 // The editor seam on a platform that has no web view backend yet.

@@ -37,6 +37,10 @@ Synth :: struct {
 	// The host half of the params extension, resolved once in init(). Null when
 	// the host does not implement it, which is legal and has to stay working.
 	host_params: ^clap.Host_Params,
+	// The Linux editor's host loop, resolved when an editor is requested.
+	host_fd:     ^clap.Host_Posix_Fd_Support,
+	host_timer:  ^clap.Host_Timer_Support,
+	gui_timer:   clap.Id,
 	eng:         engine.Engine,
 
 	// The audio thread's parameter set, in stored .sy1 integers.
@@ -672,7 +676,7 @@ plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 	case clap.EXT_PRESET_LOAD, clap.EXT_PRESET_LOAD_COMPAT:
 		return &PRESET_LOAD
 	}
-	return nil
+	return gui_loop_extension(id)
 }
 
 // -- audio ports -------------------------------------------------------------

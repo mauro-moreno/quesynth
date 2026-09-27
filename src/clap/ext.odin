@@ -1,7 +1,8 @@
 package clap
 
 // The plugin-side extensions this synthesiser implements: audio-ports,
-// note-ports, params, state, and preset-load.
+// note-ports, params, state, and preset-load -- and, for the Linux editor,
+// posix-fd-support and timer-support.
 //
 // preset-load is here because loading a .sy1 file's values into the parameters
 // is a required deliverable and CLAP already has the interface for it: the host
@@ -9,9 +10,10 @@ package clap
 // alternative -- an extra exported C symbol of our own invention -- would be a
 // private protocol no real host could drive.
 //
-// The host-side halves of these extensions are not bound: the plugin reports
-// parameter changes through the output event queue it is already given, and
-// needs no callback into the host to do it.
+// Most host-side halves are not bound: the plugin reports parameter changes
+// through the output event queue it is already given, and needs no callback
+// into the host to do it. The exceptions are params (see Host_Params) and the
+// two event-loop extensions at the bottom, which only make sense as a pair.
 
 // -- audio ports -------------------------------------------------------------
 
@@ -192,9 +194,11 @@ Plugin_Preset_Load :: struct {
 EXT_GUI :: "clap.gui"
 
 WINDOW_API_WIN32 :: "win32"
+WINDOW_API_X11 :: "x11"
 
 // clap_window_t. The union is one pointer wide whichever member is used, so a
-// rawptr stands for all of them; on Windows it is the HWND.
+// rawptr stands for all of them: on Windows it is the HWND, on X11 the window
+// id (an unsigned long, which is pointer-sized on every Linux target).
 Window :: struct {
 	api:    cstring,
 	handle: rawptr,
@@ -226,4 +230,50 @@ Plugin_Gui :: struct {
 	suggest_title:     proc "c" (plugin: ^Plugin, title: cstring),
 	show:              proc "c" (plugin: ^Plugin) -> bool,
 	hide:              proc "c" (plugin: ^Plugin) -> bool,
+}
+
+// -- posix fd support and timer support ---------------------------------------
+//
+// clap.posix-fd-support and clap.timer-support, from ext/clap/include/clap/ext/
+// posix-fd-support.h and timer-support.h.
+//
+// On Windows a plugin window has the system's message loop whether the plugin
+// asks for it or not. On Linux there is no such thing: the host runs its own
+// loop, and a plugin whose editor needs file descriptors watched and timers run
+// -- the Linux editor's WebKitGTK view needs both -- asks the host to do it and
+// is called back on the main thread. The alternative, a private loop on a
+// thread of the plugin's own, would be a second GUI thread inside somebody
+// else's process.
+EXT_POSIX_FD_SUPPORT :: "clap.posix-fd-support"
+
+// clap_posix_fd_flags_t: what to watch for, and what happened.
+POSIX_FD_READ :: u32(1 << 0)
+POSIX_FD_WRITE :: u32(1 << 1)
+POSIX_FD_ERROR :: u32(1 << 2)
+
+// clap_plugin_posix_fd_support_t. Level-triggered: a readable descriptor keeps
+// calling until it is read.
+Plugin_Posix_Fd_Support :: struct {
+	on_fd: proc "c" (plugin: ^Plugin, fd: i32, flags: u32),
+}
+
+// clap_host_posix_fd_support_t
+Host_Posix_Fd_Support :: struct {
+	register_fd:   proc "c" (host: ^Host, fd: i32, flags: u32) -> bool,
+	modify_fd:     proc "c" (host: ^Host, fd: i32, flags: u32) -> bool,
+	unregister_fd: proc "c" (host: ^Host, fd: i32) -> bool,
+}
+
+EXT_TIMER_SUPPORT :: "clap.timer-support"
+
+// clap_plugin_timer_support_t
+Plugin_Timer_Support :: struct {
+	on_timer: proc "c" (plugin: ^Plugin, timer_id: Id),
+}
+
+// clap_host_timer_support_t. The host may lengthen a short period; the header
+// only promises that 30 Hz is allowed.
+Host_Timer_Support :: struct {
+	register_timer:   proc "c" (host: ^Host, period_ms: u32, timer_id: ^Id) -> bool,
+	unregister_timer: proc "c" (host: ^Host, timer_id: Id) -> bool,
 }

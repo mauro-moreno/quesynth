@@ -432,6 +432,9 @@ View_Rect :: struct {
 
 PLATFORM_TYPE_HWND :: "HWND"
 PLATFORM_TYPE_NSVIEW :: "NSView"
+// On Linux the parent handed to `attached` is an X11 window id, carried in the
+// pointer argument by value.
+PLATFORM_TYPE_X11_EMBED_WINDOW_ID :: "X11EmbedWindowID"
 
 IID_PLUG_VIEW :: proc "contextless" () -> TUID {return uid(0x5BC32507, 0xD06049EA, 0xA6151B52, 0x2B755B29)}
 IID_PLUG_FRAME :: proc "contextless" () -> TUID {return uid(0x367FAF01, 0xAFA94693, 0x8D4DA2A0, 0xED0882A3)}
@@ -469,6 +472,53 @@ IPlugFrame_Vtbl :: struct {
 	add_ref:         proc "c" (this: rawptr) -> u32,
 	release:         proc "c" (this: rawptr) -> u32,
 	resize_view:     proc "c" (this: rawptr, view: ^IPlugView, new_size: ^View_Rect) -> Result,
+}
+
+// -- the Linux run loop --------------------------------------------------------
+//
+// Steinberg::Linux::IRunLoop, IEventHandler and ITimerHandler, from
+// pluginterfaces/gui/iplugview.h. Linux has no system event loop a plugin can
+// assume, so the host lends its own: the plugin registers file descriptors and
+// timers with IRunLoop and is called back on the host's GUI thread. The host
+// provides IRunLoop as an extra interface of the IPlugFrame it passes to
+// setFrame.
+//
+// IEventHandler and ITimerHandler are the other way round -- implemented here,
+// called by the host -- which is why their vtables are laid out for filling in.
+// A handler may be registered for several descriptors, and
+// unregisterEventHandler drops every descriptor it was registered for.
+
+IID_EVENT_HANDLER :: proc "contextless" () -> TUID {return uid(0x561E65C9, 0x13A0496F, 0x813A2C35, 0x654D7983)}
+IID_TIMER_HANDLER :: proc "contextless" () -> TUID {return uid(0x10BDD94F, 0x41424774, 0x821FAD8F, 0xECA72CA9)}
+IID_RUN_LOOP :: proc "contextless" () -> TUID {return uid(0x18C35366, 0x97764F1A, 0x9C5B8385, 0x7A871389)}
+
+IEventHandler_Vtbl :: struct {
+	query_interface: proc "c" (this: rawptr, iid: ^TUID, obj: ^rawptr) -> Result,
+	add_ref:         proc "c" (this: rawptr) -> u32,
+	release:         proc "c" (this: rawptr) -> u32,
+	on_fd_is_set:    proc "c" (this: rawptr, fd: i32),
+}
+
+ITimerHandler_Vtbl :: struct {
+	query_interface: proc "c" (this: rawptr, iid: ^TUID, obj: ^rawptr) -> Result,
+	add_ref:         proc "c" (this: rawptr) -> u32,
+	release:         proc "c" (this: rawptr) -> u32,
+	on_timer:        proc "c" (this: rawptr),
+}
+
+IRunLoop :: struct {
+	vtbl: ^IRunLoop_Vtbl,
+}
+
+IRunLoop_Vtbl :: struct {
+	query_interface:          proc "c" (this: rawptr, iid: ^TUID, obj: ^rawptr) -> Result,
+	add_ref:                  proc "c" (this: rawptr) -> u32,
+	release:                  proc "c" (this: rawptr) -> u32,
+	register_event_handler:   proc "c" (this: rawptr, handler: rawptr, fd: i32) -> Result,
+	unregister_event_handler: proc "c" (this: rawptr, handler: rawptr) -> Result,
+	// The interval is a uint64 of milliseconds.
+	register_timer:           proc "c" (this: rawptr, handler: rawptr, milliseconds: u64) -> Result,
+	unregister_timer:         proc "c" (this: rawptr, handler: rawptr) -> Result,
 }
 
 // Interfaces the *host* provides. Only ever called, never implemented here.

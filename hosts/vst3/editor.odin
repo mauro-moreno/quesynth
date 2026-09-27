@@ -1,4 +1,4 @@
-#+build windows
+#+build windows, linux
 package synth_vst3
 
 import "base:runtime"
@@ -7,7 +7,7 @@ import "../../src/patch"
 import "../../src/vst3"
 import "../panel"
 
-// The editor: the interface in ui/ hosted in an Edge WebView2 control.
+// The editor: the interface in ui/ hosted in WebView2 or WebKitGTK.
 //
 // The point of this file is that there is only one interface. The same HTML
 // that opens in a browser, ships in the WebAssembly build and runs on a phone
@@ -36,6 +36,7 @@ Editor :: struct {
 	plugin:    ^Plugin,
 	frame:     ^vst3.IPlugFrame,
 	panel:     panel.Panel,
+	loop:      Editor_Loop,
 
 	ctx:       runtime.Context,
 }
@@ -243,6 +244,7 @@ view_release :: proc "c" (this: rawptr) -> u32 {
 		ed.plugin.editor = nil
 	}
 	panel.stop(&ed.panel)
+	editor_loop_detach(ed)
 	delete(ed.panel.view.content_dir)
 	free(ed)
 	return 0
@@ -252,7 +254,7 @@ view_is_platform_type_supported :: proc "c" (this: rawptr, type: cstring) -> vst
 	if type == nil {
 		return vst3.INVALID_ARGUMENT
 	}
-	return vst3.RESULT_OK if string(type) == vst3.PLATFORM_TYPE_HWND else vst3.RESULT_FALSE
+	return vst3.RESULT_OK if string(type) == EDITOR_PLATFORM_TYPE else vst3.RESULT_FALSE
 }
 
 // The host hands over a window. Everything the editor is gets built here and
@@ -262,13 +264,17 @@ view_attached :: proc "c" (this: rawptr, parent: rawptr, type: cstring) -> vst3.
 	ed := from_view(this)
 	context = ed.ctx
 
-	if parent == nil || type == nil || string(type) != vst3.PLATFORM_TYPE_HWND {
+	if parent == nil || type == nil || string(type) != EDITOR_PLATFORM_TYPE {
 		return vst3.INVALID_ARGUMENT
 	}
 	if ed.panel.open {
 		return vst3.RESULT_FALSE
 	}
+	if !editor_loop_attach(ed) {
+		return vst3.RESULT_FALSE
+	}
 	if !panel.start(&ed.panel, parent) {
+		editor_loop_detach(ed)
 		// No runtime, or the loader refused. The host keeps the window; it just
 		// stays empty. Said plainly rather than pretended away: returning OK
 		// here would claim an editor that is not there.
@@ -281,6 +287,7 @@ view_removed :: proc "c" (this: rawptr) -> vst3.Result {
 	ed := from_view(this)
 	context = ed.ctx
 	panel.stop(&ed.panel)
+	editor_loop_detach(ed)
 	return vst3.RESULT_OK
 }
 
