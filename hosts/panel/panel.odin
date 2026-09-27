@@ -1,4 +1,4 @@
-#+build windows, linux
+#+build windows, linux, darwin
 package panel
 
 import "core:encoding/json"
@@ -23,7 +23,9 @@ import "core:strings"
 // copy: the web view underneath it is WebView2 on Windows (panel_windows.odin)
 // and WebKitGTK on Linux (panel_linux.odin), and each of those supplies the
 // Panel type, starting and stopping the view, and `post`, the one way a message
-// gets to the page.
+// gets to the page. On macOS, panel_macos.odin supplies the same names around a
+// WKWebView that does not exist yet, so this file compiles there and the view
+// never opens.
 
 // Big enough that no section starts out scrolled.
 WIDTH :: i32(1180)

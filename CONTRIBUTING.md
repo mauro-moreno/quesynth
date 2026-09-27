@@ -56,14 +56,29 @@ odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
 odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
+node --test tests/ui/panel-smoke.test.mjs
 ```
 
 CI runs these on Windows, Linux, and macOS. The VST3 and CLAP plugins build on
 Windows and Linux -- the Linux editor is WebKitGTK, loaded at run time, so no
 `-dev` package is needed -- and on Linux CI also drives the built CLAP with
 `tools/clapprobe` to prove a host can load it. The Audio Unit is macOS only: CI
-assembles it with `tools/build-au.sh` and validates it with `auval`, so if you
-touch `hosts/au` or `src/audiounit` without a Mac, lean on the macOS CI job.
+assembles it with `tools/build-au.sh`, validates it with `auval`, and then runs
+it through `pluginval` with `tools/validate-au.sh`, so if you touch `hosts/au`
+or `src/audiounit` without a Mac, lean on the macOS CI job.
+
+The panel smoke test above boots `ui/` in a stand-in DOM and needs nothing but
+Node. The macOS job goes further: it checks that the macOS editor seam in
+`hosts/panel/panel_macos.odin` compiles, then renders the panel in headless
+WebKit with `tools/ui-screenshot.mjs`, fails if the page did not build, and
+keeps the screenshot as the `macos-ui-panel-screenshot` artifact. To run that
+render yourself:
+
+```
+npm install --no-save --no-package-lock playwright
+npx playwright install webkit
+node tools/ui-screenshot.mjs build/ui-smoke/panel.png
+```
 
 If you touched the measured tables in `src/engine`, regenerate the interface's
 parameter table too, or CI will fail on a stale one:

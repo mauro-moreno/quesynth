@@ -93,6 +93,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$($_.Name) does not parse" }
           }
 
+      # Parsing is not building. Every file can parse and the editor still come
+      # up blank, because app.js threw on something it expected to find. This
+      # boots the page's own scripts in a stand-in DOM and checks that the
+      # sections, the navigator and the controls came out. It needs no browser,
+      # so it costs nothing here; the macOS job runs the same file first, ahead
+      # of a real WebKit render.
+      - name: The panel builds (GUI smoke)
+        shell: pwsh
+        run: node --test tests/ui/panel-smoke.test.mjs
+
       # The measurement tool behind the sub-oscillator level section of
       # docs/null-test.md. It cannot run its own measurement here -- that needs
       # the reference plugin and a patch corpus, neither of which is in the
@@ -204,6 +214,46 @@ jobs:
           odin test tests/dsp
           odin test tests/patch
 
+      # The same panel check the Windows job runs, first here because this is
+      # the runner that goes on to render the page in a real WebKit.
+      - name: The panel builds (GUI smoke)
+        run: node --test tests/ui/panel-smoke.test.mjs
+
+      # The editor seam. hosts/panel/panel_macos.odin gives panel.odin the names
+      # it needs on darwin without a WKWebView behind them yet, and nothing
+      # opens an editor on macOS, so the host builds below would still pass if
+      # the seam fell out of step with the other platforms. Checked for both
+      # architectures, because a Mac user's DAW may be either.
+      - name: The macOS editor seam compiles
+        run: |
+          odin check hosts/panel -no-entry-point -target:darwin_arm64
+          odin check hosts/panel -no-entry-point -target:darwin_amd64
+
+      # The panel in WebKit, the engine a WKWebView editor will run it in. The
+      # stand-in DOM above cannot say whether a real layout engine builds the
+      # same page; this loads ui/index.html headless, fails if the sections,
+      # navigator or controls are missing or the page threw, and keeps a
+      # screenshot either way. Playwright is fetched here rather than declared:
+      # the repository has no package.json and this is its only use.
+      # --with-deps only installs system packages on Linux, so it is allowed to
+      # fall back to the plain browser download.
+      - name: The panel renders in WebKit (GUI smoke)
+        run: |
+          npm install --no-save --no-package-lock playwright
+          npx --yes playwright install --with-deps webkit || npx --yes playwright install webkit
+          node tools/ui-screenshot.mjs build/ui-smoke/panel.png
+
+      # Uploaded even when the step above fails: the screenshot is taken before
+      # the assertions, and a picture of a broken panel is the fastest way to
+      # see what broke.
+      - name: Keep the panel screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ui-panel-screenshot
+          path: build/ui-smoke/panel.png
+          if-no-files-found: warn
+
       # The point of this runner. The Audio Unit is macOS-only -- it cannot be
       # cross-linked from Linux or Windows -- so this is where hosts/au is built at
       # all. tools/build-au.sh assembles the .component bundle (the dylib plus the
@@ -251,6 +301,16 @@ jobs:
           # Registered: now the real functional gate. A validation failure here is
           # a fault in the unit and fails the job.
           auval -v aumu Qsy1 QSYT
+
+      # pluginval, alongside auval rather than instead of it. auval is Apple's
+      # gate and says whether a host will load the unit; pluginval puts the
+      # built component through its lifecycle, threading, parameter and render
+      # fuzzing, which is where a unit that loads can still fault. It runs on
+      # the bundle build-au.sh staged above. tools/validate-au.sh installs
+      # pluginval when the runner lacks it and warns rather than fails if that
+      # is impossible; a validation failure fails the job.
+      - name: The Audio Unit survives pluginval
+        run: bash tools/validate-au.sh build/au-stage/Quesynth.component
 
       # The other plugin hosts build headless on macOS too -- the panel is Windows
       # and Linux only, so a host draws its generic view here -- which guards their
