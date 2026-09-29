@@ -65,12 +65,16 @@ run :: proc(path: string) -> int {
 	bank_slots: []Bank_Slot
 	bank_sel := 0
 
-	// Archive browser state: 0 none, 1 banks, 2 patches. Names are held for the
-	// current level only, so browsing a huge corpus costs one list at a time.
+	// Archive browser state: 0 none, 1 banks, 2 patches. The opened archive and
+	// its bank names persist while hidden, so returning to it costs no reload;
+	// only the current patch list is re-fetched. `bank_arc_sel` remembers which
+	// bank was highlighted so leaving and re-entering lands in the same place.
 	archive_view := 0
+	has_archive := false
 	bank_names: []string
 	patch_names: []string
 	arc_sel := 0
+	bank_arc_sel := 0
 
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
@@ -78,7 +82,7 @@ run :: proc(path: string) -> int {
 		free_all(context.temp_allocator)
 		switch {
 		case archive_view == 1:
-			render_list("Quesynth — Archive banks", bank_names, arc_sel, "Enter open   Esc close   Q quit", theme)
+			render_list("Quesynth — Archive banks", bank_names, arc_sel, "Enter open   O new archive   Esc hide   Q quit", theme)
 		case archive_view == 2:
 			render_list("Quesynth — Archive patches", patch_names, arc_sel, "Enter load   Esc back   Q quit", theme)
 		case browsing:
@@ -106,6 +110,7 @@ run :: proc(path: string) -> int {
 				if archive_view == 1 {
 					if _, ok := client_archive_bank(&client, arc_sel); ok {
 						if names, nok := client_archive_names(&client, "archive.patches"); nok {
+							bank_arc_sel = arc_sel
 							patch_names = names
 							arc_sel = 0
 							archive_view = 2
@@ -119,19 +124,33 @@ run :: proc(path: string) -> int {
 						connected = metrics.ok
 					}
 				}
-			case .Escape, .Archive:
-				if archive_view == 2 {
-					client_names_free(patch_names)
-					patch_names = nil
-					arc_sel = 0
-					archive_view = 1
-				} else {
-					client_archive_close(&client)
+			case .Load_File:
+				// Open a different archive from the banks view, replacing this one.
+				if archive_view == 1 && connected && tui_open_archive(&client, theme) {
 					client_names_free(bank_names)
 					bank_names = nil
+					if names, ok := client_archive_names(&client, "archive.banks"); ok {
+						bank_names = names
+						arc_sel = 0
+						bank_arc_sel = 0
+					} else {
+						has_archive = false
+						archive_view = 0
+					}
+				}
+			case .Escape, .Archive:
+				if archive_view == 2 {
+					// Back to the bank list, landing on the bank just left.
+					client_names_free(patch_names)
+					patch_names = nil
+					arc_sel = bank_arc_sel
+					archive_view = 1
+				} else {
+					// Hide the browser but keep the archive open, so returning to
+					// it with A costs no reload.
 					archive_view = 0
 				}
-			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Other:
 			// Ignored in the archive browser.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -263,11 +282,19 @@ run :: proc(path: string) -> int {
 				}
 			}
 		case .Archive:
-			if connected && tui_open_archive(&client, theme) {
-				if names, ok := client_archive_names(&client, "archive.banks"); ok {
-					bank_names = names
-					arc_sel = 0
+			if connected {
+				if has_archive {
+					// The archive is already open; step back into it, no reload.
+					arc_sel = bank_arc_sel
 					archive_view = 1
+				} else if tui_open_archive(&client, theme) {
+					if names, ok := client_archive_names(&client, "archive.banks"); ok {
+						bank_names = names
+						has_archive = true
+						arc_sel = 0
+						bank_arc_sel = 0
+						archive_view = 1
+					}
 				}
 			}
 		case .Save, .Escape, .Other:
