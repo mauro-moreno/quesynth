@@ -34,10 +34,12 @@ import "core:os"
 USAGE :: `usage:
   quesynth [patch.sy1]                        run the synthesiser
   quesynth --daemon [patch.sy1]               run the headless audio daemon
+  quesynth --stop                             stop a running daemon
   quesynth --selftest <patch.sy1> <out.wav>   render offline, open no device`
 
 Mode :: enum {
 	Daemon,
+	Stop,
 	Selftest,
 	Help,
 	Usage_Error,
@@ -64,6 +66,15 @@ parse_args :: proc(args: []string) -> Cli {
 	switch operands[0] {
 	case "--help", "-h":
 		return Cli{mode = .Help}
+
+	case "--stop":
+		if len(operands) > 1 {
+			return Cli {
+				mode = .Usage_Error,
+				message = fmt.tprintf("error: unexpected extra argument %q", operands[1]),
+			}
+		}
+		return Cli{mode = .Stop}
 
 	case "--selftest":
 		// Exactly two operands. Being strict here matters: a missing output
@@ -112,6 +123,8 @@ main :: proc() {
 		os.exit(run_selftest(cli.patch_path, cli.output_path))
 	case .Daemon:
 		os.exit(run_daemon(cli.patch_path))
+	case .Stop:
+		os.exit(run_stop())
 	case .Help:
 		fmt.println(USAGE)
 		os.exit(0)

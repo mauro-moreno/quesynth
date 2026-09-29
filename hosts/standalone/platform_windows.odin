@@ -54,6 +54,12 @@ shutdown_requested :: proc() -> bool {
 	return bool(intrinsics.atomic_load_explicit(&g_shutdown, .Acquire))
 }
 
+// Set from the control server's daemon.shutdown handler. Raises the same flag
+// the console handler does, so a remote stop unwinds like Ctrl-C.
+request_shutdown :: proc() {
+	intrinsics.atomic_store_explicit(&g_shutdown, true, .Release)
+}
+
 sleep_ms :: proc(milliseconds: int) {
 	win.Sleep(win.DWORD(milliseconds))
 }

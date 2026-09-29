@@ -4,6 +4,7 @@ import "base:intrinsics"
 import "core:fmt"
 
 import "../../src/engine"
+import "../../src/patch"
 
 // The daemon: the persistent audio core of the standalone build.
 //
@@ -114,6 +115,16 @@ run_daemon :: proc(patch_path: string) -> int {
 	engine.engine_load_patch(&d.live.eng, parsed, audio.format.sample_rate)
 	defer engine.engine_destroy(&d.live.eng)
 
+	// Publish the initial state so a client that connects before any edit sees
+	// the loaded patch rather than an all-zero snapshot.
+	{
+		init: Snapshot_Data
+		for i in 0 ..< patch.PARAMETER_COUNT {
+			init.values[i] = i32(engine.engine_patch_value(&d.live.eng, i))
+		}
+		snapshot_publish(&d.live.snapshot, init)
+	}
+
 	// The last allocations before the stream starts. Everything the audio
 	// thread needs now exists.
 	d.live.left = make([]f32, audio.max_frames)
@@ -162,6 +173,24 @@ run_daemon :: proc(patch_path: string) -> int {
 	daemon_set_state(d, .Running)
 	fmt.printfln("quesynth daemon ready; press Ctrl-C to stop")
 
+	// Bring up the control surface once audio is running. A failure here is not
+	// fatal: the daemon still makes sound, it just has nothing to steer it. The
+	// context hands the server a ring to push edits onto and a snapshot to read,
+	// never the engine itself.
+	cs: Control_Server
+	cs.path = control_socket_path()
+	cs.ctx = Control_Context {
+		ring     = &d.live.ring,
+		snapshot = &d.live.snapshot,
+		state    = &d.state,
+	}
+	control_ok := control_server_start(&cs)
+	if control_ok {
+		fmt.printfln("control %s", cs.path)
+	} else {
+		fmt.eprintfln("control unavailable; running without a control surface")
+	}
+
 	// The handler only sets a flag, so the actual teardown happens here on the
 	// main thread where blocking and freeing are legal.
 	for !shutdown_requested() {
@@ -169,6 +198,13 @@ run_daemon :: proc(patch_path: string) -> int {
 	}
 
 	daemon_set_state(d, .Stopping)
+	// Stop accepting clients before the audio stream, so no edit is taken while
+	// the engine is tearing down.
+	if control_ok {
+		control_server_stop(&cs)
+	}
+	delete(cs.path)
+
 	// Order matters: stop the stream first so the audio thread is provably not
 	// inside `live_render` before the deferred engine and buffer teardown above
 	// starts pulling memory out from under it.

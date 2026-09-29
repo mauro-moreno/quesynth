@@ -50,6 +50,14 @@ Live :: struct {
 	// stream starts, sized to the largest block the device can ask for.
 	left:  []f32,
 	right: []f32,
+
+	// The control plane, threaded through the audio callback. The control
+	// server pushes edits onto `ring`; this callback drains them, applies them,
+	// bumps `revision` and republishes `snapshot` for readers. All three are
+	// zero-valued and inert until a control server is wired to them.
+	ring:     Param_Ring,
+	snapshot: Snapshot,
+	revision: int,
 }
 
 // The audio callback. Everything it touches is preallocated or atomic.
@@ -77,6 +85,30 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 			break
 		}
 		live_handle_midi(s, message)
+	}
+
+	// Drain control edits the same way, and at the same block-accurate timing.
+	// engine_set_stored takes the allocation-free rebind path a MIDI control
+	// change already uses, so applying one here on the audio thread is safe.
+	applied := false
+	for {
+		cmd, ok := param_ring_pop(&s.ring)
+		if !ok {
+			break
+		}
+		engine.engine_set_stored(&s.eng, int(cmd.index), int(cmd.stored))
+		s.revision += 1
+		applied = true
+	}
+	// Republish only when something changed, so an idle daemon does no snapshot
+	// work per block. A reader between now and the next edit sees this state.
+	if applied {
+		data: Snapshot_Data
+		data.revision = s.revision
+		for i in 0 ..< patch.PARAMETER_COUNT {
+			data.values[i] = i32(engine.engine_patch_value(&s.eng, i))
+		}
+		snapshot_publish(&s.snapshot, data)
 	}
 
 	// The scratch was sized from the backend's own stated maximum, so this

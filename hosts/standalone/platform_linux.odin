@@ -50,6 +50,13 @@ shutdown_requested :: proc() -> bool {
 	return bool(intrinsics.atomic_load_explicit(&g_shutdown, .Acquire))
 }
 
+// Set from the control server's daemon.shutdown handler, off the audio thread.
+// It raises the same flag the signal handler does, so `quesynth --stop` unwinds
+// through exactly the path Ctrl-C does.
+request_shutdown :: proc() {
+	intrinsics.atomic_store_explicit(&g_shutdown, true, .Release)
+}
+
 sleep_ms :: proc(milliseconds: int) {
 	time.sleep(time.Duration(milliseconds) * time.Millisecond)
 }

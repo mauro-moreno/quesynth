@@ -51,6 +51,7 @@ odin test tests/patch
 odin test tests/clap
 odin test tests/panel
 odin test tests/vst3
+odin test tests/control
 odin test tests/registry
 odin test tests/standalone
 odin build hosts/standalone -o:speed -out:build/quesynth
