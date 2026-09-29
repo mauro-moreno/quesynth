@@ -119,7 +119,7 @@ render :: proc(
 			),
 		),
 	)
-	draw_line(status + 2, paint(theme, theme.status, "Tab group   up/down select   left/right change   R reset   Q quit"))
+	draw_line(status + 2, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   O patch file   Q quit"))
 	draw_line(status + 3, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 
 	// Clear anything a previously larger group left below the current one.
@@ -149,7 +149,7 @@ render_bank :: proc(slots: []Bank_Slot, selected: int, theme: Theme) {
 	}
 	foot := 3 + len(slots) + 1
 	draw_line(foot, paint(theme, theme.dim, "-------------------------------------------------"))
-	draw_line(foot + 1, paint(theme, theme.status, "up/down select   Enter load   S save here   O load file   Esc back"))
+	draw_line(foot + 1, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
 	terminal_write("\x1b[J")
 }
 

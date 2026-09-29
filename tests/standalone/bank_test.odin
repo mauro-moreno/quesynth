@@ -199,3 +199,73 @@ test_patch_load_file_and_bank_write_round_trip :: proc(t: ^testing.T) {
 	_, perr := patch.parse_bank_json(data, context.temp_allocator)
 	testing.expect(t, perr == .None)
 }
+
+@(test)
+test_load_bank_file_reads_a_written_bank :: proc(t: ^testing.T) {
+	// Build a bank, name a slot, write it out.
+	src := new(patch.Slots)
+	defer free(src)
+	patch.factory_prepare()
+	patch.slots_load_factory(src)
+	first := -1
+	for i in 0 ..< patch.FACTORY_SLOTS {
+		if src.filled[i] {first = i; break}
+	}
+	if !testing.expect(t, first >= 0) {return}
+	json := patch.slots_write_json(src, context.temp_allocator)
+	path := fmt.tprintf("/tmp/quesynth-loadbank-%d.json", posix.getpid())
+	cpath := strings.clone_to_cstring(path)
+	defer delete(cpath)
+	defer posix.unlink(cpath)
+	testing.expect(t, os.write_entire_file_from_string(path, json) == nil)
+
+	// load_bank_file fills a fresh Slots with the same names and values.
+	dst := new(patch.Slots)
+	defer free(dst)
+	testing.expect(t, standalone.load_bank_file(dst, path))
+	testing.expect_value(t, patch.slots_name(dst, first), patch.slots_name(src, first))
+	want, _ := patch.slots_patch(src, first)
+	got, filled := patch.slots_patch(dst, first)
+	testing.expect(t, filled)
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		testing.expect_value(t, got[i], want[i])
+	}
+
+	// A missing or non-bank file is a clean failure, not a crash.
+	testing.expect(t, !standalone.load_bank_file(dst, "/tmp/quesynth-nope-does-not-exist.json"))
+}
+
+@(test)
+test_bank_load_file_command_replaces_browsable_bank :: proc(t: ^testing.T) {
+	// A one-slot bank written to disk, loaded over the socket.
+	src := new(patch.Slots)
+	defer free(src)
+	patch.factory_prepare()
+	patch.slots_load_factory(src)
+	json := patch.slots_write_json(src, context.temp_allocator)
+	path := fmt.tprintf("/tmp/quesynth-loadcmd-%d.json", posix.getpid())
+	cpath := strings.clone_to_cstring(path)
+	defer delete(cpath)
+	defer posix.unlink(cpath)
+	testing.expect(t, os.write_entire_file_from_string(path, json) == nil)
+
+	// Start a daemon whose bank is empty; loading the file fills it.
+	bank := new(patch.Slots)
+	defer free(bank)
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	cs := bank_server(bank, &ring, &snap, "loadcmd")
+	if !testing.expect(t, standalone.control_server_start(&cs)) {return}
+	defer standalone.control_server_stop(&cs)
+	fd, ok := connect_unix(cs.path)
+	if !testing.expect(t, ok) {return}
+	defer posix.close(fd)
+
+	reliability_send(fd, "1 1 bank.list")
+	testing.expect(t, strings.contains(reliability_reply(fd), "count=0"))
+	reliability_send(fd, fmt.tprintf("1 2 bank.load_file %s", path))
+	testing.expect(t, strings.has_prefix(reliability_reply(fd), "1 2 ok"))
+	// The browsable bank now has the file's filled slots.
+	reliability_send(fd, "1 3 bank.list")
+	testing.expect(t, strings.contains(reliability_reply(fd), "\nslot="))
+}

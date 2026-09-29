@@ -110,6 +110,12 @@ run :: proc(path: string) -> int {
 					bank_slots = nil
 					browsing = false
 				}
+			case .Load_Bank:
+				if connected && tui_load_bank(&client, theme) {
+					client_bank_free(bank_slots)
+					bank_slots, _ = client_bank_list(&client)
+					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
+				}
 			case .Tick, .Left, .Right, .Reset, .Tab, .Other:
 			// Ignored in the browser.
 			}
@@ -168,6 +174,15 @@ run :: proc(path: string) -> int {
 				if connected { metrics = client_info(&client); connected = metrics.ok }
 				if !connected { client_close(&client); metrics = {} }
 			}
+		case .Load_Bank:
+			if connected && tui_load_bank(&client, theme) {
+				// Loading a bank changes what is browsable; open the browser on it.
+				if slots, ok := client_bank_list(&client); ok {
+					bank_slots = slots
+					bank_sel = 0
+					browsing = true
+				}
+			}
 		case .Save, .Escape, .Other:
 		// Save applies only in the bank browser; Escape and Other are ignored.
 		}
@@ -202,6 +217,17 @@ tui_load_file :: proc(client: ^Client, rows: []Row, theme: Theme) -> bool {
 		client_load_snapshot(client, rows)
 	}
 	return true
+}
+
+// Prompt for a bank file path and load it as the browsable bank. Returns whether
+// the bank was replaced, so the caller can refresh its slot list.
+@(private)
+tui_load_bank :: proc(client: ^Client, theme: Theme) -> bool {
+	terminal_clear()
+	path, ok := prompt_line(1, "Load bank file: ", theme)
+	trimmed := strings.trim_space(path)
+	if !ok || len(trimmed) == 0 { return false }
+	return client_bank_load_file(client, trimmed)
 }
 
 // Move the selected parameter by one step, clamped to its domain, and adopt the

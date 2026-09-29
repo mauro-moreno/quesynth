@@ -34,6 +34,30 @@ test_daemon_flag_with_and_without_patch :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_bank_flag_in_run_and_daemon :: proc(t: ^testing.T) {
+	run := standalone.parse_args([]string{"quesynth", "--bank", "user.json"})
+	testing.expect_value(t, run.mode, standalone.Mode.Run)
+	testing.expect_value(t, run.bank_path, "user.json")
+	testing.expect_value(t, run.patch_path, "")
+
+	run_both := standalone.parse_args([]string{"quesynth", "--bank", "user.json", "lead.sy1"})
+	testing.expect_value(t, run_both.mode, standalone.Mode.Run)
+	testing.expect_value(t, run_both.bank_path, "user.json")
+	testing.expect_value(t, run_both.patch_path, "lead.sy1")
+
+	daemon := standalone.parse_args([]string{"quesynth", "--daemon", "--bank", "b.json", "pad.sy1"})
+	testing.expect_value(t, daemon.mode, standalone.Mode.Daemon)
+	testing.expect_value(t, daemon.bank_path, "b.json")
+	testing.expect_value(t, daemon.patch_path, "pad.sy1")
+
+	// A dangling --bank and a repeated --bank are both errors.
+	missing := standalone.parse_args([]string{"quesynth", "--bank"})
+	testing.expect_value(t, missing.mode, standalone.Mode.Usage_Error)
+	twice := standalone.parse_args([]string{"quesynth", "--bank", "a.json", "--bank", "b.json"})
+	testing.expect_value(t, twice.mode, standalone.Mode.Usage_Error)
+}
+
+@(test)
 test_selftest_needs_two_operands :: proc(t: ^testing.T) {
 	ok := standalone.parse_args([]string{"quesynth", "--selftest", "in.sy1", "out.wav"})
 	testing.expect_value(t, ok.mode, standalone.Mode.Selftest)

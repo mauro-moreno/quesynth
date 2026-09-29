@@ -81,7 +81,7 @@ daemon_state :: proc(d: ^Daemon) -> Daemon_State {
 //   start the stream -> after this the audio thread is live; allocate nothing
 //   wait             -> the signal handler only raises a flag
 //   stop the stream  -> provably out of the callback before anything is freed
-run_daemon :: proc(patch_path: string) -> int {
+run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// Heap-allocated because the audio thread holds `&d.live` for the whole
 	// life of the stream; a main-thread stack frame is the wrong owner.
 	d := new(Daemon)
@@ -214,6 +214,10 @@ run_daemon :: proc(patch_path: string) -> int {
 	defer free(bank)
 	patch.factory_prepare()
 	patch.slots_load_factory(bank)
+	// A user bank replaces the factory one: the --bank flag if given, otherwise a
+	// bank saved to the config directory on a previous run. Failure is not fatal --
+	// the factory bank stays loaded to fall back to.
+	apply_user_bank(bank, bank_path)
 	cs.ctx = Control_Context {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,

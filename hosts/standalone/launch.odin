@@ -52,8 +52,8 @@ run_stop :: proc() -> int {
 // The default `quesynth`: make sure a daemon is running, then attach the TUI to
 // it. The daemon is a separate, detached process, so quitting the TUI leaves it
 // -- and the audio -- running (plan Invariant 3, §47).
-run_tui :: proc(patch_path: string) -> int {
-	path, ok := ensure_daemon(patch_path)
+run_tui :: proc(patch_path: string, bank_path: string) -> int {
+	path, ok := ensure_daemon(patch_path, bank_path)
 	if !ok {
 		fmt.eprintfln("error: could not start or reach a daemon")
 		return 1
@@ -64,12 +64,12 @@ run_tui :: proc(patch_path: string) -> int {
 
 // Attach if a daemon is already listening; otherwise spawn one detached and wait
 // for its socket to come up. Returns the socket path on success.
-ensure_daemon :: proc(patch_path: string) -> (path: string, ok: bool) {
+ensure_daemon :: proc(patch_path: string, bank_path: string) -> (path: string, ok: bool) {
 	path = control_socket_path()
 	if daemon_is_running(path) {
 		return path, true
 	}
-	if !spawn_daemon(patch_path) {
+	if !spawn_daemon(patch_path, bank_path) {
 		delete(path)
 		return "", false
 	}
@@ -124,7 +124,7 @@ daemon_is_running :: proc(path: string) -> bool {
 // end of file after the TUI exits, and would hang waiting on a process that has
 // already gone.
 @(private = "file")
-spawn_daemon :: proc(patch_path: string) -> bool {
+spawn_daemon :: proc(patch_path: string, bank_path: string) -> bool {
 	pid := posix.fork()
 	if pid < 0 {
 		return false
@@ -155,15 +155,19 @@ spawn_daemon :: proc(patch_path: string) -> bool {
 		posix.close(posix.FD(fd))
 	}
 
+	// Rebuild the daemon's argv, forwarding --bank and the patch so the daemon
+	// this front-end spawns loads the same bank the user asked for.
 	exe: cstring = "/proc/self/exe"
-	if patch_path == "" {
-		argv := [?]cstring{"quesynth", "--daemon", nil}
-		posix.execv(exe, raw_data(argv[:]))
-	} else {
-		cpatch := strings.clone_to_cstring(patch_path)
-		argv := [?]cstring{"quesynth", "--daemon", cpatch, nil}
-		posix.execv(exe, raw_data(argv[:]))
+	argv: [dynamic]cstring
+	append(&argv, "quesynth", "--daemon")
+	if bank_path != "" {
+		append(&argv, "--bank", strings.clone_to_cstring(bank_path))
 	}
+	if patch_path != "" {
+		append(&argv, strings.clone_to_cstring(patch_path))
+	}
+	append(&argv, nil)
+	posix.execv(exe, raw_data(argv[:]))
 	// execv only returns on failure.
 	posix._exit(127)
 }

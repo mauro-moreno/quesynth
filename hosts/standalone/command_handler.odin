@@ -69,6 +69,8 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_patch_save(cc, req, out)
 	case "bank.write":
 		control_bank_write(cc, req, out)
+	case "bank.load_file":
+		control_bank_load_file(cc, req, out)
 	case:
 		control_write_err(out, req, .Unknown_Command, "unknown command")
 	}

@@ -15,7 +15,7 @@ daemon_is_running :: proc(path: string) -> bool {
 	return false
 }
 
-run_tui :: proc(patch_path: string) -> int {
+run_tui :: proc(patch_path: string, bank_path: string) -> int {
 	fmt.eprintfln("error: the interactive UI is not supported on this platform yet")
 	return 1
 }

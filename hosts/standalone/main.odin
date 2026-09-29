@@ -32,10 +32,10 @@ import "core:os"
 // unit-tested without opening a device.
 
 USAGE :: `usage:
-  quesynth [patch.sy1]                        run the synthesiser
-  quesynth --daemon [patch.sy1]               run the headless audio daemon
-  quesynth --stop                             stop a running daemon
-  quesynth --selftest <patch.sy1> <out.wav>   render offline, open no device`
+  quesynth [--bank <bank.json>] [patch.sy1]              run the synthesiser
+  quesynth --daemon [--bank <bank.json>] [patch.sy1]     run the headless daemon
+  quesynth --stop                                        stop a running daemon
+  quesynth --selftest <patch.sy1> <out.wav>              render offline, open no device`
 
 Mode :: enum {
 	Run,
@@ -49,6 +49,7 @@ Mode :: enum {
 Cli :: struct {
 	mode:        Mode,
 	patch_path:  string,
+	bank_path:   string,
 	output_path: string,
 	// Set only for Usage_Error: the line printed before the usage text.
 	message:     string,
@@ -88,33 +89,51 @@ parse_args :: proc(args: []string) -> Cli {
 			}
 		}
 		return Cli{mode = .Selftest, patch_path = operands[1], output_path = operands[2]}
-
 	case "--daemon":
-		if len(operands) > 2 {
-			return Cli {
-				mode = .Usage_Error,
-				message = fmt.tprintf("error: unexpected extra argument %q", operands[2]),
-			}
+		pp, bp, ok, msg := parse_run_operands(operands[1:])
+		if !ok {
+			return Cli{mode = .Usage_Error, message = msg}
 		}
-		return Cli{mode = .Daemon, patch_path = len(operands) == 2 ? operands[1] : ""}
+		return Cli{mode = .Daemon, patch_path = pp, bank_path = bp}
 	}
 
-	// The default mode with a positional patch. An unknown flag is an error
-	// rather than a filename, so a mistyped option fails loudly instead of
-	// being taken for a patch path that does not exist.
-	if len(operands[0]) > 0 && operands[0][0] == '-' {
-		return Cli {
-			mode = .Usage_Error,
-			message = fmt.tprintf("error: unknown option %q", operands[0]),
-		}
+	// The default mode with an optional --bank and a positional patch.
+	pp, bp, ok, msg := parse_run_operands(operands)
+	if !ok {
+		return Cli{mode = .Usage_Error, message = msg}
 	}
-	if len(operands) > 1 {
-		return Cli {
-			mode = .Usage_Error,
-			message = fmt.tprintf("error: unexpected extra argument %q", operands[1]),
+	return Cli{mode = .Run, patch_path = pp, bank_path = bp}
+}
+
+// Parse the operands common to Run and Daemon mode: an optional `--bank <path>`
+// and an optional positional patch, in any order. An unknown flag, a repeated
+// --bank or a second positional is an error rather than a silently-taken path.
+@(private)
+parse_run_operands :: proc(ops: []string) -> (patch_path, bank_path: string, ok: bool, message: string) {
+	i := 0
+	for i < len(ops) {
+		a := ops[i]
+		if a == "--bank" {
+			if i + 1 >= len(ops) {
+				return "", "", false, "error: --bank needs a path"
+			}
+			if bank_path != "" {
+				return "", "", false, "error: --bank given more than once"
+			}
+			bank_path = ops[i + 1]
+			i += 2
+			continue
 		}
+		if len(a) > 0 && a[0] == '-' {
+			return "", "", false, fmt.tprintf("error: unknown option %q", a)
+		}
+		if patch_path != "" {
+			return "", "", false, fmt.tprintf("error: unexpected extra argument %q", a)
+		}
+		patch_path = a
+		i += 1
 	}
-	return Cli{mode = .Run, patch_path = operands[0]}
+	return patch_path, bank_path, true, ""
 }
 
 main :: proc() {
@@ -123,9 +142,9 @@ main :: proc() {
 	case .Selftest:
 		os.exit(run_selftest(cli.patch_path, cli.output_path))
 	case .Daemon:
-		os.exit(run_daemon(cli.patch_path))
+		os.exit(run_daemon(cli.patch_path, cli.bank_path))
 	case .Run:
-		os.exit(run_tui(cli.patch_path))
+		os.exit(run_tui(cli.patch_path, cli.bank_path))
 	case .Stop:
 		os.exit(run_stop())
 	case .Help:

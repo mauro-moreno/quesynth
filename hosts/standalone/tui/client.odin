@@ -264,6 +264,10 @@ client_bank_write :: proc(cl: ^Client, path: string) -> bool {
 	return client_ok(cl, fmt.tprintf("%d %d bank.write %s", control.PROTOCOL_VERSION, cl.next_id, path))
 }
 
+client_bank_load_file :: proc(cl: ^Client, path: string) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d bank.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path))
+}
+
 // Send a request and report only whether it succeeded, advancing the id.
 @(private)
 client_ok :: proc(cl: ^Client, line: string) -> bool {

@@ -177,6 +177,35 @@ control_bank_write :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 	strings.write_int(out, len(json))
 }
 
+// bank.load_file <path>: replace the browsable bank with a JSON bank from disk.
+// It only changes what is browsable; the live sound is unchanged until a patch
+// is loaded from the new bank.
+@(private)
+control_bank_load_file :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	if cc.bank == nil {
+		control_write_err(out, req, .Daemon_Not_Ready, "no bank")
+		return
+	}
+	path := strings.trim_space(req.rest)
+	if len(path) == 0 {
+		control_write_err(out, req, .Invalid_Payload, "load needs a path")
+		return
+	}
+	if !load_bank_file(cc.bank, path) {
+		control_write_err(out, req, .Invalid_Payload, "cannot read or parse bank")
+		return
+	}
+	count := 0
+	for i in 0 ..< patch.FACTORY_SLOTS {
+		if cc.bank.filled[i] {count += 1}
+	}
+	control_write_ok(out, req)
+	strings.write_string(out, " label=")
+	control_write_token(out, patch.slots_label(cc.bank))
+	strings.write_string(out, " count=")
+	strings.write_int(out, count)
+}
+
 // Stage the present parameters of a patch and commit them as one transaction,
 // all-or-nothing: nothing reaches the ring unless the whole batch and its commit
 // fit. Values are pushed by patch index -- the same path startup loading takes --

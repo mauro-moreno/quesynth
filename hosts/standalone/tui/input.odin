@@ -18,6 +18,7 @@ Key :: enum {
 	Bank,
 	Save,
 	Load_File,
+	Load_Bank,
 	Escape,
 }
 
@@ -56,6 +57,8 @@ read_key :: proc() -> Key {
 		return .Save
 	case 'o', 'O':
 		return .Load_File
+	case 'l', 'L':
+		return .Load_Bank
 	case 0x0d, 0x0a:
 		return .Enter
 	case 0x09:
