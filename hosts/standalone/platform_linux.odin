@@ -36,7 +36,7 @@ install_shutdown_handler :: proc() {
 //
 // Everything the shutdown actually involves -- stopping the stream, joining the
 // audio thread, closing the MIDI devices, freeing the engine -- happens on the
-// main thread in run_live, for the same reason the Windows console handler defers
+// main thread in run_daemon, for the same reason the Windows console handler defers
 // it there: this routine runs asynchronously while the render thread is still
 // using those resources, so tearing them down here would race it. A signal
 // handler may safely touch almost nothing; an atomic store is one of the few

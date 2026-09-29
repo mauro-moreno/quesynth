@@ -8,16 +8,18 @@ import "core:strings"
 import "../../src/engine"
 import "../../src/patch"
 
-// Live mode: the real-time path.
+// The real-time render path and the MIDI decode that feeds it.
 //
-// Read this file to review the live behaviour; it is the whole of it. The two
-// platform files it leans on only move bytes -- WASAPI hands us a buffer to
-// fill, winmm hands us three MIDI bytes -- and neither knows what a note is.
+// The lifecycle -- opening the device, loading the patch, sizing the buffers,
+// starting the stream and tearing it all down in order -- lives in daemon.odin.
+// This file is the part the audio thread runs: `live_render` fills a block,
+// `live_handle_midi` decodes one message, and `live_load_patch` builds the
+// patch the daemon plays. Read the two together to review the live behaviour.
 //
 // The threading story is the part worth checking:
 //
-//   - The main thread opens the device, loads the patch, sizes every buffer,
-//     starts the stream, and then does nothing but wait for Ctrl-C.
+//   - The daemon's main thread opens the device, loads the patch, sizes every
+//     buffer, starts the stream, and then does nothing but wait for a signal.
 //   - Each MIDI device's callback thread packs its message and pushes it into
 //     a lock-free queue. It never touches the engine.
 //   - The audio thread drains that queue and is the only thread that ever
@@ -138,7 +140,7 @@ live_handle_midi :: proc(s: ^Live, message: u32) {
 	}
 }
 
-// Build the patch live mode will play. With no path given it is the plugin's
+// Build the patch the daemon will play. With no path given it is the plugin's
 // own defaults, which is what `parse_sy1` starts from before it applies a file.
 //
 // The returned name is always a fresh allocation the caller owns. It has to be:
@@ -174,96 +176,4 @@ live_load_patch :: proc(patch_path: string) -> (parsed: patch.Patch, name: strin
 	// name or the colour -- so copying the name is enough to make the struct
 	// safe to keep after `data` goes away.
 	return parsed, strings.clone(strings.trim_space(parsed.name)), true
-}
-
-// Returns the process exit code.
-run_live :: proc(patch_path: string) -> int {
-	audio, audio_ok := audio_backend_create()
-	if !audio_ok {
-		fmt.eprintfln("error: no audio backend for this platform")
-		return 1
-	}
-	defer audio.destroy(&audio)
-
-	// Open before loading the patch: the device dictates the sample rate, and
-	// the engine has to be built at the rate it will actually run at.
-	if !audio.open(&audio) {
-		fmt.eprintfln("error: cannot open an audio output device")
-		return 1
-	}
-
-	parsed, patch_name, patch_ok := live_load_patch(patch_path)
-	if !patch_ok {
-		return 1
-	}
-	defer delete(patch_name)
-
-	// Heap-allocated because the audio thread holds this pointer for the whole
-	// life of the stream; a main-thread stack frame is the wrong owner.
-	s := new(Live)
-	defer free(s)
-	midi_queue_init(&s.queue)
-
-	engine.engine_load_patch(&s.eng, parsed, audio.format.sample_rate)
-	defer engine.engine_destroy(&s.eng)
-
-	// The last allocation before the stream starts. Everything the audio thread
-	// needs now exists.
-	s.left = make([]f32, audio.max_frames)
-	defer delete(s.left)
-	s.right = make([]f32, audio.max_frames)
-	defer delete(s.right)
-
-	midi, midi_ok := midi_input_create()
-	if midi_ok {
-		// Not fatal: a machine with no MIDI hardware still runs the
-		// synthesiser, it just has nothing to play it with.
-		midi.open(&midi, &s.queue)
-	}
-	defer if midi_ok {midi.close(&midi)}
-
-	source := patch_path == "" ? "built-in defaults" : patch_path
-	fmt.printfln(
-		"audio  %s rate=%.0f channels=%d buffer=%d frames",
-		audio.name,
-		audio.format.sample_rate,
-		audio.format.channels,
-		audio.max_frames,
-	)
-	fmt.printfln("patch  %s \"%s\"", source, patch_name)
-	if midi_ok && midi.count > 0 {
-		for name, i in midi.names {
-			fmt.printfln("midi   [%d] %s", i, name)
-		}
-	} else {
-		fmt.printfln("midi   no inputs found")
-	}
-
-	// Installed before the stream starts so Ctrl-C is never the thing that
-	// races the device open.
-	install_shutdown_handler()
-
-	if !audio.start(&audio, live_render, s) {
-		fmt.eprintfln("error: cannot start the audio stream")
-		return 1
-	}
-
-	fmt.printfln("playing; press Ctrl-C to stop")
-
-	// The handler only sets a flag, so the actual teardown happens here on the
-	// main thread where blocking and freeing are legal.
-	for !shutdown_requested() {
-		sleep_ms(50)
-	}
-
-	fmt.printfln("stopping")
-	// Order matters: stop the stream first so the audio thread is provably not
-	// inside `live_render` before the deferred engine and buffer teardown above
-	// starts pulling memory out from under it.
-	audio.stop(&audio)
-
-	if dropped := midi_queue_dropped(&s.queue); dropped > 0 {
-		fmt.eprintfln("warning: dropped %d MIDI messages", dropped)
-	}
-	return 0
 }

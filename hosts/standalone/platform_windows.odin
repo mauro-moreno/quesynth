@@ -35,7 +35,7 @@ install_shutdown_handler :: proc() {
 //
 // Everything the shutdown actually involves -- stopping the stream, joining the
 // audio thread, closing the MIDI devices, freeing the engine -- happens on the
-// main thread in run_live. That is deliberate. This routine runs on an injected
+// main thread in run_daemon. That is deliberate. This routine runs on an injected
 // thread while the rest of the process keeps going, so tearing COM objects down
 // here would race the render thread that is still using them. Returning true
 // tells Windows the signal was handled and suppresses the default kill, which

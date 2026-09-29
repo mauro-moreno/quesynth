@@ -51,6 +51,7 @@ odin test tests/patch
 odin test tests/clap
 odin test tests/panel
 odin test tests/vst3
+odin test tests/standalone
 odin build hosts/standalone -o:speed -out:build/quesynth
 odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
 odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3

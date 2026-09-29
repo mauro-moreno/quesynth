@@ -15,7 +15,7 @@ import "core:sys/posix"
 // libasound is loaded at run time rather than linked, for the same reason
 // src/webview2 loads its DLL: a build must not require the -dev package to be
 // installed, and a machine without libasound should cost nothing and simply have
-// no audio -- which run_live already reports honestly. The runtime library
+// no audio -- which run_daemon already reports honestly. The runtime library
 // (libasound.so.2) ships with essentially every Linux desktop, and PipeWire
 // provides the same ALSA PCM device, so "default" reaches whatever the user
 // actually runs.
