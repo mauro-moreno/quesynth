@@ -235,7 +235,7 @@ render :: proc(
 				),
 			),
 		)
-		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   A archive   Q quit"))
+		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   A archive   C settings   Q quit"))
 	}
 	append(&footer, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 	present("Quesynth", body[:], footer[:], theme)
@@ -259,6 +259,32 @@ render_bank :: proc(slots: []Bank_Slot, selected: int, theme: Theme) {
 	append(&footer, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
 	present("Quesynth — Bank", body[:], footer[:], theme)
 }
+
+// The settings screen: the remembered paths, each editable, and where they are
+// stored. Enter edits the highlighted row.
+render_config :: proc(cfg: Config, cfg_path: string, selected: int, theme: Theme) {
+	unset :: "(unset — press Enter to set)"
+	fields := [][2]string {
+		{"Zip archive", cfg.archive_path == "" ? unset : cfg.archive_path},
+		{"User bank", cfg.bank_path == "" ? unset : cfg.bank_path},
+	}
+	body: [dynamic]string
+	body.allocator = context.temp_allocator
+	for f, k in fields {
+		chosen := k == selected
+		marker := paint(theme, theme.selected, chosen ? ">" : " ")
+		name := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-14s", f[0]))
+		value := paint(theme, f[1] == unset ? theme.dim : theme.value, f[1])
+		append(&body, fmt.tprintf("%s %s %s", marker, name, value))
+	}
+	footer: [dynamic]string
+	footer.allocator = context.temp_allocator
+	append(&footer, paint(theme, theme.status, "up/down select   Enter edit   Esc back   Q quit"))
+	append(&footer, paint(theme, theme.dim, fmt.tprintf("config: %s", cfg_path)))
+	present("Quesynth — Settings", body[:], footer[:], theme)
+}
+
+CONFIG_FIELDS :: 2
 
 // A scrolling list, used for the archive's bank and patch views. The window
 // follows the selection, so a list far larger than the terminal browses without

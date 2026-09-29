@@ -20,6 +20,7 @@ Key :: enum {
 	Load_File,
 	Load_Bank,
 	Archive,
+	Config,
 	Escape,
 }
 
@@ -62,6 +63,8 @@ read_key :: proc() -> Key {
 		return .Load_Bank
 	case 'a', 'A':
 		return .Archive
+	case 'c', 'C':
+		return .Config
 	case 0x0d, 0x0a:
 		return .Enter
 	case 0x09:

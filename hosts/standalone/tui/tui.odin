@@ -76,11 +76,25 @@ run :: proc(path: string) -> int {
 	arc_sel := 0
 	bank_arc_sel := 0
 
+	// Remembered settings (the zip archive path, the user bank path) and the
+	// settings screen state. The archive path lets A open the corpus with no
+	// prompt, this run and the next.
+	config := config_load()
+	defer config_free(&config)
+	configuring := false
+	config_sel := 0
+	// A remembered user bank is loaded so it is browsable from the first B.
+	if connected && config.bank_path != "" {
+		client_bank_load_file(&client, config.bank_path)
+	}
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
 		// lines) so the render loop does not grow memory without bound.
 		free_all(context.temp_allocator)
 		switch {
+		case configuring:
+			cfg_path, _ := config_file_path(context.temp_allocator)
+			render_config(config, cfg_path, config_sel, theme)
 		case archive_view == 1:
 			render_list("Quesynth — Archive banks", bank_names, arc_sel, "Enter open   O new archive   Esc hide   Q quit", theme)
 		case archive_view == 2:
@@ -92,6 +106,28 @@ run :: proc(path: string) -> int {
 		}
 
 		key := read_key_timeout(REFRESH_MS)
+
+		// The settings screen sits over everything; handle it first.
+		if configuring {
+			switch key {
+			case .Quit:
+				client_names_free(bank_names)
+				client_names_free(patch_names)
+				return 0
+			case .Up:
+				if config_sel > 0 { config_sel -= 1 }
+			case .Down:
+				if config_sel < CONFIG_FIELDS - 1 { config_sel += 1 }
+			case .Enter:
+				tui_edit_setting(&client, &config, config_sel, &has_archive, &bank_names, theme)
+			case .Escape, .Config:
+				configuring = false
+			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Other:
+			// Ignored on the settings screen.
+			}
+			if client.fd < 0 { connected = false; metrics = {} }
+			continue
+		}
 
 		// The archive browser is a two-level list (banks, then patches) layered
 		// over everything else; handle it first and skip the rest while it is up.
@@ -125,17 +161,25 @@ run :: proc(path: string) -> int {
 					}
 				}
 			case .Load_File:
-				// Open a different archive from the banks view, replacing this one.
-				if archive_view == 1 && connected && tui_open_archive(&client, theme) {
-					client_names_free(bank_names)
-					bank_names = nil
-					if names, ok := client_archive_names(&client, "archive.banks"); ok {
-						bank_names = names
-						arc_sel = 0
-						bank_arc_sel = 0
-					} else {
-						has_archive = false
-						archive_view = 0
+				// Open a different archive from the banks view, replacing this one,
+				// and remember its path.
+				if archive_view == 1 && connected {
+					if p, ok := tui_open_archive(&client, theme); ok {
+						if config.archive_path != p {
+							delete(config.archive_path)
+							config.archive_path = strings.clone(p)
+							config_save(config)
+						}
+						client_names_free(bank_names)
+						bank_names = nil
+						if names, nok := client_archive_names(&client, "archive.banks"); nok {
+							bank_names = names
+							arc_sel = 0
+							bank_arc_sel = 0
+						} else {
+							has_archive = false
+							archive_view = 0
+						}
 					}
 				}
 			case .Escape, .Archive:
@@ -150,7 +194,7 @@ run :: proc(path: string) -> int {
 					// it with A costs no reload.
 					archive_view = 0
 				}
-			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Config, .Other:
 			// Ignored in the archive browser.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -205,7 +249,7 @@ run :: proc(path: string) -> int {
 					bank_slots, _ = client_bank_list(&client)
 					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
 				}
-			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Config, .Other:
 			// Ignored in the browser.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -287,7 +331,7 @@ run :: proc(path: string) -> int {
 					// The archive is already open; step back into it, no reload.
 					arc_sel = bank_arc_sel
 					archive_view = 1
-				} else if tui_open_archive(&client, theme) {
+				} else if tui_enter_archive(&client, &config, theme) {
 					if names, ok := client_archive_names(&client, "archive.banks"); ok {
 						bank_names = names
 						has_archive = true
@@ -297,6 +341,9 @@ run :: proc(path: string) -> int {
 					}
 				}
 			}
+		case .Config:
+			configuring = true
+			config_sel = 0
 		case .Save, .Escape, .Other:
 		// Save applies only in the bank browser; Escape and Other are ignored.
 		}
@@ -367,16 +414,84 @@ tui_load_bank :: proc(client: ^Client, theme: Theme) -> bool {
 	return client_bank_load_file(client, trimmed)
 }
 
-// Prompt for a zip archive path and open it for browsing. Returns whether an
-// archive was opened, so the caller can fetch its bank list.
+// Prompt for a zip archive path and open it for browsing. Returns the path that
+// was opened (so it can be remembered) and whether it opened.
 @(private)
-tui_open_archive :: proc(client: ^Client, theme: Theme) -> bool {
+tui_open_archive :: proc(client: ^Client, theme: Theme) -> (string, bool) {
 	terminal_clear()
 	path, ok := prompt_line(1, "Open archive (zip): ", theme)
 	trimmed := strings.trim_space(path)
-	if !ok || len(trimmed) == 0 { return false }
-	_, opened := client_archive_open(client, trimmed)
-	return opened
+	if !ok || len(trimmed) == 0 {
+		return "", false
+	}
+	if _, opened := client_archive_open(client, trimmed); opened {
+		return trimmed, true
+	}
+	return "", false
+}
+
+// Open an archive for browsing and, on success, remember its path in the config
+// so a later A opens it with no prompt. If the remembered path is set, it is
+// tried first; only when there is none, or it fails, is the path asked for.
+@(private)
+tui_enter_archive :: proc(client: ^Client, config: ^Config, theme: Theme) -> bool {
+	if config.archive_path != "" {
+		if _, opened := client_archive_open(client, config.archive_path); opened {
+			return true
+		}
+	}
+	path, opened := tui_open_archive(client, theme)
+	if !opened {
+		return false
+	}
+	if config.archive_path != path {
+		delete(config.archive_path)
+		config.archive_path = strings.clone(path)
+		config_save(config^)
+	}
+	return true
+}
+
+// Edit one remembered setting from the settings screen and save it. Changing the
+// archive path drops any open archive so the new one is used next time; setting
+// the bank path loads that bank now, so the change takes effect at once.
+@(private)
+tui_edit_setting :: proc(
+	client: ^Client,
+	config: ^Config,
+	field: int,
+	has_archive: ^bool,
+	bank_names: ^[]string,
+	theme: Theme,
+) {
+	terminal_clear()
+	if field == 0 {
+		path, ok := prompt_line(1, "Zip archive path: ", theme)
+		if !ok {
+			return
+		}
+		delete(config.archive_path)
+		config.archive_path = strings.clone(strings.trim_space(path))
+		config_save(config^)
+		if has_archive^ {
+			client_archive_close(client)
+			client_names_free(bank_names^)
+			bank_names^ = nil
+			has_archive^ = false
+		}
+	} else {
+		path, ok := prompt_line(1, "User bank path: ", theme)
+		if !ok {
+			return
+		}
+		trimmed := strings.trim_space(path)
+		delete(config.bank_path)
+		config.bank_path = strings.clone(trimmed)
+		config_save(config^)
+		if trimmed != "" {
+			client_bank_load_file(client, trimmed)
+		}
+	}
 }
 
 // Move the selected parameter by one step, clamped to its domain, and adopt the
