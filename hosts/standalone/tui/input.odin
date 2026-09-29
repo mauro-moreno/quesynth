@@ -62,6 +62,7 @@ read_key_timeout :: proc(timeout_ms: int) -> Key {
 	if n <= 0 {
 		return .Tick
 	}
+	if fds[0].revents & {.HUP, .ERR, .NVAL} != {} { return .Quit }
 	if .IN not_in fds[0].revents {
 		return .Tick
 	}

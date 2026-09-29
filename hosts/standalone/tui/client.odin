@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
+import "core:time"
 
 import "../../../src/control"
 
@@ -19,24 +20,37 @@ Client :: struct {
 	next_id: int,
 }
 
+// A total round-trip bound, not an inactivity timer: a trickling or stopped
+// daemon must still give the terminal back so the user can reconnect or quit.
+CLIENT_TIMEOUT_MS :: 500
+
 client_connect :: proc(path: string) -> (Client, bool) {
 	fd := posix.socket(.UNIX, .STREAM)
 	if fd < 0 {
-		return {}, false
+		return Client{fd = -1}, false
 	}
 	addr: posix.sockaddr_un
 	addr.sun_family = .UNIX
-	if len(path) >= len(addr.sun_path) {
+	if len(path) == 0 || len(path) >= len(addr.sun_path) || strings.contains(path, "\x00") ||
+		posix.fcntl(fd, .SETFL, c.int(posix.O_NONBLOCK)) < 0 {
 		posix.close(fd)
-		return {}, false
+		return Client{fd = -1}, false
 	}
 	for i in 0 ..< len(path) {
 		addr.sun_path[i] = path[i]
 	}
 	addr.sun_path[len(path)] = 0
 	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) != .OK {
-		posix.close(fd)
-		return {}, false
+		if posix.errno() != .EINPROGRESS || !client_wait(fd, {.OUT}, time.tick_now()) {
+			posix.close(fd)
+			return Client{fd = -1}, false
+		}
+		err: c.int
+		len_err := posix.socklen_t(size_of(err))
+		if posix.getsockopt(fd, posix.SOL_SOCKET, .ERROR, &err, &len_err) != .OK || err != 0 {
+			posix.close(fd)
+			return Client{fd = -1}, false
+		}
 	}
 	return Client{fd = fd, next_id = 1}, true
 }
@@ -178,47 +192,74 @@ client_value_request :: proc(cl: ^Client, line: string) -> (value: int, ok: bool
 	return strconv.parse_int(value_str)
 }
 
-@(private)
-client_roundtrip :: proc(cl: ^Client, line: string) -> (payload: []u8, ok: bool) {
-	frame := control.frame_encode(transmute([]u8)line)
-	defer delete(frame)
-	if !client_write_all(cl.fd, frame) {
-		return nil, false
-	}
-	return client_read_frame(cl.fd)
+// Also used by --stop, which needs the same deadline and broken-pipe behavior.
+client_shutdown :: proc(cl: ^Client) -> bool {
+	line := fmt.tprintf("%d %d daemon.shutdown", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, ok := client_roundtrip(cl, line)
+	if !ok { return false }
+	defer delete(payload)
+	resp, _ := control.response_parse(payload)
+	return resp.status == .Ok
 }
 
 @(private)
-client_write_all :: proc(fd: posix.FD, data: []u8) -> bool {
+client_roundtrip :: proc(cl: ^Client, line: string) -> (payload: []u8, ok: bool) {
+	if cl.fd < 0 { return nil, false }
+	defer if !ok { client_close(cl) }
+	start := time.tick_now()
+	frame := control.frame_encode(transmute([]u8)line)
+	defer delete(frame)
+	if !client_write_all(cl.fd, frame, start) { return nil, false }
+	payload, ok = client_read_frame(cl.fd, start)
+	if !ok { return nil, false }
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.id != cl.next_id - 1 || resp.version != control.PROTOCOL_VERSION {
+		delete(payload)
+		return nil, false
+	}
+	return payload, true
+}
+
+@(private)
+client_wait :: proc(fd: posix.FD, events: posix.Poll_Event, start: time.Tick) -> bool {
+	for {
+		remaining := CLIENT_TIMEOUT_MS - int(time.duration_milliseconds(time.tick_since(start)))
+		if remaining <= 0 { return false }
+		fds := [1]posix.pollfd{{fd = fd, events = events}}
+		n := posix.poll(&fds[0], 1, c.int(remaining))
+		if n < 0 && posix.errno() == .EINTR { continue }
+		return n > 0 && fds[0].revents & (events | {.HUP}) != {}
+	}
+}
+
+@(private)
+client_write_all :: proc(fd: posix.FD, data: []u8, start: time.Tick) -> bool {
 	sent := 0
 	for sent < len(data) {
+		if !client_wait(fd, {.OUT}, start) { return false }
 		remaining := len(data) - sent
-		n := posix.write(fd, raw_data(data[sent:]), c.size_t(remaining))
-		if n <= 0 {
-			return false
-		}
+		n := posix.send(fd, raw_data(data[sent:]), c.size_t(remaining), {.NOSIGNAL})
+		if n < 0 && (posix.errno() == .EAGAIN || posix.errno() == .EINTR) { continue }
+		if n <= 0 { return false }
 		sent += int(n)
 	}
 	return true
 }
 
 @(private)
-client_read_frame :: proc(fd: posix.FD) -> ([]u8, bool) {
+client_read_frame :: proc(fd: posix.FD, start: time.Tick) -> ([]u8, bool) {
 	reader: control.Frame_Reader
 	defer control.frame_reader_destroy(&reader)
 	buf: [1024]u8
 	for {
+		if !client_wait(fd, {.IN}, start) { return nil, false }
 		n := posix.read(fd, raw_data(buf[:]), c.size_t(len(buf)))
-		if n <= 0 {
-			return nil, false
-		}
+		if n < 0 && (posix.errno() == .EAGAIN || posix.errno() == .EINTR) { continue }
+		if n <= 0 { return nil, false }
 		control.frame_reader_push(&reader, buf[:int(n)])
 		payload, ok, err := control.frame_reader_next(&reader)
-		if err {
-			return nil, false
-		}
-		if ok {
-			return payload, true
-		}
+		if err { return nil, false }
+		if ok { return payload, true }
 	}
 }

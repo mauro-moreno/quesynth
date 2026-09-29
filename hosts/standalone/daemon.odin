@@ -88,6 +88,28 @@ run_daemon :: proc(patch_path: string) -> int {
 	defer free(d)
 	daemon_set_state(d, .Starting)
 
+	// Do not start a second daemon over a live one: it would seize the audio
+	// device the first already owns. This is not an error -- attaching a client
+	// is the right move -- so it exits cleanly.
+	sock_path := control_socket_path()
+	if daemon_is_running(sock_path) {
+		fmt.eprintfln("a quesynth daemon is already running at %s", sock_path)
+		delete(sock_path)
+		return 0
+	}
+	defer delete(sock_path)
+
+	// The probe is only a fast path. The lifetime endpoint claim serializes
+	// concurrent starters before either can acquire an audio device.
+	cs := Control_Server{path = sock_path}
+	when ODIN_OS == .Linux {
+		if !control_server_bind(&cs) {
+			fmt.eprintfln("error: control endpoint is owned or unavailable: %s", sock_path)
+			return 1
+		}
+	}
+	defer control_server_stop(&cs)
+
 	audio, audio_ok := audio_backend_create()
 	if !audio_ok {
 		fmt.eprintfln("error: no audio backend for this platform")
@@ -185,17 +207,15 @@ run_daemon :: proc(patch_path: string) -> int {
 	daemon_set_state(d, .Running)
 	fmt.printfln("quesynth daemon ready; press Ctrl-C to stop")
 
-	// Bring up the control surface once audio is running. A failure here is not
-	// fatal: the daemon still makes sound, it just has nothing to steer it. The
-	// context hands the server a ring to push edits onto and a snapshot to read,
-	// never the engine itself.
-	cs: Control_Server
-	cs.path = control_socket_path()
+	// Start serving only after audio and the published context are initialized.
+	// Binding above already excludes a second daemon; the context exposes only
+	// the command ring and snapshot, never the engine.
 	cs.ctx = Control_Context {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,
 		state    = &d.state,
 		metrics  = &metrics,
+		midi     = &d.live.queue,
 	}
 	control_ok := control_server_start(&cs)
 	if control_ok {
@@ -216,7 +236,7 @@ run_daemon :: proc(patch_path: string) -> int {
 	if control_ok {
 		control_server_stop(&cs)
 	}
-	delete(cs.path)
+	// The deferred stop also releases a bound endpoint on any startup failure.
 
 	// Order matters: stop the stream first so the audio thread is provably not
 	// inside `live_render` before the deferred engine and buffer teardown above

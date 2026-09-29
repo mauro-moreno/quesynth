@@ -7,10 +7,9 @@ import "base:intrinsics"
 // A single-producer single-consumer ring: the control server thread pushes
 // commands, the audio thread pops them at the top of each block, the same
 // block-accurate timing MIDI already gets. SPSC is enough because the control
-// server serves one connection at a time on one thread, so there is exactly one
-// producer, and the audio thread is the only consumer. That keeps this far
-// simpler than the MPMC MIDI ring, whose many producer threads it does not
-// need to match.
+// server multiplexes all connections on one thread: exactly one producer and
+// one audio consumer. This is simpler than the MPMC MIDI ring, whose many
+// producer threads it does not need to match.
 //
 // The audio thread never blocks on this: pop is wait-free, and a full ring
 // drops on the producer side with a count, exactly as the MIDI queue does.
@@ -42,7 +41,7 @@ Param_Ring :: struct {
 	cells:   [PARAM_RING_CAPACITY]Param_Command,
 	head:    u32, // consumer-owned (audio thread)
 	tail:    u32, // producer-owned (control thread)
-	dropped: u32,
+	dropped: u32, // rejected enqueue attempts (one per refused transaction)
 }
 
 // Producer side, on the control thread. Returns false when the ring is full.

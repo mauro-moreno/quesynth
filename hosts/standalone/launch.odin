@@ -7,7 +7,6 @@ import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 
-import "../../src/control"
 import "tui"
 
 // Where the control socket lives, and the client half of `quesynth --stop`.
@@ -36,32 +35,16 @@ run_stop :: proc() -> int {
 	path := control_socket_path()
 	defer delete(path)
 
-	fd := posix.socket(.UNIX, .STREAM)
-	if fd < 0 {
-		fmt.eprintfln("error: cannot create a control socket")
-		return 1
-	}
-	defer posix.close(fd)
-
-	addr: posix.sockaddr_un
-	addr.sun_family = .UNIX
-	if len(path) >= len(addr.sun_path) {
-		fmt.eprintfln("error: socket path too long: %s", path)
-		return 1
-	}
-	for i in 0 ..< len(path) {
-		addr.sun_path[i] = path[i]
-	}
-	addr.sun_path[len(path)] = 0
-
-	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) != .OK {
+	client, connected := tui.client_connect(path)
+	if !connected {
 		fmt.eprintfln("error: no daemon listening at %s", path)
 		return 1
 	}
-
-	frame := control.frame_encode(transmute([]u8)string("1 1 daemon.shutdown"))
-	defer delete(frame)
-	posix.write(fd, raw_data(frame), c.size_t(len(frame)))
+	defer tui.client_close(&client)
+	if !tui.client_shutdown(&client) {
+		fmt.eprintfln("error: daemon did not acknowledge stop")
+		return 1
+	}
 	fmt.println("stop requested")
 	return 0
 }
@@ -83,7 +66,7 @@ run_tui :: proc(patch_path: string) -> int {
 // for its socket to come up. Returns the socket path on success.
 ensure_daemon :: proc(patch_path: string) -> (path: string, ok: bool) {
 	path = control_socket_path()
-	if daemon_listening(path) {
+	if daemon_is_running(path) {
 		return path, true
 	}
 	if !spawn_daemon(patch_path) {
@@ -93,7 +76,7 @@ ensure_daemon :: proc(patch_path: string) -> (path: string, ok: bool) {
 	// Give the fresh daemon time to open its device and bind the socket.
 	for _ in 0 ..< 50 {
 		sleep_ms(100)
-		if daemon_listening(path) {
+		if daemon_is_running(path) {
 			return path, true
 		}
 	}
@@ -101,13 +84,16 @@ ensure_daemon :: proc(patch_path: string) -> (path: string, ok: bool) {
 	return "", false
 }
 
-@(private = "file")
-daemon_listening :: proc(path: string) -> bool {
+// Whether a daemon is already listening at the path: a plain connect probe. Used
+// to attach instead of spawning, and to refuse starting a second daemon over a
+// live one.
+daemon_is_running :: proc(path: string) -> bool {
 	fd := posix.socket(.UNIX, .STREAM)
 	if fd < 0 {
 		return false
 	}
 	defer posix.close(fd)
+	if posix.fcntl(fd, .SETFL, c.int(posix.O_NONBLOCK)) < 0 { return false }
 	addr: posix.sockaddr_un
 	addr.sun_family = .UNIX
 	if len(path) >= len(addr.sun_path) {
@@ -117,7 +103,11 @@ daemon_listening :: proc(path: string) -> bool {
 		addr.sun_path[i] = path[i]
 	}
 	addr.sun_path[len(path)] = 0
-	return posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) == .OK
+	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) == .OK {
+		return true
+	}
+	// A full backlog still belongs to a live listener; never wait on a probe.
+	return posix.errno() == .EAGAIN || posix.errno() == .EINPROGRESS
 }
 
 // Spawn a fully detached daemon that re-execs this same binary with --daemon.

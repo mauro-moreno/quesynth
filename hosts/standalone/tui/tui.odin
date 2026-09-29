@@ -35,7 +35,7 @@ run :: proc(path: string) -> int {
 	}
 	// One round-trip instead of a get per parameter: state.snapshot returns
 	// every value at once, and fills the rows that match by id.
-	client_load_snapshot(&client, rows[:])
+	connected = client_load_snapshot(&client, rows[:])
 
 	groups := build_groups(rows[:])
 	defer free_groups(groups)
@@ -49,7 +49,9 @@ run :: proc(path: string) -> int {
 
 	current_group := 0
 	selected := 0
-	metrics := client_info(&client)
+	metrics: Metrics
+	if connected { metrics = client_info(&client); connected = metrics.ok }
+	if !connected { client_close(&client) }
 
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
@@ -59,7 +61,11 @@ run :: proc(path: string) -> int {
 
 		switch read_key_timeout(REFRESH_MS) {
 		case .Tick:
-			metrics = client_info(&client)
+			if connected {
+				metrics = client_info(&client)
+				connected = metrics.ok
+				if !connected { client_close(&client) }
+			}
 		case .Quit:
 			// Quitting closes the client only. The daemon -- a separate process
 			// -- keeps making sound.
@@ -76,18 +82,28 @@ run :: proc(path: string) -> int {
 				selected += 1
 			}
 		case .Left:
-			tui_nudge(&client, &rows[groups[current_group].indices[selected]], -1)
+			if connected { tui_nudge(&client, &rows[groups[current_group].indices[selected]], -1) }
 		case .Right:
-			tui_nudge(&client, &rows[groups[current_group].indices[selected]], +1)
+			if connected { tui_nudge(&client, &rows[groups[current_group].indices[selected]], +1) }
 		case .Reset:
+			if !connected { continue }
 			row := &rows[groups[current_group].indices[selected]]
 			applied, ok := client_set(&client, row.desc.id, registry.registry_default(row.desc))
 			if ok {
 				row.value = applied
 			}
-		case .Enter, .Other:
-		// Nothing yet; Enter becomes value-entry in a later slice.
+		case .Enter:
+			if !connected {
+				// A new connection gets a fresh snapshot, never a replay of an
+				// edit whose acknowledgement may have been lost.
+				client, connected = client_connect(path)
+				if connected { connected = client_load_snapshot(&client, rows[:]) }
+				if connected { metrics = client_info(&client); connected = metrics.ok }
+				if !connected { client_close(&client); metrics = {} }
+			}
+		case .Other:
 		}
+		if client.fd < 0 { connected = false; metrics = {} }
 	}
 }
 

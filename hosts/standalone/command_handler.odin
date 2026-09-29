@@ -19,6 +19,8 @@ Control_Context :: struct {
 	// Static runtime facts plus the audio thread's live voice count. May be nil
 	// (a bare handler in a test); daemon.info reports only what it can then.
 	metrics:  ^Daemon_Metrics,
+	// Optional existing MIDI overflow counter; no extra audio-thread work.
+	midi:     ^Midi_Queue,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -81,6 +83,14 @@ control_info :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.B
 	strings.write_int(out, control.PROTOCOL_VERSION)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+	if cc.ring != nil {
+		strings.write_string(out, " control_dropped=")
+		strings.write_uint(out, uint(param_ring_dropped(cc.ring)))
+	}
+	if cc.midi != nil {
+		strings.write_string(out, " midi_dropped=")
+		strings.write_uint(out, uint(midi_queue_dropped(cc.midi)))
+	}
 	if cc.metrics != nil {
 		m := cc.metrics
 		voices := intrinsics.atomic_load_explicit(&m.active_voices, .Relaxed)
@@ -174,6 +184,7 @@ control_set :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Bu
 		return
 	}
 	if param_ring_free_space(cc.ring) < 2 {
+		intrinsics.atomic_add_explicit(&cc.ring.dropped, 1, .Relaxed)
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
 	}
@@ -233,6 +244,7 @@ control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strin
 	// Enqueue the whole batch and its commit, or nothing: checking free space
 	// first keeps a partial transaction off the ring.
 	if param_ring_free_space(cc.ring) < count + 1 {
+		intrinsics.atomic_add_explicit(&cc.ring.dropped, 1, .Relaxed)
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
 	}

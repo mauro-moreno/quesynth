@@ -17,7 +17,7 @@ import standalone "../../hosts/standalone"
 // drives, which is the boundary this slice introduces, while staying runnable
 // on a headless CI box.
 
-@(private = "file")
+@(private)
 connect_unix :: proc(path: string) -> (posix.FD, bool) {
 	fd := posix.socket(.UNIX, .STREAM)
 	if fd < 0 {

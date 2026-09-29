@@ -97,6 +97,13 @@ render :: proc(
 
 	status := first_row + len(group.indices) + 1
 	draw_line(status, "-------------------------------------------------")
+	if !metrics.ok {
+		draw_line(status + 1, "DISCONNECTED - cached values are stale; edits disabled")
+		draw_line(status + 2, "Enter reconnect   Q quit (daemon is not stopped)")
+		draw_line(status + 3, fmt.tprintf("daemon: %s", path))
+		terminal_write("\x1b[J")
+		return
+	}
 	draw_line(
 		status + 1,
 		fmt.tprintf(
