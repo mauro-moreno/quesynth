@@ -124,6 +124,11 @@ control_patch_load_file :: proc(cc: ^Control_Context, req: control.Request, out:
 	strings.write_int(out, applied)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+	// The patch's own name from inside the file, on its own line so it keeps its
+	// spaces, for a client to show instead of the file name.
+	strings.write_byte(out, '\n')
+	strings.write_string(out, "name=")
+	strings.write_string(out, parsed.name)
 }
 
 // patch.save <slot> [name]: capture the live snapshot into a bank slot.

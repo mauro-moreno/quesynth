@@ -255,8 +255,24 @@ client_patch_load :: proc(cl: ^Client, slot: int) -> bool {
 	return client_ok(cl, fmt.tprintf("%d %d patch.load %d", control.PROTOCOL_VERSION, cl.next_id, slot))
 }
 
-client_patch_load_file :: proc(cl: ^Client, path: string) -> bool {
-	return client_ok(cl, fmt.tprintf("%d %d patch.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path))
+// Load a patch file. Returns the patch's own name (from inside the file, cloned;
+// caller frees) and whether it loaded.
+client_patch_load_file :: proc(cl: ^Client, path: string) -> (name: string, ok: bool) {
+	line := fmt.tprintf("%d %d patch.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return "", false }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return "", false }
+	body := resp.body
+	for line in strings.split_lines_iterator(&body) {
+		if strings.has_prefix(line, "name=") {
+			name = strings.clone(strings.trim_space(line[5:]))
+			break
+		}
+	}
+	return name, true
 }
 
 client_patch_save :: proc(cl: ^Client, slot: int, name: string) -> bool {

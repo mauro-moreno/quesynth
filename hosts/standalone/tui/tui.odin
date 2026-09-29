@@ -438,9 +438,12 @@ tui_load_file :: proc(
 	path, ok := prompt_line(1, "Load patch file: ", theme)
 	trimmed := strings.trim_space(path)
 	if !ok || len(trimmed) == 0 { return {}, false }
-	if client_patch_load_file(client, trimmed) {
+	if name, loaded := client_patch_load_file(client, trimmed); loaded {
+		defer delete(name)
+		// Prefer the patch's own name from inside the file; fall back to the file
+		// name when it carries none.
 		tui_set(current_bank, "file")
-		tui_set(current_patch, tui_base_name(trimmed))
+		tui_set(current_patch, name != "" ? name : tui_base_name(trimmed))
 		return tui_reload_values(client, rows, prev_rev), true
 	}
 	return client_info(client), true
