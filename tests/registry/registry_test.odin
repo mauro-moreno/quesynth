@@ -36,6 +36,14 @@ test_bound_index_matches_the_measured_name :: proc(t: ^testing.T) {
 		{"master.volume", "amp gain"},
 		{"filter.cutoff", "*filter freq"},
 		{"filter.resonance", "*filter resonance"},
+		{"osc1.shape", "osc1 shape"},
+		{"filter.type", "filter type"},
+		{"lfo1.dest", "lfo1 destination"},
+		{"global.play_mode", "play mode type"},
+		{"fx.effect.type", "effect type"},
+		{"eq.freq", "equalizer freq"},
+		{"chorus.on", "chorus on/off"},
+		{"delay.tone", "delay tone"},
 	}
 
 	for want in expected {
@@ -43,6 +51,31 @@ test_bound_index_matches_the_measured_name :: proc(t: ^testing.T) {
 		testing.expect(t, ok)
 		testing.expect_value(t, patch.PARAMETERS[d.index].name, want.name)
 	}
+}
+
+@(test)
+test_registry_covers_every_controllable_parameter :: proc(t: ^testing.T) {
+	// Exactly the ninety-nine measured parameters minus the seven that are
+	// daemon config or modulation-matrix wiring must be registered, each once.
+	excluded := [?]int{50, 51, 86, 87, 88, 89, 94}
+	is_excluded: [patch.PARAMETER_COUNT]bool
+	for e in excluded {
+		is_excluded[e] = true
+	}
+
+	seen: [patch.PARAMETER_COUNT]bool
+	for d in registry.registry_list() {
+		testing.expect(t, !seen[d.index]) // no index registered twice
+		seen[d.index] = true
+	}
+	for idx in 0 ..< patch.PARAMETER_COUNT {
+		testing.expect_value(t, seen[idx], !is_excluded[idx])
+	}
+	testing.expect_value(
+		t,
+		len(registry.registry_list()),
+		patch.PARAMETER_COUNT - len(excluded),
+	)
 }
 
 @(test)
