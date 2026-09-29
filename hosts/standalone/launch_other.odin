@@ -11,6 +11,11 @@ control_socket_path :: proc() -> string {
 	return ""
 }
 
+run_tui :: proc(patch_path: string) -> int {
+	fmt.eprintfln("error: the interactive UI is not supported on this platform yet")
+	return 1
+}
+
 run_stop :: proc() -> int {
 	fmt.eprintfln("error: --stop is not supported on this platform yet")
 	return 1

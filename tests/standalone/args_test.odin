@@ -9,16 +9,16 @@ import standalone "../../hosts/standalone"
 // expectations, so a change that quietly redefines a flag fails here.
 
 @(test)
-test_default_runs_the_daemon :: proc(t: ^testing.T) {
+test_default_runs_the_tui :: proc(t: ^testing.T) {
 	cli := standalone.parse_args([]string{"quesynth"})
-	testing.expect_value(t, cli.mode, standalone.Mode.Daemon)
+	testing.expect_value(t, cli.mode, standalone.Mode.Run)
 	testing.expect_value(t, cli.patch_path, "")
 }
 
 @(test)
 test_default_takes_a_positional_patch :: proc(t: ^testing.T) {
 	cli := standalone.parse_args([]string{"quesynth", "lead.sy1"})
-	testing.expect_value(t, cli.mode, standalone.Mode.Daemon)
+	testing.expect_value(t, cli.mode, standalone.Mode.Run)
 	testing.expect_value(t, cli.patch_path, "lead.sy1")
 }
 

@@ -38,6 +38,7 @@ USAGE :: `usage:
   quesynth --selftest <patch.sy1> <out.wav>   render offline, open no device`
 
 Mode :: enum {
+	Run,
 	Daemon,
 	Stop,
 	Selftest,
@@ -60,7 +61,7 @@ parse_args :: proc(args: []string) -> Cli {
 	operands := len(args) > 0 ? args[1:] : args
 
 	if len(operands) == 0 {
-		return Cli{mode = .Daemon}
+		return Cli{mode = .Run}
 	}
 
 	switch operands[0] {
@@ -113,7 +114,7 @@ parse_args :: proc(args: []string) -> Cli {
 			message = fmt.tprintf("error: unexpected extra argument %q", operands[1]),
 		}
 	}
-	return Cli{mode = .Daemon, patch_path = operands[0]}
+	return Cli{mode = .Run, patch_path = operands[0]}
 }
 
 main :: proc() {
@@ -123,6 +124,8 @@ main :: proc() {
 		os.exit(run_selftest(cli.patch_path, cli.output_path))
 	case .Daemon:
 		os.exit(run_daemon(cli.patch_path))
+	case .Run:
+		os.exit(run_tui(cli.patch_path))
 	case .Stop:
 		os.exit(run_stop())
 	case .Help:
