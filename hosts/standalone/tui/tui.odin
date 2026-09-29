@@ -268,7 +268,7 @@ run :: proc(path: string) -> int {
 			case .Load_File:
 				if connected {
 					prev_rev := metrics.revision
-					if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
+					if m, did := tui_load_file(&client, rows[:], prev_rev, &current_bank, &current_patch, theme); did {
 						metrics = m
 						connected = metrics.ok
 						client_bank_free(bank_slots)
@@ -339,7 +339,7 @@ run :: proc(path: string) -> int {
 		case .Load_File:
 			if connected {
 				prev_rev := metrics.revision
-				if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
+				if m, did := tui_load_file(&client, rows[:], prev_rev, &current_bank, &current_patch, theme); did {
 					metrics = m
 					connected = metrics.ok
 				}
@@ -427,15 +427,32 @@ tui_save :: proc(client: ^Client, slot: int, theme: Theme) {
 // load and whether a load was attempted. `prev_rev` is the revision before the
 // load, so the values are read back only once the audio thread has applied it.
 @(private)
-tui_load_file :: proc(client: ^Client, rows: []Row, prev_rev: int, theme: Theme) -> (Metrics, bool) {
+tui_load_file :: proc(
+	client: ^Client,
+	rows: []Row,
+	prev_rev: int,
+	current_bank, current_patch: ^string,
+	theme: Theme,
+) -> (Metrics, bool) {
 	terminal_clear()
 	path, ok := prompt_line(1, "Load patch file: ", theme)
 	trimmed := strings.trim_space(path)
 	if !ok || len(trimmed) == 0 { return {}, false }
 	if client_patch_load_file(client, trimmed) {
+		tui_set(current_bank, "file")
+		tui_set(current_patch, tui_base_name(trimmed))
 		return tui_reload_values(client, rows, prev_rev), true
 	}
 	return client_info(client), true
+}
+
+// The last path segment: "lead.sy1" from "patches/lead.sy1".
+@(private)
+tui_base_name :: proc(path: string) -> string {
+	if slash := strings.last_index_byte(path, '/'); slash >= 0 {
+		return path[slash + 1:]
+	}
+	return path
 }
 
 // Pull the values the daemon actually holds into the rows. A load is applied by
