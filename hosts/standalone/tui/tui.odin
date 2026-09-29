@@ -2,6 +2,7 @@ package tui
 
 import "core:fmt"
 import "core:strings"
+import "core:time"
 
 import "../../../src/registry"
 
@@ -54,6 +55,10 @@ run :: proc(path: string) -> int {
 	metrics: Metrics
 	if connected { metrics = client_info(&client); connected = metrics.ok }
 	if !connected { client_close(&client) }
+	// The revision the displayed values were read at. When the daemon's revision
+	// moves past it -- a load, a MIDI change, another client -- the rows are
+	// re-snapshotted, so the parameter view always reflects the live state.
+	shown_rev := metrics.revision
 
 	// Bank browser state, active only while `browsing`.
 	browsing := false
@@ -108,9 +113,9 @@ run :: proc(path: string) -> int {
 					}
 				} else if connected {
 					// Load the patch live; stay in the list to audition others.
+					prev_rev := metrics.revision
 					if client_archive_load(&client, arc_sel) {
-						client_load_snapshot(&client, rows[:])
-						metrics = client_info(&client)
+						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
 					}
 				}
@@ -148,9 +153,9 @@ run :: proc(path: string) -> int {
 				if bank_sel < len(bank_slots) - 1 { bank_sel += 1 }
 			case .Enter:
 				if connected && len(bank_slots) > 0 {
+					prev_rev := metrics.revision
 					if client_patch_load(&client, bank_slots[bank_sel].slot) {
-						client_load_snapshot(&client, rows[:])
-						metrics = client_info(&client)
+						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
 					}
 					client_bank_free(bank_slots)
@@ -165,12 +170,15 @@ run :: proc(path: string) -> int {
 					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
 				}
 			case .Load_File:
-				if connected && tui_load_file(&client, rows[:], theme) {
-					metrics = client_info(&client)
-					connected = metrics.ok
-					client_bank_free(bank_slots)
-					bank_slots = nil
-					browsing = false
+				if connected {
+					prev_rev := metrics.revision
+					if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
+						metrics = m
+						connected = metrics.ok
+						client_bank_free(bank_slots)
+						bank_slots = nil
+						browsing = false
+					}
 				}
 			case .Load_Bank:
 				if connected && tui_load_bank(&client, theme) {
@@ -190,7 +198,13 @@ run :: proc(path: string) -> int {
 			if connected {
 				metrics = client_info(&client)
 				connected = metrics.ok
-				if !connected { client_close(&client) }
+				if !connected {
+					client_close(&client)
+				} else if metrics.revision != shown_rev {
+					// Something moved the daemon's state; pull the new values in.
+					client_load_snapshot(&client, rows[:])
+					shown_rev = metrics.revision
+				}
 			}
 		case .Quit:
 			// Quitting closes the client only. The daemon -- a separate process
@@ -223,9 +237,12 @@ run :: proc(path: string) -> int {
 				}
 			}
 		case .Load_File:
-			if connected && tui_load_file(&client, rows[:], theme) {
-				metrics = client_info(&client)
-				connected = metrics.ok
+			if connected {
+				prev_rev := metrics.revision
+				if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
+					metrics = m
+					connected = metrics.ok
+				}
 			}
 		case .Enter:
 			if !connected {
@@ -275,18 +292,41 @@ tui_save :: proc(client: ^Client, slot: int, theme: Theme) {
 	}
 }
 
-// Prompt for a patch file path and load it live, refreshing the rows. Returns
-// whether a load was attempted (so the caller re-reads metrics).
+// Prompt for a patch file path and load it live. Returns the metrics after the
+// load and whether a load was attempted. `prev_rev` is the revision before the
+// load, so the values are read back only once the audio thread has applied it.
 @(private)
-tui_load_file :: proc(client: ^Client, rows: []Row, theme: Theme) -> bool {
+tui_load_file :: proc(client: ^Client, rows: []Row, prev_rev: int, theme: Theme) -> (Metrics, bool) {
 	terminal_clear()
 	path, ok := prompt_line(1, "Load patch file: ", theme)
 	trimmed := strings.trim_space(path)
-	if !ok || len(trimmed) == 0 { return false }
+	if !ok || len(trimmed) == 0 { return {}, false }
 	if client_patch_load_file(client, trimmed) {
-		client_load_snapshot(client, rows)
+		return tui_reload_values(client, rows, prev_rev), true
 	}
-	return true
+	return client_info(client), true
+}
+
+// Pull the values the daemon actually holds into the rows. A load is applied by
+// the audio thread a block later and bumps the revision then, so this waits
+// briefly for the revision to move past `prev_rev` before snapshotting --
+// otherwise it would read back the values from before the load and the screen
+// would look as if nothing changed. Returns the current metrics.
+@(private)
+tui_reload_values :: proc(client: ^Client, rows: []Row, prev_rev: int) -> Metrics {
+	for _ in 0 ..< 25 {
+		m := client_info(client)
+		if !m.ok { return m }
+		if m.revision != prev_rev {
+			client_load_snapshot(client, rows)
+			return m
+		}
+		time.sleep(8 * time.Millisecond)
+	}
+	// The revision never moved (an idle or stopped audio thread); snapshot anyway
+	// rather than leave the display stuck.
+	client_load_snapshot(client, rows)
+	return client_info(client)
 }
 
 // Prompt for a bank file path and load it as the browsable bank. Returns whether
