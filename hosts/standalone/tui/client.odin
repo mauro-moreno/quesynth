@@ -203,6 +203,78 @@ client_shutdown :: proc(cl: ^Client) -> bool {
 	return resp.status == .Ok
 }
 
+// One browsable bank entry: a slot index and the name reported for it.
+Bank_Slot :: struct {
+	slot: int,
+	name: string,
+}
+
+// bank.list: the filled slots, in order. The returned names are cloned; the
+// caller frees each with delete and the slice with delete.
+client_bank_list :: proc(cl: ^Client) -> ([]Bank_Slot, bool) {
+	line := fmt.tprintf("%d %d bank.list", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, ok := client_roundtrip(cl, line)
+	if !ok { return nil, false }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return nil, false }
+
+	slots: [dynamic]Bank_Slot
+	body := resp.body
+	for len(body) > 0 {
+		record := body
+		if idx := strings.index_byte(body, '\n'); idx >= 0 {
+			record = body[:idx]
+			body = body[idx + 1:]
+		} else {
+			body = ""
+		}
+		slot_str, has_slot := control.response_field(record, "slot")
+		name, has_name := control.response_field(record, "name")
+		if !has_slot || !has_name { continue }
+		if slot, sok := strconv.parse_int(slot_str); sok {
+			append(&slots, Bank_Slot{slot = slot, name = strings.clone(name)})
+		}
+	}
+	return slots[:], true
+}
+
+client_bank_free :: proc(slots: []Bank_Slot) {
+	for s in slots { delete(s.name) }
+	delete(slots)
+}
+
+client_patch_load :: proc(cl: ^Client, slot: int) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d patch.load %d", control.PROTOCOL_VERSION, cl.next_id, slot))
+}
+
+client_patch_load_file :: proc(cl: ^Client, path: string) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d patch.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path))
+}
+
+client_patch_save :: proc(cl: ^Client, slot: int, name: string) -> bool {
+	line := name == "" \
+		? fmt.tprintf("%d %d patch.save %d", control.PROTOCOL_VERSION, cl.next_id, slot) \
+		: fmt.tprintf("%d %d patch.save %d %s", control.PROTOCOL_VERSION, cl.next_id, slot, name)
+	return client_ok(cl, line)
+}
+
+client_bank_write :: proc(cl: ^Client, path: string) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d bank.write %s", control.PROTOCOL_VERSION, cl.next_id, path))
+}
+
+// Send a request and report only whether it succeeded, advancing the id.
+@(private)
+client_ok :: proc(cl: ^Client, line: string) -> bool {
+	cl.next_id += 1
+	payload, ok := client_roundtrip(cl, line)
+	if !ok { return false }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	return parsed && resp.status == .Ok
+}
+
 @(private)
 client_roundtrip :: proc(cl: ^Client, line: string) -> (payload: []u8, ok: bool) {
 	if cl.fd < 0 { return nil, false }

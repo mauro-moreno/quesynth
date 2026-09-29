@@ -209,13 +209,18 @@ run_daemon :: proc(patch_path: string) -> int {
 
 	// Start serving only after audio and the published context are initialized.
 	// Binding above already excludes a second daemon; the context exposes only
-	// the command ring and snapshot, never the engine.
+	// the command ring, the snapshot and the patch bank, never the engine.
+	bank := new(patch.Slots)
+	defer free(bank)
+	patch.factory_prepare()
+	patch.slots_load_factory(bank)
 	cs.ctx = Control_Context {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,
 		state    = &d.state,
 		metrics  = &metrics,
 		midi     = &d.live.queue,
+		bank     = bank,
 	}
 	control_ok := control_server_start(&cs)
 	if control_ok {

@@ -126,6 +126,33 @@ render :: proc(
 	terminal_write("\x1b[J")
 }
 
+// The bank browser: the filled slots, one per line, the selected one marked.
+// Same bounded redraw as the parameter view.
+render_bank :: proc(slots: []Bank_Slot, selected: int, theme: Theme) {
+	terminal_home()
+	draw_line(1, paint(theme, theme.title, "Quesynth — Bank"))
+	if len(slots) == 0 {
+		draw_line(3, paint(theme, theme.warning, "the bank is empty"))
+		draw_line(5, paint(theme, theme.status, "O load a patch file   Esc back   Q quit"))
+		terminal_write("\x1b[J")
+		return
+	}
+	for s, k in slots {
+		chosen := k == selected
+		marker := paint(theme, theme.selected, chosen ? ">" : " ")
+		text := paint(
+			theme,
+			chosen ? theme.selected : theme.label,
+			fmt.tprintf("%3d  %s", s.slot, s.name),
+		)
+		draw_line(3 + k, fmt.tprintf("%s %s", marker, text))
+	}
+	foot := 3 + len(slots) + 1
+	draw_line(foot, paint(theme, theme.dim, "-------------------------------------------------"))
+	draw_line(foot + 1, paint(theme, theme.status, "up/down select   Enter load   S save here   O load file   Esc back"))
+	terminal_write("\x1b[J")
+}
+
 // The tab strip, with the current group bracketed. Uses the temp allocator, so
 // the caller need not free it; the run loop resets that allocator each frame.
 @(private)

@@ -6,6 +6,7 @@ import "core:strings"
 import "core:time"
 
 import "../../src/control"
+import "../../src/patch"
 import "../../src/registry"
 
 // What the control server may reach: a ring to push edits onto (the audio
@@ -21,6 +22,10 @@ Control_Context :: struct {
 	metrics:  ^Daemon_Metrics,
 	// Optional existing MIDI overflow counter; no extra audio-thread work.
 	midi:     ^Midi_Queue,
+	// The patch bank the daemon browses, loads from and saves to. Read and
+	// written only on the control thread, so it needs no lock. nil in a bare
+	// handler test, where the bank commands report they are unavailable.
+	bank:     ^patch.Slots,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -54,6 +59,16 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_set_many(cc, req, out)
 	case "state.snapshot":
 		control_state_snapshot(cc, req, out)
+	case "bank.list":
+		control_bank_list(cc, req, out)
+	case "patch.load":
+		control_patch_load(cc, req, out)
+	case "patch.load_file":
+		control_patch_load_file(cc, req, out)
+	case "patch.save":
+		control_patch_save(cc, req, out)
+	case "bank.write":
+		control_bank_write(cc, req, out)
 	case:
 		control_write_err(out, req, .Unknown_Command, "unknown command")
 	}
