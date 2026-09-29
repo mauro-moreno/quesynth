@@ -354,8 +354,10 @@ client_archive_names :: proc(cl: ^Client, verb: string) -> ([]string, bool) {
 			} else {
 				body = ""
 			}
-			if name, has := control.response_field(record, "name"); has {
-				append(&names, strings.clone(name))
+			// name is the last field on the record; take it to the line end so a
+			// name with spaces is kept whole.
+			if at := strings.index(record, "name="); at >= 0 {
+				append(&names, strings.clone(strings.trim_space(record[at + 5:])))
 				got += 1
 			}
 		}

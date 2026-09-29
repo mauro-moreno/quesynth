@@ -56,7 +56,7 @@ test_archive_open_lists_banks_and_patches :: proc(t: ^testing.T) {
 	reliability_send(fd, "1 4 archive.patches 0 10")
 	patches := reliability_reply(fd)
 	testing.expect(t, strings.contains(patches, "total=2"))
-	testing.expect(t, strings.contains(patches, "\npatch=0 name=001.sy1"))
+	testing.expect(t, strings.contains(patches, "\npatch=0 name=Test Patch One"))
 }
 
 @(test)

@@ -51,7 +51,7 @@ test_tui_archive_browse_and_load :: proc(t: ^testing.T) {
 	defer tui.client_names_free(patch_names)
 	testing.expect(t, nok)
 	testing.expect_value(t, len(patch_names), 2)
-	testing.expect_value(t, patch_names[0], "001.sy1")
+	testing.expect_value(t, patch_names[0], "Test Patch One")
 
 	testing.expect(t, tui.client_archive_load(&client, 0))
 	seen := 0

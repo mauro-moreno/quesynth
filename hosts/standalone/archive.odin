@@ -170,6 +170,25 @@ archive_patch_count :: proc(a: ^Archive) -> int {
 	return len(a.patch_indices)
 }
 
+// The patch's own name from inside its .sy1 (or .json), or "" if it cannot be
+// read. Inflates and parses just that one entry -- one small file, not the bank --
+// so listing a bank's names stays cheap. Temp-allocated.
+@(private = "file")
+archive_patch_name :: proc(a: ^Archive, patch_i: int) -> string {
+	if patch_i < 0 || patch_i >= len(a.patch_indices) {
+		return ""
+	}
+	data, ok := zip.zip_read(&a.bank, a.patch_indices[patch_i], context.temp_allocator)
+	if !ok {
+		return ""
+	}
+	parsed, _, pok := patch.parse_patch_any(data, context.temp_allocator)
+	if !pok {
+		return ""
+	}
+	return parsed.name
+}
+
 // The basename of a path, without directory or a trailing slash.
 @(private = "file")
 base_name :: proc(path: string) -> string {
@@ -220,8 +239,9 @@ control_archive_banks :: proc(cc: ^Control_Context, req: control.Request, out: ^
 		strings.write_byte(out, '\n')
 		strings.write_string(out, "bank=")
 		strings.write_int(out, i)
+		// name last and raw, so it keeps its spaces for a client to read to line end.
 		strings.write_string(out, " name=")
-		control_write_token(out, base_name(e.name))
+		strings.write_string(out, base_name(e.name))
 	}
 }
 
@@ -259,11 +279,17 @@ control_archive_patches :: proc(cc: ^Control_Context, req: control.Request, out:
 	strings.write_string(out, " total=")
 	strings.write_int(out, total)
 	for i in offset ..< offset + count {
+		// The patch's own name from inside the .sy1, falling back to the file name
+		// when it carries none. name last and raw so it keeps its spaces.
+		name := archive_patch_name(cc.archive, i)
+		if name == "" {
+			name = base_name(zip.zip_name(&cc.archive.bank, cc.archive.patch_indices[i]))
+		}
 		strings.write_byte(out, '\n')
 		strings.write_string(out, "patch=")
 		strings.write_int(out, i)
 		strings.write_string(out, " name=")
-		control_write_token(out, base_name(zip.zip_name(&cc.archive.bank, cc.archive.patch_indices[i])))
+		strings.write_string(out, name)
 	}
 }
 
