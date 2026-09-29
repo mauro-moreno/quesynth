@@ -34,6 +34,7 @@ Error_Code :: enum {
 	Unknown_Parameter,
 	Out_Of_Range,
 	Daemon_Not_Ready,
+	Transaction_Failed,
 	Internal_Error,
 }
 
@@ -55,6 +56,8 @@ error_code_name :: proc(code: Error_Code) -> string {
 		return "out_of_range"
 	case .Daemon_Not_Ready:
 		return "daemon_not_ready"
+	case .Transaction_Failed:
+		return "transaction_failed"
 	case .Internal_Error:
 		return "internal_error"
 	}
@@ -77,6 +80,8 @@ error_code_from_name :: proc(name: string) -> Error_Code {
 		return .Out_Of_Range
 	case "daemon_not_ready":
 		return .Daemon_Not_Ready
+	case "transaction_failed":
+		return .Transaction_Failed
 	case "internal_error":
 		return .Internal_Error
 	}
@@ -93,6 +98,9 @@ Request :: struct {
 	command:       string,
 	operands:      [MAX_OPERANDS]string,
 	operand_count: int,
+	// The untokenized remainder after the command, for commands like
+	// parameter.set_many whose operand count is unbounded.
+	rest:          string,
 }
 
 // Parse a request payload's envelope line. Requests are single-line in V1; any
@@ -125,9 +133,11 @@ request_parse :: proc(payload: []u8) -> (req: Request, ok: bool) {
 	req.version = version
 	req.id = id
 	req.command = command
+	req.rest = strings.trim_space(rest)
+	operand_rest := rest
 	for req.operand_count < MAX_OPERANDS {
 		operand: string
-		operand, rest = next_token(rest)
+		operand, operand_rest = next_token(operand_rest)
 		if len(operand) == 0 {
 			break
 		}

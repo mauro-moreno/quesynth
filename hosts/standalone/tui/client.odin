@@ -3,6 +3,7 @@ package tui
 import "core:c"
 import "core:fmt"
 import "core:strconv"
+import "core:strings"
 import "core:sys/posix"
 
 import "../../../src/control"
@@ -112,6 +113,50 @@ client_field_int :: proc(fields: string, key: string) -> int {
 		}
 	}
 	return 0
+}
+
+// Load every parameter value in one round-trip via state.snapshot, filling the
+// rows that match by id. Returns false on a transport error, leaving the rows'
+// existing values (their defaults) in place.
+client_load_snapshot :: proc(cl: ^Client, rows: []Row) -> bool {
+	line := fmt.tprintf("%d %d state.snapshot", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent {
+		return false
+	}
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok {
+		return false
+	}
+
+	body := resp.body
+	for len(body) > 0 {
+		record := body
+		if idx := strings.index_byte(body, '\n'); idx >= 0 {
+			record = body[:idx]
+			body = body[idx + 1:]
+		} else {
+			body = ""
+		}
+		id, has_id := control.response_field(record, "id")
+		value_str, has_value := control.response_field(record, "value")
+		if !has_id || !has_value {
+			continue
+		}
+		value, vok := strconv.parse_int(value_str)
+		if !vok {
+			continue
+		}
+		for &row in rows {
+			if row.desc.id == id {
+				row.value = value
+				break
+			}
+		}
+	}
+	return true
 }
 
 // Send a request and read the "value=" field of an ok response.

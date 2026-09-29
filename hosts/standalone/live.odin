@@ -60,10 +60,43 @@ Live :: struct {
 	snapshot: Snapshot,
 	revision: int,
 
+	// Transaction staging: a batch's Set commands accumulate here until their
+	// Commit, so the batch applies all-or-nothing within one block. It persists
+	// across blocks in case a transaction is split across the ring.
+	txn_staging: [TXN_STAGING_MAX]Param_Command,
+	txn_count:   int,
+
 	// Runtime metrics shared with the control thread. nil until a control server
 	// is wired; when present, the audio thread stores the live voice count into
 	// it each block.
 	metrics:  ^Daemon_Metrics,
+}
+
+// Drain queued control edits, applying each committed transaction to the engine
+// and returning whether anything was applied. A transaction's Set commands are
+// staged until its Commit, so a batch applies at once and bumps the revision
+// once; a transaction split across the ring simply finishes on a later block.
+// Extracted from the audio callback so a test can drive it without a device.
+live_drain_control :: proc(s: ^Live) -> (applied: bool) {
+	for {
+		cmd, ok := param_ring_pop(&s.ring)
+		if !ok {
+			break
+		}
+		if cmd.kind == .Commit {
+			for i in 0 ..< s.txn_count {
+				edit := s.txn_staging[i]
+				engine.engine_set_stored(&s.eng, int(edit.index), int(edit.stored))
+			}
+			s.txn_count = 0
+			s.revision += 1
+			applied = true
+		} else if s.txn_count < TXN_STAGING_MAX {
+			s.txn_staging[s.txn_count] = cmd
+			s.txn_count += 1
+		}
+	}
+	return applied
 }
 
 // The audio callback. Everything it touches is preallocated or atomic.
@@ -93,19 +126,10 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 		live_handle_midi(s, message)
 	}
 
-	// Drain control edits the same way, and at the same block-accurate timing.
-	// engine_set_stored takes the allocation-free rebind path a MIDI control
-	// change already uses, so applying one here on the audio thread is safe.
-	applied := false
-	for {
-		cmd, ok := param_ring_pop(&s.ring)
-		if !ok {
-			break
-		}
-		engine.engine_set_stored(&s.eng, int(cmd.index), int(cmd.stored))
-		s.revision += 1
-		applied = true
-	}
+	// Drain control edits at the same block-accurate timing. A transaction's Set
+	// commands are staged and applied together on its Commit, so the block below
+	// never renders a partial batch.
+	applied := live_drain_control(s)
 	// Republish only when something changed, so an idle daemon does no snapshot
 	// work per block. A reader between now and the next edit sees this state.
 	if applied {

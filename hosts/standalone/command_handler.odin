@@ -48,6 +48,10 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_get(cc, req, out)
 	case "parameter.set":
 		control_set(cc, req, out)
+	case "parameter.set_many":
+		control_set_many(cc, req, out)
+	case "state.snapshot":
+		control_state_snapshot(cc, req, out)
 	case:
 		control_write_err(out, req, .Unknown_Command, "unknown command")
 	}
@@ -169,10 +173,12 @@ control_set :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Bu
 		control_write_err(out, req, .Unknown_Parameter, "no such parameter")
 		return
 	}
-	if !param_ring_push(cc.ring, Param_Command{index = i32(d.index), stored = i32(stored)}) {
+	if param_ring_free_space(cc.ring) < 2 {
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
 	}
+	param_ring_push(cc.ring, Param_Command{kind = .Set, index = i32(d.index), stored = i32(stored)})
+	param_ring_push(cc.ring, Param_Command{kind = .Commit})
 	// The revision is the accepted marker: the audio thread bumps it when it
 	// applies the command. A get after this reflects the new value once the
 	// audio thread has drained the ring.
@@ -182,6 +188,90 @@ control_set :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Bu
 	strings.write_int(out, stored)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+}
+
+@(private = "file")
+control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	tokens := strings.fields(req.rest)
+	defer delete(tokens)
+	if len(tokens) == 0 || len(tokens) % 2 != 0 {
+		control_write_err(out, req, .Invalid_Payload, "set_many needs id value pairs")
+		return
+	}
+	count := len(tokens) / 2
+	if count > TXN_STAGING_MAX {
+		control_write_err(out, req, .Transaction_Failed, "too many parameters in one transaction")
+		return
+	}
+
+	// Validate every member before enqueuing any, so the first bad member
+	// rejects the whole transaction and a batch never lands half-applied.
+	staged: [TXN_STAGING_MAX]Param_Command
+	for i in 0 ..< count {
+		value, vok := strconv.parse_int(tokens[i * 2 + 1])
+		if !vok {
+			control_write_err(out, req, .Invalid_Payload, "value is not an integer")
+			return
+		}
+		d, found := registry.registry_describe(tokens[i * 2])
+		if !found {
+			control_write_err(out, req, .Unknown_Parameter, "no such parameter")
+			return
+		}
+		stored, verr := registry.registry_validate(d, value)
+		if verr == .Out_Of_Range {
+			control_write_err(out, req, .Out_Of_Range, "value out of range")
+			return
+		}
+		if verr != .None {
+			control_write_err(out, req, .Unknown_Parameter, "no such parameter")
+			return
+		}
+		staged[i] = Param_Command{kind = .Set, index = i32(d.index), stored = i32(stored)}
+	}
+
+	// Enqueue the whole batch and its commit, or nothing: checking free space
+	// first keeps a partial transaction off the ring.
+	if param_ring_free_space(cc.ring) < count + 1 {
+		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
+		return
+	}
+	for i in 0 ..< count {
+		param_ring_push(cc.ring, staged[i])
+	}
+	param_ring_push(cc.ring, Param_Command{kind = .Commit})
+
+	snap := snapshot_read(cc.snapshot)
+	control_write_ok(out, req)
+	strings.write_string(out, " count=")
+	strings.write_int(out, count)
+	strings.write_string(out, " revision=")
+	strings.write_int(out, snap.revision)
+}
+
+@(private = "file")
+control_state_snapshot :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	snap := snapshot_read(cc.snapshot)
+	list := registry.registry_list()
+	control_write_ok(out, req)
+	strings.write_string(out, " revision=")
+	strings.write_int(out, snap.revision)
+	if cc.metrics != nil {
+		strings.write_string(out, " sample_rate=")
+		strings.write_int(out, cc.metrics.sample_rate)
+		strings.write_string(out, " buffer=")
+		strings.write_int(out, cc.metrics.buffer_size)
+	}
+	strings.write_string(out, " count=")
+	strings.write_int(out, len(list))
+	// One record line per registered parameter, in registry order.
+	for d in list {
+		strings.write_byte(out, '\n')
+		strings.write_string(out, "id=")
+		strings.write_string(out, d.id)
+		strings.write_string(out, " value=")
+		strings.write_int(out, int(snap.values[d.index]))
+	}
 }
 
 // Envelope writers. Every response begins `<version> <id> <status>`.

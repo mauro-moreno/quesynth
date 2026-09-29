@@ -31,9 +31,11 @@ run :: proc(path: string) -> int {
 	defer delete(rows)
 	for descriptor, i in descriptors {
 		rows[i].desc = descriptor
-		value, ok := client_get(&client, descriptor.id)
-		rows[i].value = ok ? value : registry.registry_default(descriptor)
+		rows[i].value = registry.registry_default(descriptor)
 	}
+	// One round-trip instead of a get per parameter: state.snapshot returns
+	// every value at once, and fills the rows that match by id.
+	client_load_snapshot(&client, rows[:])
 
 	groups := build_groups(rows[:])
 	defer free_groups(groups)

@@ -15,10 +15,24 @@ import "base:intrinsics"
 // The audio thread never blocks on this: pop is wait-free, and a full ring
 // drops on the producer side with a count, exactly as the MIDI queue does.
 
+// Every mutation crosses the ring as a run of Set commands ended by a Commit.
+// The audio thread stages the Sets and applies them together on the Commit,
+// bumping the revision once, so a batch is atomic relative to a block: no block
+// ever renders half a transaction, and a reader never sees a partial one.
+Param_Command_Kind :: enum i32 {
+	Set,
+	Commit,
+}
+
 Param_Command :: struct {
+	kind:   Param_Command_Kind,
 	index:  i32,
 	stored: i32,
 }
+
+// The most edits one transaction can stage. Larger than the whole registry, so
+// even "set every parameter at once" fits.
+TXN_STAGING_MAX :: 128
 
 PARAM_RING_CAPACITY :: 256
 PARAM_RING_MASK :: PARAM_RING_CAPACITY - 1
@@ -44,6 +58,15 @@ param_ring_push :: proc "contextless" (r: ^Param_Ring, cmd: Param_Command) -> bo
 	r.cells[tail & PARAM_RING_MASK] = cmd
 	intrinsics.atomic_store_explicit(&r.tail, tail + 1, .Release)
 	return true
+}
+
+// Free slots, read by the producer before pushing a whole transaction so it
+// never pushes a partial one. Only the control thread calls this, so reading the
+// producer-owned tail relaxed is correct.
+param_ring_free_space :: proc "contextless" (r: ^Param_Ring) -> int {
+	tail := intrinsics.atomic_load_explicit(&r.tail, .Relaxed)
+	head := intrinsics.atomic_load_explicit(&r.head, .Acquire)
+	return PARAM_RING_CAPACITY - int(tail - head)
 }
 
 // Consumer side, on the audio thread. ok=false when the ring is empty.

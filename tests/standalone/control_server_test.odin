@@ -185,3 +185,150 @@ test_control_server_survives_an_invalid_command :: proc(t: ^testing.T) {
 	posix.close(fd)
 	standalone.control_server_stop(&cs)
 }
+
+@(test)
+test_control_server_set_many_enqueues_one_transaction :: proc(t: ^testing.T) {
+	cutoff, _ := registry.registry_describe("filter.cutoff")
+	reso, _ := registry.registry_describe("filter.resonance")
+
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	state := standalone.Daemon_State.Running
+	standalone.snapshot_publish(&snap, standalone.Snapshot_Data{})
+
+	cs: standalone.Control_Server
+	cs.path = fmt.tprintf("/tmp/quesynth-test-many-%d.sock", posix.getpid())
+	cs.ctx = standalone.Control_Context {
+		ring     = &ring,
+		snapshot = &snap,
+		state    = &state,
+	}
+	testing.expect(t, standalone.control_server_start(&cs))
+
+	fd, connected := connect_unix(cs.path)
+	testing.expect(t, connected)
+
+	send_frame(fd, "1 1 parameter.set_many filter.cutoff 50 filter.resonance 30")
+	payload, ok := read_frame(fd)
+	testing.expect(t, ok)
+	resp, parsed := control.response_parse(payload)
+	testing.expect(t, parsed)
+	testing.expect_value(t, resp.status, control.Status.Ok)
+	count, has_count := control.response_field(resp.fields, "count")
+	testing.expect(t, has_count)
+	testing.expect_value(t, count, "2")
+	delete(payload)
+
+	// The whole batch reached the ring as two Sets then one Commit, in order.
+	c1, ok1 := standalone.param_ring_pop(&ring)
+	testing.expect(t, ok1)
+	testing.expect_value(t, c1.kind, standalone.Param_Command_Kind.Set)
+	testing.expect_value(t, int(c1.index), cutoff.index)
+	testing.expect_value(t, int(c1.stored), 50)
+	c2, ok2 := standalone.param_ring_pop(&ring)
+	testing.expect(t, ok2)
+	testing.expect_value(t, c2.kind, standalone.Param_Command_Kind.Set)
+	testing.expect_value(t, int(c2.index), reso.index)
+	testing.expect_value(t, int(c2.stored), 30)
+	c3, ok3 := standalone.param_ring_pop(&ring)
+	testing.expect(t, ok3)
+	testing.expect_value(t, c3.kind, standalone.Param_Command_Kind.Commit)
+	_, empty := standalone.param_ring_pop(&ring)
+	testing.expect(t, !empty)
+
+	posix.close(fd)
+	standalone.control_server_stop(&cs)
+}
+
+@(test)
+test_control_server_set_many_rejects_the_whole_batch :: proc(t: ^testing.T) {
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	state := standalone.Daemon_State.Running
+	standalone.snapshot_publish(&snap, standalone.Snapshot_Data{})
+
+	cs: standalone.Control_Server
+	cs.path = fmt.tprintf("/tmp/quesynth-test-reject-%d.sock", posix.getpid())
+	cs.ctx = standalone.Control_Context {
+		ring     = &ring,
+		snapshot = &snap,
+		state    = &state,
+	}
+	testing.expect(t, standalone.control_server_start(&cs))
+
+	fd, connected := connect_unix(cs.path)
+	testing.expect(t, connected)
+
+	// The second member is out of range, so the whole transaction is refused and
+	// nothing at all reaches the ring.
+	send_frame(fd, "1 1 parameter.set_many filter.cutoff 50 filter.resonance 999999")
+	payload, ok := read_frame(fd)
+	testing.expect(t, ok)
+	resp, parsed := control.response_parse(payload)
+	testing.expect(t, parsed)
+	testing.expect_value(t, resp.status, control.Status.Err)
+	testing.expect_value(t, resp.error, control.Error_Code.Out_Of_Range)
+	delete(payload)
+
+	_, has := standalone.param_ring_pop(&ring)
+	testing.expect(t, !has)
+
+	posix.close(fd)
+	standalone.control_server_stop(&cs)
+}
+
+@(test)
+test_control_server_state_snapshot_returns_all_values :: proc(t: ^testing.T) {
+	cutoff, _ := registry.registry_describe("filter.cutoff")
+
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	state := standalone.Daemon_State.Running
+	seed: standalone.Snapshot_Data
+	seed.revision = 5
+	seed.values[cutoff.index] = 77
+	standalone.snapshot_publish(&snap, seed)
+
+	cs: standalone.Control_Server
+	cs.path = fmt.tprintf("/tmp/quesynth-test-snap-%d.sock", posix.getpid())
+	cs.ctx = standalone.Control_Context {
+		ring     = &ring,
+		snapshot = &snap,
+		state    = &state,
+	}
+	testing.expect(t, standalone.control_server_start(&cs))
+
+	fd, connected := connect_unix(cs.path)
+	testing.expect(t, connected)
+
+	send_frame(fd, "1 1 state.snapshot")
+	payload, ok := read_frame(fd)
+	testing.expect(t, ok)
+	resp, parsed := control.response_parse(payload)
+	testing.expect(t, parsed)
+	testing.expect_value(t, resp.status, control.Status.Ok)
+	revision, has_rev := control.response_field(resp.fields, "revision")
+	testing.expect(t, has_rev)
+	testing.expect_value(t, revision, "5")
+
+	// The seeded value appears as a record line in the body.
+	body := string(resp.body)
+	testing.expect(t, contains(body, "id=filter.cutoff value=77"))
+	delete(payload)
+
+	posix.close(fd)
+	standalone.control_server_stop(&cs)
+}
+
+@(private = "file")
+contains :: proc(haystack, needle: string) -> bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i in 0 ..= len(haystack) - len(needle) {
+		if haystack[i:i + len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

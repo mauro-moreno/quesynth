@@ -104,3 +104,50 @@ test_tui_client_reads_daemon_info :: proc(t: ^testing.T) {
 	tui.client_close(&client)
 	standalone.control_server_stop(&cs)
 }
+
+@(test)
+test_tui_client_loads_a_snapshot :: proc(t: ^testing.T) {
+	cutoff, described := registry.registry_describe("filter.cutoff")
+	testing.expect(t, described)
+
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	state := standalone.Daemon_State.Running
+	seed: standalone.Snapshot_Data
+	seed.values[cutoff.index] = 66
+	standalone.snapshot_publish(&snap, seed)
+
+	cs: standalone.Control_Server
+	cs.path = fmt.tprintf("/tmp/quesynth-tui-snap-%d.sock", posix.getpid())
+	cs.ctx = standalone.Control_Context {
+		ring     = &ring,
+		snapshot = &snap,
+		state    = &state,
+	}
+	testing.expect(t, standalone.control_server_start(&cs))
+
+	client, connected := tui.client_connect(cs.path)
+	testing.expect(t, connected)
+
+	// Build rows the way the UI does, then fill them from one snapshot.
+	descriptors := registry.registry_list()
+	rows := make([]tui.Row, len(descriptors))
+	defer delete(rows)
+	for d, i in descriptors {
+		rows[i].desc = d
+		rows[i].value = registry.registry_default(d)
+	}
+	testing.expect(t, tui.client_load_snapshot(&client, rows[:]))
+
+	found := false
+	for r in rows {
+		if r.desc.id == "filter.cutoff" {
+			testing.expect_value(t, r.value, 66)
+			found = true
+		}
+	}
+	testing.expect(t, found)
+
+	tui.client_close(&client)
+	standalone.control_server_stop(&cs)
+}
