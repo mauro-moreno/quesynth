@@ -191,12 +191,24 @@ render :: proc(
 	append(&body, "")
 
 	group := groups[current_group]
+	// Size the value column to the widest reading in this group, so the bars line
+	// up whether the readings are short numbers or long choice labels.
+	vals: [dynamic]string
+	vals.allocator = context.temp_allocator
+	vw := 8
+	for local in group.indices {
+		r := rows[local]
+		disp := registry.registry_value_display(r.desc, r.value)
+		append(&vals, disp)
+		vw = max(vw, visible_width(disp))
+	}
 	for local, k in group.indices {
 		r := rows[local]
 		chosen := k == selected
 		marker := paint(theme, theme.selected, chosen ? ">" : " ")
 		label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", r.desc.label))
-		value := paint(theme, theme.value, fmt.tprintf("%-16s", registry.registry_value_display(r.desc, r.value)))
+		padded := fmt.tprintf("%s%s", vals[k], strings.repeat(" ", vw - visible_width(vals[k]), context.temp_allocator))
+		value := paint(theme, theme.value, padded)
 		bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
 		append(&body, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
 	}

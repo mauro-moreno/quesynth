@@ -227,6 +227,11 @@ registry_value_display :: proc(d: Parameter_Descriptor, stored: int) -> string {
 	if !ok {
 		return fmt.tprintf("%d", stored)
 	}
+	// A select or radio parameter reads out as its named choice -- "Sawtooth",
+	// "Ladder Low Pass 24 dB/oct" -- rather than the position number.
+	if labels := option_labels(d.index); labels != nil && pos >= 0 && pos < len(labels) {
+		return labels[pos]
+	}
 	reading := value_text(d.index, pos)
 	value, embedded := split_trailing_unit(reading)
 	unit := embedded
@@ -278,4 +283,96 @@ has_letter_or_percent :: proc(s: string) -> bool {
 		}
 	}
 	return false
+}
+
+// The named choices of the select and radio parameters, in position order, taken
+// from the web panel's control layout (ui/layout.js) so the terminal reads a
+// waveform, a filter type or a destination by name, exactly as the panel does.
+// Position order matches patch.parameter_position, so a stored value resolves to
+// its position and then to the label at that position.
+@(private)
+WAVE_STPT := [?]string{"Sine", "Sawtooth", "Pulse", "Triangle"}
+@(private)
+WAVE_OSC2 := [?]string{"Sawtooth", "Pulse", "Triangle", "Noise"}
+@(private)
+FILTER_TYPE := [?]string {
+	"Low Pass 12 dB/oct",
+	"Ladder Low Pass 24 dB/oct",
+	"High Pass 12 dB/oct",
+	"Band Pass 12 dB/oct",
+	"LPDL (24 dB fallback)",
+}
+@(private)
+ARP_TYPE := [?]string{"Up and Down", "Up", "Down", "Random"}
+@(private)
+ARP_OCTAVES := [?]string{"1 Octave", "2 Octaves", "3 Octaves", "4 Octaves"}
+@(private)
+PLAY_MODE := [?]string{"Polyphonic", "Monophonic", "Legato"}
+@(private)
+DEST_7 := [?]string {
+	"Oscillator 2 Pitch",
+	"Both Oscillator Pitches",
+	"Filter Cutoff",
+	"Volume",
+	"Nothing",
+	"FM Amount",
+	"Pan",
+}
+@(private)
+DEST_3 := [?]string{"Oscillator 2 Pitch", "FM Amount", "Pulse Width"}
+@(private)
+LFO_WAVE := [?]string{"Sawtooth", "Triangle", "Sine", "Square", "Sample & Hold", "Random Smooth"}
+@(private)
+DELAY_TYPE := [?]string{"Mono", "Stereo, One Tap", "Stereo, Two Taps"}
+@(private)
+DELAY_STEREO := [?]string{"Normal Stereo", "Cross Feedback", "Ping-Pong"}
+@(private)
+SUB_OCTAVE := [?]string{"0 Octave Down", "1 Octave Down"}
+@(private)
+EFFECT_TYPE := [?]string {
+	"Attack Decay 1",
+	"Attack Decay 2",
+	"Decay Decay",
+	"Decimator",
+	"Ring Modulator",
+	"Compressor",
+	"Phaser 1",
+	"Phaser 2",
+	"Phaser 3",
+	"Phaser 4",
+}
+
+// The choice labels for a select/radio parameter, or nil for a continuous or
+// toggle one. Keyed by the src/patch parameter index.
+@(private)
+option_labels :: proc(index: int) -> []string {
+	switch index {
+	case 0, 96:
+		return WAVE_STPT[:]
+	case 1:
+		return WAVE_OSC2[:]
+	case 14:
+		return FILTER_TYPE[:]
+	case 31:
+		return ARP_TYPE[:]
+	case 32:
+		return ARP_OCTAVES[:]
+	case 38:
+		return PLAY_MODE[:]
+	case 41, 46:
+		return DEST_7[:]
+	case 71:
+		return DEST_3[:]
+	case 42, 47:
+		return LFO_WAVE[:]
+	case 64:
+		return DELAY_TYPE[:]
+	case 78:
+		return EFFECT_TYPE[:]
+	case 82:
+		return DELAY_STEREO[:]
+	case 97:
+		return SUB_OCTAVE[:]
+	}
+	return nil
 }

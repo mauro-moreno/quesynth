@@ -154,11 +154,23 @@ test_value_display_reads_real_units :: proc(t: ^testing.T) {
 	if d, ok := registry.registry_describe("filter.sustain"); ok {
 		testing.expect(t, strings.contains(registry.registry_value_display(d, registry.registry_default(d)), "%"))
 	}
-
 	// value_text is the same measured value the panel generator emits.
 	if d, ok := registry.registry_describe("filter.cutoff"); ok {
 		lo, hi, _ := registry.registry_stored_range(d)
 		testing.expect(t, registry.registry_value_display(d, lo) != "")
 		testing.expect(t, registry.registry_value_display(d, hi) != "")
+	}
+
+	// A select or radio parameter reads out as its named choice, not a number.
+	if d, ok := registry.registry_describe("filter.type"); ok {
+		testing.expect_value(t, registry.registry_value_display(d, registry.registry_default(d)), "Ladder Low Pass 24 dB/oct")
+	}
+	if d, ok := registry.registry_describe("osc1.shape"); ok {
+		testing.expect_value(t, registry.registry_value_display(d, registry.registry_default(d)), "Pulse")
+	}
+	if d, ok := registry.registry_describe("lfo1.shape"); ok {
+		// LFO waveforms store out of position order (0,1,5,2,3,4); the label must
+		// resolve through the position, not the stored integer.
+		testing.expect(t, registry.registry_value_display(d, registry.registry_default(d)) != "")
 	}
 }
