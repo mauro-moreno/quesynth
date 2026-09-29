@@ -17,7 +17,8 @@ import "../../src/patch"
 // touched by nothing else, so it needs no lock.
 
 // bank.list: the bank's label, how many slots are filled, and one record line
-// per filled slot with its index and name.
+// per slot -- all of them, filled or empty -- with its index, name and whether it
+// holds a patch, so a client can browse every slot and save into an empty one.
 @(private)
 control_bank_list :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	if cc.bank == nil {
@@ -33,11 +34,14 @@ control_bank_list :: proc(cc: ^Control_Context, req: control.Request, out: ^stri
 	control_write_token(out, patch.slots_label(cc.bank))
 	strings.write_string(out, " count=")
 	strings.write_int(out, count)
+	strings.write_string(out, " slots=")
+	strings.write_int(out, patch.FACTORY_SLOTS)
 	for i in 0 ..< patch.FACTORY_SLOTS {
-		if !cc.bank.filled[i] {continue}
 		strings.write_byte(out, '\n')
 		strings.write_string(out, "slot=")
 		strings.write_int(out, i)
+		strings.write_string(out, " filled=")
+		strings.write_int(out, cc.bank.filled[i] ? 1 : 0)
 		strings.write_string(out, " name=")
 		control_write_token(out, patch.slots_name(cc.bank, i))
 	}

@@ -183,10 +183,17 @@ render :: proc(
 	current_group, selected: int,
 	metrics: Metrics,
 	path: string,
+	current_bank, current_patch: string,
 	theme: Theme,
 ) {
 	body: [dynamic]string
 	body.allocator = context.temp_allocator
+	// The chosen bank and patch, so what is loaded is always in view.
+	patch_line := current_patch == "" ? "patch: (unsaved)" : fmt.tprintf("patch: %s", current_patch)
+	if current_bank != "" {
+		patch_line = fmt.tprintf("%s   bank: %s", patch_line, current_bank)
+	}
+	append(&body, paint(theme, theme.value, patch_line))
 	append(&body, group_tabs(groups, current_group, theme))
 	append(&body, "")
 
@@ -241,23 +248,38 @@ render :: proc(
 	present("Quesynth", body[:], footer[:], theme)
 }
 
-// The slot bank browser.
-render_bank :: proc(slots: []Bank_Slot, selected: int, theme: Theme) {
+// The slot bank browser: every slot, filled or empty, with a scrolling window
+// that follows the selection. Empty slots read "Init" in a dim colour and are a
+// place to save into.
+render_bank :: proc(label: string, slots: []Bank_Slot, selected: int, theme: Theme) {
+	rows, _ := terminal_size()
+	window := max(rows - 5, 1)
+
 	body: [dynamic]string
 	body.allocator = context.temp_allocator
 	if len(slots) == 0 {
 		append(&body, paint(theme, theme.warning, "the bank is empty"))
 	}
-	for s, k in slots {
-		chosen := k == selected
+	start := 0
+	if selected >= window {
+		start = selected - window + 1
+	}
+	if start > len(slots) - window {
+		start = max(0, len(slots) - window)
+	}
+	end := min(len(slots), start + window)
+	for i in start ..< end {
+		s := slots[i]
+		chosen := i == selected
 		marker := paint(theme, theme.selected, chosen ? ">" : " ")
-		text := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%3d  %s", s.slot, s.name))
+		colour := chosen ? theme.selected : (s.filled ? theme.label : theme.dim)
+		text := paint(theme, colour, fmt.tprintf("%3d  %s", s.slot, s.name))
 		append(&body, fmt.tprintf("%s %s", marker, text))
 	}
 	footer: [dynamic]string
 	footer.allocator = context.temp_allocator
 	append(&footer, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
-	present("Quesynth — Bank", body[:], footer[:], theme)
+	present(fmt.tprintf("Quesynth — Bank: %s", label), body[:], footer[:], theme)
 }
 
 // The settings screen: the remembered paths, each editable, and where they are

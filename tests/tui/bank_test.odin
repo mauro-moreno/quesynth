@@ -35,19 +35,25 @@ test_tui_client_lists_and_loads_bank :: proc(t: ^testing.T) {
 	client, connected := tui.client_connect(cs.path)
 	testing.expect(t, connected)
 
-	slots, ok := tui.client_bank_list(&client)
+	slots, label, ok := tui.client_bank_list(&client)
 	defer tui.client_bank_free(slots)
+	defer delete(label)
 	testing.expect(t, ok)
-	testing.expect(t, len(slots) > 0)
-	// Each listed slot names a filled entry in the bank.
-	for s in slots {
-		testing.expect(t, s.slot >= 0 && s.slot < patch.FACTORY_SLOTS)
-		_, filled := patch.slots_patch(bank, s.slot)
-		testing.expect(t, filled)
+	// Every slot is listed, filled and empty alike.
+	testing.expect_value(t, len(slots), patch.FACTORY_SLOTS)
+	// A slot listed as filled is filled in the bank; find the first one.
+	first := -1
+	for s, i in slots {
+		if s.filled {
+			_, is_filled := patch.slots_patch(bank, s.slot)
+			testing.expect(t, is_filled)
+			if first < 0 {first = i}
+		}
 	}
+	if !testing.expect(t, first >= 0) {return}
 
-	// Loading the first listed slot enqueues its whole preset as a transaction.
-	testing.expect(t, tui.client_patch_load(&client, slots[0].slot))
+	// Loading the first filled slot enqueues its whole preset as a transaction.
+	testing.expect(t, tui.client_patch_load(&client, slots[first].slot))
 	seen := 0
 	for {
 		cmd, popped := standalone.param_ring_pop(&ring)

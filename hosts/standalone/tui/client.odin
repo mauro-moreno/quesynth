@@ -203,24 +203,29 @@ client_shutdown :: proc(cl: ^Client) -> bool {
 	return resp.status == .Ok
 }
 
-// One browsable bank entry: a slot index and the name reported for it.
+// One browsable bank entry: a slot index, the name reported for it, and whether
+// it holds a patch. Every slot is listed, empty ones included, so a client can
+// browse the whole bank and save into an empty slot.
 Bank_Slot :: struct {
-	slot: int,
-	name: string,
+	slot:   int,
+	name:   string,
+	filled: bool,
 }
 
-// bank.list: the filled slots, in order. The returned names are cloned; the
-// caller frees each with delete and the slice with delete.
-client_bank_list :: proc(cl: ^Client) -> ([]Bank_Slot, bool) {
+// bank.list: every slot in order and the bank's label. Names and the label are
+// cloned; free each slot name and the slice with client_bank_free, and the label
+// with delete.
+client_bank_list :: proc(cl: ^Client) -> (slots: []Bank_Slot, label: string, ok: bool) {
 	line := fmt.tprintf("%d %d bank.list", control.PROTOCOL_VERSION, cl.next_id)
 	cl.next_id += 1
-	payload, ok := client_roundtrip(cl, line)
-	if !ok { return nil, false }
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return nil, "", false }
 	defer delete(payload)
 	resp, parsed := control.response_parse(payload)
-	if !parsed || resp.status != .Ok { return nil, false }
+	if !parsed || resp.status != .Ok { return nil, "", false }
+	if l, has := control.response_field(resp.fields, "label"); has { label = strings.clone(l) }
 
-	slots: [dynamic]Bank_Slot
+	out: [dynamic]Bank_Slot
 	body := resp.body
 	for len(body) > 0 {
 		record := body
@@ -233,11 +238,12 @@ client_bank_list :: proc(cl: ^Client) -> ([]Bank_Slot, bool) {
 		slot_str, has_slot := control.response_field(record, "slot")
 		name, has_name := control.response_field(record, "name")
 		if !has_slot || !has_name { continue }
+		filled_str, _ := control.response_field(record, "filled")
 		if slot, sok := strconv.parse_int(slot_str); sok {
-			append(&slots, Bank_Slot{slot = slot, name = strings.clone(name)})
+			append(&out, Bank_Slot{slot = slot, name = strings.clone(name), filled = filled_str == "1"})
 		}
 	}
-	return slots[:], true
+	return out[:], label, true
 }
 
 client_bank_free :: proc(slots: []Bank_Slot) {

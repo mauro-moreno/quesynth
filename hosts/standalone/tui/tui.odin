@@ -63,18 +63,27 @@ run :: proc(path: string) -> int {
 	// Bank browser state, active only while `browsing`.
 	browsing := false
 	bank_slots: []Bank_Slot
+	bank_label := ""
 	bank_sel := 0
 
-	// Archive browser state: 0 none, 1 banks, 2 patches. The opened archive and
-	// its bank names persist while hidden, so returning to it costs no reload;
-	// only the current patch list is re-fetched. `bank_arc_sel` remembers which
-	// bank was highlighted so leaving and re-entering lands in the same place.
+	// What is loaded right now, shown on the synth screen so the chosen bank and
+	// patch are always visible. Updated on every load; "" until the first one.
+	current_bank := ""
+	current_patch := ""
+
+	// Archive browser state: 0 none, 1 banks, 2 patches. The opened archive, its
+	// bank names, the bank last entered and the patch last on all persist while
+	// hidden, so A reopens exactly where the user left off. arc_bank is -1 until a
+	// bank is entered; arc_view is the view to restore to.
 	archive_view := 0
 	has_archive := false
 	bank_names: []string
 	patch_names: []string
 	arc_sel := 0
 	bank_arc_sel := 0
+	arc_bank := -1
+	arc_patch := 0
+	arc_view := 1
 
 	// Remembered settings (the zip archive path, the user bank path) and the
 	// settings screen state. The archive path lets A open the corpus with no
@@ -100,9 +109,9 @@ run :: proc(path: string) -> int {
 		case archive_view == 2:
 			render_list("Quesynth — Archive patches", patch_names, arc_sel, "Enter load   Esc back   Q quit", theme)
 		case browsing:
-			render_bank(bank_slots, bank_sel, theme)
+			render_bank(bank_label, bank_slots, bank_sel, theme)
 		case:
-			render(rows[:], groups, current_group, selected, metrics, path, theme)
+			render(rows[:], groups, current_group, selected, metrics, path, current_bank, current_patch, theme)
 		}
 
 		key := read_key_timeout(REFRESH_MS)
@@ -147,17 +156,24 @@ run :: proc(path: string) -> int {
 					if _, ok := client_archive_bank(&client, arc_sel); ok {
 						if names, nok := client_archive_names(&client, "archive.patches"); nok {
 							bank_arc_sel = arc_sel
+							arc_bank = arc_sel
 							patch_names = names
 							arc_sel = 0
+							arc_patch = 0
 							archive_view = 2
 						}
 					}
 				} else if connected {
-					// Load the patch live; stay in the list to audition others.
+					// Load the patch live; stay in the list to audition others, and
+					// record it as the chosen bank/patch.
 					prev_rev := metrics.revision
 					if client_archive_load(&client, arc_sel) {
 						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
+						arc_patch = arc_sel
+						bank := arc_bank >= 0 && arc_bank < len(bank_names) ? bank_names[arc_bank] : ""
+						tui_set(&current_bank, bank)
+						tui_set(&current_patch, arc_sel < len(patch_names) ? patch_names[arc_sel] : "")
 					}
 				}
 			case .Load_File:
@@ -172,6 +188,7 @@ run :: proc(path: string) -> int {
 						}
 						client_names_free(bank_names)
 						bank_names = nil
+						arc_bank = -1
 						if names, nok := client_archive_names(&client, "archive.banks"); nok {
 							bank_names = names
 							arc_sel = 0
@@ -182,18 +199,25 @@ run :: proc(path: string) -> int {
 						}
 					}
 				}
-			case .Escape, .Archive:
+			case .Escape:
 				if archive_view == 2 {
-					// Back to the bank list, landing on the bank just left.
+					// Up one level to the bank list, landing on the bank just left.
 					client_names_free(patch_names)
 					patch_names = nil
 					arc_sel = bank_arc_sel
 					archive_view = 1
 				} else {
-					// Hide the browser but keep the archive open, so returning to
-					// it with A costs no reload.
+					// Hide the browser but keep the archive open; remember we were
+					// at the bank list.
+					arc_view = 1
 					archive_view = 0
 				}
+			case .Archive:
+				// Hide the browser from wherever we are, remembering the exact spot
+				// so A reopens the same bank and patch.
+				arc_view = archive_view
+				if archive_view == 2 { arc_patch = arc_sel }
+				archive_view = 0
 			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Config, .Other:
 			// Ignored in the archive browser.
 			}
@@ -205,31 +229,40 @@ run :: proc(path: string) -> int {
 			switch key {
 			case .Quit:
 				client_bank_free(bank_slots)
+				delete(bank_label)
 				return 0
 			case .Escape, .Bank:
 				client_bank_free(bank_slots)
+				delete(bank_label)
 				bank_slots = nil
+				bank_label = ""
 				browsing = false
 			case .Up:
 				if bank_sel > 0 { bank_sel -= 1 }
 			case .Down:
 				if bank_sel < len(bank_slots) - 1 { bank_sel += 1 }
 			case .Enter:
-				if connected && len(bank_slots) > 0 {
+				// Load only a filled slot; an empty one is a place to save, not load.
+				if connected && bank_sel < len(bank_slots) && bank_slots[bank_sel].filled {
 					prev_rev := metrics.revision
 					if client_patch_load(&client, bank_slots[bank_sel].slot) {
 						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
+						tui_set(&current_bank, bank_label)
+						tui_set(&current_patch, bank_slots[bank_sel].name)
 					}
 					client_bank_free(bank_slots)
+					delete(bank_label)
 					bank_slots = nil
+					bank_label = ""
 					browsing = false
 				}
 			case .Save:
-				if connected && len(bank_slots) > 0 {
+				if connected && bank_sel < len(bank_slots) {
 					tui_save(&client, bank_slots[bank_sel].slot, theme)
 					client_bank_free(bank_slots)
-					bank_slots, _ = client_bank_list(&client)
+					delete(bank_label)
+					bank_slots, bank_label, _ = client_bank_list(&client)
 					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
 				}
 			case .Load_File:
@@ -239,14 +272,17 @@ run :: proc(path: string) -> int {
 						metrics = m
 						connected = metrics.ok
 						client_bank_free(bank_slots)
+						delete(bank_label)
 						bank_slots = nil
+						bank_label = ""
 						browsing = false
 					}
 				}
 			case .Load_Bank:
 				if connected && tui_load_bank(&client, theme) {
 					client_bank_free(bank_slots)
-					bank_slots, _ = client_bank_list(&client)
+					delete(bank_label)
+					bank_slots, bank_label, _ = client_bank_list(&client)
 					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
 				}
 			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Config, .Other:
@@ -293,8 +329,9 @@ run :: proc(path: string) -> int {
 			}
 		case .Bank:
 			if connected {
-				if slots, ok := client_bank_list(&client); ok {
+				if slots, label, ok := client_bank_list(&client); ok {
 					bank_slots = slots
+					bank_label = label
 					bank_sel = 0
 					browsing = true
 				}
@@ -319,8 +356,9 @@ run :: proc(path: string) -> int {
 		case .Load_Bank:
 			if connected && tui_load_bank(&client, theme) {
 				// Loading a bank changes what is browsable; open the browser on it.
-				if slots, ok := client_bank_list(&client); ok {
+				if slots, label, ok := client_bank_list(&client); ok {
 					bank_slots = slots
+					bank_label = label
 					bank_sel = 0
 					browsing = true
 				}
@@ -328,15 +366,34 @@ run :: proc(path: string) -> int {
 		case .Archive:
 			if connected {
 				if has_archive {
-					// The archive is already open; step back into it, no reload.
-					arc_sel = bank_arc_sel
-					archive_view = 1
+					// Already open: reopen exactly where we left off -- the same
+					// patch list and patch, or the bank list.
+					if arc_view == 2 && arc_bank >= 0 {
+						if _, ok := client_archive_bank(&client, arc_bank); ok {
+							if names, nok := client_archive_names(&client, "archive.patches"); nok {
+								client_names_free(patch_names)
+								patch_names = names
+								arc_sel = clamp(arc_patch, 0, max(0, len(names) - 1))
+								archive_view = 2
+							} else {
+								arc_sel = bank_arc_sel
+								archive_view = 1
+							}
+						} else {
+							arc_sel = bank_arc_sel
+							archive_view = 1
+						}
+					} else {
+						arc_sel = bank_arc_sel
+						archive_view = 1
+					}
 				} else if tui_enter_archive(&client, &config, theme) {
 					if names, ok := client_archive_names(&client, "archive.banks"); ok {
 						bank_names = names
 						has_archive = true
 						arc_sel = 0
 						bank_arc_sel = 0
+						arc_bank = -1
 						archive_view = 1
 					}
 				}
@@ -428,6 +485,14 @@ tui_open_archive :: proc(client: ^Client, theme: Theme) -> (string, bool) {
 		return trimmed, true
 	}
 	return "", false
+}
+
+// Replace a remembered string, freeing the old and cloning the new. Used for the
+// current bank/patch labels shown on the synth screen.
+@(private)
+tui_set :: proc(dst: ^string, val: string) {
+	delete(dst^)
+	dst^ = strings.clone(val)
 }
 
 // Open an archive for browsing and, on success, remember its path in the config
