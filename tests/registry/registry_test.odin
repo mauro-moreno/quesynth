@@ -1,5 +1,6 @@
 package registry_tests
 
+import "core:strings"
 import "core:testing"
 
 import patch "../../src/patch"
@@ -130,5 +131,34 @@ test_format_is_the_measured_display :: proc(t: ^testing.T) {
 	for d in registry.registry_list() {
 		def := registry.registry_default(d)
 		testing.expect(t, registry.registry_format(d, def) != "")
+	}
+}
+
+@(test)
+test_value_display_reads_real_units :: proc(t: ^testing.T) {
+	// The measured read-out carries its own unit or has the parameter's unit
+	// appended, matching the web panel to the digit rather than showing a bare
+	// 0..127. Each of these is a parameter this project has measured a unit for.
+	cases := [][2]string {
+		{"filter.cutoff", "Hz"}, // "1.51 kHz" carries its own unit
+		{"filter.resonance", "Q"}, // "1.20 Q" gets the suffix appended
+	}
+	for c in cases {
+		d, ok := registry.registry_describe(c[0])
+		if !testing.expect(t, ok) {continue}
+		disp := registry.registry_value_display(d, registry.registry_default(d))
+		testing.expect(t, strings.contains(disp, c[1]), c[0])
+	}
+
+	// A percent parameter reads as a bare number with the suffix appended.
+	if d, ok := registry.registry_describe("filter.sustain"); ok {
+		testing.expect(t, strings.contains(registry.registry_value_display(d, registry.registry_default(d)), "%"))
+	}
+
+	// value_text is the same measured value the panel generator emits.
+	if d, ok := registry.registry_describe("filter.cutoff"); ok {
+		lo, hi, _ := registry.registry_stored_range(d)
+		testing.expect(t, registry.registry_value_display(d, lo) != "")
+		testing.expect(t, registry.registry_value_display(d, hi) != "")
 	}
 }

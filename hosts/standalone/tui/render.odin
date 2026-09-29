@@ -196,7 +196,7 @@ render :: proc(
 		chosen := k == selected
 		marker := paint(theme, theme.selected, chosen ? ">" : " ")
 		label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", r.desc.label))
-		value := paint(theme, theme.value, fmt.tprintf("%-14s", registry.registry_format(r.desc, r.value)))
+		value := paint(theme, theme.value, fmt.tprintf("%-16s", registry.registry_value_display(r.desc, r.value)))
 		bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
 		append(&body, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
 	}
