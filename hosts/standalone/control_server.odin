@@ -134,6 +134,21 @@ control_unlink_owned :: proc(cs: ^Control_Server) {
 	}
 }
 
+// Whether the socket at the path is still the exact one this daemon bound: the
+// same inode it recorded at bind. False if the file is gone, is no longer a
+// socket, or was replaced -- in which case this daemon no longer owns the
+// endpoint and should stand down.
+@(private = "file")
+control_owns_endpoint :: proc(cs: ^Control_Server) -> bool {
+	cpath := strings.clone_to_cstring(cs.path)
+	defer delete(cpath)
+	current: posix.stat_t
+	if posix.lstat(cpath, &current) != .OK || !posix.S_ISSOCK(current.st_mode) {
+		return false
+	}
+	return current.st_dev == cs.identity.st_dev && current.st_ino == cs.identity.st_ino
+}
+
 control_server_stop :: proc(cs: ^Control_Server) {
 	if !cs.bound { return }
 	if cs.thread != nil {
@@ -160,7 +175,21 @@ control_server_run :: proc(data: rawptr) {
 	pollset: [MAX_CONNECTIONS + 1]posix.pollfd
 	conn_of: [MAX_CONNECTIONS + 1]int // pollset index -> connection index
 
+	own_check := 0
 	for intrinsics.atomic_load(&cs.running) {
+		// Periodically confirm this daemon still owns its endpoint. If the socket
+		// was removed or a newer daemon replaced it, this one is unreachable, so
+		// shut it down rather than let it keep playing MIDI and audio no client
+		// can steer -- an orphaned daemon that "keeps sounding" after its socket
+		// is gone. Throttled to about once a second at the poll cadence.
+		own_check += 1
+		if own_check >= 10 {
+			own_check = 0
+			if !control_owns_endpoint(cs) {
+				request_shutdown()
+				break
+			}
+		}
 		pollset[0] = {
 			fd     = cs.listen_fd,
 			events = {.IN},

@@ -50,6 +50,36 @@ reliability_read_exact :: proc(fd: posix.FD, data: []u8) -> bool {
 }
 
 @(test)
+test_control_server_self_terminates_when_endpoint_vanishes :: proc(t: ^testing.T) {
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	state := standalone.Daemon_State.Running
+	cs := standalone.Control_Server{
+		path = fmt.tprintf("/tmp/quesynth-orphan-%d.sock", posix.getpid()),
+		ctx = {ring = &ring, snapshot = &snap, state = &state},
+	}
+	if !testing.expect(t, standalone.control_server_start(&cs)) { return }
+	defer standalone.control_server_stop(&cs)
+
+	// Take the socket out from under it, exactly as a newer daemon's takeover or a
+	// stray unlink would. The server must notice it no longer owns its endpoint
+	// and ask the daemon to shut down, rather than keep running unreachably.
+	cpath := strings.clone_to_cstring(cs.path)
+	defer delete(cpath)
+	posix.unlink(cpath)
+
+	stopped := false
+	for _ in 0 ..< 60 {
+		if standalone.shutdown_requested() {
+			stopped = true
+			break
+		}
+		time.sleep(50 * time.Millisecond)
+	}
+	testing.expect(t, stopped, "a daemon whose socket vanished must request shutdown")
+}
+
+@(test)
 test_control_backpressure_does_not_block_other_clients :: proc(t: ^testing.T) {
 	ring: standalone.Param_Ring
 	snap: standalone.Snapshot
