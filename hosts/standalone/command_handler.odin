@@ -26,6 +26,8 @@ Control_Context :: struct {
 	// written only on the control thread, so it needs no lock. nil in a bare
 	// handler test, where the bank commands report they are unavailable.
 	bank:     ^patch.Slots,
+	// A patch archive opened for browsing, indexed lazily. nil when unsupported.
+	archive:  ^Archive,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -71,6 +73,18 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_bank_write(cc, req, out)
 	case "bank.load_file":
 		control_bank_load_file(cc, req, out)
+	case "archive.open":
+		control_archive_open(cc, req, out)
+	case "archive.banks":
+		control_archive_banks(cc, req, out)
+	case "archive.bank":
+		control_archive_bank(cc, req, out)
+	case "archive.patches":
+		control_archive_patches(cc, req, out)
+	case "archive.load":
+		control_archive_load(cc, req, out)
+	case "archive.close":
+		control_archive_close(cc, req, out)
 	case:
 		control_write_err(out, req, .Unknown_Command, "unknown command")
 	}

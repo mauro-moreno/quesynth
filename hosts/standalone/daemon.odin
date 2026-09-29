@@ -218,6 +218,11 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// bank saved to the config directory on a previous run. Failure is not fatal --
 	// the factory bank stays loaded to fall back to.
 	apply_user_bank(bank, bank_path)
+
+	// A lazily-indexed patch archive the client can open and browse. It holds no
+	// file until archive.open, and even then only an index plus one bank at a time.
+	arch := new(Archive)
+	defer {archive_close(arch);free(arch)}
 	cs.ctx = Control_Context {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,
@@ -225,6 +230,7 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 		metrics  = &metrics,
 		midi     = &d.live.queue,
 		bank     = bank,
+		archive  = arch,
 	}
 	control_ok := control_server_start(&cs)
 	if control_ok {

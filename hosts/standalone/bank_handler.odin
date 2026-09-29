@@ -211,7 +211,7 @@ control_bank_load_file :: proc(cc: ^Control_Context, req: control.Request, out: 
 // fit. Values are pushed by patch index -- the same path startup loading takes --
 // so a preset applies faithfully and atomically. Returns the number applied, and
 // whether the ring was too full to take the batch.
-@(private = "file")
+@(private)
 control_apply_patch :: proc(
 	cc: ^Control_Context,
 	values: [patch.PARAMETER_COUNT]i32,
@@ -242,7 +242,7 @@ control_apply_patch :: proc(
 
 // A response value with no spaces (a name, a label) written as a single token,
 // spaces folded to underscores so it stays one field on the response line.
-@(private = "file")
+@(private)
 control_write_token :: proc(out: ^strings.Builder, s: string) {
 	for r in s {
 		b: u8 = '?'
