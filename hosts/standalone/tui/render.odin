@@ -61,11 +61,122 @@ free_groups :: proc(views: []Group_View) {
 	delete(views)
 }
 
-// Draw the screen for the current group. Rendering is a bounded redraw: the
-// cursor homes and each line is overwritten and cleared to its end, then the
-// region below the last line is cleared. There is no full-screen clear per
-// frame, so a timed metrics refresh does not flicker. Colours come from `theme`;
-// with colour off every paint is a no-op and the layout is byte-for-byte plain.
+// The whole screen is redrawn as one framed box every frame. `present` writes
+// every terminal row -- top border, body, an optional bottom-pinned footer, and
+// the bottom border -- so a row a previous frame used is always overwritten and
+// nothing is ever left stranded when a view or a group changes. All allocation is
+// on the temp allocator the run loop resets each frame.
+present :: proc(title: string, body: []string, footer: []string, theme: Theme) {
+	rows, cols := terminal_size()
+	if cols < 24 {cols = 24}
+	if rows < 6 {rows = 6}
+	inner := cols - 4 // "│ " ... " │"
+
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "\x1b[H")
+	strings.write_string(&b, box_top(title, cols, theme))
+
+	body_count := rows - 2 // rows 2 .. rows-1
+	foot_n := min(len(footer), max(body_count - 1, 0))
+	sep := foot_n > 0 ? 1 : 0
+	top_n := body_count - foot_n - sep
+
+	for i in 0 ..< body_count {
+		strings.write_string(&b, fmt.tprintf("\x1b[%d;1H", 2 + i))
+		line := ""
+		if i < top_n {
+			if i < len(body) {line = body[i]}
+		} else if sep == 1 && i == top_n {
+			line = paint(theme, theme.dim, strings.repeat("─", inner, context.temp_allocator))
+		} else {
+			fi := i - top_n - sep
+			if fi >= 0 && fi < foot_n {line = footer[fi]}
+		}
+		strings.write_string(&b, box_line(line, inner, theme))
+	}
+
+	strings.write_string(&b, fmt.tprintf("\x1b[%d;1H", rows))
+	strings.write_string(&b, box_bottom(cols, theme))
+	terminal_write(strings.to_string(b))
+}
+
+// The visible width of a string in terminal cells: runes counted, ANSI colour
+// escapes skipped. Enough for this UI, whose content is ASCII and box glyphs.
+@(private)
+visible_width :: proc(s: string) -> int {
+	w := 0
+	in_esc := false
+	for r in s {
+		if in_esc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {in_esc = false}
+			continue
+		}
+		if r == 0x1b {
+			in_esc = true
+			continue
+		}
+		w += 1
+	}
+	return w
+}
+
+// Cut a (possibly coloured) string to at most `max` visible cells, ending with a
+// reset so a truncated colour does not bleed into the border.
+@(private)
+truncate_visible :: proc(s: string, max: int) -> string {
+	if visible_width(s) <= max {
+		return s
+	}
+	b := strings.builder_make(context.temp_allocator)
+	w := 0
+	in_esc := false
+	for r in s {
+		if in_esc {
+			strings.write_rune(&b, r)
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {in_esc = false}
+			continue
+		}
+		if r == 0x1b {
+			in_esc = true
+			strings.write_rune(&b, r)
+			continue
+		}
+		if w >= max {break}
+		strings.write_rune(&b, r)
+		w += 1
+	}
+	strings.write_string(&b, "\x1b[0m")
+	return strings.to_string(b)
+}
+
+@(private)
+box_top :: proc(title: string, cols: int, theme: Theme) -> string {
+	tw := visible_width(title)
+	fill := max(cols - 5 - tw, 0)
+	return fmt.tprintf(
+		"%s%s%s%s",
+		paint(theme, theme.dim, "┌─ "),
+		paint(theme, theme.title, title),
+		paint(theme, theme.dim, " "),
+		paint(theme, theme.dim, fmt.tprintf("%s┐", strings.repeat("─", fill, context.temp_allocator))),
+	)
+}
+
+@(private)
+box_bottom :: proc(cols: int, theme: Theme) -> string {
+	return paint(theme, theme.dim, fmt.tprintf("└%s┘", strings.repeat("─", cols - 2, context.temp_allocator)))
+}
+
+@(private)
+box_line :: proc(content: string, inner: int, theme: Theme) -> string {
+	c := truncate_visible(content, inner)
+	pad := max(inner - visible_width(c), 0)
+	edge := paint(theme, theme.dim, "│")
+	return fmt.tprintf("%s %s%s %s", edge, c, strings.repeat(" ", pad, context.temp_allocator), edge)
+}
+
+// Draw the parameter view for the current group: a tab strip, the group's rows
+// with value and bar, and a bottom-pinned status/help footer.
 render :: proc(
 	rows: []Row,
 	groups: []Group_View,
@@ -74,124 +185,103 @@ render :: proc(
 	path: string,
 	theme: Theme,
 ) {
-	terminal_home()
-	draw_line(1, paint(theme, theme.title, "Quesynth"))
-	draw_line(2, group_tabs(groups, current_group, theme))
+	body: [dynamic]string
+	body.allocator = context.temp_allocator
+	append(&body, group_tabs(groups, current_group, theme))
+	append(&body, "")
 
 	group := groups[current_group]
-	first_row := 4
 	for local, k in group.indices {
 		r := rows[local]
 		chosen := k == selected
 		marker := paint(theme, theme.selected, chosen ? ">" : " ")
-		label := paint(
-			theme,
-			chosen ? theme.selected : theme.label,
-			fmt.tprintf("%-16s", r.desc.label),
-		)
-		value := paint(theme, theme.value, fmt.tprintf("%-12s", registry.registry_format(r.desc, r.value)))
+		label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", r.desc.label))
+		value := paint(theme, theme.value, fmt.tprintf("%-14s", registry.registry_format(r.desc, r.value)))
 		bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
-		draw_line(first_row + k, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
+		append(&body, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
 	}
 
-	status := first_row + len(group.indices) + 1
-	draw_line(status, paint(theme, theme.dim, "-------------------------------------------------"))
+	footer: [dynamic]string
+	footer.allocator = context.temp_allocator
 	if !metrics.ok {
-		draw_line(status + 1, paint(theme, theme.warning, "DISCONNECTED - cached values are stale; edits disabled"))
-		draw_line(status + 2, paint(theme, theme.status, "Enter reconnect   Q quit (daemon is not stopped)"))
-		draw_line(status + 3, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
-		terminal_write("\x1b[J")
-		return
-	}
-	draw_line(
-		status + 1,
-		paint(
-			theme,
-			theme.status,
-			fmt.tprintf(
-				"voices %d/%d   %d Hz   buffer %d   rev %d   up %ds",
-				metrics.voices,
-				metrics.max_voices,
-				metrics.sample_rate,
-				metrics.buffer,
-				metrics.revision,
-				metrics.uptime,
+		append(&footer, paint(theme, theme.warning, "DISCONNECTED - cached values are stale; edits disabled"))
+		append(&footer, paint(theme, theme.status, "Enter reconnect   Q quit (daemon is not stopped)"))
+	} else {
+		append(
+			&footer,
+			paint(
+				theme,
+				theme.status,
+				fmt.tprintf(
+					"voices %d/%d   %d Hz   buffer %d   rev %d   up %ds",
+					metrics.voices,
+					metrics.max_voices,
+					metrics.sample_rate,
+					metrics.buffer,
+					metrics.revision,
+					metrics.uptime,
+				),
 			),
-		),
-	)
-	draw_line(status + 2, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   A archive   Q quit"))
-	draw_line(status + 3, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
-
-	// Clear anything a previously larger group left below the current one.
-	terminal_write("\x1b[J")
+		)
+		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   A archive   Q quit"))
+	}
+	append(&footer, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
+	present("Quesynth", body[:], footer[:], theme)
 }
 
-// The bank browser: the filled slots, one per line, the selected one marked.
-// Same bounded redraw as the parameter view.
+// The slot bank browser.
 render_bank :: proc(slots: []Bank_Slot, selected: int, theme: Theme) {
-	terminal_home()
-	draw_line(1, paint(theme, theme.title, "Quesynth — Bank"))
+	body: [dynamic]string
+	body.allocator = context.temp_allocator
 	if len(slots) == 0 {
-		draw_line(3, paint(theme, theme.warning, "the bank is empty"))
-		draw_line(5, paint(theme, theme.status, "O load a patch file   Esc back   Q quit"))
-		terminal_write("\x1b[J")
-		return
+		append(&body, paint(theme, theme.warning, "the bank is empty"))
 	}
 	for s, k in slots {
 		chosen := k == selected
 		marker := paint(theme, theme.selected, chosen ? ">" : " ")
-		text := paint(
-			theme,
-			chosen ? theme.selected : theme.label,
-			fmt.tprintf("%3d  %s", s.slot, s.name),
-		)
-		draw_line(3 + k, fmt.tprintf("%s %s", marker, text))
+		text := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%3d  %s", s.slot, s.name))
+		append(&body, fmt.tprintf("%s %s", marker, text))
 	}
-	foot := 3 + len(slots) + 1
-	draw_line(foot, paint(theme, theme.dim, "-------------------------------------------------"))
-	draw_line(foot + 1, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
-	terminal_write("\x1b[J")
+	footer: [dynamic]string
+	footer.allocator = context.temp_allocator
+	append(&footer, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
+	present("Quesynth — Bank", body[:], footer[:], theme)
 }
 
-LIST_ROWS :: 18
+// A scrolling list, used for the archive's bank and patch views. The window
+// follows the selection, so a list far larger than the terminal browses without
+// drawing it all.
+render_list :: proc(title: string, items: []string, selected: int, footer_text: string, theme: Theme) {
+	rows, _ := terminal_size()
+	window := max(rows - 5, 1) // room for both borders, a separator and the footer
 
-// A scrolling list: a titled window of `items` with the selected one marked and a
-// footer of counts and keys. The window follows the selection, so a list far
-// larger than the terminal (thousands of patches) browses without drawing them
-// all. Used for the archive's bank and patch views.
-render_list :: proc(title: string, items: []string, selected: int, footer: string, theme: Theme) {
-	terminal_home()
-	draw_line(1, paint(theme, theme.title, title))
+	body: [dynamic]string
+	body.allocator = context.temp_allocator
 	if len(items) == 0 {
-		draw_line(3, paint(theme, theme.warning, "(empty)"))
-		draw_line(5, paint(theme, theme.status, footer))
-		terminal_write("\x1b[J")
-		return
+		append(&body, paint(theme, theme.warning, "(empty)"))
 	}
 	start := 0
-	if selected >= LIST_ROWS {
-		start = selected - LIST_ROWS + 1
+	if selected >= window {
+		start = selected - window + 1
 	}
-	if start > len(items) - LIST_ROWS {
-		start = max(0, len(items) - LIST_ROWS)
+	if start > len(items) - window {
+		start = max(0, len(items) - window)
 	}
-	end := min(len(items), start + LIST_ROWS)
-	row := 3
+	end := min(len(items), start + window)
 	for i in start ..< end {
 		chosen := i == selected
 		marker := paint(theme, theme.selected, chosen ? ">" : " ")
 		text := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%5d  %s", i, items[i]))
-		draw_line(row, fmt.tprintf("%s %s", marker, text))
-		row += 1
+		append(&body, fmt.tprintf("%s %s", marker, text))
 	}
-	foot := 3 + LIST_ROWS + 1
-	draw_line(foot, paint(theme, theme.dim, "-------------------------------------------------"))
-	draw_line(foot + 1, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", selected + 1, len(items), footer)))
-	terminal_write("\x1b[J")
+	footer: [dynamic]string
+	footer.allocator = context.temp_allocator
+	count := len(items) == 0 ? 0 : selected + 1
+	append(&footer, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", count, len(items), footer_text)))
+	present(title, body[:], footer[:], theme)
 }
 
-// The tab strip, with the current group bracketed. Uses the temp allocator, so
-// the caller need not free it; the run loop resets that allocator each frame.
+// The tab strip, with the current group bracketed. Temp-allocated.
 @(private)
 group_tabs :: proc(groups: []Group_View, current_group: int, theme: Theme) -> string {
 	b := strings.builder_make(context.temp_allocator)
@@ -206,13 +296,6 @@ group_tabs :: proc(groups: []Group_View, current_group: int, theme: Theme) -> st
 		}
 	}
 	return strings.to_string(b)
-}
-
-@(private)
-draw_line :: proc(row: int, s: string) {
-	terminal_move(row, 2)
-	terminal_write(s)
-	terminal_write("\x1b[K") // clear from the cursor to the end of the line
 }
 
 // A fixed-width fill bar, its filled and empty runs coloured. Temp-allocated.

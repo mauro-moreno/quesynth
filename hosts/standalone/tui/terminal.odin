@@ -2,6 +2,7 @@ package tui
 
 import "core:fmt"
 import "core:os"
+import "core:sys/linux"
 import "core:sys/posix"
 
 // The terminal seam: raw mode, the alternate screen, and cursor moves via plain
@@ -45,4 +46,21 @@ terminal_home :: proc() {
 
 terminal_move :: proc(row, col: int) {
 	terminal_write(fmt.tprintf("\x1b[%d;%dH", row, col))
+}
+
+// The terminal's size in character cells, from the kernel. Falls back to a sane
+// 80x24 when the ioctl fails (a pipe, or a terminal that does not answer), so a
+// caller always has usable bounds.
+terminal_size :: proc() -> (rows: int, cols: int) {
+	ws: struct {
+		row:  u16,
+		col:  u16,
+		xpix: u16,
+		ypix: u16,
+	}
+	res := linux.ioctl(linux.Fd(posix.STDOUT_FILENO), linux.TIOCGWINSZ, uintptr(&ws))
+	if res == 0 && ws.row > 0 && ws.col > 0 {
+		return int(ws.row), int(ws.col)
+	}
+	return 24, 80
 }
