@@ -164,16 +164,19 @@ run :: proc(path: string) -> int {
 						}
 					}
 				} else if connected {
-					// Load the patch live; stay in the list to audition others, and
-					// record it as the chosen bank/patch.
+					// Load the patch, then close the browser and return to the synth.
+					// The bank and patch are remembered, so A reopens here to pick
+					// another.
 					prev_rev := metrics.revision
 					if client_archive_load(&client, arc_sel) {
 						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
 						arc_patch = arc_sel
+						arc_view = 2
 						bank := arc_bank >= 0 && arc_bank < len(bank_names) ? bank_names[arc_bank] : ""
 						tui_set(&current_bank, bank)
 						tui_set(&current_patch, arc_sel < len(patch_names) ? patch_names[arc_sel] : "")
+						archive_view = 0
 					}
 				}
 			case .Load_File:
