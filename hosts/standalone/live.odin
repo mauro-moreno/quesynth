@@ -1,5 +1,6 @@
 package standalone
 
+import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
 import "core:os"
@@ -58,6 +59,11 @@ Live :: struct {
 	ring:     Param_Ring,
 	snapshot: Snapshot,
 	revision: int,
+
+	// Runtime metrics shared with the control thread. nil until a control server
+	// is wired; when present, the audio thread stores the live voice count into
+	// it each block.
+	metrics:  ^Daemon_Metrics,
 }
 
 // The audio callback. Everything it touches is preallocated or atomic.
@@ -109,6 +115,16 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 			data.values[i] = i32(engine.engine_patch_value(&s.eng, i))
 		}
 		snapshot_publish(&s.snapshot, data)
+	}
+
+	// One relaxed atomic per block so daemon.info can report the live voice
+	// count without the control thread ever reaching into the engine.
+	if s.metrics != nil {
+		intrinsics.atomic_store_explicit(
+			&s.metrics.active_voices,
+			u32(engine.engine_active_voice_count(&s.eng)),
+			.Relaxed,
+		)
 	}
 
 	// The scratch was sized from the backend's own stated maximum, so this

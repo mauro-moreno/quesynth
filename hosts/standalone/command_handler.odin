@@ -3,6 +3,7 @@ package standalone
 import "base:intrinsics"
 import "core:strconv"
 import "core:strings"
+import "core:time"
 
 import "../../src/control"
 import "../../src/registry"
@@ -15,6 +16,9 @@ Control_Context :: struct {
 	ring:     ^Param_Ring,
 	snapshot: ^Snapshot,
 	state:    ^Daemon_State,
+	// Static runtime facts plus the audio thread's live voice count. May be nil
+	// (a bare handler in a test); daemon.info reports only what it can then.
+	metrics:  ^Daemon_Metrics,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -30,6 +34,8 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 	switch req.command {
 	case "daemon.status":
 		control_status(cc, req, out)
+	case "daemon.info":
+		control_info(cc, req, out)
 	case "daemon.shutdown":
 		// The one command that is a lifecycle action rather than a query. It
 		// raises the same flag Ctrl-C does; the main thread tears the daemon
@@ -58,6 +64,38 @@ control_status :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 	strings.write_int(out, control.PROTOCOL_VERSION)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+}
+
+@(private = "file")
+control_info :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	state := intrinsics.atomic_load_explicit(cc.state, .Acquire)
+	snap := snapshot_read(cc.snapshot)
+	control_write_ok(out, req)
+	strings.write_string(out, " state=")
+	strings.write_string(out, daemon_state_name(state))
+	strings.write_string(out, " proto=")
+	strings.write_int(out, control.PROTOCOL_VERSION)
+	strings.write_string(out, " revision=")
+	strings.write_int(out, snap.revision)
+	if cc.metrics != nil {
+		m := cc.metrics
+		voices := intrinsics.atomic_load_explicit(&m.active_voices, .Relaxed)
+		uptime := int(time.duration_seconds(time.tick_since(m.start_tick)))
+		strings.write_string(out, " sample_rate=")
+		strings.write_int(out, m.sample_rate)
+		strings.write_string(out, " buffer=")
+		strings.write_int(out, m.buffer_size)
+		strings.write_string(out, " voices=")
+		strings.write_int(out, int(voices))
+		strings.write_string(out, " max_voices=")
+		strings.write_int(out, m.max_voices)
+		strings.write_string(out, " uptime=")
+		strings.write_int(out, uptime)
+		// backend last: an endpoint name like "ALSA (default)" has spaces, so a
+		// client reads the rest of the line as its value.
+		strings.write_string(out, " backend=")
+		strings.write_string(out, m.backend)
+	}
 }
 
 @(private = "file")

@@ -4,6 +4,7 @@ package tui_tests
 import "core:fmt"
 import "core:sys/posix"
 import "core:testing"
+import "core:time"
 
 import registry "../../src/registry"
 import standalone "../../hosts/standalone"
@@ -59,6 +60,46 @@ test_tui_client_gets_and_sets_over_the_protocol :: proc(t: ^testing.T) {
 	// A rejected value leaves the client's set reporting failure.
 	_, rejected := tui.client_set(&client, "filter.cutoff", hi + 10000)
 	testing.expect(t, !rejected)
+
+	tui.client_close(&client)
+	standalone.control_server_stop(&cs)
+}
+
+@(test)
+test_tui_client_reads_daemon_info :: proc(t: ^testing.T) {
+	ring: standalone.Param_Ring
+	snap: standalone.Snapshot
+	state := standalone.Daemon_State.Running
+	standalone.snapshot_publish(&snap, standalone.Snapshot_Data{revision = 7})
+	metrics := standalone.Daemon_Metrics {
+		sample_rate   = 48000,
+		buffer_size   = 512,
+		max_voices    = 16,
+		backend       = "test-backend",
+		start_tick    = time.tick_now(),
+		active_voices = 3,
+	}
+
+	cs: standalone.Control_Server
+	cs.path = fmt.tprintf("/tmp/quesynth-tui-info-%d.sock", posix.getpid())
+	cs.ctx = standalone.Control_Context {
+		ring     = &ring,
+		snapshot = &snap,
+		state    = &state,
+		metrics  = &metrics,
+	}
+	testing.expect(t, standalone.control_server_start(&cs))
+
+	client, connected := tui.client_connect(cs.path)
+	testing.expect(t, connected)
+
+	info := tui.client_info(&client)
+	testing.expect(t, info.ok)
+	testing.expect_value(t, info.sample_rate, 48000)
+	testing.expect_value(t, info.buffer, 512)
+	testing.expect_value(t, info.voices, 3)
+	testing.expect_value(t, info.max_voices, 16)
+	testing.expect_value(t, info.revision, 7)
 
 	tui.client_close(&client)
 	standalone.control_server_stop(&cs)

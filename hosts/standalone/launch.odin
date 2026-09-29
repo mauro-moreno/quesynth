@@ -120,27 +120,49 @@ daemon_listening :: proc(path: string) -> bool {
 	return posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) == .OK
 }
 
-// Fork a detached daemon that re-execs this same binary with --daemon. The
-// child leaves the terminal's session with setsid and silences its stdio, so it
-// neither dies with the TUI nor writes over its screen. SIGCHLD is ignored so a
-// daemon that exits early leaves no zombie behind the TUI.
+// Spawn a fully detached daemon that re-execs this same binary with --daemon.
+//
+// This is the textbook double fork. The immediate child calls setsid to leave
+// the terminal's session, then forks again and exits, so the grandchild -- the
+// daemon -- is reparented to init: it can never be a job of the launching shell
+// nor die with the TUI, and the parent reaps that immediate child at once, so no
+// zombie is left and SIGCHLD needs no special handling.
+//
+// Before exec the daemon points its stdio at /dev/null and closes every other
+// inherited descriptor. That last part matters: if the daemon kept a copy of the
+// TUI's terminal or output pipe, whatever reads the TUI's output would never see
+// end of file after the TUI exits, and would hang waiting on a process that has
+// already gone.
 @(private = "file")
 spawn_daemon :: proc(patch_path: string) -> bool {
-	posix.signal(.SIGCHLD, transmute(proc "cdecl" (posix.Signal))posix.SIG_IGN)
 	pid := posix.fork()
 	if pid < 0 {
 		return false
 	}
 	if pid != 0 {
-		return true // parent: the TUI carries on
+		// Parent: reap the immediate child, which exits as soon as it has forked
+		// the daemon.
+		posix.waitpid(pid, nil, {})
+		return true
 	}
 
+	// Immediate child: detach from the terminal, fork the daemon, get out of the
+	// way so the daemon reparents to init.
 	posix.setsid()
+	if posix.fork() != 0 {
+		posix._exit(0)
+	}
+
+	// Grandchild: the daemon. Silence stdio and drop every other inherited
+	// descriptor before becoming it.
 	devnull := posix.open("/dev/null", {.RDWR})
 	if devnull >= 0 {
 		posix.dup2(devnull, posix.STDIN_FILENO)
 		posix.dup2(devnull, posix.STDOUT_FILENO)
 		posix.dup2(devnull, posix.STDERR_FILENO)
+	}
+	for fd in 3 ..< 1024 {
+		posix.close(posix.FD(fd))
 	}
 
 	exe: cstring = "/proc/self/exe"

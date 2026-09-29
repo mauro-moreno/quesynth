@@ -2,6 +2,7 @@ package standalone
 
 import "base:intrinsics"
 import "core:fmt"
+import "core:time"
 
 import "../../src/engine"
 import "../../src/patch"
@@ -132,6 +133,17 @@ run_daemon :: proc(patch_path: string) -> int {
 	d.live.right = make([]f32, audio.max_frames)
 	defer delete(d.live.right)
 
+	// Runtime metrics for daemon.info. Filled now, while every static fact is
+	// known; the audio thread stores the live voice count into it each block.
+	metrics := Daemon_Metrics {
+		sample_rate = int(audio.format.sample_rate),
+		buffer_size = audio.max_frames,
+		max_voices  = engine.engine_max_voices(&d.live.eng),
+		backend     = audio.name,
+		start_tick  = time.tick_now(),
+	}
+	d.live.metrics = &metrics
+
 	midi, midi_ok := midi_input_create()
 	if midi_ok {
 		// Not fatal: a machine with no MIDI hardware still runs the
@@ -183,6 +195,7 @@ run_daemon :: proc(patch_path: string) -> int {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,
 		state    = &d.state,
+		metrics  = &metrics,
 	}
 	control_ok := control_server_start(&cs)
 	if control_ok {

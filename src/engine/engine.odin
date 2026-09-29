@@ -649,6 +649,12 @@ engine_active_voice_count :: proc(e: ^Engine) -> int {
 	return n
 }
 
+// The size of the voice pool -- the most voices this engine can sound at once.
+// Fixed in engine_init and never grown, so reading it as a metric is stable.
+engine_max_voices :: proc(e: ^Engine) -> int {
+	return len(e.voices)
+}
+
 // Render `len(left)` samples. The buffers are written, not accumulated, and
 // must be the same length.
 //

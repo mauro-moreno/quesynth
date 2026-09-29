@@ -70,6 +70,50 @@ client_set :: proc(cl: ^Client, id: string, value: int) -> (applied: int, ok: bo
 	return client_value_request(cl, line)
 }
 
+// The runtime metrics from daemon.info. `ok` is false on a transport error.
+Metrics :: struct {
+	sample_rate: int,
+	buffer:      int,
+	voices:      int,
+	max_voices:  int,
+	uptime:      int,
+	revision:    int,
+	ok:          bool,
+}
+
+client_info :: proc(cl: ^Client) -> Metrics {
+	m: Metrics
+	line := fmt.tprintf("%d %d daemon.info", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent {
+		return m
+	}
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok {
+		return m
+	}
+	m.ok = true
+	m.sample_rate = client_field_int(resp.fields, "sample_rate")
+	m.buffer = client_field_int(resp.fields, "buffer")
+	m.voices = client_field_int(resp.fields, "voices")
+	m.max_voices = client_field_int(resp.fields, "max_voices")
+	m.uptime = client_field_int(resp.fields, "uptime")
+	m.revision = client_field_int(resp.fields, "revision")
+	return m
+}
+
+@(private)
+client_field_int :: proc(fields: string, key: string) -> int {
+	if s, has := control.response_field(fields, key); has {
+		if v, ok := strconv.parse_int(s); ok {
+			return v
+		}
+	}
+	return 0
+}
+
 // Send a request and read the "value=" field of an ok response.
 @(private)
 client_value_request :: proc(cl: ^Client, line: string) -> (value: int, ok: bool) {

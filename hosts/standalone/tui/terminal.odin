@@ -39,6 +39,10 @@ terminal_clear :: proc() {
 	terminal_write("\x1b[2J\x1b[H")
 }
 
+terminal_home :: proc() {
+	terminal_write("\x1b[H")
+}
+
 terminal_move :: proc(row, col: int) {
 	terminal_write(fmt.tprintf("\x1b[%d;%dH", row, col))
 }

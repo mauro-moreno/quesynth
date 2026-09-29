@@ -12,6 +12,8 @@ Key :: enum {
 	Enter,
 	Reset,
 	Quit,
+	Tab,
+	Tick,
 }
 
 // Read one key. Arrow keys arrive as a three-byte escape burst (ESC [ A..D); a
@@ -45,6 +47,23 @@ read_key :: proc() -> Key {
 		return .Reset
 	case 0x0d, 0x0a:
 		return .Enter
+	case 0x09:
+		return .Tab
 	}
 	return .Other
+}
+
+// Read a key, or return Tick when none arrives within timeout_ms. That lets the
+// UI refresh its metrics on a timer without a keypress, while still answering a
+// key the instant it is pressed.
+read_key_timeout :: proc(timeout_ms: int) -> Key {
+	fds := [1]posix.pollfd{{fd = posix.STDIN_FILENO, events = {.IN}}}
+	n := posix.poll(&fds[0], 1, c.int(timeout_ms))
+	if n <= 0 {
+		return .Tick
+	}
+	if .IN not_in fds[0].revents {
+		return .Tick
+	}
+	return read_key()
 }
