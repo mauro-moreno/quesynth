@@ -47,6 +47,7 @@ run :: proc(path: string) -> int {
 	terminal_enter(&term)
 	defer terminal_leave(&term)
 
+	theme := theme_load()
 	current_group := 0
 	selected := 0
 	metrics: Metrics
@@ -57,7 +58,7 @@ run :: proc(path: string) -> int {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
 		// lines) so the render loop does not grow memory without bound.
 		free_all(context.temp_allocator)
-		render(rows[:], groups, current_group, selected, metrics, path)
+		render(rows[:], groups, current_group, selected, metrics, path, theme)
 
 		switch read_key_timeout(REFRESH_MS) {
 		case .Tick:

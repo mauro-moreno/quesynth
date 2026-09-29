@@ -64,60 +64,63 @@ free_groups :: proc(views: []Group_View) {
 // Draw the screen for the current group. Rendering is a bounded redraw: the
 // cursor homes and each line is overwritten and cleared to its end, then the
 // region below the last line is cleared. There is no full-screen clear per
-// frame, so a timed metrics refresh does not flicker.
+// frame, so a timed metrics refresh does not flicker. Colours come from `theme`;
+// with colour off every paint is a no-op and the layout is byte-for-byte plain.
 render :: proc(
 	rows: []Row,
 	groups: []Group_View,
 	current_group, selected: int,
 	metrics: Metrics,
 	path: string,
+	theme: Theme,
 ) {
 	terminal_home()
-	draw_line(1, "Quesynth")
-	draw_line(2, group_tabs(groups, current_group))
+	draw_line(1, paint(theme, theme.title, "Quesynth"))
+	draw_line(2, group_tabs(groups, current_group, theme))
 
 	group := groups[current_group]
 	first_row := 4
 	for local, k in group.indices {
 		r := rows[local]
-		marker := k == selected ? ">" : " "
-		bar := make_bar(registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
-		defer delete(bar)
-		draw_line(
-			first_row + k,
-			fmt.tprintf(
-				"%s %-16s %-12s %s",
-				marker,
-				r.desc.label,
-				registry.registry_format(r.desc, r.value),
-				bar,
-			),
+		chosen := k == selected
+		marker := paint(theme, theme.selected, chosen ? ">" : " ")
+		label := paint(
+			theme,
+			chosen ? theme.selected : theme.label,
+			fmt.tprintf("%-16s", r.desc.label),
 		)
+		value := paint(theme, theme.value, fmt.tprintf("%-12s", registry.registry_format(r.desc, r.value)))
+		bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
+		draw_line(first_row + k, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
 	}
 
 	status := first_row + len(group.indices) + 1
-	draw_line(status, "-------------------------------------------------")
+	draw_line(status, paint(theme, theme.dim, "-------------------------------------------------"))
 	if !metrics.ok {
-		draw_line(status + 1, "DISCONNECTED - cached values are stale; edits disabled")
-		draw_line(status + 2, "Enter reconnect   Q quit (daemon is not stopped)")
-		draw_line(status + 3, fmt.tprintf("daemon: %s", path))
+		draw_line(status + 1, paint(theme, theme.warning, "DISCONNECTED - cached values are stale; edits disabled"))
+		draw_line(status + 2, paint(theme, theme.status, "Enter reconnect   Q quit (daemon is not stopped)"))
+		draw_line(status + 3, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 		terminal_write("\x1b[J")
 		return
 	}
 	draw_line(
 		status + 1,
-		fmt.tprintf(
-			"voices %d/%d   %d Hz   buffer %d   rev %d   up %ds",
-			metrics.voices,
-			metrics.max_voices,
-			metrics.sample_rate,
-			metrics.buffer,
-			metrics.revision,
-			metrics.uptime,
+		paint(
+			theme,
+			theme.status,
+			fmt.tprintf(
+				"voices %d/%d   %d Hz   buffer %d   rev %d   up %ds",
+				metrics.voices,
+				metrics.max_voices,
+				metrics.sample_rate,
+				metrics.buffer,
+				metrics.revision,
+				metrics.uptime,
+			),
 		),
 	)
-	draw_line(status + 2, "Tab group   up/down select   left/right change   R reset   Q quit")
-	draw_line(status + 3, fmt.tprintf("daemon: %s", path))
+	draw_line(status + 2, paint(theme, theme.status, "Tab group   up/down select   left/right change   R reset   Q quit"))
+	draw_line(status + 3, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 
 	// Clear anything a previously larger group left below the current one.
 	terminal_write("\x1b[J")
@@ -126,18 +129,16 @@ render :: proc(
 // The tab strip, with the current group bracketed. Uses the temp allocator, so
 // the caller need not free it; the run loop resets that allocator each frame.
 @(private)
-group_tabs :: proc(groups: []Group_View, current_group: int) -> string {
+group_tabs :: proc(groups: []Group_View, current_group: int, theme: Theme) -> string {
 	b := strings.builder_make(context.temp_allocator)
 	for g, i in groups {
 		if i > 0 {
 			strings.write_byte(&b, ' ')
 		}
 		if i == current_group {
-			strings.write_byte(&b, '[')
-			strings.write_string(&b, g.name)
-			strings.write_byte(&b, ']')
+			strings.write_string(&b, paint(theme, theme.tab_active, fmt.tprintf("[%s]", g.name)))
 		} else {
-			strings.write_string(&b, g.name)
+			strings.write_string(&b, paint(theme, theme.tab_inactive, g.name))
 		}
 	}
 	return strings.to_string(b)
@@ -150,14 +151,11 @@ draw_line :: proc(row: int, s: string) {
 	terminal_write("\x1b[K") // clear from the cursor to the end of the line
 }
 
-// A fixed-width fill bar. The caller frees the returned string.
+// A fixed-width fill bar, its filled and empty runs coloured. Temp-allocated.
 @(private)
-make_bar :: proc(norm: f32, width: int) -> string {
-	buf := make([]u8, width)
-	filled := int(norm * f32(width) + 0.5)
-	filled = clamp(filled, 0, width)
-	for i in 0 ..< width {
-		buf[i] = i < filled ? '#' : '-'
-	}
-	return string(buf)
+make_bar :: proc(theme: Theme, norm: f32, width: int) -> string {
+	filled := clamp(int(norm * f32(width) + 0.5), 0, width)
+	fill := strings.repeat("#", filled, context.temp_allocator)
+	empty := strings.repeat("-", width - filled, context.temp_allocator)
+	return fmt.tprintf("%s%s", paint(theme, theme.bar_fill, fill), paint(theme, theme.bar_empty, empty))
 }
