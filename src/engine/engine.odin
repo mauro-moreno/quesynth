@@ -335,6 +335,30 @@ engine_refresh_controllers :: proc(e: ^Engine) {
 	engine_update_lfo_rates(e)
 }
 
+// Set one stored parameter and rebind, keeping every sounding voice.
+//
+// This is the engine side of an external control edit: the protocol's
+// parameter.set ends here. It deliberately takes the same path a MIDI control
+// change already does -- write the stored value into the patch and rebuild the
+// live parameters through `engine_refresh_controllers`, which reaches no
+// allocator and never resizes the voice pool, so it is safe on the audio
+// thread. `engine_apply_patch` is the wrong tool for a single control: it can
+// reallocate the pool and cut the sound. That is for loading a patch.
+engine_set_stored :: proc(e: ^Engine, index, stored: int) {
+	if index < 0 || index >= patch.PARAMETER_COUNT {return}
+	if !e.has_patch {return}
+	e.patch.values[index] = stored
+	engine_refresh_controllers(e)
+}
+
+// The stored integer currently held for a parameter -- the value a get returns.
+// Reads the base patch, not the controller-displaced live block, so a get
+// reflects what was set rather than where a moving wheel happens to sit.
+engine_patch_value :: proc(e: ^Engine, index: int) -> int {
+	if index < 0 || index >= patch.PARAMETER_COUNT {return 0}
+	return e.patch.values[index]
+}
+
 // The reference's destination menu does not offer the routing controls
 // themselves. Enforcing that at the engine boundary also makes malformed patch
 // data inert instead of allowing a controller to rewrite its own definition.
