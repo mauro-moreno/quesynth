@@ -268,6 +268,88 @@ client_bank_load_file :: proc(cl: ^Client, path: string) -> bool {
 	return client_ok(cl, fmt.tprintf("%d %d bank.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path))
 }
 
+// The archive browser's client half. Names are listed in daemon-index order, so a
+// name's position is the index archive.bank / archive.load expect.
+
+client_archive_open :: proc(cl: ^Client, path: string) -> (banks: int, ok: bool) {
+	line := fmt.tprintf("%d %d archive.open %s", control.PROTOCOL_VERSION, cl.next_id, path)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return 0, false }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return 0, false }
+	return client_field_int(resp.fields, "banks"), true
+}
+
+client_archive_bank :: proc(cl: ^Client, index: int) -> (patches: int, ok: bool) {
+	line := fmt.tprintf("%d %d archive.bank %d", control.PROTOCOL_VERSION, cl.next_id, index)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return 0, false }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return 0, false }
+	return client_field_int(resp.fields, "patches"), true
+}
+
+client_archive_load :: proc(cl: ^Client, index: int) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d archive.load %d", control.PROTOCOL_VERSION, cl.next_id, index))
+}
+
+client_archive_close :: proc(cl: ^Client) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d archive.close", control.PROTOCOL_VERSION, cl.next_id))
+}
+
+// Page through a listing verb (archive.banks / archive.patches) and return every
+// name in order. The caller frees each name and the slice with client_names_free.
+client_archive_names :: proc(cl: ^Client, verb: string) -> ([]string, bool) {
+	names: [dynamic]string
+	PAGE :: 256
+	offset := 0
+	for {
+		line := fmt.tprintf("%d %d %s %d %d", control.PROTOCOL_VERSION, cl.next_id, verb, offset, PAGE)
+		cl.next_id += 1
+		payload, sent := client_roundtrip(cl, line)
+		if !sent {
+			client_names_free(names[:])
+			return nil, false
+		}
+		defer delete(payload)
+		resp, parsed := control.response_parse(payload)
+		if !parsed || resp.status != .Ok {
+			client_names_free(names[:])
+			return nil, false
+		}
+		total := client_field_int(resp.fields, "total")
+		got := 0
+		body := resp.body
+		for len(body) > 0 {
+			record := body
+			if idx := strings.index_byte(body, '\n'); idx >= 0 {
+				record = body[:idx]
+				body = body[idx + 1:]
+			} else {
+				body = ""
+			}
+			if name, has := control.response_field(record, "name"); has {
+				append(&names, strings.clone(name))
+				got += 1
+			}
+		}
+		offset += PAGE
+		if got == 0 || offset >= total {
+			break
+		}
+	}
+	return names[:], true
+}
+
+client_names_free :: proc(names: []string) {
+	for n in names { delete(n) }
+	delete(names)
+}
+
 // Send a request and report only whether it succeeded, advancing the id.
 @(private)
 client_ok :: proc(cl: ^Client, line: string) -> bool {

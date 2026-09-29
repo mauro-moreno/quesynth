@@ -60,17 +60,79 @@ run :: proc(path: string) -> int {
 	bank_slots: []Bank_Slot
 	bank_sel := 0
 
+	// Archive browser state: 0 none, 1 banks, 2 patches. Names are held for the
+	// current level only, so browsing a huge corpus costs one list at a time.
+	archive_view := 0
+	bank_names: []string
+	patch_names: []string
+	arc_sel := 0
+
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
 		// lines) so the render loop does not grow memory without bound.
 		free_all(context.temp_allocator)
-		if browsing {
+		switch {
+		case archive_view == 1:
+			render_list("Quesynth — Archive banks", bank_names, arc_sel, "Enter open   Esc close   Q quit", theme)
+		case archive_view == 2:
+			render_list("Quesynth — Archive patches", patch_names, arc_sel, "Enter load   Esc back   Q quit", theme)
+		case browsing:
 			render_bank(bank_slots, bank_sel, theme)
-		} else {
+		case:
 			render(rows[:], groups, current_group, selected, metrics, path, theme)
 		}
 
 		key := read_key_timeout(REFRESH_MS)
+
+		// The archive browser is a two-level list (banks, then patches) layered
+		// over everything else; handle it first and skip the rest while it is up.
+		if archive_view != 0 {
+			items := archive_view == 1 ? bank_names : patch_names
+			switch key {
+			case .Quit:
+				client_names_free(bank_names)
+				client_names_free(patch_names)
+				return 0
+			case .Up:
+				if arc_sel > 0 { arc_sel -= 1 }
+			case .Down:
+				if arc_sel < len(items) - 1 { arc_sel += 1 }
+			case .Enter:
+				if archive_view == 1 {
+					if _, ok := client_archive_bank(&client, arc_sel); ok {
+						if names, nok := client_archive_names(&client, "archive.patches"); nok {
+							patch_names = names
+							arc_sel = 0
+							archive_view = 2
+						}
+					}
+				} else if connected {
+					// Load the patch live; stay in the list to audition others.
+					if client_archive_load(&client, arc_sel) {
+						client_load_snapshot(&client, rows[:])
+						metrics = client_info(&client)
+						connected = metrics.ok
+					}
+				}
+			case .Escape, .Archive:
+				if archive_view == 2 {
+					client_names_free(patch_names)
+					patch_names = nil
+					arc_sel = 0
+					archive_view = 1
+				} else {
+					client_archive_close(&client)
+					client_names_free(bank_names)
+					bank_names = nil
+					archive_view = 0
+				}
+			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Other:
+			// Ignored in the archive browser.
+			}
+			if client.fd < 0 { connected = false; metrics = {} }
+			continue
+		}
+
 		if browsing {
 			switch key {
 			case .Quit:
@@ -116,7 +178,7 @@ run :: proc(path: string) -> int {
 					bank_slots, _ = client_bank_list(&client)
 					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
 				}
-			case .Tick, .Left, .Right, .Reset, .Tab, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Other:
 			// Ignored in the browser.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -183,6 +245,14 @@ run :: proc(path: string) -> int {
 					browsing = true
 				}
 			}
+		case .Archive:
+			if connected && tui_open_archive(&client, theme) {
+				if names, ok := client_archive_names(&client, "archive.banks"); ok {
+					bank_names = names
+					arc_sel = 0
+					archive_view = 1
+				}
+			}
 		case .Save, .Escape, .Other:
 		// Save applies only in the bank browser; Escape and Other are ignored.
 		}
@@ -228,6 +298,18 @@ tui_load_bank :: proc(client: ^Client, theme: Theme) -> bool {
 	trimmed := strings.trim_space(path)
 	if !ok || len(trimmed) == 0 { return false }
 	return client_bank_load_file(client, trimmed)
+}
+
+// Prompt for a zip archive path and open it for browsing. Returns whether an
+// archive was opened, so the caller can fetch its bank list.
+@(private)
+tui_open_archive :: proc(client: ^Client, theme: Theme) -> bool {
+	terminal_clear()
+	path, ok := prompt_line(1, "Open archive (zip): ", theme)
+	trimmed := strings.trim_space(path)
+	if !ok || len(trimmed) == 0 { return false }
+	_, opened := client_archive_open(client, trimmed)
+	return opened
 }
 
 // Move the selected parameter by one step, clamped to its domain, and adopt the

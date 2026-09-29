@@ -19,6 +19,7 @@ Key :: enum {
 	Save,
 	Load_File,
 	Load_Bank,
+	Archive,
 	Escape,
 }
 
@@ -59,6 +60,8 @@ read_key :: proc() -> Key {
 		return .Load_File
 	case 'l', 'L':
 		return .Load_Bank
+	case 'a', 'A':
+		return .Archive
 	case 0x0d, 0x0a:
 		return .Enter
 	case 0x09:
@@ -78,22 +81,27 @@ prompt_line :: proc(row: int, label: string, theme: Theme) -> (string, bool) {
 		terminal_write(paint(theme, theme.status, label))
 		terminal_write(string(buf[:]))
 		terminal_write("\x1b[K")
-		b: [8]u8
+		b: [64]u8
 		n := posix.read(posix.STDIN_FILENO, raw_data(b[:]), c.size_t(len(b)))
 		if n <= 0 {
 			return "", false
 		}
-		switch {
-		case b[0] == 0x1b:
-			return "", false
-		case b[0] == 0x0d || b[0] == 0x0a:
-			return strings.clone(string(buf[:]), context.temp_allocator), true
-		case b[0] == 0x7f || b[0] == 0x08:
-			if len(buf) > 0 {
-				pop(&buf)
+		// Consume every byte the read returned, so a pasted or fast-typed path is
+		// not truncated to its first character.
+		for i in 0 ..< int(n) {
+			ch := b[i]
+			switch {
+			case ch == 0x1b:
+				return "", false
+			case ch == 0x0d || ch == 0x0a:
+				return strings.clone(string(buf[:]), context.temp_allocator), true
+			case ch == 0x7f || ch == 0x08:
+				if len(buf) > 0 {
+					pop(&buf)
+				}
+			case ch >= 0x20 && ch < 0x7f:
+				append(&buf, ch)
 			}
-		case b[0] >= 0x20 && b[0] < 0x7f:
-			append(&buf, b[0])
 		}
 	}
 }

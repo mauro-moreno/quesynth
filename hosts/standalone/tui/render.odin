@@ -119,7 +119,7 @@ render :: proc(
 			),
 		),
 	)
-	draw_line(status + 2, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   O patch file   Q quit"))
+	draw_line(status + 2, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   A archive   Q quit"))
 	draw_line(status + 3, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 
 	// Clear anything a previously larger group left below the current one.
@@ -150,6 +150,43 @@ render_bank :: proc(slots: []Bank_Slot, selected: int, theme: Theme) {
 	foot := 3 + len(slots) + 1
 	draw_line(foot, paint(theme, theme.dim, "-------------------------------------------------"))
 	draw_line(foot + 1, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
+	terminal_write("\x1b[J")
+}
+
+LIST_ROWS :: 18
+
+// A scrolling list: a titled window of `items` with the selected one marked and a
+// footer of counts and keys. The window follows the selection, so a list far
+// larger than the terminal (thousands of patches) browses without drawing them
+// all. Used for the archive's bank and patch views.
+render_list :: proc(title: string, items: []string, selected: int, footer: string, theme: Theme) {
+	terminal_home()
+	draw_line(1, paint(theme, theme.title, title))
+	if len(items) == 0 {
+		draw_line(3, paint(theme, theme.warning, "(empty)"))
+		draw_line(5, paint(theme, theme.status, footer))
+		terminal_write("\x1b[J")
+		return
+	}
+	start := 0
+	if selected >= LIST_ROWS {
+		start = selected - LIST_ROWS + 1
+	}
+	if start > len(items) - LIST_ROWS {
+		start = max(0, len(items) - LIST_ROWS)
+	}
+	end := min(len(items), start + LIST_ROWS)
+	row := 3
+	for i in start ..< end {
+		chosen := i == selected
+		marker := paint(theme, theme.selected, chosen ? ">" : " ")
+		text := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%5d  %s", i, items[i]))
+		draw_line(row, fmt.tprintf("%s %s", marker, text))
+		row += 1
+	}
+	foot := 3 + LIST_ROWS + 1
+	draw_line(foot, paint(theme, theme.dim, "-------------------------------------------------"))
+	draw_line(foot + 1, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", selected + 1, len(items), footer)))
 	terminal_write("\x1b[J")
 }
 
