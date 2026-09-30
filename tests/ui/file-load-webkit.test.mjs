@@ -38,10 +38,7 @@ test("WebKit file chooser loads a Synth1 patch", async () => {
     await page.getByRole("button", {name: "Add"}).click();
     const input = page.locator('input[type="file"]');
     await input.setInputFiles(fixture);
-    await page.waitForFunction(() => {
-      const status = document.querySelector(".browser-status");
-      return status && /patch/i.test(status.textContent || "");
-    });
+    await page.waitForFunction(() => /unison four/i.test(document.querySelector("#bank-patch")?.textContent || ""));
     assert.match(await page.locator("#bank-patch").textContent(), /unison four/i);
   } finally {
     if (browser) await browser.close();
