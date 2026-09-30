@@ -44,15 +44,51 @@ View :: struct {
 	on_message:  Message_Proc,
 	user:        rawptr,
 
-	// Each +1 and ours. The controller is kept to remove the handler at
-	// destroy; the handler's ivar points back at this View.
-	webview:     ^WK_Web_View,
-	content:     ^WK_User_Content_Controller,
-	handler:     ^NS.Object,
+    // Each +1 and ours. The controller is kept to remove the handler at
+    // destroy; the handler's ivar points back at this View.
+    webview:     ^WK_Web_View,
+    content:     ^WK_User_Content_Controller,
+    handler:     ^NS.Object,
+    delegate:    ^NS.Object,
 
-	ready:       bool,
+    ready:       bool,
 
-	ctx:         runtime.Context,
+    ctx:         runtime.Context,
+}
+
+// The file-input delegate is required by WKWebView for <input type=file>.
+@(private)
+delegate_once: sync.Once
+@(private)
+delegate_class: Class
+@(private)
+delegate_ok: bool
+
+register_delegate_class :: proc() {
+    methods := []Method{{"webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:", rawptr(run_open_panel), "v@:@@@?"}}
+    delegate_class, delegate_ok = register_class("QuesynthUIDelegate", intrinsics.objc_find_class("NSObject"), methods, "WKUIDelegate")
+}
+
+@(private)
+run_open_panel :: proc "c" (self: ^NS.Object, cmd: NS.SEL, webview: ^WK_Web_View, parameters: ^WK_Open_Panel_Parameters, frame: ^NS.Object, completion: ^NS.Block) {
+    if completion == nil {
+        return
+    }
+    panel := NS.OpenPanel_openPanel()
+    if panel == nil {
+        NS.Block_invoke(completion, nil)
+        return
+    }
+    allow_directories := parameters != nil && WK_Open_Panel_Parameters_allowsDirectories(parameters)
+    allow_multiple := parameters != nil && WK_Open_Panel_Parameters_allowsMultipleSelection(parameters)
+    NS.OpenPanel_setCanChooseFiles(panel, !allow_directories)
+    NS.OpenPanel_setCanChooseDirectories(panel, allow_directories)
+    NS.OpenPanel_setAllowsMultipleSelection(panel, allow_multiple)
+    if NS.SavePanel_runModal(panel) == .OK {
+        NS.Block_invoke(completion, NS.OpenPanel_URLs(panel))
+    } else {
+        NS.Block_invoke(completion, nil)
+    }
 }
 
 // The WKScriptMessageHandler class, registered once per image on first create.
@@ -82,6 +118,10 @@ create :: proc(v: ^View) -> bool {
 	if !handler_ok {
 		return false
 	}
+    sync.once_do(&delegate_once, register_delegate_class)
+    if !delegate_ok {
+        return false
+    }
 	v.ctx = context
 	v.ready = false
 
@@ -130,6 +170,13 @@ create :: proc(v: ^View) -> bool {
 		return false
 	}
 	v.webview = webview
+    delegate := alloc_instance(delegate_class)->init()
+    if delegate == nil {
+        destroy(v)
+        return false
+    }
+    v.delegate = delegate
+    WK_Web_View_setUIDelegate(webview, delegate)
 	view_set_autoresizing_mask(webview, VIEW_WIDTH_SIZABLE | VIEW_HEIGHT_SIZABLE)
 	(^NS.View)(v.parent)->addSubview(webview)
 
@@ -182,6 +229,13 @@ destroy :: proc(v: ^View) {
 		v.handler->release()
 		v.handler = nil
 	}
+    if v.webview != nil {
+        WK_Web_View_setUIDelegate(v.webview, nil)
+    }
+    if v.delegate != nil {
+        v.delegate->release()
+        v.delegate = nil
+    }
 	if v.webview != nil {
 		view_remove_from_superview(v.webview)
 		v.webview->release()

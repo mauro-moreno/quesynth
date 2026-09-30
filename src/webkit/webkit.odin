@@ -28,6 +28,20 @@ WK_User_Content_Controller :: struct { using _: NS.Object }
 WK_User_Script :: struct { using _: NS.Object }
 @(objc_class = "WKScriptMessage")
 WK_Script_Message :: struct { using _: NS.Object }
+@(objc_class = "WKOpenPanelParameters")
+WK_Open_Panel_Parameters :: struct { using _: NS.Object }
+
+WK_Web_View_setUIDelegate :: proc "c" (self: ^WK_Web_View, delegate: ^NS.Object) {
+	intrinsics.objc_send(nil, self, "setUIDelegate:", delegate)
+}
+
+WK_Open_Panel_Parameters_allowsDirectories :: proc "c" (self: ^WK_Open_Panel_Parameters) -> NS.BOOL {
+	return intrinsics.objc_send(NS.BOOL, self, "allowsDirectories")
+}
+
+WK_Open_Panel_Parameters_allowsMultipleSelection :: proc "c" (self: ^WK_Open_Panel_Parameters) -> NS.BOOL {
+	return intrinsics.objc_send(NS.BOOL, self, "allowsMultipleSelection")
+}
 
 WK_User_Script_Injection_Time :: enum NS.Integer {
 	At_Document_Start = 0,
