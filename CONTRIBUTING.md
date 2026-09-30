@@ -61,6 +61,8 @@ odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
 node --test tests/ui/panel-smoke.test.mjs
+for f in hosts/standalone/browser/*.js; do node --check "$f"; done
+node --test tests/browser/*.test.mjs
 ```
 
 CI runs these on Windows, Linux, and macOS. The VST3 and CLAP plugins build on
@@ -70,6 +72,10 @@ Windows and Linux -- the Linux editor is WebKitGTK, loaded at run time, so no
 assembles it with `tools/build-au.sh`, validates it with `auval`, and then runs
 it through `pluginval` with `tools/validate-au.sh`, so if you touch `hosts/au`
 or `src/audiounit` without a Mac, lean on the macOS CI job.
+
+The browser adapter's tests need only Node: they run the adapter in process
+against a stand-in daemon on a Unix socket, so they skip on Windows.
+`node --check` is run once per file because it reads only its first argument.
 
 The panel smoke test above boots `ui/` in a stand-in DOM and needs nothing but
 Node. The macOS job goes further: it checks that the macOS editor -- the

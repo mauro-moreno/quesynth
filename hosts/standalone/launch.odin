@@ -108,9 +108,23 @@ run_browser :: proc(patch_path: string, bank_path: string) -> int {
 		posix._exit(127)
 	}
 	status: c.int
-	posix.waitpid(pid, &status, {})
+	for posix.waitpid(pid, &status, {}) < 0 {
+		if posix.errno() != .EINTR { delete(socket); return 1 }
+	}
 	delete(socket)
-	return 0
+	// The adapter's own outcome is the command's: a script or wrapper must be
+	// able to tell that the browser front-end failed. 127 is the child's exec
+	// failure above -- node is not on PATH -- which deserves a hint, not a code.
+	switch {
+	case posix.WIFEXITED(status) && posix.WEXITSTATUS(status) == 127:
+		fmt.eprintln("error: could not start node; is Node.js installed?")
+		return 1
+	case posix.WIFEXITED(status):
+		return int(posix.WEXITSTATUS(status))
+	case posix.WIFSIGNALED(status):
+		return 128 + int(posix.WTERMSIG(status))
+	}
+	return 1
 }
 
 // Whether a daemon is already listening at the path: a plain connect probe. Used

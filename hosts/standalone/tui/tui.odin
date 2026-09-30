@@ -66,10 +66,13 @@ run :: proc(path: string) -> int {
 	bank_label := ""
 	bank_sel := 0
 
-	// What is loaded right now, shown on the synth screen so the chosen bank and
-	// patch are always visible. Updated on every load; "" until the first one.
+	// Which bank and patch the daemon is playing, shown on the synth screen. The
+	// daemon owns this, not the client, so a load from another front-end shows
+	// here too. Re-read every tick, and straight after this client's own loads
+	// and saves so the screen never lags its own action; "" until one names it.
 	current_bank := ""
 	current_patch := ""
+	defer {delete(current_bank); delete(current_patch)}
 
 	// Archive browser state: 0 none, 1 banks, 2 patches. The opened archive, its
 	// bank names, the bank last entered and the patch last on all persist while
@@ -96,6 +99,7 @@ run :: proc(path: string) -> int {
 	if connected && config.bank_path != "" {
 		client_bank_load_file(&client, config.bank_path)
 	}
+	if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
 		// lines) so the render loop does not grow memory without bound.
@@ -129,6 +133,7 @@ run :: proc(path: string) -> int {
 				if config_sel < CONFIG_FIELDS - 1 { config_sel += 1 }
 			case .Enter:
 				tui_edit_setting(&client, &config, config_sel, &has_archive, &bank_names, theme)
+				if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 			case .Escape, .Config:
 				configuring = false
 			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Other:
@@ -173,9 +178,7 @@ run :: proc(path: string) -> int {
 						connected = metrics.ok
 						arc_patch = arc_sel
 						arc_view = 2
-						bank := arc_bank >= 0 && arc_bank < len(bank_names) ? bank_names[arc_bank] : ""
-						tui_set(&current_bank, bank)
-						tui_set(&current_patch, arc_sel < len(patch_names) ? patch_names[arc_sel] : "")
+						if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 						archive_view = 0
 					}
 				}
@@ -251,8 +254,7 @@ run :: proc(path: string) -> int {
 					if client_patch_load(&client, bank_slots[bank_sel].slot) {
 						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
-						tui_set(&current_bank, bank_label)
-						tui_set(&current_patch, bank_slots[bank_sel].name)
+						if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 					}
 					client_bank_free(bank_slots)
 					delete(bank_label)
@@ -263,6 +265,7 @@ run :: proc(path: string) -> int {
 			case .Save:
 				if connected && bank_sel < len(bank_slots) {
 					tui_save(&client, bank_slots[bank_sel].slot, theme)
+					tui_read_identity(&client, &current_bank, &current_patch)
 					client_bank_free(bank_slots)
 					delete(bank_label)
 					bank_slots, bank_label, _ = client_bank_list(&client)
@@ -271,9 +274,10 @@ run :: proc(path: string) -> int {
 			case .Load_File:
 				if connected {
 					prev_rev := metrics.revision
-					if m, did := tui_load_file(&client, rows[:], prev_rev, &current_bank, &current_patch, theme); did {
+					if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
 						metrics = m
 						connected = metrics.ok
+						if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 						client_bank_free(bank_slots)
 						delete(bank_label)
 						bank_slots = nil
@@ -283,6 +287,7 @@ run :: proc(path: string) -> int {
 				}
 			case .Load_Bank:
 				if connected && tui_load_bank(&client, theme) {
+					tui_read_identity(&client, &current_bank, &current_patch)
 					client_bank_free(bank_slots)
 					delete(bank_label)
 					bank_slots, bank_label, _ = client_bank_list(&client)
@@ -302,10 +307,14 @@ run :: proc(path: string) -> int {
 				connected = metrics.ok
 				if !connected {
 					client_close(&client)
-				} else if metrics.revision != shown_rev {
-					// Something moved the daemon's state; pull the new values in.
-					client_load_snapshot(&client, rows[:])
-					shown_rev = metrics.revision
+				} else {
+					if metrics.revision != shown_rev {
+						// Something moved the daemon's state; pull the new values in.
+						client_load_snapshot(&client, rows[:])
+						shown_rev = metrics.revision
+					}
+					// Another front-end may have loaded, saved or replaced the bank.
+					tui_read_identity(&client, &current_bank, &current_patch)
 				}
 			}
 		case .Quit:
@@ -342,9 +351,10 @@ run :: proc(path: string) -> int {
 		case .Load_File:
 			if connected {
 				prev_rev := metrics.revision
-				if m, did := tui_load_file(&client, rows[:], prev_rev, &current_bank, &current_patch, theme); did {
+				if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
 					metrics = m
 					connected = metrics.ok
+					if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 				}
 			}
 		case .Enter:
@@ -354,10 +364,12 @@ run :: proc(path: string) -> int {
 				client, connected = client_connect(path)
 				if connected { connected = client_load_snapshot(&client, rows[:]) }
 				if connected { metrics = client_info(&client); connected = metrics.ok }
+				if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 				if !connected { client_close(&client); metrics = {} }
 			}
 		case .Load_Bank:
 			if connected && tui_load_bank(&client, theme) {
+				tui_read_identity(&client, &current_bank, &current_patch)
 				// Loading a bank changes what is browsable; open the browser on it.
 				if slots, label, ok := client_bank_list(&client); ok {
 					bank_slots = slots
@@ -430,35 +442,16 @@ tui_save :: proc(client: ^Client, slot: int, theme: Theme) {
 // load and whether a load was attempted. `prev_rev` is the revision before the
 // load, so the values are read back only once the audio thread has applied it.
 @(private)
-tui_load_file :: proc(
-	client: ^Client,
-	rows: []Row,
-	prev_rev: int,
-	current_bank, current_patch: ^string,
-	theme: Theme,
-) -> (Metrics, bool) {
+tui_load_file :: proc(client: ^Client, rows: []Row, prev_rev: int, theme: Theme) -> (Metrics, bool) {
 	terminal_clear()
 	path, ok := prompt_line(1, "Load patch file: ", theme)
 	trimmed := strings.trim_space(path)
 	if !ok || len(trimmed) == 0 { return {}, false }
 	if name, loaded := client_patch_load_file(client, trimmed); loaded {
-		defer delete(name)
-		// Prefer the patch's own name from inside the file; fall back to the file
-		// name when it carries none.
-		tui_set(current_bank, "file")
-		tui_set(current_patch, name != "" ? name : tui_base_name(trimmed))
+		delete(name) // the daemon names the patch now, through patch.current
 		return tui_reload_values(client, rows, prev_rev), true
 	}
 	return client_info(client), true
-}
-
-// The last path segment: "lead.sy1" from "patches/lead.sy1".
-@(private)
-tui_base_name :: proc(path: string) -> string {
-	if slash := strings.last_index_byte(path, '/'); slash >= 0 {
-		return path[slash + 1:]
-	}
-	return path
 }
 
 // Pull the values the daemon actually holds into the rows. A load is applied by
@@ -510,12 +503,17 @@ tui_open_archive :: proc(client: ^Client, theme: Theme) -> (string, bool) {
 	return "", false
 }
 
-// Replace a remembered string, freeing the old and cloning the new. Used for the
-// current bank/patch labels shown on the synth screen.
+// Re-read which bank and patch the daemon is playing into the labels the synth
+// screen shows. A failed read leaves them as they were: a dropped connection is
+// the footer's to report, and the names come back with the next good read.
 @(private)
-tui_set :: proc(dst: ^string, val: string) {
-	delete(dst^)
-	dst^ = strings.clone(val)
+tui_read_identity :: proc(client: ^Client, current_bank, current_patch: ^string) {
+	_, bank, name, _, _, ok := client_patch_current(client)
+	if !ok { return }
+	delete(current_bank^)
+	delete(current_patch^)
+	current_bank^ = bank
+	current_patch^ = name
 }
 
 // Open an archive for browsing and, on success, remember its path in the config

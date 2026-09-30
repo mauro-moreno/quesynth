@@ -292,6 +292,42 @@ the socket.
 **Acceptance (handoff §41).** Test client connects; a parameter changes
 externally; audio keeps running; invalid command does not crash.
 
+**Commands added since (still protocol version 1, additive).** The bank,
+archive and `midi` commands came with the TUI's bank browser and the browser
+front-end. These four make two front-ends peers of one daemon:
+
+- `patch.current` → `ok slot=<int> bank_rev=<uint> revision=<int>`, then the
+  record lines `bank=<label>` and `name=<name>`, always both and in that order,
+  raw to the line end. One poll tells a client whether the values (`revision`),
+  the bank (`bank_rev`) or only the names moved.
+- `patch.clear` → `ok`: forget the identity; the values are untouched.
+- `bank.keep` → `ok bytes=<n> path=<path>`: write the bank, atomically, to the
+  config path the daemon loads at startup (`$XDG_CONFIG_HOME/quesynth/bank.json`,
+  else `~/.config/quesynth/bank.json`).
+- `volume <0..1000>` → `ok volume=<milli>`: master gain in thousandths. Not a
+  patch parameter — no `revision`, not in `state.snapshot` — and reported by
+  `daemon.info` as `volume=`, just before `backend=`. The control thread stores
+  one atomic; `live_render` ramps to it over a block, and at unity leaves the
+  output untouched.
+
+`bank.load_file` and `patch.save` also end their `ok` line with `bank_rev=`.
+
+The daemon, not each client, owns which patch is playing. It lives beside the
+bank and is touched only by the control thread:
+
+| on success | slot | bank | name | bank_rev |
+|---|---|---|---|---|
+| daemon start | -1 | empty | empty | 0 |
+| `patch.load k` | k | bank label | slot name | — |
+| `patch.load_file p` | -1 | `file` | patch's name, else file name | — |
+| `archive.load i` | -1 | archive bank's file name | patch's name, else entry name | — |
+| `patch.save k [name]` | k | bank label | final name | +1 |
+| `bank.load_file p` | -1 | unchanged | unchanged | +1 |
+| `patch.clear` | -1 | empty | empty | — |
+
+Anything else, and any failed command, leaves it alone: a knob tweak edits the
+sound, it does not rename the patch.
+
 **Dependencies.** Slices 1, 2.
 
 ---
@@ -474,20 +510,30 @@ present and tested (handoff §43).
 
 ---
 
-## Slice 9 (deferred, planned) — `quesynth --browser`
+## Slice 9 — `quesynth --browser`
 
-**Objective.** The eventual browser GUI: `quesynth --browser` attaches-or-spawns
-the daemon and serves the existing `ui/` panel as a **protocol client**, native
-audio through the daemon rather than the current in-browser AudioWorklet engine.
+**Objective.** The browser GUI: `quesynth --browser` attaches-or-spawns the
+daemon and serves the existing `ui/` panel as a **protocol client**, native audio
+through the daemon rather than the in-browser AudioWorklet engine.
 
-**Sketch.** A small local HTTP server serves `ui/`; a WebSocket↔Unix-socket
-bridge in `hosts/standalone/browser/` relays the control protocol to the browser
-(handoff §7 lists WebSocket bridge as an intended transport reuse). `ui/bridge.js`
-gains a native-daemon transport behind its existing `onerror`/host-guard so the
-panel does not learn which host it is in (CONTRIBUTING layering rule). No engine
-in the browser for this mode — the daemon owns audio. Out of scope until Slices
-1–8 land; listed so the protocol/registry decisions keep it reachable (this is
-why the browser is a front-end, not a special case).
+**Shape.** A small local Node adapter in `hosts/standalone/browser/` serves `ui/`
+and gives each page's WebSocket its own daemon connection (handoff §7 lists a
+WebSocket bridge as an intended transport reuse). `ui/` does not change: the
+adapter supplies the `host.js` that `index.html` already loads behind its
+`onerror` guard, so the panel does not learn which host it is in (CONTRIBUTING
+layering rule), and it runs *hosted*, as in a plugin — the adapter does not
+serve `store.js` or `bank.js`, so the page keeps no sound or bank of its own
+and the daemon's bank reaches it with the panel's existing `bank` message. No
+engine in the browser for this mode — the daemon owns audio. `run_browser`
+returns the adapter's exit status, and says so when `node` cannot be started.
+
+**Peers, not modes.** The TUI and any number of browser pages are peers of one
+daemon, the only authority for values, the bank, the patch identity and the
+volume (the Slice 3 additions above). A front-end's writes go straight to the
+daemon; it learns of the others' by polling — the TUI `daemon.info` and
+`patch.current` every refresh, the adapter one `patch.current` per tick, whose
+`revision` and `bank_rev` say what to re-read. Neither keeps a copy that could
+overwrite the other's work.
 
 **Dependencies.** Slices 3–8; `ui/` and its `bridge.js` seam.
 

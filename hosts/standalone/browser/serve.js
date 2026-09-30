@@ -1,60 +1,352 @@
 "use strict";
-const http = require("http"), net = require("net"), crypto = require("crypto"), fs = require("fs"), path = require("path");
+// The local web server `quesynth --browser` starts: the shared panel's files
+// over HTTP and one WebSocket per page, each backed by its own connection to
+// the daemon's control socket. The daemon owns the sound, the bank and the
+// patch identity; see README.md beside this file for who owns what.
+//
+//   node serve.js --socket PATH [--root DIR] [--port N] [--poll-ms N]
+//                 [--no-open]
+
+const fs = require("fs");
+const http = require("http");
+const path = require("path");
 const { spawn } = require("child_process");
-function option(name, fallback) { const i = process.argv.indexOf(name); return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : fallback; }
-const root = path.resolve(option("--root", path.resolve(__dirname, "../../..")));
-const socketPath = option("--socket", process.env.QUESYNTH_SOCKET || "");
-const port = Number(option("--port", "8177"));
-if (!socketPath) throw new Error("--socket is required");
-const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
-function fileFor(url) {
-  const rel = decodeURIComponent(url.split("?")[0] === "/" ? "/ui/index.html" : url.split("?")[0]);
-  if (rel === "/ui/host.js") return path.resolve(__dirname, "host.js");
-  const file = path.resolve(root, "." + rel);
-  return file.startsWith(root + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile() ? file : null;
-}
-class Daemon {
-  constructor() { this.next = 1; this.buf = Buffer.alloc(0); this.pending = new Map(); this.sock = net.createConnection(socketPath); this.sock.on("data", b => this.read(b)); }
-  read(b) { this.buf = Buffer.concat([this.buf, b]); while (this.buf.length >= 4) { const n = this.buf.readUInt32LE(0); if (this.buf.length < n + 4) return; const text = this.buf.subarray(4, n + 4).toString(); this.buf = this.buf.subarray(n + 4); const id = Number(text.split(" ", 2)[1]); const resolve = this.pending.get(id); if (resolve) { this.pending.delete(id); resolve(text); } } }
-  request(command) { return new Promise((resolve, reject) => { const id = this.next++; const body = Buffer.from(`1 ${id} ${command}`); const frame = Buffer.alloc(body.length + 4); frame.writeUInt32LE(body.length, 0); body.copy(frame, 4); this.pending.set(id, resolve); this.sock.write(frame, err => { if (err) { this.pending.delete(id); reject(err); } }); }); }
-  close() { this.sock.destroy(); }
-}
-function parameterIds(response) { const ids = {}; for (const line of response.split("\n").slice(1)) { const m = line.match(/id=([^ ]+) .*?index=(\d+)/); if (m) ids[Number(m[2])] = m[1]; } return ids; }
-async function makeAdapter() { const daemon = new Daemon(); return { daemon, ids: parameterIds(await daemon.request("parameter.list")) }; }
-async function handle(adapter, msg, send) {
-  const d = adapter.daemon;
-  if (msg.type === "sync") {
-    const response = await d.request("state.snapshot"), values = [];
-    for (const line of response.split("\n").slice(1)) { const m = line.match(/id=([^ ]+) value=(-?\d+)/); if (!m) continue; const i = Object.keys(adapter.ids).find(k => adapter.ids[k] === m[1]); if (i !== undefined) values[Number(i)] = Number(m[2]); }
-    send({ type: "state", values }); return;
+const { checkHandshake, rejectUpgrade, acceptUpgrade } = require("./websocket");
+const { DaemonClient } = require("./daemon");
+const { Session, readRegistry } = require("./session");
+const { loadParams } = require("./bank");
+
+const HOST = "127.0.0.1";
+
+const TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".wasm": "application/wasm",
+};
+
+// Never served, deliberately. The adapter hosts the panel the way a plugin
+// does, so the two files that make the page its own authority are left out:
+// store.js keeps the sound and the bank in local storage, and bank.js is the
+// factory bank compiled into the page. ui/index.html loads both behind
+// onerror="void 0" so a host that owns persistence can omit them; with them
+// gone SynthBank.hosted() is true and nothing in the page can overwrite the
+// daemon (the contract's section 1.3).
+const WITHHELD = new Set(["store.js", "bank.js"]);
+
+function createBridge(options) {
+  const root = path.resolve(options.root);
+  const uiDir = fs.realpathSync(path.join(root, "ui"));
+  const hostScript = path.join(__dirname, "host.js");
+  const socketPath = options.socketPath;
+  const params = loadParams(root);
+  const log = options.log || (() => {});
+  const sessionOptions = {
+    params,
+    log,
+    pollMs: options.pollMs,
+    echoMs: options.echoMs,
+    adoptMs: options.adoptMs,
+  };
+  const sessions = new Set();
+  let port = null;
+  let closing = false;
+  let daemonDown = false;
+
+  // A page from anywhere else, or a hostname rebound to 127.0.0.1, must not
+  // reach a socket that can rewrite the user's saved bank.
+  function allowedHosts() {
+    const hosts = [`${HOST}:${port}`, `localhost:${port}`];
+    if (port === 80) hosts.push(HOST, "localhost");
+    return hosts;
   }
-  if (msg.type === "set" && adapter.ids[msg.index]) { await d.request(`parameter.set ${adapter.ids[msg.index]} ${msg.value}`); return; }
-  if (msg.type === "state" && Array.isArray(msg.values)) { const pairs = []; msg.values.forEach((v, i) => { if (adapter.ids[i] && Number.isInteger(v)) pairs.push(`${adapter.ids[i]} ${v}`); }); if (pairs.length) await d.request(`parameter.set_many ${pairs.join(" ")}`); return; }
-  if (msg.type === "note") { await d.request(`midi ${msg.on ? 144 : 128} ${msg.note | 0} ${msg.velocity | 0}`); return; }
-  if (msg.type === "wheel") {
-    if (msg.which === "pitch") { const raw = Math.max(0, Math.min(16383, Math.round((Number(msg.value) + 1) * 8192))); await d.request(`midi 224 ${raw & 127} ${raw >> 7}`); }
-    else await d.request(`midi 176 1 ${Math.max(0, Math.min(127, Math.round(Number(msg.value) * 127)))}`);
+
+  function checkHost(req) {
+    const host = req.headers.host;
+    if (!host) return { status: 400, message: "missing host" };
+    if (!allowedHosts().includes(host.toLowerCase())) return { status: 403, message: "wrong host" };
+    return null;
+  }
+
+  // A browser always sends Origin on a WebSocket; a missing one is a local
+  // tool, which could reach the daemon's socket directly anyway.
+  function originAllowed(origin) {
+    if (origin === undefined) return true;
+    return allowedHosts().some(h => origin.toLowerCase() === `http://${h}`);
+  }
+
+  function route(url) {
+    const pathname = String(url).split("?")[0];
+    let decoded;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch (err) {
+      return { status: 400, message: "bad url encoding" };
+    }
+    if (!decoded.startsWith("/") || decoded.includes("\0") || decoded.includes("\\")) {
+      return { status: 400, message: "bad path" };
+    }
+    // The page's own scripts and styles are relative to it, so it has to be
+    // loaded from under /ui/.
+    if (decoded === "/" || decoded === "/ui" || decoded === "/ui/") {
+      return { status: 302, location: "/ui/index.html" };
+    }
+    // This directory's transport, not whatever ui/ may hold under that name.
+    if (decoded === "/ui/host.js") return { file: hostScript };
+    if (!decoded.startsWith("/ui/")) return { status: 404 };
+    const parts = decoded.slice(4).split("/");
+    if (parts.some(p => p === "" || p.startsWith("."))) return { status: 404 };
+    let file;
+    try {
+      file = fs.realpathSync(path.join(uiDir, ...parts));
+    } catch (err) {
+      return { status: 404 };
+    }
+    // Checked on the resolved path, so neither a symlink nor a case-folding
+    // filesystem can reach the files withheld above or anything outside ui/.
+    const rel = path.relative(uiDir, file);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return { status: 404 };
+    if (WITHHELD.has(rel.toLowerCase())) return { status: 404 };
+    return { file };
+  }
+
+  function respond(res, status, message, headers) {
+    const body = `${message || http.STATUS_CODES[status] || ""}\n`;
+    res.writeHead(status, Object.assign({
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Length": Buffer.byteLength(body),
+      "Cache-Control": "no-store",
+    }, headers));
+    res.end(res.req.method === "HEAD" ? undefined : body);
+  }
+
+  function serveFile(req, res, file) {
+    fs.stat(file, (err, stat) => {
+      if (err || !stat.isFile()) return respond(res, 404);
+      res.writeHead(200, {
+        "Content-Type": TYPES[path.extname(file).toLowerCase()] || "application/octet-stream",
+        "Content-Length": stat.size,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+      if (req.method === "HEAD") return res.end();
+      const stream = fs.createReadStream(file);
+      stream.on("error", () => res.destroy());
+      stream.pipe(res);
+      return undefined;
+    });
+  }
+
+  function onRequest(req, res) {
+    try {
+      const bad = checkHost(req);
+      if (bad) return respond(res, bad.status, bad.message);
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        return respond(res, 405, "GET or HEAD only", { Allow: "GET, HEAD" });
+      }
+      const found = route(req.url);
+      if (found.file) return serveFile(req, res, found.file);
+      if (found.location) return respond(res, found.status, "", { Location: found.location });
+      return respond(res, found.status, found.message);
+    } catch (err) {
+      log(`request error: ${err.stack || err}`);
+      if (!res.headersSent) return respond(res, 500);
+      return res.destroy();
+    }
+  }
+
+  // The daemon connection is made before the upgrade completes, so a daemon
+  // that is down or full is a plain 503 the page can back off from, rather
+  // than a socket that opens and immediately dies.
+  function onUpgrade(req, socket, head) {
+    socket.on("error", () => socket.destroy());
+    try {
+      const bad = checkHost(req);
+      if (bad) return rejectUpgrade(socket, bad.status, bad.message);
+      if (!originAllowed(req.headers.origin)) return rejectUpgrade(socket, 403, "origin not allowed");
+      if (String(req.url).split("?")[0] !== "/control") return rejectUpgrade(socket, 404);
+      const refused = checkHandshake(req);
+      if (refused) return rejectUpgrade(socket, refused.status, refused.message, refused.headers);
+      if (closing) return rejectUpgrade(socket, 503, "shutting down");
+
+      const daemon = new DaemonClient(socketPath, { timeoutMs: options.requestTimeoutMs });
+      // The socket is read while the daemon answers, or a page that goes
+      // away in the meantime would not be noticed until the daemon did.
+      // Nothing legitimate arrives before the 101; whatever does is kept.
+      const early = [];
+      const hold = chunk => {
+        early.push(chunk);
+        if (early.reduce((n, c) => n + c.length, 0) > 64 * 1024) socket.destroy();
+      };
+      const abandon = () => {
+        daemon.close();
+        socket.destroy();
+      };
+      const settle = () => {
+        socket.removeListener("data", hold);
+        socket.removeListener("end", abandon);
+        socket.removeListener("close", abandon);
+      };
+      socket.on("data", hold);
+      socket.once("end", abandon);
+      socket.once("close", abandon);
+      readRegistry(daemon, params).then(registry => {
+        settle();
+        if (socket.destroyed || closing) {
+          daemon.close();
+          if (!socket.destroyed) rejectUpgrade(socket, 503, "shutting down");
+          return;
+        }
+        if (daemonDown) log("daemon reachable again");
+        daemonDown = false;
+        const ws = acceptUpgrade(req, socket, Buffer.concat([head, ...early]));
+        const session = new Session(ws, daemon, registry, Object.assign({
+          onClose: s => sessions.delete(s),
+        }, sessionOptions));
+        sessions.add(session);
+      }, err => {
+        settle();
+        daemon.close();
+        // Logged once per outage: the page retries every few seconds.
+        if (!daemonDown) log(`daemon unavailable at ${socketPath}: ${err.message}`);
+        daemonDown = true;
+        rejectUpgrade(socket, 503, "daemon unavailable");
+      }).catch(err => {
+        log(`upgrade error: ${err.stack || err}`);
+        daemon.close();
+        socket.destroy();
+      });
+    } catch (err) {
+      log(`upgrade error: ${err.stack || err}`);
+      socket.destroy();
+    }
+    return undefined;
+  }
+
+  const server = http.createServer(onRequest);
+  server.on("upgrade", onUpgrade);
+
+  return {
+    get port() { return port; },
+    get url() { return `http://${HOST}:${port}/ui/index.html`; },
+    get sessions() { return sessions.size; },
+
+    listen() {
+      return new Promise((resolve, reject) => {
+        const failed = err => reject(err);
+        server.once("error", failed);
+        server.listen(options.port === undefined ? 8177 : options.port, HOST, () => {
+          server.removeListener("error", failed);
+          server.on("error", err => log(`server error: ${err.message}`));
+          port = server.address().port;
+          resolve(server.address());
+        });
+      });
+    },
+
+    // Every page is told the adapter is going away (1001) rather than left to
+    // find out from a reset.
+    close() {
+      closing = true;
+      const pending = [...sessions].map(s => {
+        s.close(1001, "adapter shutting down");
+        return s.done;
+      });
+      return new Promise(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }).then(() => Promise.all(pending)).then(() => undefined);
+    },
+  };
+}
+
+function parseArgs(argv) {
+  const out = { root: path.resolve(__dirname, "../../.."), socket: process.env.QUESYNTH_SOCKET || "",
+    port: 8177, pollMs: 100, open: true };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const value = () => {
+      if (i + 1 >= argv.length) throw new Error(`${arg} needs a value`);
+      return argv[++i];
+    };
+    const integer = (lo, hi) => {
+      const text = value();
+      const n = Number(text);
+      if (!/^\d+$/.test(text) || n < lo || n > hi) throw new Error(`${arg} needs an integer ${lo}..${hi}`);
+      return n;
+    };
+    if (arg === "--root") out.root = path.resolve(value());
+    else if (arg === "--socket") out.socket = value();
+    else if (arg === "--port") out.port = integer(0, 65535);
+    else if (arg === "--poll-ms") out.pollMs = integer(10, 10000);
+    else if (arg === "--no-open") out.open = false;
+    else throw new Error(`unknown option ${arg}`);
+  }
+  if (!out.socket) throw new Error("--socket is required (or set QUESYNTH_SOCKET)");
+  return out;
+}
+
+// Failing to open a browser is not failing to serve: the URL is printed and
+// the user can open it by hand.
+function openBrowser(url) {
+  let command = "xdg-open";
+  let args = [url];
+  if (process.platform === "darwin") command = "open";
+  if (process.platform === "win32") {
+    command = "cmd";
+    args = ["/c", "start", "", url];
+  }
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.on("error", err => {
+      console.error(`could not open a browser (${err.message}); open ${url} yourself`);
+    });
+    child.unref();
+  } catch (err) {
+    console.error(`could not open a browser (${err.message}); open ${url} yourself`);
   }
 }
-function acceptFrames(ws, data) {
-  ws.buffer = Buffer.concat([ws.buffer, data]); let offset = 0;
-  while (offset + 2 <= ws.buffer.length) {
-    const second = ws.buffer[offset + 1]; let length = second & 127; let header = 2;
-    if (length === 126) { if (offset + 4 > ws.buffer.length) break; length = ws.buffer.readUInt16BE(offset + 2); header = 4; }
-    if (length === 127 || !(second & 0x80) || offset + header + 4 + length > ws.buffer.length) break;
-    const mask = ws.buffer.subarray(offset + header, offset + header + 4), start = offset + header + 4;
-    const payload = Buffer.from(ws.buffer.subarray(start, start + length)); offset = start + length;
-    for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
-    if (payload.length && payload[0] === 0x7b) ws.onText(payload.toString());
+
+function main() {
+  let args;
+  let bridge;
+  try {
+    args = parseArgs(process.argv.slice(2));
+    bridge = createBridge({ root: args.root, socketPath: args.socket, port: args.port,
+      pollMs: args.pollMs, log: message => console.error(message) });
+  } catch (err) {
+    console.error(`error: ${err.message}`);
+    process.exit(1);
   }
-  ws.buffer = ws.buffer.subarray(offset);
+  bridge.listen().then(() => {
+    console.log(`browser interface on ${bridge.url}`);
+    if (args.open) openBrowser(bridge.url);
+  }, err => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`error: ${HOST}:${args.port} is already in use ` +
+        "(another quesynth --browser?); pick another with --port");
+    } else {
+      console.error(`error: cannot listen on ${HOST}:${args.port}: ${err.message}`);
+    }
+    process.exit(1);
+  });
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    // Bounded, so a page that never finishes its close handshake cannot
+    // keep the process alive.
+    setTimeout(() => process.exit(0), 3000).unref();
+    bridge.close().then(() => process.exit(0));
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
 }
-function frame(text) { const body = Buffer.from(text); if (body.length < 126) return Buffer.concat([Buffer.from([129, body.length]), body]); const h = Buffer.alloc(4); h[0] = 129; h[1] = 126; h.writeUInt16BE(body.length, 2); return Buffer.concat([h, body]); }
-const server = http.createServer((req, res) => { const file = fileFor(req.url); if (!file) { res.writeHead(404); res.end("not found"); return; } res.writeHead(200, { "Content-Type": types[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" }); fs.createReadStream(file).pipe(res); });
-server.on("upgrade", async (req, socket) => {
-  if (req.url !== "/control" || !req.headers["sec-websocket-key"]) return socket.destroy();
-  const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-  try { const adapter = await makeAdapter(); const ws = { buffer: Buffer.alloc(0), onText: async text => { try { await handle(adapter, JSON.parse(text), m => socket.write(frame(JSON.stringify(m)))); } catch (_) {} } }; socket.on("data", data => acceptFrames(ws, data)); socket.on("close", () => adapter.daemon.close()); } catch (_) { socket.destroy(); }
-});
-server.listen(port, "127.0.0.1", () => { const url = `http://127.0.0.1:${port}/ui/index.html`; console.log(`browser interface on ${url}`); if (!process.argv.includes("--no-open")) spawn(process.platform === "win32" ? "start" : "xdg-open", [url], { detached: true, stdio: "ignore", shell: process.platform === "win32" }).unref(); });
+
+if (require.main === module) main();
+
+module.exports = { createBridge };

@@ -41,6 +41,18 @@ MIDI_PITCH_BEND :: 0xE0
 // 8191/8192 rather than 1.0, which is what the wire format actually offers.
 MIDI_BEND_CENTRE :: 8192.0
 
+// Master output gain in thousandths of full scale. Integer thousandths rather
+// than a float so unity is an exact value to compare against, which is what
+// lets the render skip the multiply entirely at the default.
+VOLUME_UNITY :: 1000
+
+// All the control thread shares with the audio side for volume: one u32,
+// stored and loaded atomically, never a lock. A struct of its own so that
+// Control_Context can point at it without being able to reach the rest of Live.
+Master_Volume :: struct {
+	milli: u32,
+}
+
 Live :: struct {
 	eng:   engine.Engine,
 	queue: Midi_Queue,
@@ -70,6 +82,14 @@ Live :: struct {
 	// is wired; when present, the audio thread stores the live voice count into
 	// it each block.
 	metrics:  ^Daemon_Metrics,
+
+	// Master volume. The control thread stores `volume`; the audio thread loads
+	// it once per block and ramps to it from `volume_prev`, the level the
+	// previous block ended at, which only the audio thread touches. Both are
+	// zero -- silence -- in a zero Live, so run_daemon sets unity before the
+	// stream starts.
+	volume:      Master_Volume,
+	volume_prev: u32,
 }
 
 // Drain queued control edits, applying each committed transaction to the engine
@@ -158,6 +178,7 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 
 	if n > 0 {
 		engine.engine_process(&s.eng, s.left[:n], s.right[:n])
+		live_apply_volume(s, n)
 	}
 
 	for i in 0 ..< n {
@@ -179,6 +200,26 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 		for c in 0 ..< channels {
 			out[base + c] = 0
 		}
+	}
+}
+
+// Scale the finished block by the master volume, ramping linearly from the
+// level the previous block ended at to this block's target, so a step becomes a
+// fade one block long instead of a click. At unity on both ends the buffers are
+// left exactly as the engine wrote them -- not even a multiply by one -- so the
+// default output is bit-identical to a daemon with no volume stage.
+@(private = "file")
+live_apply_volume :: proc "contextless" (s: ^Live, n: int) {
+	target := intrinsics.atomic_load_explicit(&s.volume.milli, .Relaxed)
+	from := s.volume_prev
+	s.volume_prev = target
+	if from == VOLUME_UNITY && target == VOLUME_UNITY {return}
+	g0 := f32(from) / VOLUME_UNITY
+	step := (f32(target) / VOLUME_UNITY - g0) / f32(n)
+	for i in 0 ..< n {
+		g := g0 + step * f32(i + 1)
+		s.left[i] *= g
+		s.right[i] *= g
 	}
 }
 

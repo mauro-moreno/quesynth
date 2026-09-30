@@ -76,6 +76,7 @@ control_patch_load :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
 	}
+	identity_set(cc.identity, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " slot=")
@@ -118,6 +119,11 @@ control_patch_load_file :: proc(cc: ^Control_Context, req: control.Request, out:
 		control_write_err(out, req, .Invalid_Payload, "patch set no parameters")
 		return
 	}
+	// Named as the TUI always named a file-loaded patch: by the name inside the
+	// file, or by the file itself when it carries none.
+	shown := strings.trim_space(parsed.name)
+	if shown == "" {shown = base_name(path)}
+	identity_set(cc.identity, -1, "file", shown)
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " count=")
@@ -156,12 +162,15 @@ control_patch_save :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 	cc.bank.filled[slot] = true
 	final := name != "" ? name : patch.slots_name(cc.bank, slot)
 	put_slot_name(cc.bank, slot, final)
+	identity_set(cc.identity, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
+	if cc.identity != nil {cc.identity.bank_rev += 1}
 
 	control_write_ok(out, req)
 	strings.write_string(out, " slot=")
 	strings.write_int(out, slot)
 	strings.write_string(out, " name=")
 	control_write_token(out, patch.slots_name(cc.bank, slot))
+	control_write_bank_rev(cc, out)
 }
 
 // bank.write <path>: serialize the whole bank to a JSON file.
@@ -186,6 +195,57 @@ control_bank_write :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 	strings.write_int(out, len(json))
 }
 
+// bank.keep: write the bank to the config path the daemon loads at startup, so
+// what a front-end keeps survives a restart without any client having to know
+// where that is. Written beside it and renamed over it, synced first, so a
+// crash or a power cut leaves the previous bank whole rather than half of this.
+@(private)
+control_bank_keep :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	if cc.bank == nil {
+		control_write_err(out, req, .Daemon_Not_Ready, "no bank")
+		return
+	}
+	path, ok := config_bank_path(context.temp_allocator)
+	if !ok {
+		control_write_err(out, req, .Internal_Error, "no config directory")
+		return
+	}
+	json := patch.slots_write_json(cc.bank, context.temp_allocator)
+	if !write_file_atomic(path, json) {
+		control_write_err(out, req, .Internal_Error, "cannot write file")
+		return
+	}
+	// A relative XDG_CONFIG_HOME resolves against the daemon's working
+	// directory, which a client need not share: report where the file went.
+	if !os.is_absolute_path(path) {
+		if abs, aerr := os.get_absolute_path(path, context.temp_allocator); aerr == nil {path = abs}
+	}
+	control_write_ok(out, req)
+	strings.write_string(out, " bytes=")
+	strings.write_int(out, len(json))
+	// path last: it may contain spaces, so a client reads it to the line end.
+	strings.write_string(out, " path=")
+	strings.write_string(out, path)
+}
+
+@(private = "file")
+write_file_atomic :: proc(path, data: string) -> bool {
+	if slash := strings.last_index_byte(path, '/'); slash > 0 {
+		_ = os.make_directory_all(path[:slash])
+	}
+	tmp := strings.concatenate({path, ".tmp"}, context.temp_allocator)
+	f, err := os.open(tmp, {.Write, .Create, .Trunc}, os.Permissions_Read_All + {.Write_User})
+	if err != nil {return false}
+	_, werr := os.write_string(f, data)
+	serr := os.sync(f)
+	cerr := os.close(f)
+	if werr != nil || serr != nil || cerr != nil || os.rename(tmp, path) != nil {
+		_ = os.remove(tmp)
+		return false
+	}
+	return true
+}
+
 // bank.load_file <path>: replace the browsable bank with a JSON bank from disk.
 // It only changes what is browsable; the live sound is unchanged until a patch
 // is loaded from the new bank.
@@ -208,11 +268,27 @@ control_bank_load_file :: proc(cc: ^Control_Context, req: control.Request, out: 
 	for i in 0 ..< patch.FACTORY_SLOTS {
 		if cc.bank.filled[i] {count += 1}
 	}
+	// The sound keeps its provenance -- it still came from that bank and patch --
+	// but its slot number would now index a different bank, so it names none.
+	if cc.identity != nil {
+		cc.identity.slot = -1
+		cc.identity.bank_rev += 1
+	}
 	control_write_ok(out, req)
 	strings.write_string(out, " label=")
 	control_write_token(out, patch.slots_label(cc.bank))
 	strings.write_string(out, " count=")
 	strings.write_int(out, count)
+	control_write_bank_rev(cc, out)
+}
+
+// The bank generation after a command that changed the bank, last on the line.
+// Absent without an identity to count it (a bare handler in a test).
+@(private = "file")
+control_write_bank_rev :: proc(cc: ^Control_Context, out: ^strings.Builder) {
+	if cc.identity == nil {return}
+	strings.write_string(out, " bank_rev=")
+	strings.write_uint(out, cc.identity.bank_rev)
 }
 
 // Stage the present parameters of a patch and commit them as one transaction,

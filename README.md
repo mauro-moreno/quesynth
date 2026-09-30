@@ -145,8 +145,11 @@ binary and run:
 ```
 
 This starts or attaches to the daemon, serves the shared `ui/` over a local
-WebSocket bridge, and opens the default browser. Node.js is required; set
-`QUESYNTH_ROOT` when running the binary outside the repository tree.
+WebSocket bridge, and opens the default browser. The page is a peer of the
+TUI: both are clients of the same daemon, which owns the sound, the bank and
+the current patch, so a change made in either shows in the other. Node.js is
+required; set `QUESYNTH_ROOT` when running the binary outside the repository
+tree. See [`hosts/standalone/browser`](hosts/standalone/browser/README.md).
 
 ## Compatibility and verification
 

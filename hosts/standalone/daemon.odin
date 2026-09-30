@@ -166,6 +166,11 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	}
 	d.live.metrics = &metrics
 
+	// Full volume, and already there: a previous level of zero would fade the
+	// first block in, and anything but unity would scale every block.
+	d.live.volume.milli = VOLUME_UNITY
+	d.live.volume_prev = VOLUME_UNITY
+
 	midi, midi_ok := midi_input_create()
 	if midi_ok {
 		// Not fatal: a machine with no MIDI hardware still runs the
@@ -209,7 +214,8 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 
 	// Start serving only after audio and the published context are initialized.
 	// Binding above already excludes a second daemon; the context exposes only
-	// the command ring, the snapshot and the patch bank, never the engine.
+	// the command ring, the snapshot, the patch bank and the volume atomic, never
+	// the engine.
 	bank := new(patch.Slots)
 	defer free(bank)
 	patch.factory_prepare()
@@ -223,6 +229,10 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// file until archive.open, and even then only an index plus one bank at a time.
 	arch := new(Archive)
 	defer {archive_close(arch);free(arch)}
+	// Which patch is playing, kept beside the bank it names. Nothing yet: a patch
+	// given on the command line was not loaded from a slot of this bank.
+	identity := new_clone(Patch_Identity{slot = -1})
+	defer free(identity)
 	cs.ctx = Control_Context {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,
@@ -231,6 +241,8 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 		midi     = &d.live.queue,
 		bank     = bank,
 		archive  = arch,
+		identity = identity,
+		volume   = &d.live.volume,
 	}
 	control_ok := control_server_start(&cs)
 	if control_ok {

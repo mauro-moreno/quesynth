@@ -35,6 +35,10 @@ Archive :: struct {
 	// Indices within the open bank of its .sy1 patches, excluding directory and
 	// other entries: the browsable, loadable patches.
 	patch_indices: []int,
+	// The open bank's display name, for naming a patch loaded from it. It aliases
+	// the central directory like every entry name, and the directory outlives any
+	// open bank, so there is nothing of its own to free.
+	bank_name:     string,
 }
 
 // Open and index an archive: read its central directory and note which entries
@@ -108,6 +112,7 @@ archive_close_bank :: proc(a: ^Archive) {
 		delete(a.patch_indices)
 		a.bank_bytes = nil
 		a.patch_indices = nil
+		a.bank_name = ""
 		a.bank_open = false
 	}
 }
@@ -161,6 +166,7 @@ archive_open_bank :: proc(a: ^Archive, bank: int) -> bool {
 	a.bank_bytes = bytes
 	a.bank = z
 	a.patch_indices = patches[:]
+	a.bank_name = base_name(a.entries[a.bank_indices[bank]].name)
 	a.bank_open = true
 	return true
 }
@@ -190,7 +196,7 @@ archive_patch_name :: proc(a: ^Archive, patch_i: int) -> string {
 }
 
 // The basename of a path, without directory or a trailing slash.
-@(private = "file")
+@(private)
 base_name :: proc(path: string) -> string {
 	p := path
 	if strings.has_suffix(p, "/") {
@@ -335,6 +341,10 @@ control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 		control_write_err(out, req, .Invalid_Payload, "patch set no parameters")
 		return
 	}
+	// Named as archive.patches lists it: its own name, else its file name.
+	shown := strings.trim_space(parsed.name)
+	if shown == "" {shown = base_name(zip.zip_name(&cc.archive.bank, cc.archive.patch_indices[i]))}
+	identity_set(cc.identity, -1, cc.archive.bank_name, shown)
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " count=")

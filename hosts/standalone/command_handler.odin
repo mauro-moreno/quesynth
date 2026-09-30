@@ -28,6 +28,15 @@ Control_Context :: struct {
 	bank:     ^patch.Slots,
 	// A patch archive opened for browsing, indexed lazily. nil when unsupported.
 	archive:  ^Archive,
+	// Which patch the sound came from, beside the bank that names it and, like
+	// the bank, control-thread only. nil in a bare handler test, where the
+	// commands that read it report they are unavailable and the ones that
+	// update it skip the update.
+	identity: ^Patch_Identity,
+	// The master volume the audio thread reads each block. The pointer is to the
+	// one atomic and nothing else, so storing it is all this thread can do to
+	// the audio side. nil in a bare handler test: no audio to turn down.
+	volume:   ^Master_Volume,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -75,6 +84,14 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_bank_write(cc, req, out)
 	case "bank.load_file":
 		control_bank_load_file(cc, req, out)
+	case "bank.keep":
+		control_bank_keep(cc, req, out)
+	case "patch.current":
+		control_patch_current(cc, req, out)
+	case "patch.clear":
+		control_patch_clear(cc, req, out)
+	case "volume":
+		control_volume(cc, req, out)
 	case "archive.open":
 		control_archive_open(cc, req, out)
 	case "archive.banks":
@@ -161,11 +178,41 @@ control_info :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.B
 		strings.write_int(out, m.max_voices)
 		strings.write_string(out, " uptime=")
 		strings.write_int(out, uptime)
+	}
+	if cc.volume != nil {
+		strings.write_string(out, " volume=")
+		strings.write_uint(out, uint(intrinsics.atomic_load_explicit(&cc.volume.milli, .Relaxed)))
+	}
+	if cc.metrics != nil {
 		// backend last: an endpoint name like "ALSA (default)" has spaces, so a
 		// client reads the rest of the line as its value.
 		strings.write_string(out, " backend=")
-		strings.write_string(out, m.backend)
+		strings.write_string(out, cc.metrics.backend)
 	}
+}
+
+// volume <milli>: the listener's level, not part of the sound. So it is no
+// patch parameter: it bypasses the ring, is absent from state.snapshot and moves
+// no revision. Storing the atomic is the whole of the control side; the audio
+// thread ramps to it over its next block.
+@(private = "file")
+control_volume :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	if cc.volume == nil {
+		control_write_err(out, req, .Daemon_Not_Ready, "no audio")
+		return
+	}
+	milli, ok := 0, false
+	if req.operand_count >= 1 {
+		milli, ok = strconv.parse_int(req.operands[0])
+	}
+	if !ok || milli < 0 || milli > VOLUME_UNITY {
+		control_write_err(out, req, .Invalid_Payload, "volume needs 0..1000")
+		return
+	}
+	intrinsics.atomic_store_explicit(&cc.volume.milli, u32(milli), .Relaxed)
+	control_write_ok(out, req)
+	strings.write_string(out, " volume=")
+	strings.write_int(out, milli)
 }
 
 @(private = "file")

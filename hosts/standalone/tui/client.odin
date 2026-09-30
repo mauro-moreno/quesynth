@@ -275,6 +275,45 @@ client_patch_load_file :: proc(cl: ^Client, path: string) -> (name: string, ok: 
 	return name, true
 }
 
+// patch.current: which patch the daemon is playing, the bank generation and the
+// live revision, in one round-trip. The daemon owns this, so it names a patch
+// another front-end loaded as readily as one this client did. bank and name are
+// read raw to the end of their record lines, so a name keeps its spaces; both
+// are cloned with `allocator` (an absent or empty one is "").
+client_patch_current :: proc(
+	cl: ^Client,
+	allocator := context.allocator,
+) -> (
+	slot: int,
+	bank: string,
+	name: string,
+	bank_rev: uint,
+	revision: int,
+	ok: bool,
+) {
+	line := fmt.tprintf("%d %d patch.current", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return }
+	slot = client_field_int(resp.fields, "slot")
+	revision = client_field_int(resp.fields, "revision")
+	if s, has := control.response_field(resp.fields, "bank_rev"); has {
+		bank_rev, _ = strconv.parse_uint(s)
+	}
+	body := resp.body
+	for record in strings.split_lines_iterator(&body) {
+		if strings.has_prefix(record, "bank=") {
+			bank = strings.clone(record[5:], allocator)
+		} else if strings.has_prefix(record, "name=") {
+			name = strings.clone(record[5:], allocator)
+		}
+	}
+	return slot, bank, name, bank_rev, revision, true
+}
+
 client_patch_save :: proc(cl: ^Client, slot: int, name: string) -> bool {
 	line := name == "" \
 		? fmt.tprintf("%d %d patch.save %d", control.PROTOCOL_VERSION, cl.next_id, slot) \
