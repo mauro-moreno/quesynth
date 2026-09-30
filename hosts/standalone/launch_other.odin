@@ -20,6 +20,11 @@ run_tui :: proc(patch_path: string, bank_path: string) -> int {
 	return 1
 }
 
+run_browser :: proc(patch_path: string, bank_path: string) -> int {
+	fmt.eprintfln("error: --browser is not supported on this platform yet")
+	return 1
+}
+
 run_stop :: proc() -> int {
 	fmt.eprintfln("error: --stop is not supported on this platform yet")
 	return 1

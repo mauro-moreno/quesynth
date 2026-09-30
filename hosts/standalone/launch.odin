@@ -66,6 +66,7 @@ run_tui :: proc(patch_path: string, bank_path: string) -> int {
 // for its socket to come up. Returns the socket path on success.
 ensure_daemon :: proc(patch_path: string, bank_path: string) -> (path: string, ok: bool) {
 	path = control_socket_path()
+
 	if daemon_is_running(path) {
 		return path, true
 	}
@@ -82,6 +83,34 @@ ensure_daemon :: proc(patch_path: string, bank_path: string) -> (path: string, o
 	}
 	delete(path)
 	return "", false
+}
+
+// Start the shared HTML panel in a real browser while keeping audio in the
+// native daemon. The Node helper is only the local HTTP/WebSocket adapter; it
+// never owns synth state or audio.
+run_browser :: proc(patch_path: string, bank_path: string) -> int {
+	socket, ok := ensure_daemon(patch_path, bank_path)
+	if !ok {
+		fmt.eprintln("error: could not start or reach a daemon")
+		return 1
+	}
+	root := "."
+	if p := libc.getenv("QUESYNTH_ROOT"); p != nil && len(string(p)) > 0 { root = string(p) }
+	pid := posix.fork()
+	if pid < 0 { delete(socket); return 1 }
+	if pid == 0 {
+		node := strings.clone_to_cstring("node")
+		script := strings.clone_to_cstring(fmt.tprintf("%s/hosts/standalone/browser/serve.js", root))
+		r := strings.clone_to_cstring(root)
+		s := strings.clone_to_cstring(socket)
+		argv: [7]cstring = {node, script, "--root", r, "--socket", s, nil}
+		posix.execvp(node, raw_data(argv[:]))
+		posix._exit(127)
+	}
+	status: c.int
+	posix.waitpid(pid, &status, {})
+	delete(socket)
+	return 0
 }
 
 // Whether a daemon is already listening at the path: a plain connect probe. Used

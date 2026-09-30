@@ -59,6 +59,8 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_set(cc, req, out)
 	case "parameter.set_many":
 		control_set_many(cc, req, out)
+	case "midi":
+		control_midi(cc, req, out)
 	case "state.snapshot":
 		control_state_snapshot(cc, req, out)
 	case "bank.list":
@@ -90,6 +92,29 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 	}
 }
 
+
+// Inject one packed MIDI message from a local front-end such as the browser.
+// It enters the same queue as ALSA/WinMM, so the audio thread remains the only
+// caller of the engine.
+@(private = "file")
+control_midi :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	if cc.midi == nil || req.operand_count < 3 {
+		control_write_err(out, req, .Invalid_Payload, "midi needs status data1 data2")
+		return
+	}
+	status, sok := strconv.parse_int(req.operands[0])
+	data1, aok := strconv.parse_int(req.operands[1])
+	data2, bok := strconv.parse_int(req.operands[2])
+	if !sok || !aok || !bok || status < 0 || status > 255 || data1 < 0 || data1 > 127 || data2 < 0 || data2 > 127 {
+		control_write_err(out, req, .Invalid_Payload, "invalid midi bytes")
+		return
+	}
+	if !midi_queue_push(cc.midi, midi_pack(u8(status), u8(data1), u8(data2))) {
+		control_write_err(out, req, .Daemon_Not_Ready, "midi queue full")
+		return
+	}
+	control_write_ok(out, req)
+}
 @(private = "file")
 control_status :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	state := intrinsics.atomic_load_explicit(cc.state, .Acquire)

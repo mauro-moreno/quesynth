@@ -34,6 +34,15 @@ test_daemon_flag_with_and_without_patch :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_browser_flag_with_and_without_patch :: proc(t: ^testing.T) {
+	bare := standalone.parse_args([]string{"quesynth", "--browser"})
+	testing.expect_value(t, bare.mode, standalone.Mode.Browser)
+	with_patch := standalone.parse_args([]string{"quesynth", "--browser", "pad.sy1"})
+	testing.expect_value(t, with_patch.mode, standalone.Mode.Browser)
+	testing.expect_value(t, with_patch.patch_path, "pad.sy1")
+}
+
+@(test)
 test_bank_flag_in_run_and_daemon :: proc(t: ^testing.T) {
 	run := standalone.parse_args([]string{"quesynth", "--bank", "user.json"})
 	testing.expect_value(t, run.mode, standalone.Mode.Run)

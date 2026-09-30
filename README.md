@@ -137,6 +137,17 @@ node hosts/wasm/serve.js
 Then open `http://localhost:8177`. Additional build and platform details are in
 the host-specific README files under `hosts/`.
 
+For the native standalone daemon with the same HTML panel, build the standalone
+binary and run:
+
+```sh
+./build/quesynth --browser
+```
+
+This starts or attaches to the daemon, serves the shared `ui/` over a local
+WebSocket bridge, and opens the default browser. Node.js is required; set
+`QUESYNTH_ROOT` when running the binary outside the repository tree.
+
 ## Compatibility and verification
 
 Quesynth is a measurement-driven compatibility project, not an official Synth1

@@ -34,12 +34,14 @@ import "core:os"
 USAGE :: `usage:
   quesynth [--bank <bank.json>] [patch.sy1]              run the synthesiser
   quesynth --daemon [--bank <bank.json>] [patch.sy1]     run the headless daemon
+  quesynth --browser [--bank <bank.json>] [patch.sy1]    open the shared browser UI
   quesynth --stop                                        stop a running daemon
   quesynth --selftest <patch.sy1> <out.wav>              render offline, open no device`
 
 Mode :: enum {
 	Run,
 	Daemon,
+	Browser,
 	Stop,
 	Selftest,
 	Help,
@@ -89,12 +91,12 @@ parse_args :: proc(args: []string) -> Cli {
 			}
 		}
 		return Cli{mode = .Selftest, patch_path = operands[1], output_path = operands[2]}
-	case "--daemon":
+	case "--daemon", "--browser":
 		pp, bp, ok, msg := parse_run_operands(operands[1:])
 		if !ok {
 			return Cli{mode = .Usage_Error, message = msg}
 		}
-		return Cli{mode = .Daemon, patch_path = pp, bank_path = bp}
+		return Cli{mode = operands[0] == "--browser" ? .Browser : .Daemon, patch_path = pp, bank_path = bp}
 	}
 
 	// The default mode with an optional --bank and a positional patch.
@@ -143,6 +145,8 @@ main :: proc() {
 		os.exit(run_selftest(cli.patch_path, cli.output_path))
 	case .Daemon:
 		os.exit(run_daemon(cli.patch_path, cli.bank_path))
+	case .Browser:
+		os.exit(run_browser(cli.patch_path, cli.bank_path))
 	case .Run:
 		os.exit(run_tui(cli.patch_path, cli.bank_path))
 	case .Stop:
