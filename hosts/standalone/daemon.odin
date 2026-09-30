@@ -172,11 +172,15 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	d.live.volume_prev = VOLUME_UNITY
 
 	midi, midi_ok := midi_input_create()
+	// The one selection of native inputs that every front-end reads and
+	// changes. It starts where the daemon always has: every input open.
+	midi_selection: Midi_Selection
 	if midi_ok {
 		// Not fatal: a machine with no MIDI hardware still runs the
 		// synthesiser, it just has nothing to play it with.
-		midi.open(&midi, &d.live.queue)
+		midi_selection_init(&midi_selection, &midi, &d.live.queue)
 	}
+	// The single final release, whatever the selection has become by then.
 	defer if midi_ok {midi.close(&midi)}
 
 	source := patch_path == "" ? "built-in defaults" : patch_path
@@ -214,8 +218,8 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 
 	// Start serving only after audio and the published context are initialized.
 	// Binding above already excludes a second daemon; the context exposes only
-	// the command ring, the snapshot, the patch bank and the volume atomic, never
-	// the engine.
+	// the command ring, the snapshot, the patch bank, the volume atomic and the
+	// MIDI input selection, never the engine.
 	bank := new(patch.Slots)
 	defer free(bank)
 	patch.factory_prepare()
@@ -243,6 +247,9 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 		archive  = arch,
 		identity = identity,
 		volume   = &d.live.volume,
+	}
+	if midi_ok {
+		cs.ctx.midi_select = &midi_selection
 	}
 	control_ok := control_server_start(&cs)
 	if control_ok {

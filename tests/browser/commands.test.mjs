@@ -408,7 +408,7 @@ test("edit is acknowledged with no daemon traffic and no error", {skip}, async t
   ws.send({type: "edit", index: 19, begin: false});
   ws.send({type: "edit"});
   await sleep(80);
-  assert.deepEqual(daemon.commands().filter(l => l !== "patch.current"), []);
+  assert.deepEqual(daemon.commands().filter(l => l !== "patch.current" && l !== "midi.current"), []);
   assert.deepEqual(ws.drain(), []);
 });
 

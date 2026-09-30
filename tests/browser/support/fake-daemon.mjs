@@ -5,9 +5,10 @@
 // hosts/standalone answers, with the same response shapes and error codes, and
 // keeps the same state: an engine the "audio thread" publishes into a snapshot
 // with a revision, a 128-slot bank with its generation (bank_rev), the patch
-// identity, master volume and a MIDI queue. Edits are queued like the param
-// ring and only reach the snapshot when applied, so tests can hold them back
-// and model audio-thread latency.
+// identity, master volume, a MIDI queue and the selected native MIDI input
+// with its generation (midi_rev). Edits are queued like the param ring and
+// only reach the snapshot when applied, so tests can hold them back and model
+// audio-thread latency.
 //
 // The parameter ids are the real registry's, read out of
 // src/registry/registry.odin; defaults come from ui/params.js. Stored ranges
@@ -143,7 +144,7 @@ function frame(text) {
 }
 
 export class FakeDaemon {
-  constructor({socketPath, keepPath, bankText = FIXTURE, maxConnections = 16} = {}) {
+  constructor({socketPath, keepPath, bankText = FIXTURE, maxConnections = 16, midiInputs = []} = {}) {
     this.socketPath = socketPath;
     this.keepPath = keepPath;
     this.maxConnections = maxConnections;
@@ -163,6 +164,14 @@ export class FakeDaemon {
     this.volume = 1000;
     this.midi = [];
     this.log = [];
+    // What midi.list enumerates, fresh on every call, so a test changing it
+    // is a device plugged in or out; null is a daemon with no MIDI backend.
+    // An input with `fails: true` cannot be opened. The selection starts as
+    // `all`, every input open, which is not a change: midi_rev starts at 0.
+    this.midiInputs = midiInputs;
+    this.midiSelected = "all";
+    this.midiName = "All inputs";
+    this.midiRev = 0;
     this.bank = readBank(bankText);
     // request -> undefined | {err: [code, message]} | {answer: "ok ..."} |
     // "hang" | "garbage" | "oversize" | "drop"
@@ -406,6 +415,33 @@ export class FakeDaemon {
       case "patch.clear":
         this.identity = {slot: -1, bank: "", name: ""};
         return "ok";
+      case "midi.list":
+        if (!this.midiInputs) return "err daemon_not_ready no midi input";
+        return `ok count=${this.midiInputs.length} selected=${this.midiSelected} midi_rev=${this.midiRev}` +
+          this.midiInputs.map(d => `\nid=${d.id} name=${d.name}`).join("");
+      case "midi.select": {
+        if (!this.midiInputs) return "err daemon_not_ready no midi input";
+        const t = req.rest.split(" ").filter(Boolean);
+        if (t.length !== 1) return "err invalid_payload midi.select needs all, none or an input id";
+        // Selecting what is already selected reopens nothing and is not a
+        // change, even for a device that has since been unplugged.
+        if (t[0] !== this.midiSelected) {
+          let name = t[0] === "all" ? "All inputs" : t[0] === "none" ? "None" : null;
+          if (name === null) {
+            const d = this.midiInputs.find(i => i.id === t[0]);
+            if (!d) return "err invalid_payload no such midi input";
+            if (d.fails) return "err internal_error cannot open midi input";
+            name = d.name;
+          }
+          this.midiSelected = t[0];
+          this.midiName = name;
+          this.midiRev++;
+        }
+        return `ok selected=${this.midiSelected} midi_rev=${this.midiRev}`;
+      }
+      case "midi.current":
+        if (!this.midiInputs) return "err daemon_not_ready no midi input";
+        return `ok selected=${this.midiSelected} midi_rev=${this.midiRev}\nname=${this.midiName}`;
       default:
         return "err unknown_command unknown command";
     }

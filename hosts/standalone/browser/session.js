@@ -38,6 +38,17 @@ const PARAM_BURST = 8;
 // told and resynchronised rather than queued without bound.
 const MAX_QUEUED = 256;
 
+// What midi.current and midi.list answer on a daemon older than the MIDI
+// selection, or on one with no MIDI input. Neither stops the page being kept
+// in step, so neither closes it; the page is told there is nothing to choose.
+const MIDI_UNAVAILABLE = new Set(["unknown_command", "daemon_not_ready"]);
+
+// A MIDI input id is interpolated into a command, so it must be one token
+// with nothing the daemon could read as a separator or a second line. Its
+// own ids are short (hw:1,0, winmm:3); the bound keeps a runaway one an
+// invalid payload rather than a command too long to frame.
+const MIDI_ID = /^[^\s\x00-\x1f\x7f-\x9f]{1,256}$/;
+
 // The daemon's registry, from parameter.list. Parameters it does not register
 // (see src/registry/registry.odin) have no id and cannot be read or set.
 async function readRegistry(daemon, params) {
@@ -100,6 +111,11 @@ class Session {
     this.revision = null;
     this.bankRev = null;
     this.identity = null;
+    // midi_rev, or null once the daemon has said it has no MIDI selection to
+    // offer. Only a new daemon, which is a new connection, could say anything
+    // else, so it is then not polled; opening the page's input list still
+    // asks.
+    this.midiRev = undefined;
     // The bank last sent to or adopted from the page.
     this.model = null;
     // Values for the parameters the daemon does not expose. Only loading a
@@ -178,6 +194,10 @@ class Session {
       case "volume": return this.volume(msg);
       case "bank": return this.adopt(msg);
       case "patch-step": return this.patchStep(msg);
+      case "midi-select": return this.midiSelect(msg);
+      // Asked when the page opens its input list, so a device plugged in
+      // since the last one shows up.
+      case "midi-list": return this.run("midi-list", () => this.sendMidi());
       default:
         return this.error(msg.type.length <= 32 ? msg.type : "", "unknown_command",
           "unknown message type");
@@ -360,6 +380,24 @@ class Session {
     this.run("patch-step", () => this.step(msg.step));
   }
 
+  // Only a request. The page keeps no selection of its own and shows what
+  // the `midi` sent back says, so a refusal needs no undoing there: it is
+  // reported, and the page is sent the selection the daemon kept.
+  midiSelect(msg) {
+    if (typeof msg.id !== "string" || !MIDI_ID.test(msg.id)) {
+      return this.error("midi-select", "invalid_payload", "midi-select needs all, none or an input id");
+    }
+    this.run("midi-select", async () => {
+      try {
+        await this.daemon.request(`midi.select ${msg.id}`);
+      } catch (err) {
+        if (!(err instanceof DaemonError)) throw err;
+        this.error("midi-select", err.code, err.message);
+      }
+      await this.sendMidi();
+    });
+  }
+
   // A write the page has already painted. Refused, so the page is told and
   // put back to the daemon's values rather than left showing it.
   reject(kind, code, message) {
@@ -474,6 +512,7 @@ class Session {
     this.sendState(snap.values);
     this.revision = snap.revision;
     this.sendIdentity(current);
+    await this.sendMidi();
     if (!this.polling) {
       this.polling = true;
       this.schedule();
@@ -492,7 +531,8 @@ class Session {
 
   // One patch.current per tick says what moved. Bank first, because adopting
   // it makes the page load slot 0; the daemon's values go over that; the
-  // identity goes last so it names what is now on screen.
+  // identity goes last so it names what is now on screen. The MIDI selection
+  // is apart from all three and has its own generation, midi_rev.
   async tick() {
     const current = await this.current();
     const bankMoved = current.bankRev !== this.bankRev;
@@ -511,6 +551,10 @@ class Session {
       this.revision = snap.revision;
     }
     if (bankMoved || idMoved) this.sendIdentity(current);
+    if (this.midiRev !== null) {
+      const midi = await this.midiCurrent();
+      if (!midi || midi.rev !== this.midiRev) await this.sendMidi(midi);
+    }
   }
 
   async resync() {
@@ -636,6 +680,54 @@ class Session {
       index: current.slot >= 0 ? current.slot : null,
       bank: current.bank,
     });
+  }
+
+  // The selection, its generation and its display name come from one
+  // midi.current, so they always agree; the inputs from a fresh midi.list,
+  // because a device can be plugged in or out without the selection moving.
+  async sendMidi(midi) {
+    if (midi === undefined) midi = await this.midiCurrent();
+    const inputs = midi ? await this.midiInputs() : null;
+    if (!inputs) {
+      this.midiRev = null;
+      this.send({ type: "midi", inputs: [], selected: null, name: null, rev: null });
+      return;
+    }
+    this.midiRev = midi.rev;
+    this.send({ type: "midi", inputs, selected: midi.selected, name: midi.name, rev: midi.rev });
+  }
+
+  async midiCurrent() {
+    const r = await this.midiRequest("midi.current");
+    if (!r) return null;
+    const rev = r.int("midi_rev");
+    const selected = r.field("selected");
+    if (rev === undefined || !selected) throw new ConnectionError("malformed midi.current answer");
+    const line = r.lines.find(l => l.startsWith("name="));
+    return { rev, selected, name: line === undefined ? "" : line.slice(5) };
+  }
+
+  async midiInputs() {
+    const r = await this.midiRequest("midi.list");
+    if (!r) return null;
+    const inputs = [];
+    for (const line of r.lines) {
+      // s: `.` alone stops at U+2028 and U+2029, which a name may hold.
+      const m = /^id=(\S+) name=(.*)$/s.exec(line);
+      if (m) inputs.push({ id: m[1], name: m[2] });
+    }
+    return inputs;
+  }
+
+  // Null when the daemon has no selection to offer. Anything else it refuses
+  // is handled like a refused patch.current.
+  async midiRequest(command) {
+    try {
+      return await this.daemon.request(command);
+    } catch (err) {
+      if (err instanceof DaemonError && MIDI_UNAVAILABLE.has(err.code)) return null;
+      throw err;
+    }
   }
 
   // A private directory per file handed to the daemon, so nothing else on the

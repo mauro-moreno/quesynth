@@ -11,6 +11,13 @@
 (function () {
   "use strict";
 
+  // The daemon reads the MIDI devices itself, so Web MIDI in the page would
+  // be a second source: a keyboard both could see would play every note
+  // twice. Claimed here, before ui/midi.js runs, which then never opens Web
+  // MIDI and shows the daemon's selection instead (midi, midi-select and
+  // midi-list in ui/bridge.js).
+  window.SynthHostMidi = true;
+
   var MIN_DELAY = 250;
   var MAX_DELAY = 5000;
   // Only what the page posts while it is still loading, before the socket has

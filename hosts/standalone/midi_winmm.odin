@@ -1,14 +1,16 @@
 #+build windows
 package standalone
 
+import "core:fmt"
 import "core:strings"
 import win "core:sys/windows"
 
 // Windows MIDI input: the multimedia API (winmm).
 //
 // The other half of the platform seam in backend.odin. It opens every input the
-// system reports and pushes what arrives into the lock-free queue; it never
-// touches the engine, and it never learns what a note is.
+// system reports, or the one the daemon's selection names, and pushes what
+// arrives into the lock-free queue; it never touches the engine, and it never
+// learns what a note is.
 //
 // core:sys/windows ships winmm bindings, but only the waveOut, waveIn and timer
 // halves -- there are no midiIn declarations -- so the seven entry points this
@@ -71,9 +73,12 @@ Winmm_Midi :: struct {
 winmm_midi_input :: proc() -> (Midi_Input, bool) {
 	m := new(Winmm_Midi)
 	input := Midi_Input {
-		impl  = m,
-		open  = winmm_midi_open,
-		close = winmm_midi_close,
+		impl         = m,
+		open         = winmm_midi_open,
+		list         = winmm_midi_list,
+		open_device  = winmm_midi_open_device,
+		close_inputs = winmm_midi_close_inputs,
+		close        = winmm_midi_close,
 	}
 	return input, true
 }
@@ -89,47 +94,83 @@ winmm_midi_open :: proc(input: ^Midi_Input, queue: ^Midi_Queue) -> bool {
 
 	count := int(midiInGetNumDevs())
 	for id in 0 ..< count {
-		caps: MIDIINCAPSW
-		name: string
-		if midiInGetDevCapsW(win.UINT_PTR(id), &caps, size_of(MIDIINCAPSW)) == MMSYSERR_NOERROR {
-			if text, err := win.wstring_to_utf8(
-				win.wstring(raw_data(caps.szPname[:])),
-				-1,
-				context.allocator,
-			); err == nil {
-				name = text
-			}
-		}
-		// The fallback is cloned rather than used as a literal so every entry
-		// in `names` has the same owner and `close` can free them all alike.
-		if name == "" {
-			name = strings.clone("(unnamed input)")
-		}
-
-		handle: HMIDIIN
-		// The queue pointer travels as the callback instance, so the callback
-		// needs no globals and no state of its own.
-		result := midiInOpen(
-			&handle,
-			win.UINT(id),
-			winmm_midi_callback,
-			win.DWORD_PTR(uintptr(queue)),
-			CALLBACK_FUNCTION,
-		)
-		if result != MMSYSERR_NOERROR {
-			continue
-		}
-		if midiInStart(handle) != MMSYSERR_NOERROR {
-			midiInClose(handle)
-			continue
-		}
-
-		append(&m.handles, handle)
-		append(&m.names, name)
+		winmm_midi_open_port(m, queue, id)
 	}
 
 	input.count = len(m.handles)
 	input.names = m.names[:]
+	return true
+}
+
+// Every input, open or not. winmm knows a device only by its index, so that is
+// the id; the name is the driver's, which two identical controllers share.
+winmm_midi_list :: proc(input: ^Midi_Input) -> []Midi_Device {
+	count := int(midiInGetNumDevs())
+	devices := make([]Midi_Device, count)
+	for id in 0 ..< count {
+		devices[id] = Midi_Device {
+			id   = fmt.aprintf("winmm:%d", id),
+			name = winmm_midi_name(id),
+		}
+	}
+	return devices
+}
+
+// Open the one input listed as `id`, if it is still there.
+winmm_midi_open_device :: proc(input: ^Midi_Input, queue: ^Midi_Queue, id: string) -> bool {
+	m := (^Winmm_Midi)(input.impl)
+	count := int(midiInGetNumDevs())
+	for index in 0 ..< count {
+		buffer: [32]u8
+		if fmt.bprintf(buffer[:], "winmm:%d", index) != id {
+			continue
+		}
+		opened := winmm_midi_open_port(m, queue, index)
+		input.count = len(m.handles)
+		input.names = m.names[:]
+		return opened
+	}
+	return false
+}
+
+// The driver's name for an input. The fallback is cloned rather than used as a
+// literal so every name has the same owner and can be freed alike.
+winmm_midi_name :: proc(id: int) -> string {
+	caps: MIDIINCAPSW
+	if midiInGetDevCapsW(win.UINT_PTR(id), &caps, size_of(MIDIINCAPSW)) == MMSYSERR_NOERROR {
+		if text, err := win.wstring_to_utf8(
+			win.wstring(raw_data(caps.szPname[:])),
+			-1,
+			context.allocator,
+		); err == nil && text != "" {
+			return text
+		}
+	}
+	return strings.clone("(unnamed input)")
+}
+
+// Open one input and start it. On failure nothing is added.
+winmm_midi_open_port :: proc(m: ^Winmm_Midi, queue: ^Midi_Queue, id: int) -> bool {
+	handle: HMIDIIN
+	// The queue pointer travels as the callback instance, so the callback
+	// needs no globals and no state of its own.
+	result := midiInOpen(
+		&handle,
+		win.UINT(id),
+		winmm_midi_callback,
+		win.DWORD_PTR(uintptr(queue)),
+		CALLBACK_FUNCTION,
+	)
+	if result != MMSYSERR_NOERROR {
+		return false
+	}
+	if midiInStart(handle) != MMSYSERR_NOERROR {
+		midiInClose(handle)
+		return false
+	}
+
+	append(&m.handles, handle)
+	append(&m.names, winmm_midi_name(id))
 	return true
 }
 
@@ -165,7 +206,10 @@ winmm_midi_callback :: proc "system" (
 	midi_queue_push(queue, packed)
 }
 
-winmm_midi_close :: proc(input: ^Midi_Input) {
+// Stop and close every open input, keeping the backend ready for another open.
+// With nothing open it does nothing, so the final close after a switch to none
+// closes nothing twice.
+winmm_midi_close_inputs :: proc(input: ^Midi_Input) {
 	m := (^Winmm_Midi)(input.impl)
 	if m == nil {
 		return
@@ -179,15 +223,27 @@ winmm_midi_close :: proc(input: ^Midi_Input) {
 		midiInReset(handle)
 		midiInClose(handle)
 	}
-	delete(m.handles)
+	clear(&m.handles)
 
 	for name in m.names {
 		delete(name)
 	}
+	clear(&m.names)
+
+	input.count = 0
+	input.names = nil
+}
+
+winmm_midi_close :: proc(input: ^Midi_Input) {
+	m := (^Winmm_Midi)(input.impl)
+	if m == nil {
+		return
+	}
+
+	winmm_midi_close_inputs(input)
+	delete(m.handles)
 	delete(m.names)
 
 	free(m)
 	input.impl = nil
-	input.count = 0
-	input.names = nil
 }

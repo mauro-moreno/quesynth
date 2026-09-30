@@ -3,6 +3,7 @@ package tui_tests
 
 import "core:c"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:testing"
 
@@ -84,11 +85,14 @@ render_with :: proc(bank, name: string) -> string {
 	theme := tui.theme_defaults()
 	theme.enabled = false
 
+	// Held for the whole swap; see stdout_capture in midi_test.odin.
+	sync.mutex_lock(&stdout_capture)
+	defer sync.mutex_unlock(&stdout_capture)
 	fds: [2]posix.FD
 	if posix.pipe(&fds) != .OK {return ""}
 	saved := posix.dup(posix.STDOUT_FILENO)
 	posix.dup2(fds[1], posix.STDOUT_FILENO)
-	tui.render(rows, groups, 0, 0, tui.Metrics{ok = true}, "/tmp/quesynth.sock", bank, name, theme)
+	tui.render(rows, groups, 0, 0, tui.Metrics{ok = true}, "/tmp/quesynth.sock", bank, name, "", theme)
 	posix.dup2(saved, posix.STDOUT_FILENO)
 	posix.close(saved)
 	posix.close(fds[1])

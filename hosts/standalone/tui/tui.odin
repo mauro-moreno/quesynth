@@ -73,6 +73,22 @@ run :: proc(path: string) -> int {
 	current_bank := ""
 	current_patch := ""
 	defer {delete(current_bank); delete(current_patch)}
+	// The name of the native MIDI input the daemon listens to, for the same
+	// screen. The browser page changes it too, so it is re-read with the
+	// patch; "" while unknown.
+	current_midi := ""
+	defer delete(current_midi)
+
+	// MIDI input screen state, live only while `choosing_midi`: the inputs and
+	// the daemon's token as the last midi.list gave them, the cursor, and the
+	// row whose select the daemon refused (-1 for none). The token is only
+	// ever the daemon's answer; this screen asks for a change and shows what
+	// the daemon then says, it never holds a choice of its own.
+	choosing_midi := false
+	midi_devices: []Midi_Device
+	midi_selected := ""
+	midi_cursor := 0
+	midi_refused := -1
 
 	// Archive browser state: 0 none, 1 banks, 2 patches. The opened archive, its
 	// bank names, the bank last entered and the patch last on all persist while
@@ -99,7 +115,10 @@ run :: proc(path: string) -> int {
 	if connected && config.bank_path != "" {
 		client_bank_load_file(&client, config.bank_path)
 	}
-	if connected { tui_read_identity(&client, &current_bank, &current_patch) }
+	if connected {
+		tui_read_identity(&client, &current_bank, &current_patch)
+		tui_read_midi(&client, &current_midi)
+	}
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
 		// lines) so the render loop does not grow memory without bound.
@@ -114,8 +133,10 @@ run :: proc(path: string) -> int {
 			render_list("Quesynth — Archive patches", patch_names, arc_sel, "Enter load   Esc back   Q quit", theme)
 		case browsing:
 			render_bank(bank_label, bank_slots, bank_sel, theme)
+		case choosing_midi:
+			render_midi(midi_devices, midi_selected, midi_cursor, midi_refused, theme)
 		case:
-			render(rows[:], groups, current_group, selected, metrics, path, current_bank, current_patch, theme)
+			render(rows[:], groups, current_group, selected, metrics, path, current_bank, current_patch, current_midi, theme)
 		}
 
 		key := read_key_timeout(REFRESH_MS)
@@ -136,7 +157,7 @@ run :: proc(path: string) -> int {
 				if connected { tui_read_identity(&client, &current_bank, &current_patch) }
 			case .Escape, .Config:
 				configuring = false
-			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Midi, .Other:
 			// Ignored on the settings screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -224,7 +245,7 @@ run :: proc(path: string) -> int {
 				arc_view = archive_view
 				if archive_view == 2 { arc_patch = arc_sel }
 				archive_view = 0
-			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Config, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Config, .Midi, .Other:
 			// Ignored in the archive browser.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -293,8 +314,65 @@ run :: proc(path: string) -> int {
 					bank_slots, bank_label, _ = client_bank_list(&client)
 					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
 				}
-			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Config, .Other:
+			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Config, .Midi, .Other:
 			// Ignored in the browser.
+			}
+			if client.fd < 0 { connected = false; metrics = {} }
+			continue
+		}
+
+		if choosing_midi {
+			switch key {
+			case .Quit:
+				client_midi_free(midi_devices)
+				delete(midi_selected)
+				return 0
+			case .Up:
+				if midi_cursor > 0 { midi_cursor -= 1 }
+			case .Down:
+				if midi_cursor < midi_row_count(midi_devices) - 1 { midi_cursor += 1 }
+			case .Enter:
+				if connected {
+					token, _, _ := midi_row(midi_devices, midi_cursor)
+					if client_midi_select(&client, token) {
+						tui_read_midi(&client, &current_midi)
+						client_midi_free(midi_devices)
+						delete(midi_selected)
+						midi_devices = nil
+						midi_selected = ""
+						choosing_midi = false
+					} else if client.fd >= 0 {
+						// Refused, not disconnected: stay, so the user can pick
+						// another or re-scan for what is plugged in now.
+						midi_refused = midi_cursor
+					}
+				}
+			case .Reset:
+				if connected {
+					if devices, token, _, ok := client_midi_list(&client); ok {
+						// The cursor stays on its input if that is still
+						// there, wherever the list moved it to.
+						on, _, _ := midi_row(midi_devices, midi_cursor)
+						cursor, kept := midi_row_of(devices, on)
+						if !kept { cursor, _ = midi_row_of(devices, token) }
+						client_midi_free(midi_devices)
+						delete(midi_selected)
+						midi_devices = devices
+						midi_selected = token
+						midi_cursor = cursor
+						midi_refused = -1
+					}
+				}
+			case .Escape, .Midi:
+				client_midi_free(midi_devices)
+				delete(midi_selected)
+				midi_devices = nil
+				midi_selected = ""
+				choosing_midi = false
+			case .Tick:
+				if connected { tui_refresh_midi_selected(&client, &midi_selected) }
+			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Config, .Other:
+			// Ignored on the MIDI screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
 			continue
@@ -313,8 +391,10 @@ run :: proc(path: string) -> int {
 						client_load_snapshot(&client, rows[:])
 						shown_rev = metrics.revision
 					}
-					// Another front-end may have loaded, saved or replaced the bank.
+					// Another front-end may have loaded, saved or replaced the
+					// bank, or chosen another MIDI input.
 					tui_read_identity(&client, &current_bank, &current_patch)
+					tui_read_midi(&client, &current_midi)
 				}
 			}
 		case .Quit:
@@ -364,7 +444,10 @@ run :: proc(path: string) -> int {
 				client, connected = client_connect(path)
 				if connected { connected = client_load_snapshot(&client, rows[:]) }
 				if connected { metrics = client_info(&client); connected = metrics.ok }
-				if connected { tui_read_identity(&client, &current_bank, &current_patch) }
+				if connected {
+					tui_read_identity(&client, &current_bank, &current_patch)
+					tui_read_midi(&client, &current_midi)
+				}
 				if !connected { client_close(&client); metrics = {} }
 			}
 		case .Load_Bank:
@@ -416,6 +499,18 @@ run :: proc(path: string) -> int {
 		case .Config:
 			configuring = true
 			config_sel = 0
+		case .Midi:
+			if connected {
+				if devices, token, _, ok := client_midi_list(&client); ok {
+					midi_devices = devices
+					midi_selected = token
+					// On the input the daemon listens to, so Enter at once
+					// changes nothing.
+					midi_cursor, _ = midi_row_of(devices, token)
+					midi_refused = -1
+					choosing_midi = true
+				}
+			}
 		case .Save, .Escape, .Other:
 		// Save applies only in the bank browser; Escape and Other are ignored.
 		}
@@ -514,6 +609,30 @@ tui_read_identity :: proc(client: ^Client, current_bank, current_patch: ^string)
 	delete(current_patch^)
 	current_bank^ = bank
 	current_patch^ = name
+}
+
+// Re-read the name of the MIDI input the daemon listens to. Unlike the patch
+// names, a failed read clears it: a daemon that cannot answer midi.current
+// has no selection to name, and the last one seen may not hold any more.
+@(private)
+tui_read_midi :: proc(client: ^Client, current_midi: ^string) {
+	selected, name, _, ok := client_midi_current(client)
+	delete(selected)
+	delete(current_midi^)
+	current_midi^ = ok ? name : ""
+}
+
+// Re-read the token the daemon listens to for the MIDI screen's (*) mark, so
+// a peer's change shows while the screen is open. Only the token: a fresh
+// list could move rows under the cursor, so re-scanning stays R's. A refused
+// or failed read keeps the last answer; a drop is the loop's to report.
+tui_refresh_midi_selected :: proc(client: ^Client, selected: ^string) -> bool {
+	token, name, _, ok := client_midi_current(client)
+	delete(name)
+	if !ok { return false }
+	delete(selected^)
+	selected^ = token
+	return true
 }
 
 // Open an archive for browsing and, on success, remember its path in the config

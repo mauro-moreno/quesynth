@@ -25,11 +25,12 @@ page's transport, served as `/ui/host.js`).
 | the 128-slot bank, its label, and `bank_rev` | the daemon |
 | the current patch identity (slot, bank label, name) | the daemon |
 | master volume | the daemon |
+| the selected native MIDI input, and `midi_rev` | the daemon |
 | the browser page | nobody: it is a view |
 
 The adapter keeps nothing that outlives a connection: what the page is believed
-to show, which writes are still in flight, and the bank it last sent. All of it
-exists to decide what to tell the page.
+to show, which writes are still in flight, the bank it last sent, and the last
+`midi_rev` it saw. All of it exists to decide what to tell the page.
 
 ## The page runs as a hosted panel
 
@@ -42,13 +43,32 @@ them out, exactly as a plugin does. Without them `SynthBank.hosted()` is true,
 the page never sends its own slot 0 at load, and it gets the daemon's bank and
 identity on `sync`.
 
+## The page never uses Web MIDI
+
+The daemon reads the MIDI devices itself, and by default every input it can
+open. Web MIDI in the page would be a second way in for the same keyboard,
+and every note would sound twice. So `host.js` sets `window.SynthHostMidi` as
+it loads, before `ui/midi.js` runs, and the panel then never asks for Web MIDI,
+never listens to an input, and refuses one handed to `SynthMidi.connect`. The
+MIDI button shows the daemon's selection instead (All inputs, one input, or
+None), and choosing another only asks the daemon (`midi-select`). The page
+keeps no selection of its own, so the button changes only when the daemon's
+answer comes back. The TUI changes the same selection, and each sees the
+other's change.
+
+A daemon older than the MIDI selection answers `unknown_command`, and one with
+no MIDI input `daemon_not_ready`. Neither closes the page, as a refused
+`patch.current` would. The page is sent `midi` with `selected: null` and no
+inputs, the button offers nothing to choose, and Web MIDI stays off all the
+same.
+
 ## Messages
 
 What each message of `ui/bridge.js` does here:
 
 | from the page | effect on the daemon |
 |---|---|
-| `sync` | nothing; the page is sent `bank`, `state`, `patch`, in that order |
+| `sync` | nothing; the page is sent `bank`, `state`, `patch`, `midi`, in that order |
 | `set` | `parameter.set <id> <value>` |
 | `state` | see below: dropped, `patch.load <k>`, or `parameter.set_many` then `patch.clear` |
 | `edit` | nothing, by design: gesture brackets are for hosts that record automation, and the daemon records none |
@@ -58,13 +78,18 @@ What each message of `ui/bridge.js` does here:
 | `volume` | `volume <round(value × 1000)>`, clamped to 0..1000 |
 | `bank` | the text goes to a private temporary file for `bank.load_file`; `save: true` adds `bank.keep` |
 | `patch-step` | `patch.load` of the next filled slot in that direction, wrapping round the bank |
+| `midi-select` | `midi.select <id>` (`all`, `none` or an input's id, one token); answered with `midi` |
+| `midi-list` | nothing changes; `midi.current` and a fresh `midi.list`, answered with `midi` |
 
 To the page go `state` (all 99 values), `param` (one value), `patch`
 (`{name, index, bank}`, `index` null when no slot), `bank` (a `quesynth.bank`
-document), and `error` (`{for, code, message}`), which the panel ignores and
-`host.js` logs with `console.warn`. Every field is checked before a command is
-built; a bad message, an unknown type or broken JSON gets an `error` and the
-socket stays open.
+document), `midi` (`{inputs: [{id, name}], selected, name, rev}`: the daemon's
+MIDI selection, its display name, `midi_rev`, and what `midi.list` found),
+and `error` (`{for, code, message}`), which the panel ignores and `host.js`
+logs with `console.warn`. Every field is checked before a command is built; a
+bad message, an unknown type or broken JSON gets an `error` and the socket
+stays open. A `midi-select` the daemon refuses gets an `error`, then a `midi`
+with the selection it kept.
 
 A `state` is a whole patch, and three things send one:
 
@@ -98,7 +123,11 @@ answer says what moved. If `bank_rev` moved, the bank is dumped with
 `state.snapshot` is read and the parameters that differ from what the page
 shows go as `param`s, or as one `state` when more than eight moved; if the
 identity moved, a `patch` follows. A new bank is always followed by a full
-`state` and a `patch`, because adopting it moved the page to slot 0.
+`state` and a `patch`, because adopting it moved the page to slot 0. Each
+poll then asks `midi.current`; if `midi_rev` moved, `midi.list` is read and a
+`midi` sent. That is how a selection made in the TUI reaches the page. A
+daemon with no selection to offer is not polled for one again on that
+connection; opening the page's MIDI list still asks.
 
 A page's own write outranks the daemon's value for that parameter until the
 daemon reports the written value or 500 ms pass, so a knob does not flick back
@@ -161,3 +190,5 @@ They run the adapter in process against `tests/browser/support/fake-daemon.mjs`,
 a stand-in speaking the real framing with the registry's real ids. The bank
 fixture is written by the daemon's own writer (`tests/browser/fixtures/genbank`),
 and `panel-native.test.mjs` boots the real panel scripts against the adapter.
+`midi.test.mjs` does the same to check that a hosted page never touches Web
+MIDI and that a page without `host.js` still uses it.

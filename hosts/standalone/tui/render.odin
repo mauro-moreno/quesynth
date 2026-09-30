@@ -183,7 +183,7 @@ render :: proc(
 	current_group, selected: int,
 	metrics: Metrics,
 	path: string,
-	current_bank, current_patch: string,
+	current_bank, current_patch, current_midi: string,
 	theme: Theme,
 ) {
 	body: [dynamic]string
@@ -194,6 +194,11 @@ render :: proc(
 		patch_line = fmt.tprintf("%s   bank: %s", patch_line, current_bank)
 	}
 	append(&body, paint(theme, theme.value, patch_line))
+	// Left out while unknown -- an older daemon, one with no MIDI backend, or
+	// none reachable -- because any name shown then could be the wrong one.
+	if metrics.ok && current_midi != "" {
+		append(&body, paint(theme, theme.value, fmt.tprintf("midi: %s", current_midi)))
+	}
 	append(&body, group_tabs(groups, current_group, theme))
 	append(&body, "")
 
@@ -242,7 +247,9 @@ render :: proc(
 				),
 			),
 		)
-		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   B bank   A archive   C settings   Q quit"))
+		// Two lines: on one, the last keys would be cut off at 80 columns.
+		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   Q quit"))
+		append(&footer, paint(theme, theme.status, "B bank   A archive   M midi   C settings"))
 	}
 	append(&footer, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 	present("Quesynth", body[:], footer[:], theme)
@@ -280,6 +287,68 @@ render_bank :: proc(label: string, slots: []Bank_Slot, selected: int, theme: The
 	footer.allocator = context.temp_allocator
 	append(&footer, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
 	present(fmt.tprintf("Quesynth — Bank: %s", label), body[:], footer[:], theme)
+}
+
+// The MIDI input screen. `selected` is the daemon's token, not the cursor's
+// row: the (*) moves only when the daemon says it listens to something else.
+// `refused` is the row whose select the daemon turned down, or -1.
+render_midi :: proc(devices: []Midi_Device, selected: string, cursor: int, refused: int, theme: Theme) {
+	footer: [dynamic]string
+	footer.allocator = context.temp_allocator
+	if refused >= 0 {
+		token, name, is_input := midi_row(devices, refused)
+		refusal := is_input ? fmt.tprintf("%s (%s)", name, token) : name
+		append(&footer, paint(theme, theme.warning, fmt.tprintf("the daemon refused %s", refusal)))
+	}
+	append(&footer, paint(theme, theme.status, "up/down select   Enter use   R re-scan   Esc back   Q quit"))
+
+	// What present leaves between the borders, the separator and the footer;
+	// the window follows the cursor, as the bank browser's does.
+	rows, _ := terminal_size()
+	window := max(rows - 3 - len(footer), 1)
+	count := midi_row_count(devices)
+	start := clamp(cursor - window + 1, 0, max(count - window, 0))
+	end := min(count, start + window)
+
+	body: [dynamic]string
+	body.allocator = context.temp_allocator
+	for row in start ..< end {
+		if row == count - 1 && len(devices) == 0 {
+			append(&body, paint(theme, theme.dim, "      (no MIDI inputs found)"))
+		}
+		token, name, is_input := midi_row(devices, row)
+		chosen := row == cursor
+		marker := paint(theme, theme.selected, chosen ? ">" : " ")
+		text := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%s %s", token == selected ? "(*)" : "( )", name))
+		if is_input {
+			text = fmt.tprintf("%s  %s", text, paint(theme, theme.dim, token))
+		}
+		append(&body, fmt.tprintf("%s %s", marker, text))
+	}
+	present("Quesynth — MIDI input", body[:], footer[:], theme)
+}
+
+// The MIDI screen's rows, in order: All inputs, each input as the daemon
+// listed it, None. A row's token is what midi.select takes for it.
+@(private)
+midi_row :: proc(devices: []Midi_Device, row: int) -> (token: string, name: string, is_input: bool) {
+	if row <= 0 { return "all", "All inputs", false }
+	if row > len(devices) { return "none", "None", false }
+	return devices[row - 1].id, devices[row - 1].name, true
+}
+
+@(private)
+midi_row_count :: proc(devices: []Midi_Device) -> int {
+	return len(devices) + 2
+}
+
+// The row that selects `token`, if the list has one.
+@(private)
+midi_row_of :: proc(devices: []Midi_Device, token: string) -> (int, bool) {
+	for row in 0 ..< midi_row_count(devices) {
+		if t, _, _ := midi_row(devices, row); t == token { return row, true }
+	}
+	return 0, false
 }
 
 // The settings screen: the remembered paths, each editable, and where they are

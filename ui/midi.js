@@ -12,6 +12,13 @@
 // Access needs a user gesture and a permission prompt, so nothing is requested
 // until the button is pressed. A browser without Web MIDI -- Safari, as of
 // writing -- says so rather than failing quietly.
+//
+// A host that reads the MIDI devices itself claims them by setting
+// window.SynthHostMidi before this file runs. Web MIDI here would then be a
+// second way in for the same keyboard and every note would sound twice, so in
+// that page nothing below opens it, listens to an input or lets one be
+// attached: the button shows the host's selection and asks the host to change
+// it (see ui/bridge.js for the messages).
 
 (function () {
   "use strict";
@@ -23,6 +30,13 @@
 
   var restingLabel = "MIDI";
   var flashTimer = null;
+
+  // Read once, before anything else could run: the claim is made by a
+  // script loaded ahead of this one or not at all.
+  var hosted = window.SynthHostMidi === true;
+  // The host's selection exactly as its last `midi` message said. A choice
+  // is only sent as a request, and shows once the host reports it taken.
+  var hostMidi = null;
 
   // Update only the trailing text of the button so the inline icon survives.
   function setButtonText(text) {
@@ -171,6 +185,9 @@
   }
 
   function connect(input) {
+    // Refused outright, or an input handed in from outside would be the
+    // second source the host's claim is there to prevent.
+    if (hosted) return;
     if (current) current.onmidimessage = null;
     current = input;
     if (!input) {
@@ -220,8 +237,86 @@
     list.style.top = Math.round(r.bottom + 8) + "px";
   }
 
+  // Two identical controllers share a name; the id is all that tells them
+  // apart.
+  function inputText(input) {
+    var name = input.name || input.id;
+    if (!input.name) return name;
+    var same = hostMidi.inputs.filter(function (other) { return other.name === input.name; });
+    return same.length > 1 ? name + " (" + input.id + ")" : name;
+  }
+
+  // What the button says for the host's selection. "All" or "None" alone
+  // would not say of what.
+  function hostLabel() {
+    if (!hostMidi || hostMidi.selected === null) return "MIDI";
+    if (hostMidi.selected === "all") return "All MIDI";
+    if (hostMidi.selected === "none") return "MIDI off";
+    var chosen = hostMidi.inputs.filter(function (input) { return input.id === hostMidi.selected; })[0];
+    return chosen ? inputText(chosen) : hostMidi.name || hostMidi.selected;
+  }
+
+  function ask(msg) {
+    if (window.SynthBridge) window.SynthBridge.send(msg);
+  }
+
+  function showHostList(anchor) {
+    if (!list) {
+      list = document.createElement("div");
+      list.className = "midi-list";
+      document.body.appendChild(list);
+      document.addEventListener("click", function () { list.classList.remove("open"); });
+      list.addEventListener("click", function (e) { e.stopPropagation(); });
+    }
+
+    function line(text) {
+      var d = document.createElement("div");
+      d.className = "midi-none";
+      d.textContent = text;
+      list.appendChild(d);
+    }
+
+    // Marked by what the host has, not by what was last clicked.
+    function choice(text, id) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.setAttribute("aria-current", hostMidi.selected === id ? "true" : "false");
+      b.addEventListener("click", function () {
+        ask({ type: "midi-select", id: id });
+        list.classList.remove("open");
+      });
+      list.appendChild(b);
+    }
+
+    list.textContent = "";
+    // A host that cannot say what it has selected offers nothing to choose;
+    // Web MIDI stays off all the same.
+    if (!hostMidi || hostMidi.selected === null) {
+      line("Selection unavailable");
+    } else {
+      choice("All inputs", "all");
+      if (!hostMidi.inputs.length) line("No inputs found");
+      hostMidi.inputs.forEach(function (input) { choice(inputText(input), input.id); });
+      choice("None", "none");
+    }
+
+    list.classList.add("open");
+    var r = anchor.getBoundingClientRect();
+    var w = list.offsetWidth;
+    list.style.left = Math.round(Math.min(r.right - w, window.innerWidth - w - 8)) + "px";
+    list.style.top = Math.round(r.bottom + 8) + "px";
+  }
+
   function open(e) {
     e.stopPropagation();
+    if (hosted) {
+      // Asked each time the list opens, so a device plugged in since shows
+      // up; the open list is redrawn when the answer comes.
+      ask({ type: "midi-list" });
+      showHostList(button);
+      return;
+    }
     if (access) {
       showList(button);
       return;
@@ -249,7 +344,24 @@
   document.addEventListener("DOMContentLoaded", function () {
     button = document.getElementById("midi-toggle");
     if (button) button.addEventListener("click", open);
+    // In case the host's answer came before there was a button to label.
+    if (hosted) label(hostLabel());
   });
+
+  if (hosted && window.SynthBridge) {
+    window.SynthBridge.onMessage(function (msg) {
+      if (!msg || msg.type !== "midi") return;
+      hostMidi = {
+        inputs: Array.isArray(msg.inputs) ? msg.inputs.filter(function (i) {
+          return i && typeof i.id === "string";
+        }) : [],
+        selected: typeof msg.selected === "string" ? msg.selected : null,
+        name: typeof msg.name === "string" ? msg.name : "",
+      };
+      label(hostLabel());
+      if (list && list.classList.contains("open")) showHostList(button);
+    });
+  }
 
   // Attaching an input from outside.
   //

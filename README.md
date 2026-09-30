@@ -151,6 +151,11 @@ the current patch, so a change made in either shows in the other. Node.js is
 required; set `QUESYNTH_ROOT` when running the binary outside the repository
 tree. See [`hosts/standalone/browser`](hosts/standalone/browser/README.md).
 
+The daemon also owns which MIDI input it listens to: the TUI chooses it with
+`M`, and the page's MIDI button shows and changes the same selection. A page
+served by `--browser` does not use Web MIDI, so a keyboard is never heard
+twice. By default every input is open, as it always has been.
+
 ## Compatibility and verification
 
 Quesynth is a measurement-driven compatibility project, not an official Synth1

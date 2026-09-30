@@ -328,6 +328,41 @@ bank and is touched only by the control thread:
 Anything else, and any failed command, leaves it alone: a knob tweak edits the
 sound, it does not rename the patch.
 
+The daemon also owns which native MIDI inputs it listens to, so two
+front-ends cannot each attach the same keyboard and play every note twice.
+Three more commands, same version:
+
+- `midi.list` → `ok count=<n> selected=<token> midi_rev=<uint>`, then one
+  record line `id=<id> name=<name>` per input in the backend's order, the name
+  raw to the line end. Enumerated afresh on every call and opening nothing, so
+  a controller plugged in since is there. `count=0` with no records is a valid
+  answer (no hardware, no libasound).
+- `midi.select <token>` → `ok selected=<token> midi_rev=<uint>`. The token is
+  `all` (every input open), `none` (no native input) or an input's `id`: one
+  token, never `all` or `none` — `hw:<card>,<device>` on ALSA,
+  `winmm:<index>` on Windows. Refusals, each leaving the selection as it was:
+  `err invalid_payload midi.select needs all, none or an input id` (no or
+  extra operand), `err invalid_payload no such midi input` (not in a fresh
+  enumeration), `err internal_error cannot open midi input` (listed but would
+  not open; the previous selection is reopened).
+- `midi.current` → `ok selected=<token> midi_rev=<uint>`, then the record line
+  `name=<name>`: `All inputs`, `None`, or the input's name as listed when it
+  was chosen. Cheap, for a peer to poll beside `patch.current`.
+
+The selection starts at `all`, which is what the daemon did before it had one,
+and `midi_rev` at 0. Each real change closes every open input first — after
+that nothing more from them reaches the queue — then opens the new set, then
+adds 1 to `midi_rev`; selecting the current token is a no-op that neither
+reopens anything nor moves the number. A peer that sees `midi_rev` move
+re-reads. A selected input that is unplugged stays selected. Without a MIDI
+backend all three answer `err daemon_not_ready no midi input`. The `midi`
+inject command is unchanged, and the audio thread still only drains the one
+queue.
+
+A page the browser adapter serves claims MIDI input for the host and never
+uses Web MIDI: its MIDI button shows and changes this selection, so a note
+reaches the daemon by exactly one path. Pages in other hosts keep Web MIDI.
+
 **Dependencies.** Slices 1, 2.
 
 ---

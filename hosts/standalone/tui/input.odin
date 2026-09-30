@@ -21,6 +21,7 @@ Key :: enum {
 	Load_Bank,
 	Archive,
 	Config,
+	Midi,
 	Escape,
 }
 
@@ -65,6 +66,8 @@ read_key :: proc() -> Key {
 		return .Archive
 	case 'c', 'C':
 		return .Config
+	case 'm', 'M':
+		return .Midi
 	case 0x0d, 0x0a:
 		return .Enter
 	case 0x09:

@@ -413,6 +413,86 @@ client_names_free :: proc(names: []string) {
 	delete(names)
 }
 
+// The daemon's native MIDI inputs. It owns the one selection every front-end
+// shares, so the TUI keeps none of its own: it lists, asks for a change and
+// reads back what the daemon then listens to.
+
+// One input as midi.list reports it: the id midi.select takes and the name to
+// show, which two identical controllers may share.
+Midi_Device :: struct {
+	id:   string,
+	name: string,
+}
+
+// midi.list: every input the daemon sees now, in its order, and the token it
+// listens to ("all", "none" or one of the ids). Ids, names and the token are
+// cloned; free the list with client_midi_free and the token with delete.
+client_midi_list :: proc(cl: ^Client) -> (devices: []Midi_Device, selected: string, midi_rev: uint, ok: bool) {
+	line := fmt.tprintf("%d %d midi.list", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return }
+	if s, has := control.response_field(resp.fields, "midi_rev"); has {
+		midi_rev, _ = strconv.parse_uint(s)
+	}
+	token, _ := control.response_field(resp.fields, "selected")
+
+	out: [dynamic]Midi_Device
+	body := resp.body
+	for record in strings.split_lines_iterator(&body) {
+		// An id has no spaces, so the first " name=" ends it, and the name
+		// runs raw to the line end with its spaces.
+		at := strings.index(record, " name=")
+		if !strings.has_prefix(record, "id=") || at < 0 { continue }
+		append(&out, Midi_Device{id = strings.clone(record[3:at]), name = strings.clone(record[at + 6:])})
+	}
+	return out[:], strings.clone(token), midi_rev, true
+}
+
+client_midi_free :: proc(devices: []Midi_Device) {
+	for d in devices {
+		delete(d.id)
+		delete(d.name)
+	}
+	delete(devices)
+}
+
+// midi.select: make the daemon listen to `token` instead. A refusal -- an
+// input unplugged since the list, one that will not open -- is an answer, so
+// it returns false with the connection still up; only a transport error
+// closes it.
+client_midi_select :: proc(cl: ^Client, token: string) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d midi.select %s", control.PROTOCOL_VERSION, cl.next_id, token))
+}
+
+// midi.current: the token the daemon listens to and the name to show for it,
+// read raw to the end of its record line; both cloned, the caller deletes
+// them. midi_rev moves once per change, whichever front-end made it.
+client_midi_current :: proc(cl: ^Client) -> (selected: string, name: string, midi_rev: uint, ok: bool) {
+	line := fmt.tprintf("%d %d midi.current", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return }
+	if s, has := control.response_field(resp.fields, "midi_rev"); has {
+		midi_rev, _ = strconv.parse_uint(s)
+	}
+	token, _ := control.response_field(resp.fields, "selected")
+	body := resp.body
+	for record in strings.split_lines_iterator(&body) {
+		if strings.has_prefix(record, "name=") {
+			name = strings.clone(record[5:])
+			break
+		}
+	}
+	return strings.clone(token), name, midi_rev, true
+}
+
 // Send a request and report only whether it succeeded, advancing the id.
 @(private)
 client_ok :: proc(cl: ^Client, line: string) -> bool {

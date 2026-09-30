@@ -37,6 +37,11 @@ Control_Context :: struct {
 	// one atomic and nothing else, so storing it is all this thread can do to
 	// the audio side. nil in a bare handler test: no audio to turn down.
 	volume:   ^Master_Volume,
+	// Which native MIDI inputs are open, shared by every front-end and, like
+	// the identity, control-thread only. nil where there is no MIDI backend (a
+	// bare handler test, a platform without one): midi.list, midi.select and
+	// midi.current then report that there is no MIDI input.
+	midi_select: ^Midi_Selection,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -70,6 +75,12 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_set_many(cc, req, out)
 	case "midi":
 		control_midi(cc, req, out)
+	case "midi.list":
+		control_midi_list(cc, req, out)
+	case "midi.select":
+		control_midi_select(cc, req, out)
+	case "midi.current":
+		control_midi_current(cc, req, out)
 	case "state.snapshot":
 		control_state_snapshot(cc, req, out)
 	case "bank.list":

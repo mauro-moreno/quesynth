@@ -200,13 +200,15 @@ export class TestSocket {
     return this.inbox.splice(0);
   }
 
-  // The handshake a page does on load: sync, then bank, state, patch.
+  // The handshake a page does on load: sync, then bank, state, patch, and
+  // last the daemon's MIDI selection.
   async synced() {
     this.send({type: "sync"});
     const bank = await this.next("bank");
     const state = await this.next("state");
     const patch = await this.next("patch");
-    return {bank, state, patch};
+    const midi = await this.next("midi");
+    return {bank, state, patch, midi};
   }
 
   close(code = 1000) {

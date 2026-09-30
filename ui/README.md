@@ -175,7 +175,7 @@ what keeps the label and the sound in agreement.
 | `layout.js` | hand written — panels, groups, both names per control, descriptions, option names |
 | `bridge.js` | host transport; absorbs every platform difference |
 | `app.js` | builds the panel and keeps it in step with the host |
-| `midi.js` | Web MIDI: a controller plays the panel and lights its keys |
+| `midi.js` | Web MIDI: a controller plays the panel and lights its keys; under a host that claims MIDI input (`window.SynthHostMidi`), never Web MIDI, only the host's input selection |
 | `bank.js` | **generated**, optional — the patch bank; see the note in .gitignore |
 
 Regenerate `params.js` after any change to the measured tables in `src/engine`:
@@ -221,6 +221,25 @@ To the interface:
 
 `edit` brackets a gesture so a host recording automation records one move rather
 than the few hundred values a drag passes through.
+
+A host that reads the MIDI devices itself sets `window.SynthHostMidi = true`
+before `midi.js` loads, the way a host inside the page claims `SynthVolume`.
+Web MIDI in that page would be a second way in for the same keyboard, and every
+note would sound twice, so `midi.js` then never asks for it. The MIDI button
+shows the host's selection instead and offers All inputs, each input, and None.
+It keeps no selection of its own: choosing sends a request, and the button
+changes only when the host's answer comes back.
+
+```json
+{"type":"midi-select","id":"hw:1,0"}
+{"type":"midi-list"}
+{"type":"midi","inputs":[{"id":"hw:1,0","name":"Keystation 49"}],"selected":"hw:1,0","name":"Keystation 49","rev":2}
+```
+
+`midi-select` takes `all`, `none` or an input's id. `midi-list` asks for the
+inputs again, which the page does whenever the list opens. `midi`, from the
+host, is the selection with its inputs; `selected` is null when there is
+nothing to select.
 
 ## Using it
 

@@ -31,10 +31,21 @@
 //              {"type":"wheel","which":"mod","value":0.7}      modulation on 0..1
 //              {"type":"volume","value":0.8}             master gain on 0..1
 //              {"type":"edit","index":19,"begin":true}  gesture start and end
+//              {"type":"midi-select","id":"hw:1,0"}     input id, all or none
+//              {"type":"midi-list"}                     list host inputs again
 //
 //   to interface  {"type":"state","values":[...]}       all parameters at once
 //                 {"type":"param","index":19,"value":80} one changed elsewhere
 //                 {"type":"patch","name":"Computer","bank":"soundbank00"}
+//                 {"type":"midi","inputs":[{"id":"hw:1,0","name":"..."}],
+//                  "selected":"all","name":"All inputs","rev":3}
+//
+// The three MIDI messages are for a host that reads the MIDI devices itself.
+// It claims them by setting window.SynthHostMidi = true before midi.js loads,
+// as a host in the page claims SynthVolume below. midi.js then never opens Web
+// MIDI, which would be a second way in for the same keyboard and sound every
+// note twice, and shows only what the last `midi` said: `selected` is "all",
+// "none" or an input's id, and null when the host has no selection to offer.
 
 (function () {
   "use strict";
