@@ -261,6 +261,8 @@ jobs:
           npm install --no-save --no-package-lock playwright
           npx --yes playwright install --with-deps webkit || npx --yes playwright install webkit
           node tools/ui-screenshot.mjs build/ui-smoke/panel.png
+      - name: Synth1 patch loads through the WebKit file chooser
+        run: node --test tests/ui/file-load-webkit.test.mjs
 
       # Uploaded even when the step above fails: the screenshot is taken before
       # the assertions, and a picture of a broken panel is the fastest way to
