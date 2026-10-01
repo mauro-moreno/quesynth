@@ -850,6 +850,7 @@ test_legacy_archive_line_leaves_config_conf_only_once_the_daemon_takes_it :: pro
 	testing.expect(t, client.fd >= 0)
 
 	check_config_edits(t, file)
+	check_config_symlink_and_mode(t, file)
 	check_archive_setting_edits(t, file)
 }
 
@@ -910,6 +911,138 @@ check_config_edits :: proc(t: ^testing.T, file: string) {
 		testing.expect(t, !tui.config_save(tui.Config{bank_path = "/refused"}))
 		data, _ = os.read_entire_file(file, context.temp_allocator)
 		testing.expect_value(t, string(data), "bank = /new bank.json\n")
+	}
+}
+
+// The permission bits (setuid, setgid and sticky too) of what is at `path`,
+// read from the file system itself, or max(u32) when it cannot be read.
+@(private = "file")
+mode_of :: proc(path: string) -> u32 {
+	st: posix.stat_t
+	if posix.stat(strings.clone_to_cstring(path, context.temp_allocator), &st) != .OK { return max(u32) }
+	return transmute(u32)(st.st_mode & ~posix.S_IFMT)
+}
+
+// Names a failed or finished write could have left behind in `dirs`.
+@(private = "file")
+temp_files_in :: proc(dirs: []string) -> (found: [dynamic]string) {
+	found = make([dynamic]string, context.temp_allocator)
+	for dir in dirs {
+		entries, err := os.read_all_directory_by_path(dir, context.temp_allocator)
+		if err != nil { continue }
+		for e in entries {
+			if strings.contains(e.name, ".tmp") { append(&found, fmt.tprintf("%s/%s", dir, e.name)) }
+		}
+	}
+	return
+}
+
+// config.conf kept in a dotfiles checkout is a link, and its owner may keep it
+// private or read-only. An edit is written through the link to the file it
+// names and replaces that file with one of the same mode; the link, however
+// long the chain, stays what it was. Everything is read back from the file
+// system: link text, type, mode, content, the descriptor of the replaced inode.
+// Called under the migration test's isolated config environment.
+@(private = "file")
+check_config_symlink_and_mode :: proc(t: ^testing.T, file: string) {
+	root := file[:strings.last_index(file, "/quesynth/")]
+	conf := fmt.tprintf("%s/quesynth", root)
+	dots := fmt.tprintf("%s/dots", root)
+	elsewhere := fmt.tprintf("%s/elsewhere", root)
+	for d in ([]string{dots, elsewhere}) { testing.expect(t, os.make_directory_all(d) == nil) }
+	dirs := []string{conf, dots, elsewhere}
+	old := "# mine\r\narchive = /old.zip\nbank = /old.json\nunknown = x"
+	saved := "# mine\r\narchive = /old.zip\nbank = /new bank.json\nunknown = x"
+	dropped := "# mine\r\nbank = /new bank.json\nunknown = x"
+
+	Layout :: enum { Plain, Relative, Absolute, Chain, Dangling }
+	for layout in Layout {
+		for mode in ([]u32{0o600, 0o640, 0o400, 0o4640}) {
+			if layout == .Dangling && mode != 0o600 { continue }
+			name := fmt.tprintf("%v %o", layout, mode)
+			target, links := file, []string{}
+			switch layout {
+			case .Plain:
+			case .Relative:
+				target = fmt.tprintf("%s/real.conf", dots)
+				links = []string{"../dots/real.conf"}
+			case .Absolute:
+				target = fmt.tprintf("%s/real.conf", elsewhere)
+				links = []string{target}
+			case .Chain:
+				target = fmt.tprintf("%s/real.conf", elsewhere)
+				links = []string{"../dots/hop.conf", "../elsewhere/real.conf"}
+			case .Dangling:
+				target = fmt.tprintf("%s/new.conf", dots)
+				links = []string{"../dots/new.conf"}
+			}
+			hop := fmt.tprintf("%s/hop.conf", dots)
+			_ = os.remove(file)
+			_ = os.remove(hop)
+			_ = os.remove(target)
+			if len(links) > 0 {
+				testing.expect(t, os.symlink(links[0], file) == nil)
+			}
+			if len(links) > 1 {
+				testing.expect(t, os.symlink(links[1], hop) == nil)
+			}
+			old_fd: ^os.File
+			if layout != .Dangling {
+				testing.expect(t, os.write_entire_file_from_string(target, old) == nil)
+				testing.expect(t, posix.chmod(strings.clone_to_cstring(target, context.temp_allocator), transmute(posix.mode_t)mode) == .OK)
+				fd, oerr := os.open(target)
+				testing.expect(t, oerr == nil)
+				old_fd = fd
+			}
+
+			settings := tui.Config{bank_path = "/new bank.json"}
+			for step in 0 ..< 2 {
+				ok := step == 0 ? tui.config_save(settings) : tui.config_drop_archive()
+				testing.expectf(t, ok, "%s: edit %d refused", name, step)
+				want := layout == .Dangling ? "bank = /new bank.json\n" : (step == 0 ? saved : dropped)
+				data, _ := os.read_entire_file(target, context.temp_allocator)
+				testing.expect_value(t, string(data), want)
+				if layout != .Dangling { testing.expect_value(t, mode_of(target), mode) }
+				// Each link is still a link, to the same text.
+				if len(links) > 0 {
+					info, lerr := os.lstat(file, context.temp_allocator)
+					testing.expectf(t, lerr == nil && info.type == .Symlink, "%s: config.conf is no longer a link", name)
+					text, _ := os.read_link(file, context.temp_allocator)
+					testing.expect_value(t, text, links[0])
+				}
+				if len(links) > 1 {
+					text, _ := os.read_link(hop, context.temp_allocator)
+					testing.expect_value(t, text, links[1])
+				}
+				testing.expectf(t, len(temp_files_in(dirs)) == 0, "%s: left %v", name, temp_files_in(dirs))
+			}
+			if old_fd != nil {
+				// The inode a reader had open was replaced, not rewritten.
+				before := make([]u8, len(old), context.temp_allocator)
+				n, rerr := os.read_at(old_fd, before, 0)
+				testing.expect(t, rerr == nil)
+				testing.expect_value(t, string(before[:n]), old)
+				os.close(old_fd)
+			}
+		}
+	}
+
+	// A loop of links is refused and left as it is, not followed for ever.
+	_ = os.remove(file)
+	a, b := fmt.tprintf("%s/a.conf", dots), fmt.tprintf("%s/b.conf", dots)
+	_ = os.remove(a)
+	_ = os.remove(b)
+	testing.expect(t, os.symlink("b.conf", a) == nil)
+	testing.expect(t, os.symlink("a.conf", b) == nil)
+	testing.expect(t, os.symlink("../dots/a.conf", file) == nil)
+	testing.expect(t, !tui.config_save(tui.Config{bank_path = "/new bank.json"}))
+	text, _ := os.read_link(file, context.temp_allocator)
+	testing.expect_value(t, text, "../dots/a.conf")
+	testing.expect_value(t, len(temp_files_in(dirs)), 0)
+	for p in ([]string{file, a, b, fmt.tprintf("%s/hop.conf", dots)}) { _ = os.remove(p) }
+	for p in ([]string{"real.conf", "new.conf"}) {
+		_ = os.remove(fmt.tprintf("%s/%s", dots, p))
+		_ = os.remove(fmt.tprintf("%s/%s", elsewhere, p))
 	}
 }
 

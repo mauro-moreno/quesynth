@@ -3,6 +3,7 @@ package tui
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 
 // The front-end's own remembered settings, kept beside the theme in the config
 // directory: the user bank path, so a user's own bank can be reloaded without
@@ -138,8 +139,44 @@ config_key :: proc(raw: string) -> string {
 	return ""
 }
 
+// config.conf may be a link into a dotfiles checkout. Rename replaces whatever
+// name it is given, so the link would be swapped for a plain file; follow it
+// first and replace the file it points at. A dangling link resolves to the
+// name it points at, which is then created. The cap is SYMLOOP_MAX's, so a
+// loop ends in a refusal rather than a spin.
 @(private = "file")
-config_write_atomic :: proc(path, text: string) -> bool {
+config_resolve :: proc(path: string) -> (string, bool) {
+	path := path
+	for _ in 0 ..< 40 {
+		info, err := os.lstat(path, context.temp_allocator)
+		if err == os.General_Error.Not_Exist { return path, true }
+		if err != nil { return "", false }
+		if info.type != .Symlink { return path, true }
+		target, lerr := os.read_link(path, context.temp_allocator)
+		if lerr != nil { return "", false }
+		if len(target) > 0 && target[0] == '/' {
+			path = target
+		} else {
+			path = strings.concatenate({path[:strings.last_index_byte(path, '/') + 1], target}, context.temp_allocator)
+		}
+	}
+	return "", false
+}
+
+@(private = "file")
+config_write_atomic :: proc(link, text: string) -> bool {
+	path, resolved := config_resolve(link)
+	if !resolved { return false }
+	// core:os's Permissions hold only the nine rwx bits; the replaced file
+	// keeps setuid, setgid and sticky as well. Its type bits are not a mode.
+	st: posix.stat_t
+	mode: posix.mode_t
+	existing := posix.stat(strings.clone_to_cstring(path, context.temp_allocator), &st) == .OK
+	if existing {
+		mode = st.st_mode & ~posix.S_IFMT
+	} else if posix.errno() != .ENOENT {
+		return false
+	}
 	slash := strings.last_index_byte(path, '/')
 	dir := slash > 0 ? path[:slash] : "."
 	if err := os.make_directory_all(dir); err != nil && err != os.General_Error.Exist { return false }
@@ -148,10 +185,14 @@ config_write_atomic :: proc(path, text: string) -> bool {
 	f, err := os.create_temp_file(dir, "config.conf.*.tmp")
 	if err != nil { return false }
 	tmp := strings.clone(os.name(f), context.temp_allocator)
+	// Before any content, so a private file is never readable half way, and
+	// again after it, because a write clears setuid and setgid.
+	kept := !existing || posix.fchmod(posix.FD(os.fd(f)), mode) == .OK
 	n, werr := os.write_string(f, text)
+	kept = kept && (!existing || posix.fchmod(posix.FD(os.fd(f)), mode) == .OK)
 	serr := os.sync(f)
 	cerr := os.close(f)
-	if werr != nil || n != len(text) || serr != nil || cerr != nil || os.rename(tmp, path) != nil {
+	if !kept || werr != nil || n != len(text) || serr != nil || cerr != nil || os.rename(tmp, path) != nil {
 		_ = os.remove(tmp)
 		return false
 	}

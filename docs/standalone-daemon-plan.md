@@ -678,11 +678,13 @@ A successful edit of "Zip archive" drops them too, so a path forgotten there
 is not handed over again. Both settings edits and migration preserve unrelated
 text, comments, blank lines, unknown keys and line endings. A bank edit changes
 only the last effective bank value. Writes use a unique same-directory temp
-file, sync, close and rename, cleaning up on failure. An unsuccessful write
-leaves the old config intact and reports an error in the TUI. Archive protocol
-refusals likewise stay visible until the next keypress; polling does not
-clear them. If the daemon accepts a change but local legacy-line cleanup
-fails, the TUI reports that partial result and keeps the local retry path.
+file, sync, close and rename, cleaning up on failure. A symlinked `config.conf`
+is written through to its target, which is replaced and keeps its mode while
+the link stays as it was. An unsuccessful write leaves the old config intact
+and reports an error in the TUI. Archive protocol refusals likewise stay
+visible until the next keypress; polling does not clear them. If the daemon
+accepts a change but local legacy-line cleanup fails, the TUI reports that
+partial result and keeps the local retry path.
 
 **Dependencies.** Slices 4, 5.
 
