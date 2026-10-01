@@ -22,6 +22,19 @@ config_bank_path :: proc(allocator := context.allocator) -> (string, bool) {
 	return "", false
 }
 
+// $XDG_CONFIG_HOME/quesynth/archive.path, or ~/.config/quesynth/archive.path:
+// the archive the daemon reopens at startup, so every front-end finds the same
+// one open without being told where it is. Allocated, as above.
+config_archive_path :: proc(allocator := context.allocator) -> (string, bool) {
+	if x := os.get_env("XDG_CONFIG_HOME", context.temp_allocator); x != "" {
+		return fmt.aprintf("%s/quesynth/archive.path", x, allocator = allocator), true
+	}
+	if h := os.get_env("HOME", context.temp_allocator); h != "" {
+		return fmt.aprintf("%s/.config/quesynth/archive.path", h, allocator = allocator), true
+	}
+	return "", false
+}
+
 // Read a JSON bank file and load it into `bank`, replacing what was there.
 // Returns false on a read or parse error, leaving `bank` untouched.
 load_bank_file :: proc(bank: ^patch.Slots, path: string) -> bool {

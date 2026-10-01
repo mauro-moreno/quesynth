@@ -75,9 +75,9 @@ test("sync ends with the daemon's MIDI selection and its inputs", {skip}, async 
   const env = await startEnv(t, {daemon: {midiInputs: INPUTS.slice()}});
   const ws = await env.open();
   ws.send({type: "sync"});
-  await until(() => ws.received.length >= 4, 3000, "four messages");
-  assert.deepEqual(ws.received.map(m => m.type), ["bank", "state", "patch", "midi"]);
-  assert.deepEqual(ws.received[3], {
+  await until(() => ws.received.length >= 5, 3000, "five messages");
+  assert.deepEqual(ws.received.map(m => m.type), ["bank", "state", "patch", "archive", "midi"]);
+  assert.deepEqual(ws.received[4], {
     type: "midi",
     inputs: [{id: "hw:1,0", name: "Launchkey MK3 MIDI 1"}, {id: "hw:2,0", name: "USB Keyboard"}],
     selected: "all",

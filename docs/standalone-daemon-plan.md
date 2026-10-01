@@ -296,10 +296,14 @@ externally; audio keeps running; invalid command does not crash.
 archive and `midi` commands came with the TUI's bank browser and the browser
 front-end. These four make two front-ends peers of one daemon:
 
-- `patch.current` → `ok slot=<int> bank_rev=<uint> revision=<int>`, then the
-  record lines `bank=<label>` and `name=<name>`, always both and in that order,
-  raw to the line end. One poll tells a client whether the values (`revision`),
-  the bank (`bank_rev`) or only the names moved.
+- `patch.current` → `ok slot=<int> bank_rev=<uint> revision=<int>
+  source=<none|bank|archive|file> archive_rev=<uint> archive_bank=<int>
+  archive_patch=<int>`, then the record lines `bank=<label>` and
+  `name=<name>`, always both and in that order, raw to the line end. One poll
+  tells a client whether the values (`revision`), the bank (`bank_rev`), the
+  archive (`archive_rev`) or only the names moved. The fields after
+  `revision` came later and are appended in that order, so a client that
+  reads only the first three reads them as it always did.
 - `patch.clear` → `ok`: forget the identity; the values are untouched.
 - `bank.keep` → `ok bytes=<n> path=<path>`: write the bank, atomically, to the
   config path the daemon loads at startup (`$XDG_CONFIG_HOME/quesynth/bank.json`,
@@ -312,21 +316,91 @@ front-end. These four make two front-ends peers of one daemon:
 
 `bank.load_file` and `patch.save` also end their `ok` line with `bank_rev=`.
 
-The daemon, not each client, owns which patch is playing. It lives beside the
-bank and is touched only by the control thread:
+The daemon, not each client, owns which patch is playing and where it came
+from — its provenance, which is not what any client is browsing. It lives
+beside the bank and is touched only by the control thread:
 
-| on success | slot | bank | name | bank_rev |
-|---|---|---|---|---|
-| daemon start | -1 | empty | empty | 0 |
-| `patch.load k` | k | bank label | slot name | — |
-| `patch.load_file p` | -1 | `file` | patch's name, else file name | — |
-| `archive.load i` | -1 | archive bank's file name | patch's name, else entry name | — |
-| `patch.save k [name]` | k | bank label | final name | +1 |
-| `bank.load_file p` | -1 | unchanged | unchanged | +1 |
-| `patch.clear` | -1 | empty | empty | — |
+| on success | slot | source | bank | name | archive_bank/patch |
+|---|---|---|---|---|---|
+| daemon start, `patch.clear` | -1 | `none` | empty | empty | -1/-1 |
+| `patch.load k`, native Program Change | k | `bank` | bank label | slot name | -1/-1 |
+| `patch.save k [name]` | k | `bank` | bank label | final name | -1/-1 |
+| `patch.load_file p` | -1 | `file` | `file` | patch's name, else file name | -1/-1 |
+| `archive.load i [b]` | -1 | `archive` | open bank's file name | patch's name, else entry name | b/i: the bank and patch loaded |
+| `bank.load_file p` | -1 | unchanged | unchanged | unchanged | unchanged |
+| `archive.open`, `archive.close` | unchanged | unchanged | unchanged | unchanged | -1/-1 |
+| `archive.bank b` | unchanged | unchanged | unchanged | unchanged | unchanged |
 
-Anything else, and any failed command, leaves it alone: a knob tweak edits the
-sound, it does not rename the patch.
+`archive_bank` and `archive_patch` are -1 unless `source` is `archive` and the
+archive that supplied the patch is still the one open: after `archive.open`
+— even of the same path, whose file may have changed — or `archive.close`
+the same numbers would name another archive's patch, while the names still
+say what is playing. `patch.save` and `bank.load_file` add 1 to `bank_rev`;
+nothing else here moves it. Anything else — `archive.bank` and the other
+listings, `patch.apply`, `parameter.*` — and any failed command leaves the
+identity alone: browsing does not load, and a knob tweak edits the sound, it
+does not rename the patch.
+
+**The archive, shared.** The archive — a zip of bank zips, indexed lazily:
+the outer central directory and one inner bank at a time — is daemon state
+like the bank. The archive open, the one bank of it open and the path to
+reopen are the daemon's, and every front-end browses the same ones. Additive
+changes, same version:
+
+- `archive.current` → `ok open=<0|1> banks=<n> bank=<int> patches=<n>
+  archive_rev=<uint>`, then the record lines `path=<path>` and
+  `bank_name=<name>`, always both and in that order, raw to the line end.
+  Nothing open: `open=0 banks=0 bank=-1 patches=0`, an empty `bank_name`, and
+  `path` the remembered path, which may be set while it will not open (a
+  missing file, an unmounted disk), or empty. An archive with no bank open:
+  `bank=-1 patches=0` and an empty `bank_name`. `bank_name` is the open bank's
+  name as `archive.banks` lists it. Without an archive (a bare handler): `err
+  daemon_not_ready no archive support`, as the other archive commands.
+- `archive.open [<path>]` → `ok banks=<n> archive_rev=<uint>`. With no path
+  the remembered one is opened again, and with none remembered the answer is
+  `err invalid_payload open needs a path`. The path is kept as given, trimmed,
+  never made absolute or normalized. Success replaces the open archive (its
+  open bank closes) and remembers and keeps the path. A path that does not
+  open answers `err invalid_payload cannot open archive` and leaves the
+  archive already open, and its open bank, as they were.
+- `archive.banks <offset> <count>` → `ok total=<n> archive_rev=<uint>`, then
+  the `bank=<i> name=<name>` records as before.
+- `archive.bank <i>` → `ok patches=<n> bank=<i> archive_rev=<uint>`. Asking
+  for the bank already open is an `ok` that rereads and counts nothing.
+- `archive.patches <offset> <count>` → `ok total=<n> bank=<open bank>
+  archive_rev=<uint>`, then the `patch=<i> name=<name>` records as before.
+- `archive.load <index> [<bank>]` → `ok count=<n> revision=<r> bank=<b>
+  patch=<i>`. The second operand is the bank the client is showing; when it
+  is not the open one the daemon opens it first, so a client whose list a peer
+  made stale still loads the patch its list names. A bank the archive does not
+  have answers `err invalid_payload cannot open that bank`, loading nothing and
+  leaving the open bank; with no archive open, `err daemon_not_ready no
+  archive open`. With one operand the patch comes from the open bank, as
+  before.
+- `archive.close` → `ok archive_rev=<uint>`: close the archive and forget the
+  path, here and in the file it is kept in. Fine with nothing open.
+
+Every other archive reply and refusal is unchanged. `archive_rev` starts at 0
+and adds 1 on every successful `archive.open`, on an `archive.close` that had
+an archive open or a path remembered, and whenever the open bank actually
+changes — `archive.bank`, or `archive.load` naming another bank. It is a
+generation of its own, apart from `bank_rev`, and `patch.current` reports it
+too, so a client that polls that anyway learns when to re-read
+`archive.current`. Nothing that loads, saves or replaces a patch or the
+ordinary bank — `patch.load`, `patch.save`, `patch.load_file`, `patch.apply`,
+`patch.clear`, `bank.load_file`, a Program Change — closes the archive or
+changes its open bank or path, whichever client sends it.
+
+The remembered path is kept, one line ending in a newline, in
+`$XDG_CONFIG_HOME/quesynth/archive.path`, else
+`~/.config/quesynth/archive.path`: written atomically on each successful
+`archive.open`, removed by `archive.close`. Only `run_daemon` points an
+archive at that file, so a test driving the handlers never writes the user's
+config. At startup the daemon reads it, remembers the path and tries to open
+it. That is no change any client could have missed: `archive_rev` stays 0. A
+path that does not open stays remembered (`open=0` with `path` set) and the
+file is left as it is, so the next start, or an `archive.open` with no path,
+tries it again.
 
 One more for a front-end that holds a whole patch itself — the browser page
 opening a patch file of its own — same version:
@@ -537,6 +611,54 @@ default; meter throttling.
 **Acceptance.** Metadata-driven UI renders all groups; enum and reset work
 through the protocol only.
 
+**Banks and archives (added since).** The synth screen names the sound from
+`patch.current`: `patch: <name>   bank: <label>`, then `   slot <k>` for a
+slot of the ordinary bank or `   archive #<i>` for an archive patch, and
+nothing more for a file or no source. One bank navigator, opened with `B`,
+holds the ordinary bank and the archive's banks, in two levels:
+
+- Banks (`Browsing banks`): the ordinary bank first, as
+  `<label>  <filled>/128`, then each bank of the open archive in the daemon's
+  order. With no archive open, a dim line under them, where the cursor cannot
+  go, names the remembered path or says `Z` opens one. Enter on a bank opens
+  its patches — an archive bank with `archive.bank`, so every peer sees it
+  open — and loads nothing.
+- Patches (`Browsing: <bank>`): the 128 slots, empty ones dim, or the archive
+  bank's patches. `>` is the cursor; `*` marks the patch that is playing, and
+  only in the bank the sound came from at its index, so ordinary slot 5 is
+  never archive patch 5 and the cursor never claims to be playing. Enter
+  loads the patch under the cursor — `patch.load` for a filled slot,
+  `archive.load <i> <bank>` naming the bank listed — and returns to the synth
+  screen.
+
+Esc goes up to the banks, on the bank just left, and from there hides the
+navigator, as `B` does from either level; `B` again reopens where it was left.
+`S` saves into the cursor's slot only in the ordinary bank's patches. `O` loads
+a patch file, `L` a bank file, `Z` prompts for an archive to open in the
+daemon (blank keeps the one open), and `Q` quits from anywhere. The footer
+shows the archive's path (or `no archive - Z opens one`) and
+`playing: <name> | <bank> | slot <k>` (or `archive #<i>`). `A` from the synth
+screen goes straight to the archive's banks, on the open bank: when no archive
+is open it reopens the remembered one, or asks for a path. The settings
+screen's "Zip archive" shows and sets the daemon's remembered path — a path is
+`archive.open`, a blank one `archive.close` — while "User bank" stays in the
+TUI's own `config.conf`.
+
+While the navigator or the settings screen is up, every refresh reads
+`patch.current` as the synth screen does. A moved `bank_rev` re-reads the
+ordinary bank; a moved `archive_rev` re-reads `archive.current`, the banks and
+the open bank's patches, and a navigator browsing an archive bank follows the
+bank the daemon has open, whoever opened it. One browsing the ordinary bank
+stays there while only the archive's rows change.
+
+Before the daemon kept the archive path, the TUI kept it as `archive = <path>`
+in its `config.conf`. On connecting, a TUI that still has that line and finds
+the daemon remembering no archive (`open=0`, empty `path`) hands it over with
+`archive.open`, and drops the line only once the daemon has taken it; a path
+that does not open stays in `config.conf` for the next try. A successful edit
+of "Zip archive" drops it too, so a path forgotten there is not handed over
+again.
+
 **Dependencies.** Slices 4, 5.
 
 ---
@@ -627,12 +749,12 @@ engine in the browser for this mode — the daemon owns audio. `run_browser`
 returns the adapter's exit status, and says so when `node` cannot be started.
 
 **Peers, not modes.** The TUI and any number of browser pages are peers of one
-daemon, the only authority for values, the bank, the patch identity and the
-volume (the Slice 3 additions above). A front-end's writes go straight to the
-daemon; it learns of the others' by polling — the TUI `daemon.info` and
-`patch.current` every refresh, the adapter one `patch.current` per tick, whose
-`revision` and `bank_rev` say what to re-read. Neither keeps a copy that could
-overwrite the other's work.
+daemon, the only authority for values, the bank, the archive, the patch
+identity and the volume (the Slice 3 additions above). A front-end's writes go
+straight to the daemon; it learns of the others' by polling — the TUI
+`daemon.info` and `patch.current` every refresh, the adapter one
+`patch.current` per tick, whose `revision`, `bank_rev` and `archive_rev` say
+what to re-read. Neither keeps a copy that could overwrite the other's work.
 
 **Dependencies.** Slices 3–8; `ui/` and its `bridge.js` seam.
 

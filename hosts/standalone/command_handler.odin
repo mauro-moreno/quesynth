@@ -112,6 +112,8 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_volume(cc, req, out)
 	case "archive.open":
 		control_archive_open(cc, req, out)
+	case "archive.current":
+		control_archive_current(cc, req, out)
 	case "archive.banks":
 		control_archive_banks(cc, req, out)
 	case "archive.bank":

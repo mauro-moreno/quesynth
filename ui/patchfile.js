@@ -171,6 +171,12 @@
 
     switch (sniff(bytes)) {
       case "zip":
+        // A shared archive lives at the host, not in this page. Publishing a
+        // decoded zip as `bank` would replace the ordinary bank and leave
+        // every other client without the archive it came from.
+        if (window.SynthBank && window.SynthBank.archive && window.SynthBank.archive()) {
+          throw new Error("Open this ZIP by its path in the Archive field in Patches.");
+        }
         if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
         var found = await window.SynthSy1.readZip(bytes);
 

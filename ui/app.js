@@ -1383,6 +1383,39 @@
   var currentName = "";
   var bankIndex = -1;
 
+  // A shared archive is only claimed by an `archive` from the host. Other
+  // hosts keep their local banks and their existing zip reader unchanged.
+  // Its open bank belongs to the host; which pane we are looking at does
+  // not, and neither says where the sound came from.
+  var archive = null;
+  var browsedArchive = -1;
+  var archiveWaiting = -1;
+  var archiveError = "";
+  var playing = null;
+  var hostBank = null;
+
+  // Only with a shared archive, which other clients can move under an open
+  // dialog. Without one the dialog repaints on its own actions, as it did.
+  function refreshBrowser() {
+    if (archive && window.SynthBrowser && window.SynthBrowser.refresh) window.SynthBrowser.refresh();
+  }
+
+  function receiveArchive(msg) {
+    if (!archive) {
+      // sync sends the ordinary bank before the archive capability. Keep
+      // that bank, not the empty placeholder the hosted page began with.
+      banks = [hostBank || bank];
+      currentBank = 0;
+      bank = banks[0];
+    }
+    archive = msg;
+    if (browsedArchive >= 0) {
+      browsedArchive = msg.open && msg.bank !== null ? msg.bank : -1;
+    }
+    archiveWaiting = -1;
+    refreshBrowser();
+  }
+
   function buildBank() {
     var el = document.getElementById("bank");
     if (!el) return;
@@ -1393,7 +1426,9 @@
         b.addEventListener("click", function (e) {
           e.stopPropagation();
           var step = parseInt(b.dataset.step, 10);
-          if (bank) {
+          if (archive && playing && playing.source === "archive") {
+            bridge.send({ type: "patch-step", step: step });
+          } else if (bank) {
             loadPatch(bankIndex + step);
           } else {
             // No bank compiled in: the host may still have one.
@@ -1597,9 +1632,15 @@
       var made = normalizeBank({ label: label, patches: patches });
       var at = -1;
       // Publishing happens at the end of this, once currentBank has moved.
-      for (var i = 0; i < banks.length; i++) if (banks[i].label === made.label) at = i;
-      if (at >= 0) { banks[at] = made; currentBank = at; }
-      else { banks.push(made); currentBank = banks.length - 1; }
+      if (archive) {
+        banks = [made];
+        currentBank = 0;
+        if (!adoptingBank) browsedArchive = -1;
+      } else {
+        for (var i = 0; i < banks.length; i++) if (banks[i].label === made.label) at = i;
+        if (at >= 0) { banks[at] = made; currentBank = at; }
+        else { banks.push(made); currentBank = banks.length - 1; }
+      }
       bank = made;
       bankSupplied = true;
       bankIndex = 0;
@@ -1643,7 +1684,10 @@
     if (adoptingBank) return;
     if (!window.SynthPatchFile || !window.SynthPatchFile.bankText) return;
     var text = window.SynthPatchFile.bankText();
-    if (text) bridge.send({ type: "bank", text: text, save: currentBank === 0 });
+    // A daemon's ordinary bank used to be added after the placeholder, so
+    // publishing it did not also keep it. Removing that placeholder must
+    // not turn browsing or adding a bank into a disk write; Keep still does.
+    if (text) bridge.send({ type: "bank", text: text, save: !archive && currentBank === 0 });
   }
 
   // Set while a bank from the host is being applied; see publishBank.
@@ -1672,6 +1716,50 @@
   window.SynthBank = {
     SLOTS: BANK_SLOTS,
 
+    archive: function () { return archive; },
+    archiveError: function () { return archiveError; },
+    playing: function () { return playing; },
+    openArchive: function (path) {
+      archiveError = "";
+      return bridge.send({ type: "archive-open", path: path });
+    },
+    closeArchive: function () {
+      archiveError = "";
+      return bridge.send({ type: "archive-close" });
+    },
+
+    // A view for navigation, not for exporting or storing the ordinary bank.
+    // Keeping it apart from label/slots/index prevents an export or a write
+    // from turning the open archive bank into an ordinary bank by accident.
+    browsing: function () {
+      if (!archive) return null;
+      var remote = browsedArchive >= 0;
+      var shown = remote && archive.bank === browsedArchive;
+      var index = -1;
+      if (playing) {
+        if (!remote && playing.source === "bank" && playing.index !== null) index = playing.index;
+        if (remote && playing.source === "archive" && playing.archive &&
+            playing.archive.bank === browsedArchive) index = playing.archive.patch;
+      }
+      return {
+        bank: browsedArchive,
+        label: remote ? archive.banks[browsedArchive] : bank.label,
+        slots: remote ? (shown ? archive.patches.map(function (name) { return { name: name }; }) : [])
+          : window.SynthBank.slots(),
+        index: index,
+        loading: remote && archiveWaiting >= 0,
+      };
+    },
+
+    loadBrowsed: function (i) {
+      if (archive && browsedArchive >= 0) {
+        archiveError = "";
+        bridge.send({ type: "archive-load", bank: browsedArchive, index: i });
+      } else {
+        loadPatch(i);
+      }
+    },
+
     // Every open bank, for the list down the side.
     //
     // A bank can be listed without being open. The published Synth1 collection
@@ -1681,6 +1769,14 @@
     // lazy one is a row with a loader behind it, and `used` is null until
     // somebody opens it.
     list: function () {
+      if (archive) {
+        var ordinary = { label: bank.label, used: bank.patches.filter(Boolean).length,
+          loading: false, current: browsedArchive < 0, kind: "bank" };
+        return [ordinary].concat(archive.banks.map(function (name, i) {
+          return { label: name, used: archive.bank === i ? archive.patches.length : null,
+            loading: archiveWaiting === i, current: browsedArchive === i, kind: "archive" };
+        }));
+      }
       return banks.map(function (b, i) {
         var used = null;
         if (!b.load || b.loaded) {
@@ -1712,6 +1808,16 @@
     // what looking for somewhere to save wants: choosing a destination must not
     // overwrite the thing being saved.
     select: function (i, quiet, done) {
+      if (archive) {
+        if (i < 0 || i > archive.banks.length) return;
+        browsedArchive = i - 1;
+        archiveError = "";
+        archiveWaiting = browsedArchive;
+        if (browsedArchive >= 0) bridge.send({ type: "archive-bank", index: browsedArchive });
+        if (done) done(null, browsedArchive >= 0 ? "loading" : undefined);
+        refreshBrowser();
+        return;
+      }
       if (i < 0 || i >= banks.length) return;
       var target = banks[i];
 
@@ -1759,6 +1865,15 @@
     // good bank to start writing sounds into.
     create: function (label) {
       var wanted = String(label || "New Bank");
+      if (archive) {
+        banks = [emptyBank(wanted)];
+        bank = banks[0];
+        currentBank = 0;
+        browsedArchive = -1;
+        publishBank();
+        refreshBrowser();
+        return 0;
+      }
       // Names are how the list is read, so two banks called the same thing
       // would be two rows nobody can tell apart.
       var name = wanted, n = 2;
@@ -1857,10 +1972,13 @@
   function showPatch(msg) {
     var p = document.getElementById("bank-patch");
     var b = document.getElementById("bank-name");
+    var position = msg.source === "archive" ? (msg.archive ? msg.archive.patch : null) : msg.index;
     if (p && msg.name) {
-      p.textContent = (msg.index != null ? pad3(msg.index) + ":" : "") + msg.name;
+      p.textContent = (position != null ? pad3(position) + ":" : "") + msg.name;
     }
-    if (b && msg.bank) b.textContent = msg.bank;
+    if (b && (msg.bank || typeof msg.source === "string")) b.textContent = msg.bank || "";
+    var strip = document.getElementById("bank");
+    if (strip && typeof msg.source === "string") strip.dataset.source = msg.source;
     // Only in the bank bar at the foot. It used to be repeated in the strip
     // beside the name, which said the same thing twice and made the one piece
     // of fixed chrome change width as patches were stepped through.
@@ -2015,11 +2133,19 @@
         adoptingBank = true;
         try {
           window.SynthPatchFile.load(msg.text);
+          hostBank = bank;
         } catch (e) {
           console.error("bank from host:", e.message);
         } finally {
           adoptingBank = false;
         }
+        refreshBrowser();
+      } else if (msg.type === "archive" && Array.isArray(msg.banks) && Array.isArray(msg.patches)) {
+        receiveArchive(msg);
+      } else if (msg.type === "error" && /^archive-/.test(msg["for"] || "")) {
+        archiveError = msg.message || msg.code;
+        archiveWaiting = -1;
+        refreshBrowser();
       } else if (msg.type === "patch") {
         // Which patch a *host* says is loaded, after something other than this
         // panel changed it -- a MIDI program change, most often.
@@ -2031,10 +2157,16 @@
         if (typeof msg.name === "string" && msg.name !== "") {
           currentName = msg.name;
         }
-        if (typeof msg.index === "number" && msg.index >= 0 && msg.index < BANK_SLOTS) {
+        if (typeof msg.source === "string") {
+          playing = msg;
+          bankIndex = -1;
+        }
+        if ((!msg.source || msg.source === "bank") &&
+            typeof msg.index === "number" && msg.index >= 0 && msg.index < BANK_SLOTS) {
           bankIndex = msg.index;
         }
         showPatch(msg);
+        refreshBrowser();
       }
     });
 

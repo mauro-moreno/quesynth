@@ -115,7 +115,7 @@ bank_load_slot :: proc(cc: ^Control_Context, slot: int) -> (applied: int, result
 
 	n, full := control_apply_patch(cc, values, present)
 	if full {return 0, .Queue_Full}
-	identity_set(cc.identity, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
+	identity_set(cc.identity, .Bank, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
 	return n, .Ok
 }
 
@@ -160,7 +160,7 @@ control_patch_load_file :: proc(cc: ^Control_Context, req: control.Request, out:
 	// file, or by the file itself when it carries none.
 	shown := strings.trim_space(parsed.name)
 	if shown == "" {shown = base_name(path)}
-	identity_set(cc.identity, -1, "file", shown)
+	identity_set(cc.identity, .File, -1, "file", shown)
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " count=")
@@ -199,7 +199,7 @@ control_patch_save :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 	cc.bank.filled[slot] = true
 	final := name != "" ? name : patch.slots_name(cc.bank, slot)
 	put_slot_name(cc.bank, slot, final)
-	identity_set(cc.identity, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
+	identity_set(cc.identity, .Bank, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
 	if cc.identity != nil {cc.identity.bank_rev += 1}
 
 	control_write_ok(out, req)
@@ -265,7 +265,8 @@ control_bank_keep :: proc(cc: ^Control_Context, req: control.Request, out: ^stri
 	strings.write_string(out, path)
 }
 
-@(private = "file")
+// Also how the daemon keeps the archive path it reopens at startup.
+@(private)
 write_file_atomic :: proc(path, data: string) -> bool {
 	if slash := strings.last_index_byte(path, '/'); slash > 0 {
 		_ = os.make_directory_all(path[:slash])

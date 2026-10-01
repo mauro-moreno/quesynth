@@ -230,10 +230,22 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// the factory bank stays loaded to fall back to.
 	apply_user_bank(bank, bank_path)
 
-	// A lazily-indexed patch archive the client can open and browse. It holds no
-	// file until archive.open, and even then only an index plus one bank at a time.
+	// A lazily-indexed patch archive the clients can open and browse. It holds
+	// no file until one is opened, and even then only an index plus one bank at
+	// a time.
 	arch := new(Archive)
 	defer {archive_close(arch);free(arch)}
+	// The archive a previous run had open, so every front-end finds it open
+	// again without being told where it is. Kept only from here: a test that
+	// drives the handlers never sets keep_path and never writes the config.
+	if keep, kok := config_archive_path(context.temp_allocator); kok {
+		archive_restore(arch, keep)
+		if arch.open {
+			fmt.printfln("archive %s", arch.path)
+		} else if arch.path != "" {
+			fmt.eprintfln("archive could not reopen %s; it stays remembered", arch.path)
+		}
+	}
 	// Which patch is playing, kept beside the bank it names. Nothing yet: a patch
 	// given on the command line was not loaded from a slot of this bank.
 	identity := new_clone(Patch_Identity{slot = -1})

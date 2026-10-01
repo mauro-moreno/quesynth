@@ -291,6 +291,39 @@ client_patch_current :: proc(
 	revision: int,
 	ok: bool,
 ) {
+	p, got := client_provenance(cl, allocator)
+	return p.slot, p.bank, p.name, p.bank_rev, p.revision, got
+}
+
+// Where the sound came from, which is a different question from what a client
+// is browsing: an archive patch and an ordinary slot can share an index, and
+// only the bank the sound came from may show it as playing.
+Source :: enum {
+	None,
+	Bank,
+	Archive,
+	File,
+}
+
+// All of patch.current. The archive indices are -1 unless the sound came from
+// the archive the daemon still has open.
+Provenance :: struct {
+	slot:          int,
+	source:        Source,
+	bank:          string,
+	name:          string,
+	archive_bank:  int,
+	archive_patch: int,
+	bank_rev:      uint,
+	archive_rev:   uint,
+	revision:      int,
+}
+
+// patch.current in full. A daemon from before the archive was shared sends
+// none of the later fields; its answer reads as no source and no archive.
+// bank and name are cloned with `allocator`; free with provenance_free.
+client_provenance :: proc(cl: ^Client, allocator := context.allocator) -> (p: Provenance, ok: bool) {
+	p.archive_bank, p.archive_patch = -1, -1
 	line := fmt.tprintf("%d %d patch.current", control.PROTOCOL_VERSION, cl.next_id)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
@@ -298,20 +331,44 @@ client_patch_current :: proc(
 	defer delete(payload)
 	resp, parsed := control.response_parse(payload)
 	if !parsed || resp.status != .Ok { return }
-	slot = client_field_int(resp.fields, "slot")
-	revision = client_field_int(resp.fields, "revision")
+	p.slot = client_field_int(resp.fields, "slot")
+	p.revision = client_field_int(resp.fields, "revision")
 	if s, has := control.response_field(resp.fields, "bank_rev"); has {
-		bank_rev, _ = strconv.parse_uint(s)
+		p.bank_rev, _ = strconv.parse_uint(s)
+	}
+	if s, has := control.response_field(resp.fields, "archive_rev"); has {
+		p.archive_rev, _ = strconv.parse_uint(s)
+	}
+	if s, has := control.response_field(resp.fields, "archive_bank"); has {
+		p.archive_bank, _ = strconv.parse_int(s)
+	}
+	if s, has := control.response_field(resp.fields, "archive_patch"); has {
+		p.archive_patch, _ = strconv.parse_int(s)
+	}
+	source, _ := control.response_field(resp.fields, "source")
+	switch source {
+	case "bank":
+		p.source = .Bank
+	case "archive":
+		p.source = .Archive
+	case "file":
+		p.source = .File
 	}
 	body := resp.body
 	for record in strings.split_lines_iterator(&body) {
 		if strings.has_prefix(record, "bank=") {
-			bank = strings.clone(record[5:], allocator)
+			p.bank = strings.clone(record[5:], allocator)
 		} else if strings.has_prefix(record, "name=") {
-			name = strings.clone(record[5:], allocator)
+			p.name = strings.clone(record[5:], allocator)
 		}
 	}
-	return slot, bank, name, bank_rev, revision, true
+	return p, true
+}
+
+provenance_free :: proc(p: ^Provenance) {
+	delete(p.bank)
+	delete(p.name)
+	p^ = {slot = -1, archive_bank = -1, archive_patch = -1}
 }
 
 client_patch_save :: proc(cl: ^Client, slot: int, name: string) -> bool {
@@ -329,11 +386,15 @@ client_bank_load_file :: proc(cl: ^Client, path: string) -> bool {
 	return client_ok(cl, fmt.tprintf("%d %d bank.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path))
 }
 
-// The archive browser's client half. Names are listed in daemon-index order, so a
+// The navigator's archive half. Names are listed in daemon-index order, so a
 // name's position is the index archive.bank / archive.load expect.
 
+// archive.open, with no path when `path` is empty: the daemon then reopens the
+// archive it remembers.
 client_archive_open :: proc(cl: ^Client, path: string) -> (banks: int, ok: bool) {
-	line := fmt.tprintf("%d %d archive.open %s", control.PROTOCOL_VERSION, cl.next_id, path)
+	line := path == "" \
+		? fmt.tprintf("%d %d archive.open", control.PROTOCOL_VERSION, cl.next_id) \
+		: fmt.tprintf("%d %d archive.open %s", control.PROTOCOL_VERSION, cl.next_id, path)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	if !sent { return 0, false }
@@ -354,12 +415,70 @@ client_archive_bank :: proc(cl: ^Client, index: int) -> (patches: int, ok: bool)
 	return client_field_int(resp.fields, "patches"), true
 }
 
-client_archive_load :: proc(cl: ^Client, index: int) -> bool {
-	return client_ok(cl, fmt.tprintf("%d %d archive.load %d", control.PROTOCOL_VERSION, cl.next_id, index))
+// Load patch `index` of archive bank `bank`, the one this client is showing:
+// the daemon opens that bank first if a peer has opened another since. A
+// negative bank loads from whichever bank is open, as the older form did.
+client_archive_load :: proc(cl: ^Client, index: int, bank := -1) -> bool {
+	if bank < 0 {
+		return client_ok(cl, fmt.tprintf("%d %d archive.load %d", control.PROTOCOL_VERSION, cl.next_id, index))
+	}
+	return client_ok(cl, fmt.tprintf("%d %d archive.load %d %d", control.PROTOCOL_VERSION, cl.next_id, index, bank))
 }
 
 client_archive_close :: proc(cl: ^Client) -> bool {
 	return client_ok(cl, fmt.tprintf("%d %d archive.close", control.PROTOCOL_VERSION, cl.next_id))
+}
+
+// What archive.current says the daemon has open. The archive is the daemon's,
+// shared with every peer, so this is read rather than remembered: a peer may
+// have opened another, moved the open bank or closed it.
+Archive_State :: struct {
+	open:      bool,
+	banks:     int,
+	// The open bank's index, or -1 when none is open.
+	bank:      int,
+	patches:   int,
+	rev:       uint,
+	// The archive the daemon reopens, kept even while it will not open.
+	path:      string,
+	bank_name: string,
+}
+
+// archive.current. path and bank_name are read raw to the end of their record
+// lines and cloned; free them with archive_state_free.
+client_archive_current :: proc(cl: ^Client) -> (state: Archive_State, ok: bool) {
+	state.bank = -1
+	line := fmt.tprintf("%d %d archive.current", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	if !sent { return }
+	defer delete(payload)
+	resp, parsed := control.response_parse(payload)
+	if !parsed || resp.status != .Ok { return }
+	state.open = client_field_int(resp.fields, "open") == 1
+	state.banks = client_field_int(resp.fields, "banks")
+	if s, has := control.response_field(resp.fields, "bank"); has {
+		state.bank, _ = strconv.parse_int(s)
+	}
+	state.patches = client_field_int(resp.fields, "patches")
+	if s, has := control.response_field(resp.fields, "archive_rev"); has {
+		state.rev, _ = strconv.parse_uint(s)
+	}
+	body := resp.body
+	for record in strings.split_lines_iterator(&body) {
+		if strings.has_prefix(record, "path=") {
+			state.path = strings.clone(record[5:])
+		} else if strings.has_prefix(record, "bank_name=") {
+			state.bank_name = strings.clone(record[10:])
+		}
+	}
+	return state, true
+}
+
+archive_state_free :: proc(state: ^Archive_State) {
+	delete(state.path)
+	delete(state.bank_name)
+	state^ = {bank = -1}
 }
 
 // Page through a listing verb (archive.banks / archive.patches) and return every

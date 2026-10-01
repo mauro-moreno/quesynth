@@ -19,19 +19,26 @@ import "../../src/zip"
 // it: open an archive, page through its banks, open one bank, page through its
 // patches, load a patch. Loading applies the patch as the same atomic transaction
 // a slot load uses.
+//
+// The archive, its open bank and the path to reopen are the daemon's, shared by
+// every front-end, like the bank and the identity. A client that kept its own
+// copy would be browsing something a peer has since closed or moved; archive_rev
+// tells it when to look again, through the patch.current it already polls.
 
 Archive :: struct {
-	file:         ^os.File,
+	file:          ^os.File,
 	// The outer central directory, kept because entry names alias into it.
-	cd:           []u8,
-	entries:      []zip.Entry,
+	cd:            []u8,
+	entries:       []zip.Entry,
 	// Outer entries that are inner bank zips, in order: the browsable banks.
-	bank_indices: []int,
-	open:         bool,
+	bank_indices:  []int,
+	open:          bool,
 	// The one inner bank currently open, if any.
 	bank_bytes:    []u8,
 	bank:          zip.Zip,
 	bank_open:     bool,
+	// The open bank's position in bank_indices, read only while bank_open.
+	bank_at:       int,
 	// Indices within the open bank of its .sy1 patches, excluding directory and
 	// other entries: the browsable, loadable patches.
 	patch_indices: []int,
@@ -39,12 +46,26 @@ Archive :: struct {
 	// the central directory like every entry name, and the directory outlives any
 	// open bank, so there is nothing of its own to free.
 	bank_name:     string,
+	// The archive to reopen, as it was given. Kept when it fails to reopen at
+	// startup: the zip may be on a disk that is not mounted yet, and forgetting
+	// it then would make the user find it again. Owned.
+	path:          string,
+	// Where path is kept for the next start, or "" to keep nothing. Only
+	// run_daemon sets it, so a test driving the handlers never writes the
+	// user's config directory. Owned.
+	keep_path:     string,
+	// Moves once per change to the open archive or its open bank, whichever
+	// client made it, so a peer knows to re-read archive.current.
+	rev:           uint,
 }
 
 // Open and index an archive: read its central directory and note which entries
 // are inner bank zips. The file stays open for on-demand reads until close.
+//
+// The archive already open is let go only once the new one has indexed: a path
+// that does not open must not take away the archive another client is in the
+// middle of browsing.
 archive_open :: proc(a: ^Archive, path: string) -> bool {
-	archive_close(a)
 	f, err := os.open(path)
 	if err != nil {
 		return false
@@ -85,6 +106,12 @@ archive_open :: proc(a: ^Archive, path: string) -> bool {
 			append(&banks, i)
 		}
 	}
+	// Cloned before the old path goes: reopening the remembered archive passes
+	// a.path itself.
+	remembered := strings.clone(path)
+	archive_release(a)
+	delete(a.path)
+	a.path = remembered
 	a.file = f
 	a.cd = cd
 	a.entries = entries
@@ -93,7 +120,20 @@ archive_open :: proc(a: ^Archive, path: string) -> bool {
 	return true
 }
 
+// Everything the archive holds, its remembered and kept paths included: what
+// its owner calls once it is done with it. Not archive.close, which forgets the
+// path but keeps counting changes.
 archive_close :: proc(a: ^Archive) {
+	archive_release(a)
+	delete(a.path)
+	delete(a.keep_path)
+	a^ = {}
+}
+
+// Let go of the open archive and its bank, keeping what outlives them: the
+// path to reopen, where it is kept, and the change count.
+@(private = "file")
+archive_release :: proc(a: ^Archive) {
 	archive_close_bank(a)
 	if a.open {
 		delete(a.entries)
@@ -101,7 +141,11 @@ archive_close :: proc(a: ^Archive) {
 		delete(a.bank_indices)
 		os.close(a.file)
 	}
-	a^ = {}
+	a.file = nil
+	a.cd = nil
+	a.entries = nil
+	a.bank_indices = nil
+	a.open = false
 }
 
 @(private = "file")
@@ -141,9 +185,14 @@ archive_read_entry :: proc(a: ^Archive, e: zip.Entry, allocator := context.alloc
 }
 
 // Open an inner bank by its index within bank_indices, replacing any open one.
+// The bank already open is left as it is rather than read again, so a client
+// that asks for the bank it is showing changes nothing.
 archive_open_bank :: proc(a: ^Archive, bank: int) -> bool {
 	if !a.open || bank < 0 || bank >= len(a.bank_indices) {
 		return false
+	}
+	if a.bank_open && a.bank_at == bank {
+		return true
 	}
 	bytes, ok := archive_read_entry(a, a.entries[a.bank_indices[bank]], context.allocator)
 	if !ok {
@@ -167,6 +216,7 @@ archive_open_bank :: proc(a: ^Archive, bank: int) -> bool {
 	a.bank = z
 	a.patch_indices = patches[:]
 	a.bank_name = base_name(a.entries[a.bank_indices[bank]].name)
+	a.bank_at = bank
 	a.bank_open = true
 	return true
 }
@@ -174,6 +224,36 @@ archive_open_bank :: proc(a: ^Archive, bank: int) -> bool {
 // How many loadable patches the open bank has.
 archive_patch_count :: proc(a: ^Archive) -> int {
 	return len(a.patch_indices)
+}
+
+// Remember where the archive path is kept, and reopen the archive a previous
+// run kept there. Not a change any client could have missed -- nobody was
+// connected -- so archive_rev stays where it starts. A kept path that does not
+// open stays remembered, and the file stays as it is, so the next start, or an
+// archive.open with no path, tries it again.
+archive_restore :: proc(a: ^Archive, keep_path: string) {
+	delete(a.keep_path)
+	a.keep_path = strings.clone(keep_path)
+	if keep_path == "" {return}
+	data, err := os.read_entire_file(keep_path, context.temp_allocator)
+	if err != nil {return}
+	path := string(data)
+	if nl := strings.index_any(path, "\r\n"); nl >= 0 {path = path[:nl]}
+	if path == "" {return}
+	if !archive_open(a, path) {
+		delete(a.path)
+		a.path = strings.clone(path)
+	}
+}
+
+// Write the remembered path where the next start reads it. Best effort, as the
+// TUI's own settings are: the archive is open either way, and only the next
+// start would miss it.
+@(private = "file")
+archive_keep :: proc(a: ^Archive) {
+	if a.keep_path == "" {return}
+	text := strings.concatenate({a.path, "\n"}, context.temp_allocator)
+	_ = write_file_atomic(a.keep_path, text)
 }
 
 // The patch's own name from inside its .sy1 (or .json), or "" if it cannot be
@@ -208,7 +288,8 @@ base_name :: proc(path: string) -> string {
 	return p
 }
 
-// archive.open <path>: index an archive and report how many banks it holds.
+// archive.open [path]: index an archive and report how many banks it holds.
+// With no path, the remembered one is opened again.
 @(private)
 control_archive_open :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	if cc.archive == nil {
@@ -217,6 +298,9 @@ control_archive_open :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 	}
 	path := strings.trim_space(req.rest)
 	if len(path) == 0 {
+		path = cc.archive.path
+	}
+	if len(path) == 0 {
 		control_write_err(out, req, .Invalid_Payload, "open needs a path")
 		return
 	}
@@ -224,9 +308,49 @@ control_archive_open :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 		control_write_err(out, req, .Invalid_Payload, "cannot open archive")
 		return
 	}
+	cc.archive.rev += 1
+	archive_keep(cc.archive)
+	// Even the same path again: the file may have changed under its name, so
+	// the playing patch's indices may no longer name it.
+	identity_forget_archive(cc.identity)
 	control_write_ok(out, req)
 	strings.write_string(out, " banks=")
 	strings.write_int(out, len(cc.archive.bank_indices))
+	control_write_archive_rev(cc, out)
+}
+
+// archive.current: what is open, for every client to show the same archive. The
+// path and the open bank's name are record lines, always both and in that
+// order, raw to the line end like patch.current's names.
+@(private)
+control_archive_current :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	a := cc.archive
+	if a == nil {
+		control_write_err(out, req, .Daemon_Not_Ready, "no archive support")
+		return
+	}
+	banks, bank, patches := 0, -1, 0
+	if a.open {
+		banks = len(a.bank_indices)
+		if a.bank_open {
+			bank = a.bank_at
+			patches = archive_patch_count(a)
+		}
+	}
+	control_write_ok(out, req)
+	strings.write_string(out, " open=")
+	strings.write_int(out, a.open ? 1 : 0)
+	strings.write_string(out, " banks=")
+	strings.write_int(out, banks)
+	strings.write_string(out, " bank=")
+	strings.write_int(out, bank)
+	strings.write_string(out, " patches=")
+	strings.write_int(out, patches)
+	control_write_archive_rev(cc, out)
+	strings.write_string(out, "\npath=")
+	strings.write_string(out, a.path)
+	strings.write_string(out, "\nbank_name=")
+	strings.write_string(out, a.bank_open ? a.bank_name : "")
 }
 
 // archive.banks <offset> <count>: a page of bank names.
@@ -240,6 +364,7 @@ control_archive_banks :: proc(cc: ^Control_Context, req: control.Request, out: ^
 	control_write_ok(out, req)
 	strings.write_string(out, " total=")
 	strings.write_int(out, len(cc.archive.bank_indices))
+	control_write_archive_rev(cc, out)
 	for i in offset ..< offset + count {
 		e := cc.archive.entries[cc.archive.bank_indices[i]]
 		strings.write_byte(out, '\n')
@@ -251,7 +376,8 @@ control_archive_banks :: proc(cc: ^Control_Context, req: control.Request, out: ^
 	}
 }
 
-// archive.bank <index>: open a bank and report how many patches it holds.
+// archive.bank <index>: open a bank and report how many patches it holds. Only
+// browsing: the sound and its provenance stay as they are.
 @(private)
 control_archive_bank :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	if cc.archive == nil || !cc.archive.open {
@@ -263,13 +389,27 @@ control_archive_bank :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 		return
 	}
 	i, ok := parse_index(req.operands[0])
-	if !ok || !archive_open_bank(cc.archive, i) {
+	if !ok || !archive_switch_bank(cc.archive, i) {
 		control_write_err(out, req, .Invalid_Payload, "cannot open that bank")
 		return
 	}
 	control_write_ok(out, req)
 	strings.write_string(out, " patches=")
 	strings.write_int(out, archive_patch_count(cc.archive))
+	strings.write_string(out, " bank=")
+	strings.write_int(out, i)
+	control_write_archive_rev(cc, out)
+}
+
+// Open a bank for a command, counting it as a change only when the open bank
+// really moved: asking for the bank already open must not send every peer off
+// to re-read it.
+@(private = "file")
+archive_switch_bank :: proc(a: ^Archive, bank: int) -> bool {
+	same := a.bank_open && a.bank_at == bank
+	if !archive_open_bank(a, bank) {return false}
+	if !same {a.rev += 1}
+	return true
 }
 
 // archive.patches <offset> <count>: a page of patch names in the open bank.
@@ -284,6 +424,11 @@ control_archive_patches :: proc(cc: ^Control_Context, req: control.Request, out:
 	control_write_ok(out, req)
 	strings.write_string(out, " total=")
 	strings.write_int(out, total)
+	// Which bank these are, so a client paging through them can tell a peer
+	// moved the open bank between two pages.
+	strings.write_string(out, " bank=")
+	strings.write_int(out, cc.archive.bank_at)
+	control_write_archive_rev(cc, out)
 	for i in offset ..< offset + count {
 		// The patch's own name from inside the .sy1, falling back to the file name
 		// when it carries none. name last and raw so it keeps its spaces.
@@ -299,11 +444,15 @@ control_archive_patches :: proc(cc: ^Control_Context, req: control.Request, out:
 	}
 }
 
-// archive.load <index>: inflate one patch from the open bank and apply it as one
-// atomic transaction, exactly like loading a slot.
+// archive.load <index> [bank]: inflate one patch and apply it as one atomic
+// transaction, exactly like loading a slot. The bank, when given, is the one the
+// client is showing: a peer may have opened another since the client listed
+// it, and the patch meant is the one the client's list names, so that bank is
+// opened first. Without it the patch comes from the open bank, as it always did.
 @(private)
 control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
-	if cc.archive == nil || !cc.archive.bank_open {
+	a := cc.archive
+	if a == nil || (!a.bank_open && req.operand_count < 2) {
 		control_write_err(out, req, .Daemon_Not_Ready, "no bank open")
 		return
 	}
@@ -316,11 +465,24 @@ control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 		control_write_err(out, req, .Invalid_Payload, "bad index")
 		return
 	}
-	if i < 0 || i >= archive_patch_count(cc.archive) {
+	if req.operand_count >= 2 {
+		// As archive.bank would answer: the request names a bank of the open
+		// archive, and with none open there is no bank to name.
+		if !a.open {
+			control_write_err(out, req, .Daemon_Not_Ready, "no archive open")
+			return
+		}
+		b, bok := parse_index(req.operands[1])
+		if !bok || !archive_switch_bank(a, b) {
+			control_write_err(out, req, .Invalid_Payload, "cannot open that bank")
+			return
+		}
+	}
+	if i < 0 || i >= archive_patch_count(a) {
 		control_write_err(out, req, .Invalid_Payload, "patch index out of range")
 		return
 	}
-	data, read_ok := zip.zip_read(&cc.archive.bank, cc.archive.patch_indices[i], context.temp_allocator)
+	data, read_ok := zip.zip_read(&a.bank, a.patch_indices[i], context.temp_allocator)
 	if !read_ok {
 		control_write_err(out, req, .Invalid_Payload, "cannot read patch")
 		return
@@ -343,23 +505,43 @@ control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 	}
 	// Named as archive.patches lists it: its own name, else its file name.
 	shown := strings.trim_space(parsed.name)
-	if shown == "" {shown = base_name(zip.zip_name(&cc.archive.bank, cc.archive.patch_indices[i]))}
-	identity_set(cc.identity, -1, cc.archive.bank_name, shown)
+	if shown == "" {shown = base_name(zip.zip_name(&a.bank, a.patch_indices[i]))}
+	identity_set(cc.identity, .Archive, -1, a.bank_name, shown, a.bank_at, i)
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " count=")
 	strings.write_int(out, applied)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+	strings.write_string(out, " bank=")
+	strings.write_int(out, a.bank_at)
+	strings.write_string(out, " patch=")
+	strings.write_int(out, i)
 }
 
-// archive.close: release the archive and any open bank.
+// archive.close: release the archive and any open bank, and forget the path, so
+// neither this daemon nor the next one reopens it.
 @(private)
 control_archive_close :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
-	if cc.archive != nil {
-		archive_close(cc.archive)
+	if a := cc.archive; a != nil {
+		changed := a.open || a.path != ""
+		archive_release(a)
+		delete(a.path)
+		a.path = ""
+		if a.keep_path != "" {_ = os.remove(a.keep_path)}
+		if changed {a.rev += 1}
 	}
+	identity_forget_archive(cc.identity)
 	control_write_ok(out, req)
+	control_write_archive_rev(cc, out)
+}
+
+// The archive generation, after a command that reports it. 0 without an archive
+// to count it (a bare handler in a test), as patch.current reports it then.
+@(private = "file")
+control_write_archive_rev :: proc(cc: ^Control_Context, out: ^strings.Builder) {
+	strings.write_string(out, " archive_rev=")
+	strings.write_uint(out, cc.archive != nil ? cc.archive.rev : 0)
 }
 
 // A paged (offset, count) from operands[0..1], clamped to [0, total]. A missing

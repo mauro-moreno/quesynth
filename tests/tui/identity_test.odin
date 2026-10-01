@@ -92,7 +92,8 @@ render_with :: proc(bank, name: string) -> string {
 	if posix.pipe(&fds) != .OK {return ""}
 	saved := posix.dup(posix.STDOUT_FILENO)
 	posix.dup2(fds[1], posix.STDOUT_FILENO)
-	tui.render(rows, groups, 0, 0, tui.Metrics{ok = true}, "/tmp/quesynth.sock", bank, name, "", theme)
+	prov := tui.Provenance{slot = -1, bank = bank, name = name, archive_bank = -1, archive_patch = -1}
+	tui.render(rows, groups, 0, 0, tui.Metrics{ok = true}, "/tmp/quesynth.sock", prov, "", theme)
 	posix.dup2(saved, posix.STDOUT_FILENO)
 	posix.close(saved)
 	posix.close(fds[1])

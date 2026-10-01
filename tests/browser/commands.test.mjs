@@ -224,7 +224,7 @@ test("a state that is a filled slot's sound becomes patch.load and moves the ide
   ws.send({type: "state", values: daemon.bank.slots[0].values});
   await sleep(50);
   ws.send({type: "state", values: daemon.bank.slots[7].values});
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Brass", index: 7, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Brass", index: 7, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(writes(daemon), ["patch.load 7"]);
   assert.equal(daemon.identity.slot, 7);
 });
@@ -253,8 +253,8 @@ test("a sound no slot holds clears the identity the daemon was showing", {skip},
   const values = daemon.bank.slots[5].values.slice();
   values[19] = (values[19] + 1) % 128;
   ws.send({type: "state", values});
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Untitled", index: null, bank: ""});
-  assert.deepEqual(daemon.identity, {slot: -1, bank: "", name: ""});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Untitled", index: null, bank: "", source: "none", archive: null});
+  assert.deepEqual(daemon.identity, {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1});
 });
 
 test("malformed state arrays are refused and the page is put back", {skip}, async t => {
@@ -352,23 +352,23 @@ test("storing into one slot is a patch.save, so the slot becomes the identity ev
   const live = synced.state.values;
 
   ws.send({type: "bank", text: stored(live, [[20, "My Lead"]])});
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "My Lead", index: 20, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "My Lead", index: 20, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(writes(daemon), ["patch.save 20 My Lead"]);
-  assert.deepEqual(daemon.identity, {slot: 20, bank: "My Bank", name: "My Lead"});
+  assert.deepEqual(daemon.identity, {slot: 20, bank: "My Bank", name: "My Lead", source: "bank", archiveBank: -1, archivePatch: -1});
   assert.equal(daemon.bank.slots[20].name, "My Lead");
 
   // The other page is sent the bank the store changed, then the identity.
   const bank = await other.next("bank");
   assert.equal(bank.text, writeBank(daemon.bank));
-  assert.deepEqual(await other.next("patch"), {type: "patch", name: "My Lead", index: 20, bank: "My Bank"});
+  assert.deepEqual(await other.next("patch"), {type: "patch", name: "My Lead", index: 20, bank: "My Bank", source: "bank", archive: null});
   // The sender is not sent its own bank back, and the identity sticks.
   assert.deepEqual(await ws.quiet(150, m => m.type === "bank" || m.type === "patch"), []);
-  assert.deepEqual(daemon.identity, {slot: 20, bank: "My Bank", name: "My Lead"});
+  assert.deepEqual(daemon.identity, {slot: 20, bank: "My Bank", name: "My Lead", source: "bank", archiveBank: -1, archivePatch: -1});
 
   // The store updated what this page is known to hold: a second one is
   // recognised as a store against it.
   ws.send({type: "bank", text: stored(live, [[20, "My Lead"], [21, "Second"]])});
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Second", index: 21, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Second", index: 21, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(writes(daemon), ["patch.save 20 My Lead", "patch.save 21 Second"]);
 });
 
@@ -378,7 +378,7 @@ test("a store holds the knob the page has just turned, and overwrites a filled s
   live[19] = 55;
   ws.send({type: "set", index: 19, value: 55});
   ws.send({type: "bank", text: stored(live, [[4, "Pluck 2"]])});
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Pluck 2", index: 4, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Pluck 2", index: 4, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(writes(daemon), ["parameter.set filter.cutoff 55", "patch.save 4 Pluck 2"]);
   assert.equal(daemon.bank.slots[4].values[19], 55);
 });
@@ -389,7 +389,7 @@ test("a store differing only in parameters the daemon hides is still a patch.sav
     for (const i of HIDDEN) values[i] = (values[i] + 1) % 128;
   }]]);
   ws.send({type: "bank", text});
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Padded", index: 20, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Padded", index: 20, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(writes(daemon), ["patch.save 20 Padded"], "the name is trimmed");
 });
 

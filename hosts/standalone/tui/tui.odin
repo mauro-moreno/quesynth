@@ -60,19 +60,20 @@ run :: proc(path: string) -> int {
 	// re-snapshotted, so the parameter view always reflects the live state.
 	shown_rev := metrics.revision
 
-	// Bank browser state, active only while `browsing`.
-	browsing := false
-	bank_slots: []Bank_Slot
-	bank_label := ""
-	bank_sel := 0
+	// The bank navigator (navigator.odin): the ordinary bank and the archive's
+	// banks as one list, each opened onto its patches. What it lists and where
+	// its cursor is persist while hidden, so B reopens exactly where the user
+	// left off.
+	nav := Navigator{browsing = ORDINARY, archive = {bank = -1}}
+	defer nav_free(&nav)
 
-	// Which bank and patch the daemon is playing, shown on the synth screen. The
-	// daemon owns this, not the client, so a load from another front-end shows
-	// here too. Re-read every tick, and straight after this client's own loads
-	// and saves so the screen never lags its own action; "" until one names it.
-	current_bank := ""
-	current_patch := ""
-	defer {delete(current_bank); delete(current_patch)}
+	// Which patch the daemon is playing and where it came from, shown on the
+	// synth screen and marked in the navigator. The daemon owns this, not the
+	// client, so a load from another front-end shows here too. Re-read every
+	// tick, and straight after this client's own loads and saves so the screen
+	// never lags its own action; unnamed until one names it.
+	prov := Provenance{slot = -1, archive_bank = -1, archive_patch = -1}
+	defer provenance_free(&prov)
 	// The name of the native MIDI input the daemon listens to, for the same
 	// screen. The browser page changes it too, so it is re-read with the
 	// patch; "" while unknown.
@@ -90,23 +91,9 @@ run :: proc(path: string) -> int {
 	midi_cursor := 0
 	midi_refused := -1
 
-	// Archive browser state: 0 none, 1 banks, 2 patches. The opened archive, its
-	// bank names, the bank last entered and the patch last on all persist while
-	// hidden, so A reopens exactly where the user left off. arc_bank is -1 until a
-	// bank is entered; arc_view is the view to restore to.
-	archive_view := 0
-	has_archive := false
-	bank_names: []string
-	patch_names: []string
-	arc_sel := 0
-	bank_arc_sel := 0
-	arc_bank := -1
-	arc_patch := 0
-	arc_view := 1
-
-	// Remembered settings (the zip archive path, the user bank path) and the
-	// settings screen state. The archive path lets A open the corpus with no
-	// prompt, this run and the next.
+	// Remembered settings (the user bank path) and the settings screen state.
+	// The archive path is the daemon's, which reopens it at its own start for
+	// every front-end; config.conf holds one only from before that.
 	config := config_load()
 	defer config_free(&config)
 	configuring := false
@@ -116,7 +103,8 @@ run :: proc(path: string) -> int {
 		client_bank_load_file(&client, config.bank_path)
 	}
 	if connected {
-		tui_read_identity(&client, &current_bank, &current_patch)
+		tui_migrate_archive(&client, &config)
+		tui_read_provenance(&client, &prov)
 		tui_read_midi(&client, &current_midi)
 	}
 	for {
@@ -126,17 +114,13 @@ run :: proc(path: string) -> int {
 		switch {
 		case configuring:
 			cfg_path, _ := config_file_path(context.temp_allocator)
-			render_config(config, cfg_path, config_sel, theme)
-		case archive_view == 1:
-			render_list("Quesynth — Archive banks", bank_names, arc_sel, "Enter open   O new archive   Esc hide   Q quit", theme)
-		case archive_view == 2:
-			render_list("Quesynth — Archive patches", patch_names, arc_sel, "Enter load   Esc back   Q quit", theme)
-		case browsing:
-			render_bank(bank_label, bank_slots, bank_sel, theme)
+			render_config(config, nav.archive.path, cfg_path, config_sel, theme)
+		case nav.shown:
+			render_navigator(&nav, prov, theme)
 		case choosing_midi:
 			render_midi(midi_devices, midi_selected, midi_cursor, midi_refused, theme)
 		case:
-			render(rows[:], groups, current_group, selected, metrics, path, current_bank, current_patch, current_midi, theme)
+			render(rows[:], groups, current_group, selected, metrics, path, prov, current_midi, theme)
 		}
 
 		key := read_key_timeout(REFRESH_MS)
@@ -145,152 +129,69 @@ run :: proc(path: string) -> int {
 		if configuring {
 			switch key {
 			case .Quit:
-				client_names_free(bank_names)
-				client_names_free(patch_names)
 				return 0
 			case .Up:
 				if config_sel > 0 { config_sel -= 1 }
 			case .Down:
 				if config_sel < CONFIG_FIELDS - 1 { config_sel += 1 }
 			case .Enter:
-				tui_edit_setting(&client, &config, config_sel, &has_archive, &bank_names, theme)
-				if connected { tui_read_identity(&client, &current_bank, &current_patch) }
+				tui_edit_setting(&client, &config, config_sel, theme)
+				if connected {
+					tui_read_provenance(&client, &prov)
+					tui_sync_navigator(&client, &nav, prov, true)
+				}
+			case .Tick:
+				// The archive path shown is the daemon's, and a peer may change it.
+				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
 			case .Escape, .Config:
 				configuring = false
-			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Midi, .Other:
+			case .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Midi, .Open_Archive, .Other:
 			// Ignored on the settings screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
 			continue
 		}
 
-		// The archive browser is a two-level list (banks, then patches) layered
-		// over everything else; handle it first and skip the rest while it is up.
-		if archive_view != 0 {
-			items := archive_view == 1 ? bank_names : patch_names
+		// The navigator is a two-level list (banks, then a bank's patches)
+		// layered over everything else; handle it first and skip the rest while
+		// it is up. Moving through it only browses: a sound changes on Enter at
+		// the patches, never because a cursor or a bank moved.
+		if nav.shown {
 			switch key {
 			case .Quit:
-				client_names_free(bank_names)
-				client_names_free(patch_names)
 				return 0
+			case .Tick:
+				// A peer's load moves the playing mark, and its bank or archive
+				// change the lists, while this screen is up.
+				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
 			case .Up:
-				if arc_sel > 0 { arc_sel -= 1 }
+				nav_move(&nav, -1)
 			case .Down:
-				if arc_sel < len(items) - 1 { arc_sel += 1 }
-			case .Enter:
-				if archive_view == 1 {
-					if _, ok := client_archive_bank(&client, arc_sel); ok {
-						if names, nok := client_archive_names(&client, "archive.patches"); nok {
-							bank_arc_sel = arc_sel
-							arc_bank = arc_sel
-							patch_names = names
-							arc_sel = 0
-							arc_patch = 0
-							archive_view = 2
-						}
-					}
-				} else if connected {
-					// Load the patch, then close the browser and return to the synth.
-					// The bank and patch are remembered, so A reopens here to pick
-					// another.
-					prev_rev := metrics.revision
-					if client_archive_load(&client, arc_sel) {
-						metrics = tui_reload_values(&client, rows[:], prev_rev)
-						connected = metrics.ok
-						arc_patch = arc_sel
-						arc_view = 2
-						if connected { tui_read_identity(&client, &current_bank, &current_patch) }
-						archive_view = 0
-					}
-				}
-			case .Load_File:
-				// Open a different archive from the banks view, replacing this one,
-				// and remember its path.
-				if archive_view == 1 && connected {
-					if p, ok := tui_open_archive(&client, theme); ok {
-						if config.archive_path != p {
-							delete(config.archive_path)
-							config.archive_path = strings.clone(p)
-							config_save(config)
-						}
-						client_names_free(bank_names)
-						bank_names = nil
-						arc_bank = -1
-						if names, nok := client_archive_names(&client, "archive.banks"); nok {
-							bank_names = names
-							arc_sel = 0
-							bank_arc_sel = 0
-						} else {
-							has_archive = false
-							archive_view = 0
-						}
-					}
-				}
+				nav_move(&nav, 1)
 			case .Escape:
-				if archive_view == 2 {
-					// Up one level to the bank list, landing on the bank just left.
-					client_names_free(patch_names)
-					patch_names = nil
-					arc_sel = bank_arc_sel
-					archive_view = 1
-				} else {
-					// Hide the browser but keep the archive open; remember we were
-					// at the bank list.
-					arc_view = 1
-					archive_view = 0
-				}
-			case .Archive:
-				// Hide the browser from wherever we are, remembering the exact spot
-				// so A reopens the same bank and patch.
-				arc_view = archive_view
-				if archive_view == 2 { arc_patch = arc_sel }
-				archive_view = 0
-			case .Tick, .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_Bank, .Config, .Midi, .Other:
-			// Ignored in the archive browser.
-			}
-			if client.fd < 0 { connected = false; metrics = {} }
-			continue
-		}
-
-		if browsing {
-			switch key {
-			case .Quit:
-				client_bank_free(bank_slots)
-				delete(bank_label)
-				return 0
-			case .Escape, .Bank:
-				client_bank_free(bank_slots)
-				delete(bank_label)
-				bank_slots = nil
-				bank_label = ""
-				browsing = false
-			case .Up:
-				if bank_sel > 0 { bank_sel -= 1 }
-			case .Down:
-				if bank_sel < len(bank_slots) - 1 { bank_sel += 1 }
+				nav_escape(&nav)
+			case .Bank:
+				nav.shown = false
 			case .Enter:
-				// Load only a filled slot; an empty one is a place to save, not load.
-				if connected && bank_sel < len(bank_slots) && bank_slots[bank_sel].filled {
+				if connected && nav.level == .Banks {
+					tui_browse_bank(&client, &nav, nav_row_bank(nav.cursor), prov)
+				} else if connected {
 					prev_rev := metrics.revision
-					if client_patch_load(&client, bank_slots[bank_sel].slot) {
+					if tui_load_cursor(&client, &nav) {
+						// Back to the synth. The level and cursor stay, so B
+						// reopens here to pick another.
 						metrics = tui_reload_values(&client, rows[:], prev_rev)
 						connected = metrics.ok
-						if connected { tui_read_identity(&client, &current_bank, &current_patch) }
+						if connected { tui_read_provenance(&client, &prov) }
+						nav.shown = false
 					}
-					client_bank_free(bank_slots)
-					delete(bank_label)
-					bank_slots = nil
-					bank_label = ""
-					browsing = false
 				}
 			case .Save:
-				if connected && bank_sel < len(bank_slots) {
-					tui_save(&client, bank_slots[bank_sel].slot, theme)
-					tui_read_identity(&client, &current_bank, &current_patch)
-					client_bank_free(bank_slots)
-					delete(bank_label)
-					bank_slots, bank_label, _ = client_bank_list(&client)
-					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
+				// Only into the ordinary bank: an archive is read-only.
+				if connected && nav.level == .Patches && nav.browsing == ORDINARY && nav.cursor < len(nav.slots) {
+					tui_save(&client, nav.slots[nav.cursor].slot, theme)
+					tui_read_provenance(&client, &prov)
+					tui_sync_navigator(&client, &nav, prov, true)
 				}
 			case .Load_File:
 				if connected {
@@ -298,24 +199,27 @@ run :: proc(path: string) -> int {
 					if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
 						metrics = m
 						connected = metrics.ok
-						if connected { tui_read_identity(&client, &current_bank, &current_patch) }
-						client_bank_free(bank_slots)
-						delete(bank_label)
-						bank_slots = nil
-						bank_label = ""
-						browsing = false
+						if connected { tui_read_provenance(&client, &prov) }
+						nav.shown = false
 					}
 				}
 			case .Load_Bank:
+				// The bank just loaded is what there is to browse.
 				if connected && tui_load_bank(&client, theme) {
-					tui_read_identity(&client, &current_bank, &current_patch)
-					client_bank_free(bank_slots)
-					delete(bank_label)
-					bank_slots, bank_label, _ = client_bank_list(&client)
-					bank_sel = clamp(bank_sel, 0, max(0, len(bank_slots) - 1))
+					tui_read_provenance(&client, &prov)
+					tui_sync_navigator(&client, &nav, prov, true)
+					nav_descend(&nav, ORDINARY, prov)
 				}
-			case .Tick, .Left, .Right, .Reset, .Tab, .Archive, .Config, .Midi, .Other:
-			// Ignored in the browser.
+			case .Open_Archive:
+				if connected && tui_open_archive(&client, theme) {
+					tui_read_provenance(&client, &prov)
+					tui_sync_navigator(&client, &nav, prov, true)
+					nav_open_archive(&nav)
+				}
+			case .Archive:
+				if connected && tui_enter_archive(&client, &nav, prov, theme) { nav_open_archive(&nav) }
+			case .Left, .Right, .Reset, .Tab, .Config, .Midi, .Other:
+			// Ignored in the navigator.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
 			continue
@@ -371,7 +275,7 @@ run :: proc(path: string) -> int {
 				choosing_midi = false
 			case .Tick:
 				if connected { tui_refresh_midi_selected(&client, &midi_selected) }
-			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Config, .Other:
+			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Config, .Open_Archive, .Other:
 			// Ignored on the MIDI screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -393,7 +297,7 @@ run :: proc(path: string) -> int {
 					}
 					// Another front-end may have loaded, saved or replaced the
 					// bank, or chosen another MIDI input.
-					tui_read_identity(&client, &current_bank, &current_patch)
+					tui_read_provenance(&client, &prov)
 					tui_read_midi(&client, &current_midi)
 				}
 			}
@@ -421,12 +325,8 @@ run :: proc(path: string) -> int {
 			}
 		case .Bank:
 			if connected {
-				if slots, label, ok := client_bank_list(&client); ok {
-					bank_slots = slots
-					bank_label = label
-					bank_sel = 0
-					browsing = true
-				}
+				tui_sync_navigator(&client, &nav, prov, true)
+				nav_open(&nav, prov)
 			}
 		case .Load_File:
 			if connected {
@@ -434,7 +334,7 @@ run :: proc(path: string) -> int {
 				if m, did := tui_load_file(&client, rows[:], prev_rev, theme); did {
 					metrics = m
 					connected = metrics.ok
-					if connected { tui_read_identity(&client, &current_bank, &current_patch) }
+					if connected { tui_read_provenance(&client, &prov) }
 				}
 			}
 		case .Enter:
@@ -445,58 +345,26 @@ run :: proc(path: string) -> int {
 				if connected { connected = client_load_snapshot(&client, rows[:]) }
 				if connected { metrics = client_info(&client); connected = metrics.ok }
 				if connected {
-					tui_read_identity(&client, &current_bank, &current_patch)
+					tui_migrate_archive(&client, &config)
+					tui_read_provenance(&client, &prov)
 					tui_read_midi(&client, &current_midi)
 				}
 				if !connected { client_close(&client); metrics = {} }
 			}
 		case .Load_Bank:
 			if connected && tui_load_bank(&client, theme) {
-				tui_read_identity(&client, &current_bank, &current_patch)
-				// Loading a bank changes what is browsable; open the browser on it.
-				if slots, label, ok := client_bank_list(&client); ok {
-					bank_slots = slots
-					bank_label = label
-					bank_sel = 0
-					browsing = true
-				}
+				tui_read_provenance(&client, &prov)
+				// Loading a bank changes what is browsable; open the navigator
+				// on it.
+				tui_sync_navigator(&client, &nav, prov, true)
+				nav_open(&nav, prov)
+				nav_descend(&nav, ORDINARY, prov)
 			}
 		case .Archive:
-			if connected {
-				if has_archive {
-					// Already open: reopen exactly where we left off -- the same
-					// patch list and patch, or the bank list.
-					if arc_view == 2 && arc_bank >= 0 {
-						if _, ok := client_archive_bank(&client, arc_bank); ok {
-							if names, nok := client_archive_names(&client, "archive.patches"); nok {
-								client_names_free(patch_names)
-								patch_names = names
-								arc_sel = clamp(arc_patch, 0, max(0, len(names) - 1))
-								archive_view = 2
-							} else {
-								arc_sel = bank_arc_sel
-								archive_view = 1
-							}
-						} else {
-							arc_sel = bank_arc_sel
-							archive_view = 1
-						}
-					} else {
-						arc_sel = bank_arc_sel
-						archive_view = 1
-					}
-				} else if tui_enter_archive(&client, &config, theme) {
-					if names, ok := client_archive_names(&client, "archive.banks"); ok {
-						bank_names = names
-						has_archive = true
-						arc_sel = 0
-						bank_arc_sel = 0
-						arc_bank = -1
-						archive_view = 1
-					}
-				}
-			}
+			if connected && tui_enter_archive(&client, &nav, prov, theme) { nav_open_archive(&nav) }
 		case .Config:
+			// The archive path it shows is the daemon's, read afresh.
+			if connected { tui_sync_navigator(&client, &nav, prov, true) }
 			configuring = true
 			config_sel = 0
 		case .Midi:
@@ -511,8 +379,8 @@ run :: proc(path: string) -> int {
 					choosing_midi = true
 				}
 			}
-		case .Save, .Escape, .Other:
-		// Save applies only in the bank browser; Escape and Other are ignored.
+		case .Save, .Open_Archive, .Escape, .Other:
+		// Save and Z apply only in the navigator; Escape and Other are ignored.
 		}
 		if client.fd < 0 { connected = false; metrics = {} }
 	}
@@ -582,33 +450,103 @@ tui_load_bank :: proc(client: ^Client, theme: Theme) -> bool {
 	return client_bank_load_file(client, trimmed)
 }
 
-// Prompt for a zip archive path and open it for browsing. Returns the path that
-// was opened (so it can be remembered) and whether it opened.
+// Z: prompt for a zip archive path and open it in the daemon, replacing the
+// archive open there for every front-end. A blank answer or Escape keeps the
+// archive as it is; forgetting it is the settings screen's blank edit.
 @(private)
-tui_open_archive :: proc(client: ^Client, theme: Theme) -> (string, bool) {
+tui_open_archive :: proc(client: ^Client, theme: Theme) -> bool {
 	terminal_clear()
-	path, ok := prompt_line(1, "Open archive (zip): ", theme)
+	path, ok := prompt_line(1, "Open archive (zip, blank to keep): ", theme)
 	trimmed := strings.trim_space(path)
-	if !ok || len(trimmed) == 0 {
-		return "", false
-	}
-	if _, opened := client_archive_open(client, trimmed); opened {
-		return trimmed, true
-	}
-	return "", false
+	if !ok || len(trimmed) == 0 { return false }
+	_, opened := client_archive_open(client, trimmed)
+	return opened
 }
 
-// Re-read which bank and patch the daemon is playing into the labels the synth
-// screen shows. A failed read leaves them as they were: a dropped connection is
-// the footer's to report, and the names come back with the next good read.
+// Re-read which patch the daemon is playing and where it came from. A failed
+// read leaves the last answer: a dropped connection is the footer's to report,
+// and the names come back with the next good read.
+tui_read_provenance :: proc(client: ^Client, prov: ^Provenance) -> bool {
+	p, ok := client_provenance(client)
+	if !ok { return false }
+	provenance_free(prov)
+	prov^ = p
+	return true
+}
+
+// Bring the navigator's lists up to what the daemon holds: the ordinary bank
+// when bank_rev has moved past the one it was read at, the archive when
+// archive_rev has, both when `force`. A list that cannot be read keeps the
+// last good one.
+tui_sync_navigator :: proc(client: ^Client, nav: ^Navigator, prov: Provenance, force := false) {
+	if force || nav.seen_bank_rev != prov.bank_rev {
+		if slots, label, ok := client_bank_list(client); ok {
+			client_bank_free(nav.slots)
+			delete(nav.label)
+			nav.slots, nav.label = slots, label
+			nav.seen_bank_rev = prov.bank_rev
+		}
+	}
+	if force || nav.seen_archive_rev != prov.archive_rev {
+		if state, ok := client_archive_current(client); ok {
+			names: []string
+			if state.open {
+				got: bool
+				names, got = client_archive_names(client, "archive.banks")
+				if !got {
+					archive_state_free(&state)
+					return
+				}
+			}
+			archive_state_free(&nav.archive)
+			client_names_free(nav.bank_names)
+			nav.archive, nav.bank_names = state, names
+			nav.seen_archive_rev = state.rev
+			if nav_follow(nav) { tui_read_archive_patches(client, nav) }
+		}
+	}
+	nav_move(nav, 0)
+}
+
 @(private)
-tui_read_identity :: proc(client: ^Client, current_bank, current_patch: ^string) {
-	_, bank, name, _, _, ok := client_patch_current(client)
-	if !ok { return }
-	delete(current_bank^)
-	delete(current_patch^)
-	current_bank^ = bank
-	current_patch^ = name
+tui_read_archive_patches :: proc(client: ^Client, nav: ^Navigator) -> bool {
+	names, ok := client_archive_names(client, "archive.patches")
+	if !ok { return false }
+	client_names_free(nav.patch_names)
+	nav.patch_names = names
+	nav_move(nav, 0)
+	return true
+}
+
+// Enter at the banks: into `bank`'s patches. An archive bank is opened in the
+// daemon, where every peer browsing the archive sees it; the sound and where
+// it came from stay as they were.
+tui_browse_bank :: proc(client: ^Client, nav: ^Navigator, bank: int, prov: Provenance) -> bool {
+	browsed := bank
+	if bank != ORDINARY {
+		if _, ok := client_archive_bank(client, bank); !ok { return false }
+		tui_sync_navigator(client, nav, prov, true)
+		// A peer may have opened another bank between those two requests:
+		// show the bank the daemon has open, never one bank's name over
+		// another's patches.
+		browsed = nav.archive.bank
+		if browsed < 0 || !tui_read_archive_patches(client, nav) { return false }
+	}
+	nav_descend(nav, browsed, prov)
+	return true
+}
+
+// Enter at a bank's patches: load the one under the cursor from the bank
+// listed. An archive load names that bank, so it is the patch this list shows
+// even when a peer has opened another bank since the list was read.
+tui_load_cursor :: proc(client: ^Client, nav: ^Navigator) -> bool {
+	if nav.level != .Patches || nav.cursor >= nav_row_count(nav) { return false }
+	if nav.browsing == ORDINARY {
+		// Only a filled slot; an empty one is a place to save, not load.
+		s := nav.slots[nav.cursor]
+		return s.filled && client_patch_load(client, s.slot)
+	}
+	return client_archive_load(client, nav.cursor, nav.browsing)
 }
 
 // Re-read the name of the MIDI input the daemon listens to. Unlike the patch
@@ -635,54 +573,69 @@ tui_refresh_midi_selected :: proc(client: ^Client, selected: ^string) -> bool {
 	return true
 }
 
-// Open an archive for browsing and, on success, remember its path in the config
-// so a later A opens it with no prompt. If the remembered path is set, it is
-// tried first; only when there is none, or it fails, is the path asked for.
+// A: open the archive for browsing if the daemon has none open. The archive
+// the daemon remembers is tried first; only when there is none, or it fails,
+// is a path asked for.
 @(private)
-tui_enter_archive :: proc(client: ^Client, config: ^Config, theme: Theme) -> bool {
-	if config.archive_path != "" {
-		if _, opened := client_archive_open(client, config.archive_path); opened {
-			return true
-		}
-	}
-	path, opened := tui_open_archive(client, theme)
-	if !opened {
-		return false
-	}
-	if config.archive_path != path {
-		delete(config.archive_path)
-		config.archive_path = strings.clone(path)
-		config_save(config^)
-	}
-	return true
+tui_enter_archive :: proc(client: ^Client, nav: ^Navigator, prov: Provenance, theme: Theme) -> bool {
+	tui_sync_navigator(client, nav, prov, true)
+	if nav.archive.open { return true }
+	opened := false
+	if nav.archive.path != "" { _, opened = client_archive_open(client, "") }
+	if !opened { opened = tui_open_archive(client, theme) }
+	if opened { tui_sync_navigator(client, nav, prov, true) }
+	return opened
 }
 
-// Edit one remembered setting from the settings screen and save it. Changing the
-// archive path drops any open archive so the new one is used next time; setting
-// the bank path loads that bank now, so the change takes effect at once.
+// Legacy: before the daemon kept the archive path, this front-end kept it in
+// config.conf. It is handed to a daemon that remembers none, and leaves
+// config.conf only once the daemon has taken it, so a path that does not open
+// now is not lost.
 @(private)
-tui_edit_setting :: proc(
-	client: ^Client,
-	config: ^Config,
-	field: int,
-	has_archive: ^bool,
-	bank_names: ^[]string,
-	theme: Theme,
-) {
+tui_migrate_archive :: proc(client: ^Client, config: ^Config) {
+	if !tui_hand_over_archive(client, config.archive_path) { return }
+	delete(config.archive_path)
+	config.archive_path = ""
+	config_save(config^)
+}
+
+// Whether the daemon took `legacy` as its archive. Never over a path the
+// daemon already has: that is a choice made since, in some front-end.
+tui_hand_over_archive :: proc(client: ^Client, legacy: string) -> bool {
+	state, ok := client_archive_current(client)
+	if !ok { return false }
+	defer archive_state_free(&state)
+	if !legacy_archive_handoff(state, legacy) { return false }
+	_, opened := client_archive_open(client, legacy)
+	return opened
+}
+
+// Edit one remembered setting from the settings screen. The archive path is
+// the daemon's: a path opens that archive there for every front-end, and a
+// blank one closes it and forgets it, so no start reopens it. Setting the bank
+// path saves it here and loads that bank now, so the change takes effect at
+// once.
+@(private)
+tui_edit_setting :: proc(client: ^Client, config: ^Config, field: int, theme: Theme) {
 	terminal_clear()
 	if field == 0 {
-		path, ok := prompt_line(1, "Zip archive path: ", theme)
+		path, ok := prompt_line(1, "Zip archive path (blank to forget): ", theme)
 		if !ok {
 			return
 		}
-		delete(config.archive_path)
-		config.archive_path = strings.clone(strings.trim_space(path))
-		config_save(config^)
-		if has_archive^ {
-			client_archive_close(client)
-			client_names_free(bank_names^)
-			bank_names^ = nil
-			has_archive^ = false
+		trimmed := strings.trim_space(path)
+		done := false
+		if trimmed == "" {
+			done = client_archive_close(client)
+		} else {
+			_, done = client_archive_open(client, trimmed)
+		}
+		// A path still in config.conf would be handed over again the next
+		// time the daemon remembers none -- after a forget, too.
+		if done && config.archive_path != "" {
+			delete(config.archive_path)
+			config.archive_path = ""
+			config_save(config^)
 		}
 	} else {
 		path, ok := prompt_line(1, "User bank path: ", theme)

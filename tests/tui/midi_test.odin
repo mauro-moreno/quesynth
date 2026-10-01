@@ -400,7 +400,7 @@ test_midi_screen_mark_stays_when_the_read_fails :: proc(t: ^testing.T) {
 // begin and end; the renderers write with plain write(2), so nothing is left
 // buffered when it is swapped back. A pipe has no size, so the screen is the
 // 80x24 fallback.
-@(private = "file")
+@(private)
 Capture :: struct {
 	saved: posix.FD,
 	pipe:  [2]posix.FD,
@@ -413,7 +413,7 @@ Capture :: struct {
 @(private)
 stdout_capture: sync.Mutex
 
-@(private = "file")
+@(private)
 capture_begin :: proc() -> (cap: Capture) {
 	sync.mutex_lock(&stdout_capture)
 	if posix.pipe(&cap.pipe) != .OK {
@@ -425,7 +425,7 @@ capture_begin :: proc() -> (cap: Capture) {
 	return cap
 }
 
-@(private = "file")
+@(private)
 capture_end :: proc(cap: Capture) -> string {
 	if cap.saved < 0 {return ""}
 	posix.dup2(cap.saved, posix.STDOUT_FILENO)
@@ -443,7 +443,7 @@ capture_end :: proc(cap: Capture) -> string {
 	return strings.to_string(b)
 }
 
-@(private = "file")
+@(private)
 plain_theme :: proc() -> tui.Theme {
 	theme := tui.theme_defaults()
 	theme.enabled = false
@@ -458,7 +458,7 @@ midi_screen :: proc(devices: []tui.Midi_Device, selected: string, cursor: int, r
 }
 
 // Each line, in this order, as whole framed rows of the screen.
-@(private = "file")
+@(private)
 expect_rows :: proc(t: ^testing.T, screen: string, rows: ..string, loc := #caller_location) {
 	at := 0
 	for row in rows {
@@ -532,7 +532,8 @@ synth_screen :: proc(midi: string, connected := true) -> string {
 	groups := tui.build_groups(rows)
 	defer tui.free_groups(groups)
 	cap := capture_begin()
-	tui.render(rows, groups, 0, 0, tui.Metrics{ok = connected}, "/tmp/quesynth.sock", "Factory", "Solo Lead", midi, plain_theme())
+	prov := tui.Provenance{slot = -1, bank = "Factory", name = "Solo Lead", archive_bank = -1, archive_patch = -1}
+	tui.render(rows, groups, 0, 0, tui.Metrics{ok = connected}, "/tmp/quesynth.sock", prov, midi, plain_theme())
 	return capture_end(cap)
 }
 

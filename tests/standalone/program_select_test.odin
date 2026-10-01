@@ -100,7 +100,7 @@ program_expect_slot :: proc(t: ^testing.T, r: ^Program_Rig, slot, revision: int)
 		testing.expect_value(t, engine.engine_patch_value(&r.live.eng, i), v)
 	}
 	testing.expect_value(t, program_ask(r, "1 1 patch.current"), fmt.tprintf(
-		"1 1 ok slot=%d bank_rev=0 revision=%d\nbank=Factory\nname=%s",
+		"1 1 ok slot=%d bank_rev=0 revision=%d source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=Factory\nname=%s",
 		slot, revision, patch.factory_name(slot),
 	))
 }
@@ -275,7 +275,7 @@ test_native_program_failed_targets_leave_patch_unchanged :: proc(t: ^testing.T) 
 	program_audio(r)
 	testing.expect_value(t, r.live.revision, 3)
 	testing.expect_value(t, program_ask(r, "1 1 patch.current"),
-		"1 1 ok slot=127 bank_rev=0 revision=3\nbank=Bank\nname=Init")
+		"1 1 ok slot=127 bank_rev=0 revision=3 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=Bank\nname=Init")
 	for v, i in values {testing.expect_value(t, r.live.eng.patch.values[i], v)}
 
 	// An inert control context or absent ring cannot change the sound.
@@ -388,7 +388,7 @@ test_native_program_replaces_atomically_and_keeps_the_held_note :: proc(t: ^test
 		testing.expect_value(t, snap.revision, 1)
 		for v, i in to.values {testing.expect_value(t, snap.values[i], i32(v))}
 		testing.expect_value(t, program_ask(r, "1 1 patch.current"),
-			"1 1 ok slot=120 bank_rev=9 revision=1\nbank=User bank with spaces\nname=New held sound")
+			"1 1 ok slot=120 bank_rev=9 revision=1 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=User bank with spaces\nname=New held sound")
 		for buffer in ([?][]f32{e.delay_left, e.delay_right, e.chorus_left, e.chorus_right}) {
 			for v in buffer {
 				if !testing.expect_value(t, v, f32(0)) {break}
@@ -442,7 +442,7 @@ test_native_program_control_server_drains_and_accepts_injection :: proc(t: ^test
 	defer posix.close(fd)
 	reliability_send(fd, "1 1 patch.current")
 	testing.expect_value(t, reliability_reply(fd),
-		"1 1 ok slot=6 bank_rev=0 revision=1\nbank=Factory\nname=Organ")
+		"1 1 ok slot=6 bank_rev=0 revision=1 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=Factory\nname=Organ")
 	reliability_send(fd, "1 2 midi 192 7 0")
 	testing.expect_value(t, reliability_reply(fd), "1 2 ok")
 	for _ in 0 ..< 100 {
@@ -453,7 +453,7 @@ test_native_program_control_server_drains_and_accepts_injection :: proc(t: ^test
 	testing.expect_value(t, r.live.revision, 2)
 	reliability_send(fd, "1 3 patch.current")
 	testing.expect_value(t, reliability_reply(fd), fmt.tprintf(
-		"1 3 ok slot=7 bank_rev=0 revision=2\nbank=Factory\nname=%s", patch.factory_name(7)))
+		"1 3 ok slot=7 bank_rev=0 revision=2 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=Factory\nname=%s", patch.factory_name(7)))
 	values, _ := patch.factory_patch(7)
 	for v, i in values {testing.expect_value(t, r.live.eng.patch.values[i], v)}
 }

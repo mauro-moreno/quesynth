@@ -5,9 +5,10 @@ import "core:os"
 import "core:strings"
 
 // The front-end's own remembered settings, kept beside the theme in the config
-// directory. The point is the zip archive: once its path is known, A opens it with
-// no typing, this run and every run after. The bank path is remembered the same
-// way so a user's own bank can be reloaded without hunting for it.
+// directory: the user bank path, so a user's own bank can be reloaded without
+// hunting for it. The zip archive path was kept here too until the daemon kept
+// it for every front-end; an `archive =` line from before is handed to the
+// daemon once (tui_migrate_archive) and stays here only until it takes it.
 
 Config :: struct {
 	archive_path: string,

@@ -53,18 +53,37 @@ test_tui_archive_browse_and_load :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(patch_names), 2)
 	testing.expect_value(t, patch_names[0], "Test Patch One")
 
-	testing.expect(t, tui.client_archive_load(&client, 0))
-	seen := 0
-	last: standalone.Param_Command_Kind
-	for {
-		cmd, popped := standalone.param_ring_pop(&ring)
-		if !popped { break }
-		seen += 1
-		last = cmd.kind
-		if cmd.kind == .Commit_Patch { break }
+	// What every peer reads: the archive open, its bank open, the path as given.
+	current, cok := tui.client_archive_current(&client)
+	defer tui.archive_state_free(&current)
+	testing.expect(t, cok)
+	testing.expect(t, current.open)
+	testing.expect_value(t, current.banks, 1)
+	testing.expect_value(t, current.bank, 0)
+	testing.expect_value(t, current.patches, 2)
+	testing.expect_value(t, current.rev, 2)
+	testing.expect_value(t, current.path, "tests/zip/fixtures/nested.zip")
+	testing.expect_value(t, current.bank_name, "bankA.zip")
+
+	// From the open bank, and from the bank named: each one replacement.
+	for bank in ([2]int{-1, 0}) {
+		testing.expect(t, tui.client_archive_load(&client, 0, bank))
+		seen := 0
+		last: standalone.Param_Command_Kind
+		for {
+			cmd, popped := standalone.param_ring_pop(&ring)
+			if !popped { break }
+			seen += 1
+			last = cmd.kind
+			if cmd.kind == .Commit_Patch { break }
+		}
+		testing.expect(t, seen > 1)
+		testing.expect_value(t, last, standalone.Param_Command_Kind.Commit_Patch)
 	}
-	testing.expect(t, seen > 1)
-	testing.expect_value(t, last, standalone.Param_Command_Kind.Commit_Patch)
+	// A bank the archive does not have loads nothing.
+	testing.expect(t, !tui.client_archive_load(&client, 0, 1))
+	_, queued := standalone.param_ring_pop(&ring)
+	testing.expect(t, !queued)
 
 	testing.expect(t, tui.client_archive_close(&client))
 	tui.client_close(&client)

@@ -71,9 +71,22 @@ drain :: proc(r: ^standalone.Param_Ring) {
 	}
 }
 
+// The archive fields default to what every reply but an archive load's carries:
+// nothing opened, nothing pointed into.
 @(private = "file")
-current_reply :: proc(id, slot: int, bank_rev: uint, revision: int, bank, name: string) -> string {
-	return fmt.tprintf("1 %d ok slot=%d bank_rev=%d revision=%d\nbank=%s\nname=%s", id, slot, bank_rev, revision, bank, name)
+current_reply :: proc(
+	id, slot: int,
+	bank_rev: uint,
+	revision: int,
+	source, bank, name: string,
+	archive_rev: uint = 0,
+	archive_bank := -1,
+	archive_patch := -1,
+) -> string {
+	return fmt.tprintf(
+		"1 %d ok slot=%d bank_rev=%d revision=%d source=%s archive_rev=%d archive_bank=%d archive_patch=%d\nbank=%s\nname=%s",
+		id, slot, bank_rev, revision, source, archive_rev, archive_bank, archive_patch, bank, name,
+	)
 }
 
 // A filled factory slot whose name has a space, to show names travel raw rather
@@ -91,7 +104,7 @@ test_patch_current_starts_unnamed :: proc(t: ^testing.T) {
 	b := bench_make()
 	defer bench_free(b)
 	standalone.snapshot_publish(&b.snap, standalone.Snapshot_Data{revision = 4})
-	testing.expect_value(t, ask(&b.cc, "1 1 patch.current"), "1 1 ok slot=-1 bank_rev=0 revision=4\nbank=\nname=")
+	testing.expect_value(t, ask(&b.cc, "1 1 patch.current"), "1 1 ok slot=-1 bank_rev=0 revision=4 source=none archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=\nname=")
 }
 
 @(test)
@@ -103,7 +116,7 @@ test_patch_load_names_the_slot :: proc(t: ^testing.T) {
 
 	reply := ask(&b.cc, fmt.tprintf("1 1 patch.load %d", k))
 	testing.expect(t, strings.has_prefix(reply, "1 1 ok"))
-	testing.expect_value(t, ask(&b.cc, "1 2 patch.current"), current_reply(2, k, 0, 0, "Factory", patch.factory_name(k)))
+	testing.expect_value(t, ask(&b.cc, "1 2 patch.current"), current_reply(2, k, 0, 0, "bank", "Factory", patch.factory_name(k)))
 }
 
 @(test)
@@ -113,7 +126,7 @@ test_patch_load_file_names_the_file_patch :: proc(t: ^testing.T) {
 
 	// The fixture's first line is "Synth1 unison four reference fixture".
 	testing.expect(t, strings.has_prefix(ask(&b.cc, "1 1 patch.load_file tools/s1probe/fixtures/unison-four.sy1"), "1 1 ok"))
-	testing.expect_value(t, ask(&b.cc, "1 2 patch.current"), current_reply(2, -1, 0, 0, "file", "unison four reference fixture"))
+	testing.expect_value(t, ask(&b.cc, "1 2 patch.current"), current_reply(2, -1, 0, 0, "file", "file", "unison four reference fixture"))
 	drain(&b.ring)
 
 	// A patch with no name of its own is named by its file.
@@ -122,7 +135,7 @@ test_patch_load_file_names_the_file_patch :: proc(t: ^testing.T) {
 	testing.expect(t, os.write_entire_file_from_string(path, "color=default\r\nver=113\r\n0,3\r\n") == nil)
 	defer os.remove(path)
 	testing.expect(t, strings.has_prefix(ask(&b.cc, fmt.tprintf("1 3 patch.load_file %s", path)), "1 3 ok"))
-	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"), current_reply(4, -1, 0, 0, "file", base))
+	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"), current_reply(4, -1, 0, 0, "file", "file", base))
 }
 
 @(test)
@@ -134,14 +147,18 @@ test_archive_load_names_the_archive_bank :: proc(t: ^testing.T) {
 
 	// banks/bankA.zip holds 001.sy1 and 002.sy1, named "Synth1 Test Patch One"
 	// and "Synth1 Test Patch Two" on their first lines.
+	// Opening the archive and its bank are two changes to what is open; the
+	// load names the bank and the patch it took, by the indices a client lists.
 	testing.expect(t, strings.has_prefix(ask(&b.cc, "1 3 archive.load 1"), "1 3 ok"))
-	want := current_reply(4, -1, 0, 0, "bankA.zip", "Test Patch Two")
-	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"), want)
+	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"),
+		current_reply(4, -1, 0, 0, "archive", "bankA.zip", "Test Patch Two", 2, 0, 1))
 
 	// The names were copied, not borrowed from the archive: closing it, which
-	// frees everything the archive read, leaves them intact.
+	// frees everything the archive read, leaves them intact. The indices go:
+	// they pointed into an archive that is no longer open.
 	ask(&b.cc, "1 5 archive.close")
-	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"), want)
+	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"),
+		current_reply(4, -1, 0, 0, "archive", "bankA.zip", "Test Patch Two", 3))
 }
 
 @(test)
@@ -150,11 +167,11 @@ test_patch_save_names_the_slot_and_bumps_bank_rev :: proc(t: ^testing.T) {
 	defer bench_free(b)
 
 	testing.expect_value(t, ask(&b.cc, "1 1 patch.save 120 My Lead"), "1 1 ok slot=120 name=My_Lead bank_rev=1")
-	testing.expect_value(t, ask(&b.cc, "1 2 patch.current"), current_reply(2, 120, 1, 0, "Factory", "My Lead"))
+	testing.expect_value(t, ask(&b.cc, "1 2 patch.current"), current_reply(2, 120, 1, 0, "bank", "Factory", "My Lead"))
 
 	// With no name an empty slot is saved as what the bank already calls it.
 	testing.expect_value(t, ask(&b.cc, "1 3 patch.save 121"), "1 3 ok slot=121 name=Init bank_rev=2")
-	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"), current_reply(4, 121, 2, 0, "Factory", "Init"))
+	testing.expect_value(t, ask(&b.cc, "1 4 patch.current"), current_reply(4, 121, 2, 0, "bank", "Factory", "Init"))
 }
 
 @(test)
@@ -180,7 +197,7 @@ test_bank_load_file_bumps_bank_rev_and_forgets_the_slot :: proc(t: ^testing.T) {
 	testing.expect_value(t, reply, fmt.tprintf("1 2 ok label=Factory count=%d bank_rev=1", filled))
 	// The sound is still the one it was, so it keeps its names; only the slot
 	// number, which now indexes another bank, is gone.
-	testing.expect_value(t, ask(&b.cc, "1 3 patch.current"), current_reply(3, -1, 1, 0, "Factory", patch.factory_name(k)))
+	testing.expect_value(t, ask(&b.cc, "1 3 patch.current"), current_reply(3, -1, 1, 0, "bank", "Factory", patch.factory_name(k)))
 }
 
 @(test)
@@ -192,7 +209,7 @@ test_failed_and_unrelated_commands_leave_identity_alone :: proc(t: ^testing.T) {
 	ask(&b.cc, fmt.tprintf("1 1 patch.load %d", k))
 	drain(&b.ring)
 	ask(&b.cc, "1 2 patch.save 120 Kept")
-	want := current_reply(9, 120, 1, 0, "Factory", "Kept")
+	want := current_reply(9, 120, 1, 0, "bank", "Factory", "Kept")
 	testing.expect_value(t, ask(&b.cc, "1 9 patch.current"), want)
 
 	failing := []string {
@@ -232,7 +249,7 @@ test_patch_clear_forgets_the_name_only :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, ask(&b.cc, "1 2 patch.clear"), "1 2 ok")
 	// bank_rev stays: the bank did not change. Nothing reached the audio side.
-	testing.expect_value(t, ask(&b.cc, "1 3 patch.current"), current_reply(3, -1, 1, 0, "", ""))
+	testing.expect_value(t, ask(&b.cc, "1 3 patch.current"), current_reply(3, -1, 1, 0, "none", "", ""))
 	_, queued := standalone.param_ring_pop(&b.ring)
 	testing.expect(t, !queued)
 }
@@ -301,7 +318,7 @@ test_bank_keep_writes_the_bank_the_daemon_starts_with :: proc(t: ^testing.T) {
 	testing.expect(t, standalone.load_bank_file(restarted, path))
 	testing.expect_value(t, patch.slots_name(restarted, 120), "Kept Sound")
 	// Keeping the bank does not change it.
-	testing.expect_value(t, ask(&b.cc, "1 3 patch.current"), current_reply(3, 120, 1, 0, "Factory", "Kept Sound"))
+	testing.expect_value(t, ask(&b.cc, "1 3 patch.current"), current_reply(3, 120, 1, 0, "bank", "Factory", "Kept Sound"))
 
 	// An unwritable config directory: here a regular file stands in its way.
 	blocker := fmt.tprintf("%s/not-a-dir", root)

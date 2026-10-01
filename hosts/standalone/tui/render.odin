@@ -151,12 +151,15 @@ truncate_visible :: proc(s: string, max: int) -> string {
 
 @(private)
 box_top :: proc(title: string, cols: int, theme: Theme) -> string {
-	tw := visible_width(title)
+	// Cut to the frame: a bank's name in the title can be any length, and a top
+	// row wider than the terminal wraps and pushes every row below it down.
+	shown := truncate_visible(title, max(cols - 5, 0))
+	tw := visible_width(shown)
 	fill := max(cols - 5 - tw, 0)
 	return fmt.tprintf(
 		"%s%s%s%s",
 		paint(theme, theme.dim, "┌─ "),
-		paint(theme, theme.title, title),
+		paint(theme, theme.title, shown),
 		paint(theme, theme.dim, " "),
 		paint(theme, theme.dim, fmt.tprintf("%s┐", strings.repeat("─", fill, context.temp_allocator))),
 	)
@@ -183,17 +186,14 @@ render :: proc(
 	current_group, selected: int,
 	metrics: Metrics,
 	path: string,
-	current_bank, current_patch, current_midi: string,
+	prov: Provenance,
+	current_midi: string,
 	theme: Theme,
 ) {
 	body: [dynamic]string
 	body.allocator = context.temp_allocator
-	// The chosen bank and patch, so what is loaded is always in view.
-	patch_line := current_patch == "" ? "patch: (unsaved)" : fmt.tprintf("patch: %s", current_patch)
-	if current_bank != "" {
-		patch_line = fmt.tprintf("%s   bank: %s", patch_line, current_bank)
-	}
-	append(&body, paint(theme, theme.value, patch_line))
+	// Where the sound came from, so what is loaded is always in view.
+	append(&body, paint(theme, theme.value, provenance_line(prov)))
 	// Left out while unknown -- an older daemon, one with no MIDI backend, or
 	// none reachable -- because any name shown then could be the wrong one.
 	if metrics.ok && current_midi != "" {
@@ -249,44 +249,85 @@ render :: proc(
 		)
 		// Two lines: on one, the last keys would be cut off at 80 columns.
 		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   Q quit"))
-		append(&footer, paint(theme, theme.status, "B bank   A archive   M midi   C settings"))
+		append(&footer, paint(theme, theme.status, "B banks   A archive   M midi   C settings"))
 	}
 	append(&footer, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 	present("Quesynth", body[:], footer[:], theme)
 }
 
-// The slot bank browser: every slot, filled or empty, with a scrolling window
-// that follows the selection. Empty slots read "Init" in a dim colour and are a
-// place to save into.
-render_bank :: proc(label: string, slots: []Bank_Slot, selected: int, theme: Theme) {
-	rows, _ := terminal_size()
-	window := max(rows - 5, 1)
-
-	body: [dynamic]string
-	body.allocator = context.temp_allocator
-	if len(slots) == 0 {
-		append(&body, paint(theme, theme.warning, "the bank is empty"))
-	}
-	start := 0
-	if selected >= window {
-		start = selected - window + 1
-	}
-	if start > len(slots) - window {
-		start = max(0, len(slots) - window)
-	}
-	end := min(len(slots), start + window)
-	for i in start ..< end {
-		s := slots[i]
-		chosen := i == selected
-		marker := paint(theme, theme.selected, chosen ? ">" : " ")
-		colour := chosen ? theme.selected : (s.filled ? theme.label : theme.dim)
-		text := paint(theme, colour, fmt.tprintf("%3d  %s", s.slot, s.name))
-		append(&body, fmt.tprintf("%s %s", marker, text))
+// The bank navigator (navigator.odin): the list of banks, or one bank's
+// patches. The cursor is > and the patch the sound came from is *, two marks
+// for two facts; the footer says what is playing whatever is being browsed.
+render_navigator :: proc(nav: ^Navigator, prov: Provenance, theme: Theme) {
+	count := nav_row_count(nav)
+	keys: string
+	switch {
+	case nav.level == .Banks:
+		keys = "Enter browse   O patch file   L bank file   Z archive   Esc hide"
+	case nav.browsing == ORDINARY:
+		keys = "Enter load   S save   O patch file   L bank file   Esc banks"
+	case:
+		keys = "Enter load   O patch file   Z archive   Esc banks"
 	}
 	footer: [dynamic]string
 	footer.allocator = context.temp_allocator
-	append(&footer, paint(theme, theme.status, "up/down select   Enter load   S save   O patch file   L bank file   Esc back"))
-	present(fmt.tprintf("Quesynth — Bank: %s", label), body[:], footer[:], theme)
+	append(&footer, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", count == 0 ? 0 : nav.cursor + 1, count, keys)))
+	append(&footer, paint(theme, theme.value, playing_line(prov)))
+	archive := nav.archive.open ? fmt.tprintf("archive: %s", nav.archive.path) : "no archive - Z opens one"
+	append(&footer, paint(theme, theme.dim, archive))
+
+	// The archive's hint is a line of its own below the banks, never a row the
+	// cursor can land on: there is nothing on it to browse.
+	hint := nav.level == .Banks ? nav_archive_hint(nav) : ""
+	// What present leaves between the borders, the separator and the footer.
+	// A short terminal gives up footer lines, the last first, rather than the
+	// row under the cursor: present would hand the footer every row it asked
+	// for and draw no list at all.
+	rows, _ := terminal_size()
+	rows = max(rows, 6)
+	if len(footer) > rows - 4 { resize(&footer, rows - 4) }
+	window := max(rows - 3 - len(footer) - (hint != "" ? 1 : 0), 1)
+	start, end := list_window(nav.cursor, count, window)
+
+	body: [dynamic]string
+	body.allocator = context.temp_allocator
+	if count == 0 {
+		append(&body, paint(theme, theme.warning, "(empty)"))
+	}
+	for row in start ..< end {
+		text: string
+		playing, empty := false, false
+		switch {
+		case nav.level == .Banks:
+			text = nav_bank_text(nav, row)
+		case nav.browsing == ORDINARY:
+			s := nav.slots[row]
+			text = fmt.tprintf("%3d  %s", s.slot, s.name)
+			playing = nav_playing(prov, ORDINARY, s.slot)
+			empty = !s.filled
+		case:
+			text = fmt.tprintf("%5d  %s", row, nav.patch_names[row])
+			playing = nav_playing(prov, nav.browsing, row)
+		}
+		chosen := row == nav.cursor
+		cursor := paint(theme, theme.selected, chosen ? ">" : " ")
+		mark := paint(theme, theme.value, playing ? "*" : " ")
+		colour := chosen ? theme.selected : (empty ? theme.dim : theme.label)
+		append(&body, fmt.tprintf("%s%s %s", cursor, mark, paint(theme, colour, text)))
+	}
+	if hint != "" {
+		append(&body, paint(theme, theme.dim, fmt.tprintf("   %s", hint)))
+	}
+
+	title := "Quesynth — Browsing banks"
+	if nav.level == .Patches {
+		label := nav.label
+		if nav.browsing != ORDINARY && nav.browsing < len(nav.bank_names) {
+			label = nav.bank_names[nav.browsing]
+		}
+		title = fmt.tprintf("Quesynth — Browsing: %s", label)
+	}
+	present(title, body[:], footer[:], theme)
 }
 
 // The MIDI input screen. `selected` is the daemon's token, not the cursor's
@@ -303,7 +344,7 @@ render_midi :: proc(devices: []Midi_Device, selected: string, cursor: int, refus
 	append(&footer, paint(theme, theme.status, "up/down select   Enter use   R re-scan   Esc back   Q quit"))
 
 	// What present leaves between the borders, the separator and the footer;
-	// the window follows the cursor, as the bank browser's does.
+	// the window follows the cursor, as the navigator's does.
 	rows, _ := terminal_size()
 	window := max(rows - 3 - len(footer), 1)
 	count := midi_row_count(devices)
@@ -352,11 +393,13 @@ midi_row_of :: proc(devices: []Midi_Device, token: string) -> (int, bool) {
 }
 
 // The settings screen: the remembered paths, each editable, and where they are
-// stored. Enter edits the highlighted row.
-render_config :: proc(cfg: Config, cfg_path: string, selected: int, theme: Theme) {
+// stored. Enter edits the highlighted row. The archive path is the daemon's --
+// every front-end opens the same one -- so it is shown as the daemon has it,
+// and only the bank path lives in this front-end's own config.
+render_config :: proc(cfg: Config, archive_path: string, cfg_path: string, selected: int, theme: Theme) {
 	unset :: "(unset — press Enter to set)"
 	fields := [][2]string {
-		{"Zip archive", cfg.archive_path == "" ? unset : cfg.archive_path},
+		{"Zip archive", archive_path == "" ? unset : archive_path},
 		{"User bank", cfg.bank_path == "" ? unset : cfg.bank_path},
 	}
 	body: [dynamic]string
@@ -376,39 +419,6 @@ render_config :: proc(cfg: Config, cfg_path: string, selected: int, theme: Theme
 }
 
 CONFIG_FIELDS :: 2
-
-// A scrolling list, used for the archive's bank and patch views. The window
-// follows the selection, so a list far larger than the terminal browses without
-// drawing it all.
-render_list :: proc(title: string, items: []string, selected: int, footer_text: string, theme: Theme) {
-	rows, _ := terminal_size()
-	window := max(rows - 5, 1) // room for both borders, a separator and the footer
-
-	body: [dynamic]string
-	body.allocator = context.temp_allocator
-	if len(items) == 0 {
-		append(&body, paint(theme, theme.warning, "(empty)"))
-	}
-	start := 0
-	if selected >= window {
-		start = selected - window + 1
-	}
-	if start > len(items) - window {
-		start = max(0, len(items) - window)
-	}
-	end := min(len(items), start + window)
-	for i in start ..< end {
-		chosen := i == selected
-		marker := paint(theme, theme.selected, chosen ? ">" : " ")
-		text := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%5d  %s", i, items[i]))
-		append(&body, fmt.tprintf("%s %s", marker, text))
-	}
-	footer: [dynamic]string
-	footer.allocator = context.temp_allocator
-	count := len(items) == 0 ? 0 : selected + 1
-	append(&footer, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", count, len(items), footer_text)))
-	present(title, body[:], footer[:], theme)
-}
 
 // The tab strip, with the current group bracketed. Temp-allocated.
 @(private)

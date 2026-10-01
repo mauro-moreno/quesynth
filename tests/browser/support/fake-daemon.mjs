@@ -5,15 +5,21 @@
 // hosts/standalone answers, with the same response shapes and error codes, and
 // keeps the same state: an engine the "audio thread" publishes into a snapshot
 // with a revision, a 128-slot bank with its generation (bank_rev), the patch
-// identity, master volume, a MIDI queue and the selected native MIDI input
-// with its generation (midi_rev). Edits are queued like the param ring and
-// only reach the snapshot when applied, so tests can hold them back and model
-// audio-thread latency.
+// identity and where it came from, master volume, a MIDI queue, the selected
+// native MIDI input with its generation (midi_rev), and a patch archive with
+// its open bank, remembered path and generation (archive_rev). Edits are
+// queued like the param ring and only reach the snapshot when applied, so
+// tests can hold them back and model audio-thread latency.
 //
 // The parameter ids are the real registry's, read out of
 // src/registry/registry.odin; defaults come from ui/params.js. Stored ranges
 // are an approximation (the widest of 0..127, the default and the table's
 // stored values), which is enough to exercise the adapter's range handling.
+//
+// The archive is held in memory -- banks of named patches, under the paths
+// archive.open accepts -- rather than read from a zip, because what the
+// adapter depends on is the protocol around it (hosts/standalone/archive.odin
+// and identity.odin), not the inflating.
 
 import fs from "node:fs";
 import net from "node:net";
@@ -63,6 +69,52 @@ function token(s) {
 function truncate(s) {
   const bytes = Buffer.from(s, "utf8");
   return bytes.length <= NAME_MAX ? s : bytes.subarray(0, NAME_MAX).toString("utf8");
+}
+
+// identity_put in identity.odin: a line break would end the record line it
+// travels on.
+function identityText(s) {
+  return truncate(s).replace(/[\r\n]/g, " ");
+}
+
+// One patch of a stand-in archive: its name as archive.patches lists it, and
+// values a load applies that differ per bank and patch, so a test can tell
+// which one landed.
+export function archivePatch(bank, patch, name) {
+  const values = DEFAULTS.slice();
+  values[19] = (17 + 29 * bank + 5 * patch) % 128;
+  values[20] = (3 + 7 * bank + 11 * patch) % 128;
+  return {name, values};
+}
+
+// [[bank name, [patch name, ...]], ...] as archive banks, in archive order.
+export function makeArchive(banks) {
+  return banks.map(([name, patches], b) => ({name, patches: patches.map((p, i) => archivePatch(b, i, p))}));
+}
+
+// Spaces in the path and in the names, because both travel raw to the end of
+// a record line and a client that split on them would lose half.
+export const ARCHIVE_PATH = "/srv/quesynth/patch banks.zip";
+export const ARCHIVE = makeArchive([
+  ["aaa bbb Thanks Ms Ichiro 01.zip",
+    ["05_fx", "miniPoli_01", "  Spaced  Lead ", "Bells", "Organ", "Brass", "Sweep", "Last One"]],
+  ["bankB.zip", ["Pad 2", "Bass", "Keys"]],
+  ["empty.zip", []],
+]);
+
+// Digits only, as parse_index in archive.odin reads an index.
+function archiveIndex(text) {
+  return /^\d+$/.test(text || "") ? Number(text) : null;
+}
+
+// paged_range in archive.odin: a missing or unreadable operand takes its
+// default, and the page is clamped to what there is.
+function paged(req, total) {
+  const off = archiveIndex(req.operands[0]);
+  const cnt = archiveIndex(req.operands[1]);
+  const offset = Math.min(Math.max(off === null ? 0 : off, 0), total);
+  const count = Math.min(Math.min(cnt === null ? 64 : cnt, 256), total - offset);
+  return [offset, count];
 }
 
 // json_escape in src/patch/json.odin.
@@ -144,7 +196,10 @@ function frame(text) {
 }
 
 export class FakeDaemon {
-  constructor({socketPath, keepPath, bankText = FIXTURE, maxConnections = 16, midiInputs = []} = {}) {
+  constructor({
+    socketPath, keepPath, bankText = FIXTURE, maxConnections = 16, midiInputs = [],
+    archives = {[ARCHIVE_PATH]: ARCHIVE}, archivePath = "", legacy = false,
+  } = {}) {
     this.socketPath = socketPath;
     this.keepPath = keepPath;
     this.maxConnections = maxConnections;
@@ -159,7 +214,7 @@ export class FakeDaemon {
     // "auto" applies each edit as soon as it is queued, as an idle audio
     // thread effectively does; "manual" waits for apply().
     this.applyMode = "auto";
-    this.identity = {slot: -1, bank: "", name: ""};
+    this.identity = {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1};
     this.bankRev = 0;
     this.volume = 1000;
     this.midi = [];
@@ -173,6 +228,21 @@ export class FakeDaemon {
     this.midiName = "All inputs";
     this.midiRev = 0;
     this.bank = readBank(bankText);
+    // The archives archive.open can open, path -> banks; null is a daemon with
+    // no archive support (a bare handler), whose archive verbs refuse.
+    this.archives = archives;
+    // A daemon from before archives were shared: patch.current carries none
+    // of the fields after revision, and its archive verbs are the older ones
+    // (handleOldArchive).
+    this.legacy = legacy;
+    // The open archive (banks, or null), its open bank, the path it
+    // remembers and archive_rev. archivePath is what a previous run kept: it
+    // is remembered, and opened if it can be, without counting as a change.
+    this.archive = {banks: null, bank: -1, path: "", rev: 0};
+    if (archives && archivePath) {
+      this.archive.path = archivePath;
+      if (Object.hasOwn(archives, archivePath)) this.archive.banks = archives[archivePath];
+    }
     // request -> undefined | {err: [code, message]} | {answer: "ok ..."} |
     // "hang" | "garbage" | "oversize" | "drop"
     this.intercept = null;
@@ -379,7 +449,8 @@ export class FakeDaemon {
         const s = this.bank.slots[k];
         if (!s) return "err unknown_parameter slot is empty";
         this.queue.push(s.values.map((v, i) => [i, v]));
-        this.identity = {slot: k, bank: this.bank.label, name: this.slotName(k)};
+        this.identity = {slot: k, bank: this.bank.label, name: this.slotName(k), source: "bank",
+          archiveBank: -1, archivePatch: -1};
         return `ok slot=${k} name=${token(this.slotName(k))} count=${PARAMS.length}` +
           ` revision=${this.published.revision}`;
       }
@@ -392,7 +463,8 @@ export class FakeDaemon {
         const final = truncate(name || this.slotName(k));
         this.bank.slots[k] = {name: final, values: this.published.values.slice()};
         this.bankRev++;
-        this.identity = {slot: k, bank: this.bank.label, name: final};
+        this.identity = {slot: k, bank: this.bank.label, name: final, source: "bank",
+          archiveBank: -1, archivePatch: -1};
         return `ok slot=${k} name=${token(final)} bank_rev=${this.bankRev}`;
       }
       case "bank.write": {
@@ -429,12 +501,27 @@ export class FakeDaemon {
         }
         return `ok bytes=${Buffer.byteLength(text)} path=${this.keepPath}`;
       }
-      case "patch.current":
-        return `ok slot=${this.identity.slot} bank_rev=${this.bankRev} revision=${this.published.revision}` +
-          `\nbank=${this.identity.bank}\nname=${this.identity.name}`;
+      case "patch.current": {
+        const id = this.identity;
+        let answer = `ok slot=${id.slot} bank_rev=${this.bankRev} revision=${this.published.revision}`;
+        if (!this.legacy) {
+          const archived = id.source === "archive";
+          answer += ` source=${id.source} archive_rev=${this.archives ? this.archive.rev : 0}` +
+            ` archive_bank=${archived ? id.archiveBank : -1} archive_patch=${archived ? id.archivePatch : -1}`;
+        }
+        return answer + `\nbank=${id.bank}\nname=${id.name}`;
+      }
       case "patch.clear":
-        this.identity = {slot: -1, bank: "", name: ""};
+        this.identity = {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1};
         return "ok";
+      case "archive.current":
+      case "archive.open":
+      case "archive.banks":
+      case "archive.bank":
+      case "archive.patches":
+      case "archive.load":
+      case "archive.close":
+        return this.legacy ? this.handleOldArchive(req) : this.handleArchive(req);
       case "midi.list":
         if (!this.midiInputs) return "err daemon_not_ready no midi input";
         return `ok count=${this.midiInputs.length} selected=${this.midiSelected} midi_rev=${this.midiRev}` +
@@ -465,6 +552,124 @@ export class FakeDaemon {
       default:
         return "err unknown_command unknown command";
     }
+  }
+
+  // The archive verbs, as archive.odin answers them, refusals included.
+  handleArchive(req) {
+    const a = this.archive;
+    const supported = this.archives !== null;
+    const ops = req.operands;
+    switch (req.command) {
+      case "archive.current": {
+        if (!supported) return "err daemon_not_ready no archive support";
+        const open = a.banks !== null;
+        const bank = open ? a.bank : -1;
+        return `ok open=${open ? 1 : 0} banks=${open ? a.banks.length : 0} bank=${bank}` +
+          ` patches=${bank >= 0 ? a.banks[bank].patches.length : 0} archive_rev=${a.rev}` +
+          `\npath=${a.path}\nbank_name=${bank >= 0 ? a.banks[bank].name : ""}`;
+      }
+      case "archive.open": {
+        if (!supported) return "err daemon_not_ready no archive support";
+        const path = req.rest || a.path;
+        if (!path) return "err invalid_payload open needs a path";
+        // A failure leaves the archive that was open, and its bank, alone.
+        if (!Object.hasOwn(this.archives, path)) return "err invalid_payload cannot open archive";
+        a.banks = this.archives[path];
+        a.bank = -1;
+        a.path = path;
+        a.rev++;
+        this.forgetArchive();
+        return `ok banks=${a.banks.length} archive_rev=${a.rev}`;
+      }
+      case "archive.banks": {
+        if (!supported || a.banks === null) return "err daemon_not_ready no archive open";
+        const [offset, count] = paged(req, a.banks.length);
+        let answer = `ok total=${a.banks.length} archive_rev=${a.rev}`;
+        for (let i = offset; i < offset + count; i++) answer += `\nbank=${i} name=${a.banks[i].name}`;
+        return answer;
+      }
+      case "archive.bank": {
+        if (!supported || a.banks === null) return "err daemon_not_ready no archive open";
+        if (!ops.length) return "err invalid_payload bank needs an index";
+        const i = archiveIndex(ops[0]);
+        if (i === null || i >= a.banks.length) return "err invalid_payload cannot open that bank";
+        // Asking for the bank already open is not a change.
+        if (a.bank !== i) {
+          a.bank = i;
+          a.rev++;
+        }
+        return `ok patches=${a.banks[i].patches.length} bank=${i} archive_rev=${a.rev}`;
+      }
+      case "archive.patches": {
+        if (!supported || a.bank < 0) return "err daemon_not_ready no bank open";
+        const patches = a.banks[a.bank].patches;
+        const [offset, count] = paged(req, patches.length);
+        let answer = `ok total=${patches.length} bank=${a.bank} archive_rev=${a.rev}`;
+        for (let i = offset; i < offset + count; i++) answer += `\npatch=${i} name=${patches[i].name}`;
+        return answer;
+      }
+      case "archive.load": {
+        if (!supported || (a.bank < 0 && ops.length < 2)) return "err daemon_not_ready no bank open";
+        if (!ops.length) return "err invalid_payload load needs an index";
+        const i = archiveIndex(ops[0]);
+        if (i === null) return "err invalid_payload bad index";
+        if (ops.length >= 2) {
+          if (a.banks === null) return "err daemon_not_ready no archive open";
+          const b = archiveIndex(ops[1]);
+          if (b === null || b >= a.banks.length) return "err invalid_payload cannot open that bank";
+          // The bank the client is showing is opened first, as archive.bank
+          // would, even if the index then turns out to be out of range.
+          if (a.bank !== b) {
+            a.bank = b;
+            a.rev++;
+          }
+        }
+        const bank = a.banks[a.bank];
+        if (i >= bank.patches.length) return "err invalid_payload patch index out of range";
+        const p = bank.patches[i];
+        this.queue.push(p.values.map((v, j) => [j, v]));
+        this.identity = {slot: -1, bank: identityText(bank.name), name: identityText(p.name.trim()),
+          source: "archive", archiveBank: a.bank, archivePatch: i};
+        return `ok count=${PARAMS.length} revision=${this.published.revision} bank=${a.bank} patch=${i}`;
+      }
+      case "archive.close": {
+        if (supported) {
+          const changed = a.banks !== null || a.path !== "";
+          a.banks = null;
+          a.bank = -1;
+          a.path = "";
+          if (changed) a.rev++;
+        }
+        this.forgetArchive();
+        return `ok archive_rev=${supported ? a.rev : 0}`;
+      }
+      default:
+        return "err unknown_command unknown command";
+    }
+  }
+
+  // The archive verbs as archive.odin answered them before the archive was
+  // shared: no archive.current, no remembered path to reopen, archive.load
+  // reading only its index, and no generation, bank or patch in an answer.
+  // Not modelled: there a failed archive.open also closed the open archive.
+  // The adapter is never to send one of these to such a daemon, and its tests
+  // look at whether it did.
+  handleOldArchive(req) {
+    if (req.command === "archive.current") return "err unknown_command unknown command";
+    if (req.command === "archive.open" && !req.rest) return "err invalid_payload open needs a path";
+    const operands = req.command === "archive.load" ? req.operands.slice(0, 1) : req.operands;
+    const answer = this.handleArchive({...req, operands});
+    if (!answer.startsWith("ok")) return answer;
+    if (req.command === "archive.close") return "ok";
+    const [head, ...records] = answer.split("\n");
+    const fields = head.split(" ").slice(1).filter(f => !/^(archive_rev|bank|patch)=/.test(f));
+    return ["ok " + fields.join(" "), ...records].join("\n");
+  }
+
+  // The archive that supplied the sound is gone or replaced: the names still
+  // say what is playing, but its indices would name another archive's patch.
+  forgetArchive() {
+    this.identity = {...this.identity, archiveBank: -1, archivePatch: -1};
   }
 }
 

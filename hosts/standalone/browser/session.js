@@ -49,6 +49,54 @@ const MIDI_UNAVAILABLE = new Set(["unknown_command", "daemon_not_ready"]);
 // invalid payload rather than a command too long to frame.
 const MIDI_ID = /^[^\s\x00-\x1f\x7f-\x9f]{1,256}$/;
 
+// What archive.current answers on a daemon that cannot browse an archive:
+// one older than the shared archive, or one with no archive at all. Like a
+// missing MIDI selection, neither stops the page being kept in step, so
+// neither closes it; the page is never sent an `archive` and keeps its own
+// zip handling.
+const ARCHIVE_UNAVAILABLE = new Set(["unknown_command", "daemon_not_ready"]);
+
+// Names per archive.banks or archive.patches: the most the daemon gives in
+// one answer (paged_range in archive.odin), so a listing takes the fewest
+// round trips. The published corpus is 175 banks, so usually one.
+const ARCHIVE_PAGE = 256;
+
+// Reads of the archive begun again because it moved between two pages,
+// before the page is sent what was read anyway and the next poll looks
+// again. A peer would have to move the archive on every round trip to use
+// them all.
+const ARCHIVE_TRIES = 3;
+
+// A path is interpolated into a command, so it must stay on one line: no
+// control character (C0, DEL, C1) and neither Unicode line separator. It goes
+// as UTF-8, which is what its length is counted in, so it must be well formed:
+// a lone surrogate would reach the daemon as U+FFFD, naming another path.
+const ARCHIVE_PATH = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]+$/;
+const ARCHIVE_PATH_MAX = 4096;
+
+// Where the sound came from, as patch.current names it.
+const SOURCES = new Set(["none", "bank", "archive", "file"]);
+
+// The same, for a daemon older than the field, worked out from what it did
+// say. Its archive loads named the inner zip as the bank, and only an entry
+// ending .zip is ever an archive bank (archive_open in archive.odin).
+function oldSource(slot, label, name) {
+  if (slot >= 0) return "bank";
+  if (!label && !name) return "none";
+  if (label === "file") return "file";
+  return /\.zip$/i.test(label) ? "archive" : "bank";
+}
+
+function isIndex(v) {
+  return Number.isSafeInteger(v) && v >= 0;
+}
+
+// The value of the record line starting `key=`, raw to its end; "" if absent.
+function recordLine(lines, key) {
+  const line = lines.find(l => l.startsWith(key + "="));
+  return line === undefined ? "" : line.slice(key.length + 1);
+}
+
 // The daemon's registry, from parameter.list. Parameters it does not register
 // (see src/registry/registry.odin) have no id and cannot be read or set.
 async function readRegistry(daemon, params) {
@@ -116,6 +164,13 @@ class Session {
     // else, so it is then not polled; opening the page's input list still
     // asks.
     this.midiRev = undefined;
+    // archive_rev as last sent to the page; null once the daemon has shown
+    // it has no shared archive (patch.current carries no archive_rev, or
+    // archive.current is refused), which is then not read again on this
+    // connection. archiveStale marks a view sent while the archive was still
+    // moving under the read, so the next poll reads it again.
+    this.archiveRev = undefined;
+    this.archiveStale = false;
     // The bank last sent to or adopted from the page.
     this.model = null;
     // Values for the parameters the daemon does not expose. Only loading a
@@ -198,6 +253,12 @@ class Session {
       // Asked when the page opens its input list, so a device plugged in
       // since the last one shows up.
       case "midi-list": return this.run("midi-list", () => this.sendMidi());
+      // The daemon's archive. Each is only a request: the page is sent the
+      // archive the daemon then has, whether it did as asked or not.
+      case "archive-open": return this.archiveOpen(msg);
+      case "archive-bank": return this.archiveBank(msg);
+      case "archive-load": return this.archiveLoad(msg);
+      case "archive-close": return this.archiveRequest("archive-close", "archive.close");
       default:
         return this.error(msg.type.length <= 32 ? msg.type : "", "unknown_command",
           "unknown message type");
@@ -401,6 +462,64 @@ class Session {
     });
   }
 
+  archiveOpen(msg) {
+    const path = msg.path === undefined ? "" : msg.path;
+    if (typeof path !== "string" || (path !== "" && (!ARCHIVE_PATH.test(path) ||
+        !path.isWellFormed() || Buffer.byteLength(path, "utf8") > ARCHIVE_PATH_MAX))) {
+      return this.error("archive-open", "invalid_payload",
+        "archive-open needs a path of 1 to 4096 bytes on one line, or none");
+    }
+    // No path asks the daemon to reopen the one it remembers.
+    return this.archiveRequest("archive-open", path ? `archive.open ${path}` : "archive.open");
+  }
+
+  archiveBank(msg) {
+    if (!isIndex(msg.index)) {
+      return this.error("archive-bank", "invalid_payload", "archive-bank needs a non-negative integer index");
+    }
+    return this.archiveRequest("archive-bank", `archive.bank ${msg.index}`);
+  }
+
+  // The bank goes with the index because it is the one the page is showing:
+  // a peer may have opened another since, and the daemon then opens the
+  // page's again first, so the patch loaded is the one the page's list names.
+  archiveLoad(msg) {
+    if (!isIndex(msg.bank) || !isIndex(msg.index)) {
+      return this.error("archive-load", "invalid_payload",
+        "archive-load needs a non-negative integer bank and index");
+    }
+    return this.archiveRequest("archive-load", `archive.load ${msg.index} ${msg.bank}`);
+  }
+
+  // Refused or not, the page is sent the archive the daemon has afterwards,
+  // so it never goes on showing a view the daemon does not hold. Another
+  // page learns of the change from archive_rev on its next poll.
+  archiveRequest(kind, command) {
+    this.run(kind, async () => {
+      if (typeof this.archiveRev !== "number") {
+        // A daemon not yet known to share its archive -- one with none to
+        // share, or one asked before sync -- is asked only what cannot change
+        // anything: an older one has archive commands of its own, and what
+        // they did could not be shown. The page is told what it answers.
+        try {
+          await this.daemon.request("archive.current");
+        } catch (err) {
+          if (!(err instanceof DaemonError)) throw err;
+          this.error(kind, err.code, err.message);
+          return;
+        }
+        this.archiveRev = undefined;
+      }
+      try {
+        await this.daemon.request(command);
+      } catch (err) {
+        if (!(err instanceof DaemonError)) throw err;
+        this.error(kind, err.code, err.message);
+      }
+      await this.sendArchive();
+    });
+  }
+
   // A write the page has already painted. Refused, so the page is told and
   // put back to the daemon's values rather than left showing it.
   reject(kind, code, message) {
@@ -476,6 +595,23 @@ class Session {
   }
 
   async step(by) {
+    const current = await this.current();
+    // A patch from the archive steps through its own archive bank, wrapping
+    // round it, so PREV and NEXT stay in the bank the sound came from rather
+    // than jumping to the ordinary one. archive.bank both tells how many
+    // patches that bank has and opens it again if a peer opened another:
+    // archive.load would have to open it anyway.
+    if (current.source === "archive" && current.archiveBank >= 0 && current.archivePatch >= 0) {
+      const opened = await this.daemon.request(`archive.bank ${current.archiveBank}`);
+      const count = opened.int("patches");
+      if (!count) {
+        this.error("patch-step", "empty_bank", "the archive bank has no patches to step to");
+        return;
+      }
+      const to = (((current.archivePatch + by) % count) + count) % count;
+      await this.daemon.request(`archive.load ${to} ${current.archiveBank}`);
+      return;
+    }
     const list = await this.daemon.request("bank.list");
     const filled = [];
     for (const line of list.lines) {
@@ -487,7 +623,7 @@ class Session {
       this.error("patch-step", "empty_bank", "the bank has no patches to step to");
       return;
     }
-    const { slot } = await this.current();
+    const slot = current.slot;
     const n = filled.length;
     // The first step lands on the nearest filled slot in that direction,
     // wherever the daemon is (an empty slot, or none); the rest walk filled
@@ -509,12 +645,16 @@ class Session {
 
   async sync() {
     const current = await this.current();
+    // A daemon whose patch.current has no archive_rev predates the shared
+    // archive: the page is never sent one, and keeps its own zip handling.
+    if (current.archiveRev === undefined) this.archiveRev = null;
     await this.sendBank(current.bankRev);
     const snap = await this.snapshot(current.slot);
     this.forceFull = false;
     this.sendState(snap.values);
     this.revision = snap.revision;
     this.sendIdentity(current);
+    if (this.archiveRev !== null) await this.sendArchive();
     await this.sendMidi();
     if (!this.polling) {
       this.polling = true;
@@ -534,13 +674,16 @@ class Session {
 
   // One patch.current per tick says what moved. Bank first, because adopting
   // it makes the page load slot 0; the daemon's values go over that; the
-  // identity goes last so it names what is now on screen. The MIDI selection
-  // is apart from all three and has its own generation, midi_rev.
+  // identity goes last so it names what is now on screen. The archive and the
+  // MIDI selection are apart from all three and each has its own generation,
+  // archive_rev and midi_rev.
   async tick() {
     const current = await this.current();
     const bankMoved = current.bankRev !== this.bankRev;
-    const idMoved = !this.identity || current.slot !== this.identity.slot ||
-      current.bank !== this.identity.bank || current.name !== this.identity.name;
+    const was = this.identity;
+    const idMoved = !was || current.slot !== was.slot || current.bank !== was.bank ||
+      current.name !== was.name || current.source !== was.source ||
+      current.archiveBank !== was.archiveBank || current.archivePatch !== was.archivePatch;
     if (bankMoved) await this.sendBank(current.bankRev);
     const full = bankMoved || this.forceFull;
     if (full || idMoved || current.revision !== this.revision || this.anyExpired()) {
@@ -554,6 +697,9 @@ class Session {
       this.revision = snap.revision;
     }
     if (bankMoved || idMoved) this.sendIdentity(current);
+    if (this.archiveRev !== null && (current.archiveRev !== this.archiveRev || this.archiveStale)) {
+      await this.sendArchive();
+    }
     if (this.midiRev !== null) {
       const midi = await this.midiCurrent();
       if (!midi || midi.rev !== this.midiRev) await this.sendMidi(midi);
@@ -579,7 +725,19 @@ class Session {
       if (label === undefined && line.startsWith("bank=")) label = line.slice(5);
       else if (name === undefined && line.startsWith("name=")) name = line.slice(5);
     }
-    return { slot, bankRev, revision, bank: label || "", name: name || "" };
+    label = label || "";
+    name = name || "";
+    const given = r.field("source");
+    const archiveBank = r.int("archive_bank");
+    const archivePatch = r.int("archive_patch");
+    return {
+      slot, bankRev, revision, bank: label, name,
+      source: SOURCES.has(given) ? given : oldSource(slot, label, name),
+      // undefined on a daemon older than the shared archive.
+      archiveRev: r.int("archive_rev"),
+      archiveBank: archiveBank === undefined ? -1 : archiveBank,
+      archivePatch: archivePatch === undefined ? -1 : archivePatch,
+    };
   }
 
   async snapshot(slot) {
@@ -675,14 +833,118 @@ class Session {
   // the bank it just adopted selected. "Untitled" is the panel's own name for
   // a sound nobody named. What is cached stays the daemon's own word, or the
   // next poll would see a change that is not there.
+  //
+  // `index` is only ever an ordinary slot. Where an archive patch came from
+  // goes apart, in `archive`, so a page cannot mark slot 5 of the ordinary
+  // bank as playing because patch 5 of an archive bank is.
   sendIdentity(current) {
-    this.identity = { slot: current.slot, bank: current.bank, name: current.name };
+    this.identity = {
+      slot: current.slot, bank: current.bank, name: current.name, source: current.source,
+      archiveBank: current.archiveBank, archivePatch: current.archivePatch,
+    };
+    const archived = current.source === "archive" && current.archiveBank >= 0 && current.archivePatch >= 0;
     this.send({
       type: "patch",
       name: current.name || "Untitled",
       index: current.slot >= 0 ? current.slot : null,
       bank: current.bank,
+      source: current.source,
+      archive: archived ? { bank: current.archiveBank, patch: current.archivePatch } : null,
     });
+  }
+
+  // The daemon's archive, read whole and sent as one `archive`: its path,
+  // every bank's name, the open bank and every name in it. Nothing when the
+  // daemon has no archive to share.
+  async sendArchive() {
+    const view = await this.readArchive();
+    if (!view) return;
+    this.archiveRev = view.rev;
+    this.archiveStale = view.stale;
+    this.send({
+      type: "archive",
+      rev: view.rev,
+      open: view.open,
+      path: view.path,
+      banks: view.banks,
+      bank: view.bank,
+      patches: view.patches,
+    });
+  }
+
+  // A listing takes several requests, and a peer can open another bank or
+  // archive between two of them, so every answer carries archive_rev and one
+  // from another generation starts the read again. On the last try what was
+  // read is kept, marked stale for the next poll to read again.
+  async readArchive() {
+    for (let tries = 1; ; tries++) {
+      let r;
+      try {
+        r = await this.daemon.request("archive.current");
+      } catch (err) {
+        if (err instanceof DaemonError && ARCHIVE_UNAVAILABLE.has(err.code)) {
+          this.archiveRev = null;
+          return null;
+        }
+        throw err;
+      }
+      const rev = r.int("archive_rev");
+      const open = r.int("open");
+      const bank = r.int("bank");
+      if (rev === undefined || (open !== 0 && open !== 1) || bank === undefined) {
+        throw new ConnectionError("malformed archive.current answer");
+      }
+      const view = {
+        rev, open: open === 1, path: recordLine(r.lines, "path"),
+        banks: [], bank: open === 1 && bank >= 0 ? bank : null, patches: [], stale: false,
+      };
+      if (!view.open) return view;
+      const last = tries >= ARCHIVE_TRIES;
+      const banks = await this.archiveNames("archive.banks", "bank", rev, null);
+      if (banks.moved && !last) continue;
+      view.banks = banks.names;
+      view.stale = banks.moved;
+      if (view.bank !== null) {
+        const patches = await this.archiveNames("archive.patches", "patch", rev, view.bank);
+        if (patches.moved && !last) continue;
+        view.patches = patches.names;
+        view.stale = view.stale || patches.moved;
+      }
+      return view;
+    }
+  }
+
+  // Every name a listing verb pages through, by its index, raw to the end of
+  // its line: the daemon's spaces are the name's. `moved` when an answer is
+  // from another generation than `rev`, or another bank than `bank`, or was
+  // refused because what it lists has gone.
+  async archiveNames(verb, key, rev, bank) {
+    const names = [];
+    const record = new RegExp(`^${key}=(\\d+) name=(.*)$`, "s");
+    for (let offset = 0; ; offset += ARCHIVE_PAGE) {
+      let r;
+      try {
+        r = await this.daemon.request(`${verb} ${offset} ${ARCHIVE_PAGE}`);
+      } catch (err) {
+        if (!(err instanceof DaemonError)) throw err;
+        return { names: Array.from(names, n => n || ""), moved: true };
+      }
+      const total = r.int("total");
+      if (total === undefined) throw new ConnectionError(`malformed ${verb} answer`);
+      if (r.int("archive_rev") !== rev || (bank !== null && r.int("bank") !== bank)) {
+        return { names: Array.from(names, n => n || ""), moved: true };
+      }
+      let got = 0;
+      for (const line of r.lines) {
+        const m = record.exec(line);
+        if (m && Number(m[1]) < total) {
+          names[Number(m[1])] = m[2];
+          got++;
+        }
+      }
+      if (!got || offset + ARCHIVE_PAGE >= total) break;
+    }
+    return { names: Array.from(names, n => n || ""), moved: false };
   }
 
   // The selection, its generation and its display name come from one

@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import {Event, createWindow, mountIndexSkeleton} from "../ui/support/dom.mjs";
-import {ROOT, connectRaw} from "./support/fake-daemon.mjs";
+import {ROOT, ARCHIVE, ARCHIVE_PATH, connectRaw} from "./support/fake-daemon.mjs";
 import {startEnv, unix, until} from "./support/harness.mjs";
 import {sleep} from "./support/ws-client.mjs";
 
@@ -135,7 +135,7 @@ test("a fresh daemon plays Init, and the strip says so instead of the bank's fir
   const shown = () => page.window.document.getElementById("bank-patch").textContent;
   await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
   await sleep(150);
-  assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: ""});
+  assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1});
   assert.equal(shown(), "Untitled", "not 000:Strings, which is what adopting the bank selected");
   assert.deepEqual(Array.from(page.window.SynthPatch.values()), env.daemon.published.values);
 });
@@ -165,10 +165,145 @@ test("storing a patch from the panel keeps the slot and the name on the strip an
   // daemon had before the store.
   await sleep(300);
   assert.equal(shown(), "020:My Lead");
-  assert.deepEqual(daemon.identity, {slot: 20, bank: "My Bank", name: "My Lead"});
+  assert.deepEqual(daemon.identity, {slot: 20, bank: "My Bank", name: "My Lead", source: "bank", archiveBank: -1, archivePatch: -1});
   assert.deepEqual(writes(daemon).slice(before), ["patch.save 20 My Lead"], "a store is not a whole-bank adoption");
   assert.equal(daemon.bank.slots[20].name, "My Lead");
   assert.equal(page.got.filter(m => m.type === "bank").length, banks, "the bank is not echoed back");
   assert.deepEqual(page.got.filter(m => m.type === "patch").at(-1),
-    {type: "patch", name: "My Lead", index: 20, bank: "My Bank"});
+    {type: "patch", name: "My Lead", index: 20, bank: "My Bank", source: "bank", archive: null});
+});
+
+test("the hosted bank dialog browses the shared archive without replacing the ordinary bank", {
+  skip: !unix || typeof WebSocket !== "function",
+}, async t => {
+  const env = await startEnv(t);
+  const peer = await connectRaw(env.socketPath);
+  t.after(() => peer.close());
+  await peer.request("patch.load 5");
+  const page = bootPanel(env.port);
+  t.after(() => page.close());
+  const w = page.window, doc = w.document;
+  await until(() => page.got.some(m => m.type === "archive"), 5000, "archive capability");
+  assert.deepEqual(Array.from(w.SynthBank.list(), b => b.label), ["My Bank"], "no placeholder bank");
+  w.SynthBrowser.open();
+  const sources = () => doc.querySelectorAll(".browser-source");
+  const slots = () => doc.querySelectorAll(".browser-slot");
+  const shown = () => doc.getElementById("bank-patch").textContent;
+  const marked = () => doc.querySelectorAll(".browser-slot.on");
+  const pathField = doc.querySelector(".browser-archive-path");
+  assert.equal(slots().length, 128);
+  assert.equal(marked()[0].querySelector(".browser-slot-num").textContent, "005");
+  pathField.value = ARCHIVE_PATH;
+  doc.querySelector('[aria-label="Open archive"]').click();
+  await until(() => sources().length === 4, 3000, "ordinary plus three archive banks");
+  assert.deepEqual(sources().map(s => s.querySelector(".browser-source-name").textContent),
+    ["My Bank", ...ARCHIVE.map(b => b.name)]);
+  const revision = env.daemon.published.revision;
+  sources()[1].click();
+  await until(() => slots().length === 8, 3000, "archive bank 0's patches");
+  assert.equal(env.daemon.published.revision, revision, "browsing loads nothing");
+  assert.equal(shown(), "005:Bells");
+  assert.equal(doc.getElementById("bank-name").textContent, "My Bank");
+  assert.match(doc.querySelector(".browser-bank-name").textContent, /^Browsing: aaa bbb/);
+  assert.match(doc.querySelector(".browser-playing").textContent, /Playing: Bells · My Bank · slot 5/);
+  assert.equal(marked().length, 0, "ordinary slot 5 is not archive patch 5");
+  slots()[3].click();
+  await until(() => doc.getElementById("bank").dataset.source === "archive", 3000, "archive provenance");
+  assert.equal(shown(), "003:Bells");
+  assert.equal(w.SynthBank.index(), -1, "no stale ordinary slot");
+  assert.equal(marked()[0].querySelector(".browser-slot-num").textContent, "003");
+  assert.equal(page.sent.at(-1).type, "archive-load");
+  assert.equal(env.daemon.commands("archive.load").at(-1), "archive.load 3 0");
+  assert.equal(env.daemon.bank.label, "My Bank");
+  assert.deepEqual(env.daemon.commands("bank.load_file"), [], "no flattened bank");
+
+  // A peer's browse moves the open bank, but not the playing patch.
+  await peer.request("archive.bank 1");
+  await until(() => slots().length === 3, 3000, "the peer's bank");
+  assert.equal(marked().length, 0);
+  assert.equal(shown(), "003:Bells");
+  sources()[0].click();
+  assert.equal(slots().length, 128);
+  assert.equal(marked().length, 0);
+  await peer.request("patch.load 6");
+  await until(() => shown() === "006:Organ", 3000, "ordinary load from peer");
+  assert.equal(sources().length, 4, "archive banks survive a cross-client ordinary load");
+  assert.equal(marked()[0].querySelector(".browser-slot-num").textContent, "006");
+  assert.equal(doc.getElementById("bank").dataset.source, "bank");
+  await peer.request("archive.bank 0");
+  await sleep(60);
+  assert.equal(slots().length, 128, "ordinary browsing does not follow archive navigation");
+
+  // ZIP input is deliberately not the panel's old local parser in this mode.
+  const sent = page.sent.length;
+  await assert.rejects(w.SynthPatchFile.loadBytes(new Uint8Array([80, 75, 3, 4]), "banks.zip"),
+    /Archive field in Patches/);
+  assert.equal(page.sent.length, sent);
+  assert.deepEqual(env.daemon.commands("bank.load_file"), []);
+
+  // A replacement ordinary bank stays in its one row, with the archive next
+  // to it, even while the archive is being browsed.
+  sources()[1].click();
+  await until(() => slots().length === 8, 3000, "archive bank 0 again");
+  const bankFile = path.join(env.dir, "replacement.json");
+  fs.writeFileSync(bankFile, JSON.stringify({format: "quesynth.bank", version: 1,
+    name: "Replacement", patches: [{name: "Only", parameters: {}}]}));
+  const before = page.got.length;
+  await peer.request(`bank.load_file ${bankFile}`);
+  // The identity always follows a new bank, which on its own shows slot 0.
+  await until(() => page.got.slice(before).some(m => m.type === "patch"), 3000, "the bank and its identity");
+  assert.ok(sources()[0].textContent.includes("Replacement"), "replaced ordinary row");
+  assert.equal(sources().length, 4);
+  assert.equal(slots().length, 8, "still browsing the archive");
+  assert.equal(shown(), "Organ", "old slot invalidated, old provenance name retained");
+  assert.equal(doc.getElementById("bank-name").textContent, "My Bank");
+
+  doc.querySelector('[aria-label="Close archive"]').click();
+  await until(() => sources().length === 1, 3000, "closed archive");
+  assert.equal(slots().length, 128);
+  assert.equal(pathField.value, "");
+});
+
+test("the hosted WRITE dialog targets only the ordinary bank while an archive patch is playing", {
+  skip: !unix || typeof WebSocket !== "function",
+}, async t => {
+  const env = await startEnv(t, {daemon: {archivePath: ARCHIVE_PATH}});
+  const peer = await connectRaw(env.socketPath);
+  t.after(() => peer.close());
+  await peer.request("archive.load 1 1");
+  const page = bootPanel(env.port);
+  t.after(() => page.close());
+  const w = page.window, doc = w.document;
+  await until(() => page.got.some(m => m.type === "archive"), 5000, "archive capability");
+  w.SynthBrowser.open();
+  doc.querySelectorAll(".browser-source")[2].click();
+  await until(() => w.SynthBank.browsing().bank === 1 && !w.SynthBank.browsing().loading, 3000);
+  w.SynthBrowser.write();
+  assert.equal(doc.querySelectorAll(".browser-source").length, 1);
+  assert.equal(doc.querySelectorAll(".browser-slot").length, 128);
+  assert.ok(doc.querySelector(".browser-archive").hidden);
+  doc.querySelectorAll(".browser-slot")[20].click();
+  doc.querySelector(".browser-save-name").value = "Archive Copy";
+  doc.querySelector(".browser-save").dispatchEvent(new Event("submit"));
+  await until(() => env.daemon.identity.slot === 20, 3000, "saved to ordinary slot");
+  assert.equal(env.daemon.identity.source, "bank");
+  assert.deepEqual(env.daemon.commands("patch.save"), ["patch.save 20 Archive Copy"]);
+  assert.equal(env.daemon.bank.slots[20].values[19], ARCHIVE[1].patches[1].values[19]);
+  assert.equal(env.daemon.archive.bank, 1);
+});
+
+test("on a daemon from before the shared archive the hosted page keeps its own zip handling", {
+  skip: !unix || typeof WebSocket !== "function",
+}, async t => {
+  const env = await startEnv(t, {daemon: {legacy: true}});
+  const page = bootPanel(env.port);
+  t.after(() => page.close());
+  const w = page.window;
+  await until(() => page.got.some(m => m.type === "midi"), 5000, "the sync");
+  assert.equal(w.SynthBank.archive(), null);
+  assert.equal(w.document.getElementById("bank").dataset.source, "none");
+  const zip = new Uint8Array(fs.readFileSync(path.join(ROOT, "tests", "zip", "fixtures", "nested.zip")));
+  assert.equal(await w.SynthPatchFile.loadBytes(zip, "nested.zip"), "1 banks");
+  assert.equal(Array.from(w.SynthBank.list()).at(-1).label, "bankA", "listed by the page, unopened");
+  assert.deepEqual(page.sent.filter(m => /^archive-/.test(m.type)), []);
 });

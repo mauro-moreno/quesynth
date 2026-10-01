@@ -27,7 +27,7 @@ test("sync answers bank, then state, then patch: 99 dense values and no slot", {
   assert.equal(state.values[19], 12);
   // The panel ignores an empty name, so a daemon with none is shown as the
   // panel's own "Untitled".
-  assert.deepEqual(patch, {type: "patch", name: "Untitled", index: null, bank: ""});
+  assert.deepEqual(patch, {type: "patch", name: "Untitled", index: null, bank: "", source: "none", archive: null});
   assert.equal(HIDDEN.length, 7, "the registry leaves seven parameters out");
 });
 
@@ -37,7 +37,7 @@ test("after a patch.load the page is told the slot, and unexposed parameters com
   await peer.request("patch.load 5");
   const ws = await env.open();
   const {state, patch} = await ws.synced();
-  assert.deepEqual(patch, {type: "patch", name: "Bells", index: 5, bank: "My Bank"});
+  assert.deepEqual(patch, {type: "patch", name: "Bells", index: 5, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(state.values, env.daemon.bank.slots[5].values);
   for (const i of HIDDEN) assert.equal(state.values[i], env.daemon.engine[i]);
 });
@@ -46,8 +46,8 @@ test("a fresh daemon's sound is Untitled, and staying so is not a change to anno
   const env = await startEnv(t);
   const ws = await env.open();
   const {patch} = await ws.synced();
-  assert.deepEqual(patch, {type: "patch", name: "Untitled", index: null, bank: ""});
-  assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: ""}, "the daemon's own word is unchanged");
+  assert.deepEqual(patch, {type: "patch", name: "Untitled", index: null, bank: "", source: "none", archive: null});
+  assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1}, "the daemon's own word is unchanged");
   assert.deepEqual(await ws.quiet(120, "patch"), [], "the empty identity is not re-sent every poll");
 });
 
@@ -63,8 +63,8 @@ test("a file-like state clears the identity and a second page is told Untitled",
   const values = env.daemon.bank.slots[5].values.slice();
   values[19] = (values[19] + 1) % 128;
   writer.send({type: "state", values});
-  assert.deepEqual(await reader.next("patch"), {type: "patch", name: "Untitled", index: null, bank: ""});
-  assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: ""});
+  assert.deepEqual(await reader.next("patch"), {type: "patch", name: "Untitled", index: null, bank: "", source: "none", archive: null});
+  assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1});
 });
 
 test("one parameter changed by another client arrives as a param", {skip: !unix}, async t => {
@@ -97,7 +97,7 @@ test("a TUI-style patch.load sends state and patch, and no bank", {skip: !unix},
   await peer.request("patch.load 5");
   const state = await ws.next("state");
   assert.deepEqual(state.values, env.daemon.bank.slots[5].values);
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Bells", index: 5, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Bells", index: 5, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(await ws.quiet(100, "bank"), []);
 });
 
@@ -112,6 +112,6 @@ test("a patch.save by another client sends the bank, then state, then patch", {s
   assert.equal(bank.text, writeBank(env.daemon.bank));
   assert.equal(JSON.parse(bank.text).patches[20].name, "My Sound");
   await ws.next("state");
-  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "My Sound", index: 20, bank: "My Bank"});
+  assert.deepEqual(await ws.next("patch"), {type: "patch", name: "My Sound", index: 20, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(ws.received.slice(before).map(m => m.type), ["bank", "state", "patch"]);
 });

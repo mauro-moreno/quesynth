@@ -200,15 +200,18 @@ export class TestSocket {
     return this.inbox.splice(0);
   }
 
-  // The handshake a page does on load: sync, then bank, state, patch, and
-  // last the daemon's MIDI selection.
+  // The handshake a page does on load: sync, then bank, state, patch, the
+  // daemon's archive when it has one to share, and last its MIDI selection.
+  // `archive` is null when none came before the `midi`.
   async synced() {
     this.send({type: "sync"});
     const bank = await this.next("bank");
     const state = await this.next("state");
     const patch = await this.next("patch");
-    const midi = await this.next("midi");
-    return {bank, state, patch, midi};
+    const after = await this.next(m => m.type === "archive" || m.type === "midi");
+    const archive = after.type === "archive" ? after : null;
+    const midi = archive ? await this.next("midi") : after;
+    return {bank, state, patch, archive, midi};
   }
 
   close(code = 1000) {
