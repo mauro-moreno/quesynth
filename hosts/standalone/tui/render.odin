@@ -100,6 +100,15 @@ present :: proc(title: string, body: []string, footer: []string, theme: Theme) {
 	terminal_write(strings.to_string(b))
 }
 
+// A refused archive/config change must remain visible through polling. Use
+// the last footer row in every view, so startup migration errors show too.
+render_notice :: proc(message: string, theme: Theme) {
+	if message == "" { return }
+	rows, cols := terminal_size()
+	line := paint(theme, theme.warning, fmt.tprintf("Error: %s", message))
+	terminal_write(fmt.tprintf("\x1b[%d;1H%s", max(rows, 6)-1, box_line(line, max(cols, 24)-4, theme)))
+}
+
 // The visible width of a string in terminal cells: runes counted, ANSI colour
 // escapes skipped. Enough for this UI, whose content is ASCII and box glyphs.
 @(private)
@@ -249,7 +258,7 @@ render :: proc(
 		)
 		// Two lines: on one, the last keys would be cut off at 80 columns.
 		append(&footer, paint(theme, theme.status, "Tab group   arrows move/change   R reset   Q quit"))
-		append(&footer, paint(theme, theme.status, "B banks   A archive   M midi   C settings"))
+		append(&footer, paint(theme, theme.status, "B banks   M midi   C settings"))
 	}
 	append(&footer, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
 	present("Quesynth", body[:], footer[:], theme)

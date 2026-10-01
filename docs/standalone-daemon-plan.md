@@ -363,6 +363,18 @@ changes, same version:
   open bank closes) and remembers and keeps the path. A path that does not
   open answers `err invalid_payload cannot open archive` and leaves the
   archive already open, and its open bank, as they were.
+  An explicit path is persisted before replacing the open archive. Failure
+  answers `err internal_error cannot keep archive path`, preserving the old
+  file, archive, open bank, generation and playing identity. Reopening the
+  remembered path writes nothing.
+- `archive.adopt <path>` → `ok adopted=<0|1> open=<0|1> banks=<n>
+  archive_rev=<uint>`. A legacy client hands its path over in this single
+  request, not a separate `archive.current` followed by `archive.open`.
+  The daemon opens and keeps it only when neither an archive nor a remembered
+  path exists. Otherwise `adopted=0` changes nothing, even if the remembered
+  archive cannot open. An empty path answers `err invalid_payload adopt needs
+  a path`; an adopting request has the same open/persistence refusals as
+  `archive.open`. A successful adoption reports `adopted=1`.
 - `archive.banks <offset> <count>` → `ok total=<n> archive_rev=<uint>`, then
   the `bank=<i> name=<name>` records as before.
 - `archive.bank <i>` → `ok patches=<n> bank=<i> archive_rev=<uint>`. Asking
@@ -379,9 +391,13 @@ changes, same version:
   before.
 - `archive.close` → `ok archive_rev=<uint>`: close the archive and forget the
   path, here and in the file it is kept in. Fine with nothing open.
+  If the kept file cannot be removed, `err internal_error cannot forget
+  archive path` leaves the archive, path, generation and identity unchanged.
+  A missing kept file is already forgotten and is not an error.
 
 Every other archive reply and refusal is unchanged. `archive_rev` starts at 0
-and adds 1 on every successful `archive.open`, on an `archive.close` that had
+and adds 1 on every successful `archive.open` or adopting `archive.adopt`, on
+an `archive.close` that had
 an archive open or a path remembered, and whenever the open bank actually
 changes — `archive.bank`, or `archive.load` naming another bank. It is a
 generation of its own, apart from `bank_rev`, and `patch.current` reports it
@@ -394,7 +410,9 @@ changes its open bank or path, whichever client sends it.
 The remembered path is kept, one line ending in a newline, in
 `$XDG_CONFIG_HOME/quesynth/archive.path`, else
 `~/.config/quesynth/archive.path`: written atomically on each successful
-`archive.open`, removed by `archive.close`. Only `run_daemon` points an
+explicit `archive.open` or adopting `archive.adopt`, removed by
+`archive.close`. Writes use a temporary file, sync, close and rename, with
+temporary-file cleanup on failure. Only `run_daemon` points an
 archive at that file, so a test driving the handlers never writes the user's
 config. At startup the daemon reads it, remembers the path and tries to open
 it. That is no change any client could have missed: `archive_rev` stays 0. A
@@ -637,12 +655,11 @@ navigator, as `B` does from either level; `B` again reopens where it was left.
 a patch file, `L` a bank file, `Z` prompts for an archive to open in the
 daemon (blank keeps the one open), and `Q` quits from anywhere. The footer
 shows the archive's path (or `no archive - Z opens one`) and
-`playing: <name> | <bank> | slot <k>` (or `archive #<i>`). `A` from the synth
-screen goes straight to the archive's banks, on the open bank: when no archive
-is open it reopens the remembered one, or asks for a path. The settings
-screen's "Zip archive" shows and sets the daemon's remembered path — a path is
-`archive.open`, a blank one `archive.close` — while "User bank" stays in the
-TUI's own `config.conf`.
+`playing: <name> | <bank> | slot <k>` (or `archive #<i>`). There is no separate
+Archive screen or `A` shortcut; ZIP banks are in the same `B` navigator as the
+ordinary bank. The settings screen's "Zip archive" shows and sets the
+daemon's remembered path: a path is `archive.open`, a blank one
+`archive.close`. "User bank" stays in the TUI's own `config.conf`.
 
 While the navigator or the settings screen is up, every refresh reads
 `patch.current` as the synth screen does. A moved `bank_rev` re-reads the
@@ -652,12 +669,20 @@ bank the daemon has open, whoever opened it. One browsing the ordinary bank
 stays there while only the archive's rows change.
 
 Before the daemon kept the archive path, the TUI kept it as `archive = <path>`
-in its `config.conf`. On connecting, a TUI that still has that line and finds
-the daemon remembering no archive (`open=0`, empty `path`) hands it over with
-`archive.open`, and drops the line only once the daemon has taken it; a path
-that does not open stays in `config.conf` for the next try. A successful edit
-of "Zip archive" drops it too, so a path forgotten there is not handed over
-again.
+in its `config.conf`. On connecting, a TUI that still has that line sends
+`archive.adopt`. The daemon decides whether to take it and opens it in the
+same request, so a peer's choice cannot be overwritten between a client's
+check and open. Only `adopted=1` removes the legacy lines; a refused path,
+an existing daemon choice or an older daemon leaves them for a later try.
+A successful edit of "Zip archive" drops them too, so a path forgotten there
+is not handed over again. Both settings edits and migration preserve unrelated
+text, comments, blank lines, unknown keys and line endings. A bank edit changes
+only the last effective bank value. Writes use a unique same-directory temp
+file, sync, close and rename, cleaning up on failure. An unsuccessful write
+leaves the old config intact and reports an error in the TUI. Archive protocol
+refusals likewise stay visible until the next keypress; polling does not
+clear them. If the daemon accepts a change but local legacy-line cleanup
+fails, the TUI reports that partial result and keeps the local retry path.
 
 **Dependencies.** Slices 4, 5.
 

@@ -59,46 +59,44 @@ Archive :: struct {
 	rev:           uint,
 }
 
-// Open and index an archive: read its central directory and note which entries
-// are inner bank zips. The file stays open for on-demand reads until close.
-//
-// The archive already open is let go only once the new one has indexed: a path
-// that does not open must not take away the archive another client is in the
-// middle of browsing.
-archive_open :: proc(a: ^Archive, path: string) -> bool {
+// Read an archive's central directory and note which entries are inner bank
+// zips, without touching the archive already open. The file stays open for
+// on-demand reads until the result is swapped in or released.
+@(private = "file")
+archive_index :: proc(path: string) -> (fresh: Archive, ok: bool) {
 	f, err := os.open(path)
 	if err != nil {
-		return false
+		return
 	}
 	size, serr := os.file_size(f)
 	if serr != nil || size < 22 {
 		os.close(f)
-		return false
+		return
 	}
 	tail_len := min(size, 65557) // 22-byte record + 65535-byte max comment
 	tail := make([]u8, tail_len, context.temp_allocator)
 	tn, terr := os.read_at(f, tail, size - tail_len)
 	if terr != nil {
 		os.close(f)
-		return false
+		return
 	}
 	cd_offset, cd_size, count, found := zip.find_eocd(tail[:tn])
 	if !found {
 		os.close(f)
-		return false
+		return
 	}
 	cd := make([]u8, cd_size)
 	cn, cerr := os.read_at(f, cd, i64(cd_offset))
 	if cerr != nil || cn != int(cd_size) {
 		delete(cd)
 		os.close(f)
-		return false
+		return
 	}
 	entries, parsed := zip.parse_central(cd, 0, cd_size, count)
 	if !parsed {
 		delete(cd)
 		os.close(f)
-		return false
+		return
 	}
 	banks: [dynamic]int
 	for e, i in entries {
@@ -106,17 +104,43 @@ archive_open :: proc(a: ^Archive, path: string) -> bool {
 			append(&banks, i)
 		}
 	}
+	fresh = {
+		file         = f,
+		cd           = cd,
+		entries      = entries,
+		bank_indices = banks[:],
+		open         = true,
+	}
+	return fresh, true
+}
+
+// Make an indexed archive the open one, remembering path. The archive already
+// open is let go only here, once the new one has indexed: a path that does not
+// open must not take away the archive another client is in the middle of
+// browsing.
+@(private = "file")
+archive_swap :: proc(a: ^Archive, path: string, fresh: Archive) {
 	// Cloned before the old path goes: reopening the remembered archive passes
 	// a.path itself.
 	remembered := strings.clone(path)
 	archive_release(a)
 	delete(a.path)
 	a.path = remembered
-	a.file = f
-	a.cd = cd
-	a.entries = entries
-	a.bank_indices = banks[:]
+	a.file = fresh.file
+	a.cd = fresh.cd
+	a.entries = fresh.entries
+	a.bank_indices = fresh.bank_indices
 	a.open = true
+}
+
+// Open and index an archive and make it the open one, without keeping its
+// path anywhere: how a start reopens the archive the last run kept.
+archive_open :: proc(a: ^Archive, path: string) -> bool {
+	fresh, ok := archive_index(path)
+	if !ok {
+		return false
+	}
+	archive_swap(a, path, fresh)
 	return true
 }
 
@@ -246,14 +270,14 @@ archive_restore :: proc(a: ^Archive, keep_path: string) {
 	}
 }
 
-// Write the remembered path where the next start reads it. Best effort, as the
-// TUI's own settings are: the archive is open either way, and only the next
-// start would miss it.
+// Write path where the next start reads it, or report that it could not be:
+// the caller then changes nothing, so what is kept and what is open never
+// disagree. True without a keep_path, which keeps nothing.
 @(private = "file")
-archive_keep :: proc(a: ^Archive) {
-	if a.keep_path == "" {return}
-	text := strings.concatenate({a.path, "\n"}, context.temp_allocator)
-	_ = write_file_atomic(a.keep_path, text)
+archive_keep :: proc(a: ^Archive, path: string) -> bool {
+	if a.keep_path == "" {return true}
+	text := strings.concatenate({path, "\n"}, context.temp_allocator)
+	return write_file_atomic(a.keep_path, text)
 }
 
 // The patch's own name from inside its .sy1 (or .json), or "" if it cannot be
@@ -288,6 +312,32 @@ base_name :: proc(path: string) -> string {
 	return p
 }
 
+// Index the archive at path and make it the open one, all or nothing. The
+// path is kept for the next start before the swap, unless keep is false (the
+// remembered path again, which the file already holds), so a path that cannot
+// be kept leaves the open archive, its path, the generation and the playing
+// patch's indices as they were. Writes the refusal and returns false.
+@(private = "file")
+archive_replace :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder, path: string, keep: bool) -> bool {
+	a := cc.archive
+	fresh, ok := archive_index(path)
+	if !ok {
+		control_write_err(out, req, .Invalid_Payload, "cannot open archive")
+		return false
+	}
+	if keep && !archive_keep(a, path) {
+		archive_release(&fresh)
+		control_write_err(out, req, .Internal_Error, "cannot keep archive path")
+		return false
+	}
+	archive_swap(a, path, fresh)
+	a.rev += 1
+	// Even the same path again: the file may have changed under its name, so
+	// the playing patch's indices may no longer name it.
+	identity_forget_archive(cc.identity)
+	return true
+}
+
 // archive.open [path]: index an archive and report how many banks it holds.
 // With no path, the remembered one is opened again.
 @(private)
@@ -297,25 +347,51 @@ control_archive_open :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 		return
 	}
 	path := strings.trim_space(req.rest)
-	if len(path) == 0 {
+	explicit := len(path) > 0
+	if !explicit {
 		path = cc.archive.path
 	}
 	if len(path) == 0 {
 		control_write_err(out, req, .Invalid_Payload, "open needs a path")
 		return
 	}
-	if !archive_open(cc.archive, path) {
-		control_write_err(out, req, .Invalid_Payload, "cannot open archive")
+	if !archive_replace(cc, req, out, path, explicit) {
 		return
 	}
-	cc.archive.rev += 1
-	archive_keep(cc.archive)
-	// Even the same path again: the file may have changed under its name, so
-	// the playing patch's indices may no longer name it.
-	identity_forget_archive(cc.identity)
 	control_write_ok(out, req)
 	strings.write_string(out, " banks=")
 	strings.write_int(out, len(cc.archive.bank_indices))
+	control_write_archive_rev(cc, out)
+}
+
+// archive.adopt <path>: take a path a client holds from before the daemon
+// kept one, unless the daemon has made a choice since -- an archive open, or
+// a path remembered even though it will not open. Deciding and opening are
+// one request, so no peer's open can fall between a client's look and its
+// hand-over.
+@(private)
+control_archive_adopt :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	a := cc.archive
+	if a == nil {
+		control_write_err(out, req, .Daemon_Not_Ready, "no archive support")
+		return
+	}
+	path := strings.trim_space(req.rest)
+	if len(path) == 0 {
+		control_write_err(out, req, .Invalid_Payload, "adopt needs a path")
+		return
+	}
+	adopt := !a.open && a.path == ""
+	if adopt && !archive_replace(cc, req, out, path, true) {
+		return
+	}
+	control_write_ok(out, req)
+	strings.write_string(out, " adopted=")
+	strings.write_int(out, adopt ? 1 : 0)
+	strings.write_string(out, " open=")
+	strings.write_int(out, a.open ? 1 : 0)
+	strings.write_string(out, " banks=")
+	strings.write_int(out, a.open ? len(a.bank_indices) : 0)
 	control_write_archive_rev(cc, out)
 }
 
@@ -520,15 +596,22 @@ control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 }
 
 // archive.close: release the archive and any open bank, and forget the path, so
-// neither this daemon nor the next one reopens it.
+// neither this daemon nor the next one reopens it. The kept path goes first: if
+// it cannot be removed nothing is released, so what is kept and what is open
+// never disagree.
 @(private)
 control_archive_close :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	if a := cc.archive; a != nil {
+		if a.keep_path != "" {
+			if rerr := os.remove(a.keep_path); rerr != nil && rerr != os.General_Error.Not_Exist {
+				control_write_err(out, req, .Internal_Error, "cannot forget archive path")
+				return
+			}
+		}
 		changed := a.open || a.path != ""
 		archive_release(a)
 		delete(a.path)
 		a.path = ""
-		if a.keep_path != "" {_ = os.remove(a.keep_path)}
 		if changed {a.rev += 1}
 	}
 	identity_forget_archive(cc.identity)

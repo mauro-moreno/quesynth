@@ -18,6 +18,8 @@ import "../../../src/control"
 Client :: struct {
 	fd:      posix.FD,
 	next_id: int,
+	// Archive/config errors survive periodic reads until the next user action.
+	notice:  string,
 }
 
 // A total round-trip bound, not an inactivity timer: a trickling or stopped
@@ -56,10 +58,17 @@ client_connect :: proc(path: string) -> (Client, bool) {
 }
 
 client_close :: proc(cl: ^Client) {
+	delete(cl.notice)
+	cl.notice = ""
 	if cl.fd >= 0 {
 		posix.close(cl.fd)
 		cl.fd = -1
 	}
+}
+
+client_set_notice :: proc(cl: ^Client, message: string) {
+	delete(cl.notice)
+	cl.notice = strings.clone(message)
 }
 
 // The current stored value of a parameter. ok=false on a transport error, which
@@ -397,11 +406,21 @@ client_archive_open :: proc(cl: ^Client, path: string) -> (banks: int, ok: bool)
 		: fmt.tprintf("%d %d archive.open %s", control.PROTOCOL_VERSION, cl.next_id, path)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
-	if !sent { return 0, false }
 	defer delete(payload)
-	resp, parsed := control.response_parse(payload)
-	if !parsed || resp.status != .Ok { return 0, false }
+	resp, accepted := client_archive_response(cl, payload, sent)
+	if !accepted { return 0, false }
 	return client_field_int(resp.fields, "banks"), true
+}
+
+// The daemon decides and opens in one request. A peer's existing choice,
+// including a remembered path that will not open, is never overwritten.
+client_archive_adopt :: proc(cl: ^Client, path: string) -> bool {
+	line := fmt.tprintf("%d %d archive.adopt %s", control.PROTOCOL_VERSION, cl.next_id, path)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	defer delete(payload)
+	resp, accepted := client_archive_response(cl, payload, sent)
+	return accepted && client_field_int(resp.fields, "adopted") == 1
 }
 
 client_archive_bank :: proc(cl: ^Client, index: int) -> (patches: int, ok: bool) {
@@ -426,7 +445,29 @@ client_archive_load :: proc(cl: ^Client, index: int, bank := -1) -> bool {
 }
 
 client_archive_close :: proc(cl: ^Client) -> bool {
-	return client_ok(cl, fmt.tprintf("%d %d archive.close", control.PROTOCOL_VERSION, cl.next_id))
+	line := fmt.tprintf("%d %d archive.close", control.PROTOCOL_VERSION, cl.next_id)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	defer delete(payload)
+	_, accepted := client_archive_response(cl, payload, sent)
+	return accepted
+}
+
+// Keep the refusal until it has been shown, not just until the next periodic
+// state read. A protocol refusal leaves the connection usable.
+@(private = "file")
+client_archive_response :: proc(cl: ^Client, payload: []u8, sent: bool) -> (control.Response, bool) {
+	if !sent {
+		client_set_notice(cl, "archive request failed: daemon disconnected")
+		return {}, false
+	}
+	resp, parsed := control.response_parse(payload)
+	if !parsed {
+		client_set_notice(cl, "invalid archive response")
+		return {}, false
+	}
+	client_set_notice(cl, resp.status == .Ok ? "" : resp.fields)
+	return resp, resp.status == .Ok
 }
 
 // What archive.current says the daemon has open. The archive is the daemon's,

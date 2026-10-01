@@ -58,72 +58,102 @@ config_load :: proc() -> Config {
 		val := strings.trim_space(line[eq + 1:])
 		switch key {
 		case "archive":
+			delete(c.archive_path)
 			c.archive_path = strings.clone(val)
 		case "bank":
+			delete(c.bank_path)
 			c.bank_path = strings.clone(val)
 		}
 	}
 	return c
 }
 
-// Write the settings back, best effort. A failure to write (an unwritable config
-// directory) is silent: the setting still holds for this run, it just will not be
-// remembered for the next.
-config_save :: proc(c: Config) {
-	path, ok := config_file_path(context.temp_allocator)
-	if !ok {
-		return
-	}
-	if slash := strings.last_index_byte(path, '/'); slash > 0 {
-		make_directory_all_config(path[:slash])
-	}
-	b := strings.builder_make(context.temp_allocator)
-	strings.write_string(&b, "# Quesynth front-end settings.\n")
-	if c.archive_path != "" {
-		fmt.sbprintf(&b, "archive = %s\n", c.archive_path)
-	}
-	if c.bank_path != "" {
-		fmt.sbprintf(&b, "bank = %s\n", c.bank_path)
-	}
-	_ = os.write_entire_file_from_string(path, strings.to_string(b))
+// Only the bank belongs to this front-end now. Leave the legacy archive and
+// every unrelated byte alone; that path goes only after the daemon takes it.
+config_save :: proc(c: Config) -> bool {
+	return config_edit("bank", c.bank_path, false)
 }
 
-// Take the `archive =` lines out of the settings file once the daemon has the
-// path, and leave every other byte as it is: the rest is the user's, not the
-// hand-off's to rewrite. Best effort, as config_save is.
-config_drop_archive :: proc() {
-	path, ok := config_file_path(context.temp_allocator)
-	if !ok {
-		return
-	}
-	data, rerr := os.read_entire_file(path, context.temp_allocator)
-	if rerr != nil {
-		return
-	}
-	b := strings.builder_make(context.temp_allocator)
-	rest := string(data)
-	for len(rest) > 0 {
-		raw := rest
-		if nl := strings.index_byte(rest, '\n'); nl >= 0 {
-			raw = rest[:nl + 1]
-		}
-		rest = rest[len(raw):]
-		line := strings.trim_space(raw)
-		eq := strings.index_byte(line, '=')
-		if len(line) > 0 && line[0] != '#' && eq >= 0 && strings.trim_space(line[:eq]) == "archive" {
-			continue
-		}
-		strings.write_string(&b, raw)
-	}
-	_ = os.write_entire_file_from_string(path, strings.to_string(b))
+config_drop_archive :: proc() -> bool {
+	return config_edit("archive", "", true)
 }
 
 @(private = "file")
-make_directory_all_config :: proc(dir: string) {
-	for i in 1 ..< len(dir) {
-		if dir[i] == '/' {
-			os.make_directory(dir[:i])
-		}
+config_edit :: proc(key, value: string, remove: bool) -> bool {
+	path, ok := config_file_path(context.temp_allocator)
+	if !ok { return false }
+	data, rerr := os.read_entire_file(path, context.temp_allocator)
+	if rerr != nil && rerr != os.General_Error.Not_Exist { return false }
+	text := string(data)
+	// The loader uses the last duplicate. Edit that value, not earlier lines
+	// the user may have kept as notes. Dropping archive removes every retry.
+	last := -1
+	for rest := text; len(rest) > 0; {
+		start := len(text) - len(rest)
+		raw := config_take_line(&rest)
+		if config_key(raw) == key { last = start }
 	}
-	os.make_directory(dir)
+	b := strings.builder_make(context.temp_allocator)
+	for rest := text; len(rest) > 0; {
+		start := len(text) - len(rest)
+		raw := config_take_line(&rest)
+		if config_key(raw) != key || (!remove && start != last) {
+			strings.write_string(&b, raw)
+			continue
+		}
+		if remove { continue }
+		eq := strings.index_byte(raw, '=')
+		begin := eq + 1
+		for begin < len(raw) && (raw[begin] == ' ' || raw[begin] == '\t') { begin += 1 }
+		end := len(strings.trim_right_space(raw))
+		end = max(end, begin)
+		strings.write_string(&b, raw[:begin])
+		strings.write_string(&b, value)
+		strings.write_string(&b, raw[end:])
+	}
+	if last < 0 && !remove && value != "" {
+		if len(text) > 0 && text[len(text)-1] != '\n' { strings.write_byte(&b, '\n') }
+		fmt.sbprintf(&b, "%s = %s\n", key, value)
+	}
+	after := strings.to_string(b)
+	if after == text { return true }
+	return config_write_atomic(path, after)
+}
+
+// Keep line terminators rather than split/rejoin, including CRLF and an
+// unterminated last line.
+@(private = "file")
+config_take_line :: proc(rest: ^string) -> string {
+	raw := rest^
+	if nl := strings.index_byte(raw, '\n'); nl >= 0 { raw = raw[:nl+1] }
+	rest^ = rest^[len(raw):]
+	return raw
+}
+
+@(private = "file")
+config_key :: proc(raw: string) -> string {
+	line := strings.trim_space(raw)
+	if len(line) == 0 || line[0] == '#' { return "" }
+	if eq := strings.index_byte(line, '='); eq >= 0 { return strings.trim_space(line[:eq]) }
+	return ""
+}
+
+@(private = "file")
+config_write_atomic :: proc(path, text: string) -> bool {
+	slash := strings.last_index_byte(path, '/')
+	dir := slash > 0 ? path[:slash] : "."
+	if err := os.make_directory_all(dir); err != nil && err != os.General_Error.Exist { return false }
+	// Each TUI gets its own temporary file: another client must never truncate
+	// one we are about to rename, or have already published.
+	f, err := os.create_temp_file(dir, "config.conf.*.tmp")
+	if err != nil { return false }
+	tmp := strings.clone(os.name(f), context.temp_allocator)
+	n, werr := os.write_string(f, text)
+	serr := os.sync(f)
+	cerr := os.close(f)
+	if werr != nil || n != len(text) || serr != nil || cerr != nil || os.rename(tmp, path) != nil {
+		_ = os.remove(tmp)
+		return false
+	}
+	return true
 }

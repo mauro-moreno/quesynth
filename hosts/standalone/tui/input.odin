@@ -19,7 +19,6 @@ Key :: enum {
 	Save,
 	Load_File,
 	Load_Bank,
-	Archive,
 	Config,
 	Midi,
 	Open_Archive,
@@ -63,8 +62,6 @@ read_key :: proc() -> Key {
 		return .Load_File
 	case 'l', 'L':
 		return .Load_Bank
-	case 'a', 'A':
-		return .Archive
 	case 'c', 'C':
 		return .Config
 	case 'm', 'M':

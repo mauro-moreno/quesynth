@@ -198,7 +198,7 @@ function frame(text) {
 export class FakeDaemon {
   constructor({
     socketPath, keepPath, bankText = FIXTURE, maxConnections = 16, midiInputs = [],
-    archives = {[ARCHIVE_PATH]: ARCHIVE}, archivePath = "", legacy = false,
+    archives = {[ARCHIVE_PATH]: ARCHIVE}, archivePath = "", legacy = false, keepFails = false,
   } = {}) {
     this.socketPath = socketPath;
     this.keepPath = keepPath;
@@ -235,6 +235,10 @@ export class FakeDaemon {
     // of the fields after revision, and its archive verbs are the older ones
     // (handleOldArchive).
     this.legacy = legacy;
+    // The daemon cannot write or remove the file that keeps the archive path:
+    // archive.open of a path, an adopting archive.adopt and archive.close then
+    // answer as archive.odin does and change nothing.
+    this.keepFails = keepFails;
     // The open archive (banks, or null), its open bank, the path it
     // remembers and archive_rev. archivePath is what a previous run kept: it
     // is remembered, and opened if it can be, without counting as a change.
@@ -516,6 +520,7 @@ export class FakeDaemon {
         return "ok";
       case "archive.current":
       case "archive.open":
+      case "archive.adopt":
       case "archive.banks":
       case "archive.bank":
       case "archive.patches":
@@ -574,12 +579,24 @@ export class FakeDaemon {
         if (!path) return "err invalid_payload open needs a path";
         // A failure leaves the archive that was open, and its bank, alone.
         if (!Object.hasOwn(this.archives, path)) return "err invalid_payload cannot open archive";
-        a.banks = this.archives[path];
-        a.bank = -1;
-        a.path = path;
-        a.rev++;
-        this.forgetArchive();
+        // Reopening the remembered path writes nothing: the file holds it.
+        if (req.rest && this.keepFails) return "err internal_error cannot keep archive path";
+        this.replaceArchive(path);
         return `ok banks=${a.banks.length} archive_rev=${a.rev}`;
+      }
+      case "archive.adopt": {
+        if (!supported) return "err daemon_not_ready no archive support";
+        if (!req.rest) return "err invalid_payload adopt needs a path";
+        // Any choice already made stands, a remembered path that will not open
+        // included.
+        const adopt = a.banks === null && a.path === "";
+        if (adopt) {
+          if (!Object.hasOwn(this.archives, req.rest)) return "err invalid_payload cannot open archive";
+          if (this.keepFails) return "err internal_error cannot keep archive path";
+          this.replaceArchive(req.rest);
+        }
+        return `ok adopted=${adopt ? 1 : 0} open=${a.banks !== null ? 1 : 0}` +
+          ` banks=${a.banks !== null ? a.banks.length : 0} archive_rev=${a.rev}`;
       }
       case "archive.banks": {
         if (!supported || a.banks === null) return "err daemon_not_ready no archive open";
@@ -633,6 +650,7 @@ export class FakeDaemon {
         return `ok count=${PARAMS.length} revision=${this.published.revision} bank=${a.bank} patch=${i}`;
       }
       case "archive.close": {
+        if (supported && this.keepFails) return "err internal_error cannot forget archive path";
         if (supported) {
           const changed = a.banks !== null || a.path !== "";
           a.banks = null;
@@ -655,7 +673,9 @@ export class FakeDaemon {
   // The adapter is never to send one of these to such a daemon, and its tests
   // look at whether it did.
   handleOldArchive(req) {
-    if (req.command === "archive.current") return "err unknown_command unknown command";
+    if (req.command === "archive.current" || req.command === "archive.adopt") {
+      return "err unknown_command unknown command";
+    }
     if (req.command === "archive.open" && !req.rest) return "err invalid_payload open needs a path";
     const operands = req.command === "archive.load" ? req.operands.slice(0, 1) : req.operands;
     const answer = this.handleArchive({...req, operands});
@@ -664,6 +684,17 @@ export class FakeDaemon {
     const [head, ...records] = answer.split("\n");
     const fields = head.split(" ").slice(1).filter(f => !/^(archive_rev|bank|patch)=/.test(f));
     return ["ok " + fields.join(" "), ...records].join("\n");
+  }
+
+  // The open archive becomes the one at path, with no bank open, and the
+  // playing patch stops pointing into it.
+  replaceArchive(path) {
+    const a = this.archive;
+    a.banks = this.archives[path];
+    a.bank = -1;
+    a.path = path;
+    a.rev++;
+    this.forgetArchive();
   }
 
   // The archive that supplied the sound is gone or replaced: the names still

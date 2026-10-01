@@ -125,16 +125,6 @@ nav_open :: proc(nav: ^Navigator, prov: Provenance) {
 	nav_move(nav, 0)
 }
 
-// Straight to the archive's banks, on the bank the archive has open, or its
-// first bank when none is.
-nav_open_archive :: proc(nav: ^Navigator) {
-	nav.shown = true
-	nav.used = true
-	nav.level = .Banks
-	nav.cursor = nav_bank_row(max(nav.archive.bank, 0))
-	nav_move(nav, 0)
-}
-
 // Into a bank's patches. Lands on the patch that is playing when this bank
 // holds it, so the sound's place in its bank is in view; otherwise at the top.
 nav_descend :: proc(nav: ^Navigator, bank: int, prov: Provenance) {
@@ -245,11 +235,11 @@ nav_bank_text :: proc(nav: ^Navigator, row: int) -> string {
 }
 
 // The Banks level's line about the archive when none is open: the one the
-// daemon remembers but could not open, which A tries again, or how to open one.
+// daemon remembers but could not open, or how to open one.
 nav_archive_hint :: proc(nav: ^Navigator) -> string {
 	if nav.archive.open {return ""}
 	if nav.archive.path != "" {
-		return fmt.tprintf("archive not open: %s   A retries   Z opens another", nav.archive.path)
+		return fmt.tprintf("archive not open: %s   Z opens another", nav.archive.path)
 	}
 	return "no archive   Z opens one"
 }
@@ -259,11 +249,4 @@ list_window :: proc(selected, count, window: int) -> (start, end: int) {
 	start = clamp(selected - window + 1, 0, max(count - window, 0))
 	end = min(count, start + window)
 	return
-}
-
-// Legacy: the TUI kept the archive path in its own config.conf before the
-// daemon kept it. Handed over once, and only to a daemon that remembers none,
-// so it never replaces a choice made since in any front-end.
-legacy_archive_handoff :: proc(state: Archive_State, legacy: string) -> bool {
-	return legacy != "" && !state.open && state.path == ""
 }

@@ -92,6 +92,41 @@ test("the stand-in daemon answers the archive verbs as the protocol says", {skip
     "\nbank=aaa bbb Thanks Ms Ichiro 01.zip\nname=Spaced  Lead");
 });
 
+test("the stand-in's archive.adopt takes a path only while the daemon has chosen none", {skip}, async t => {
+  const env = await startEnv(t, {daemon: {archives: {[ARCHIVE_PATH]: ARCHIVE, "/gone.zip": ARCHIVE}}});
+  const peer = await connectRaw(env.socketPath);
+  t.after(() => peer.close());
+  const ask = async line => (await peer.request(line)).replace(/^1 \d+ /, "");
+  assert.equal(await ask("archive.adopt"), "err invalid_payload adopt needs a path");
+  assert.equal(await ask("archive.adopt /no/such.zip"), "err invalid_payload cannot open archive");
+  assert.equal(await ask("archive.current"), "ok open=0 banks=0 bank=-1 patches=0 archive_rev=0\npath=\nbank_name=");
+  assert.equal(await ask(`archive.adopt ${ARCHIVE_PATH}`), "ok adopted=1 open=1 banks=3 archive_rev=1");
+  assert.equal(await ask("archive.adopt /gone.zip"), "ok adopted=0 open=1 banks=3 archive_rev=1");
+  assert.equal(env.daemon.archive.path, ARCHIVE_PATH);
+  // A remembered path that will not open is a choice too.
+  env.daemon.archive = {banks: null, bank: -1, path: "/media/usb/unmounted.zip", rev: 0};
+  assert.equal(await ask(`archive.adopt ${ARCHIVE_PATH}`), "ok adopted=0 open=0 banks=0 archive_rev=0");
+  assert.equal(env.daemon.archive.path, "/media/usb/unmounted.zip");
+});
+
+test("the stand-in's persistence knob refuses open, adopt and close as the daemon does, changing nothing", {skip}, async t => {
+  const env = await startEnv(t, {daemon: {keepFails: true, archives: {[ARCHIVE_PATH]: ARCHIVE, "/other.zip": ARCHIVE}}});
+  const peer = await connectRaw(env.socketPath);
+  t.after(() => peer.close());
+  const ask = async line => (await peer.request(line)).replace(/^1 \d+ /, "");
+  const closedView = "ok open=0 banks=0 bank=-1 patches=0 archive_rev=0\npath=\nbank_name=";
+  assert.equal(await ask(`archive.adopt ${ARCHIVE_PATH}`), "err internal_error cannot keep archive path");
+  assert.equal(await ask(`archive.open ${ARCHIVE_PATH}`), "err internal_error cannot keep archive path");
+  assert.equal(await ask("archive.current"), closedView);
+  env.daemon.keepFails = false;
+  assert.equal(await ask(`archive.open ${ARCHIVE_PATH}`), "ok banks=3 archive_rev=1");
+  env.daemon.keepFails = true;
+  assert.equal(await ask("archive.open /other.zip"), "err internal_error cannot keep archive path");
+  assert.equal(await ask("archive.open"), "ok banks=3 archive_rev=2", "the remembered path is already kept");
+  assert.equal(await ask("archive.close"), "err internal_error cannot forget archive path");
+  assert.equal((await ask("archive.current")).split("\n")[0], "ok open=1 banks=3 bank=-1 patches=0 archive_rev=2");
+});
+
 // -- daemon -> page ---------------------------------------------------------------
 
 test("sync sends the archive after the patch, closed and with the path it remembers", {skip}, async t => {
@@ -325,6 +360,38 @@ test("a refused request is reported, then the page is sent the archive the daemo
   assert.deepEqual(await ws.next("archive"), closed(3));
   assert.equal(daemon.identity.source, "none", "nothing was loaded");
   assert.ok(!ws.ended, "the page stays connected");
+});
+
+test("a daemon that cannot keep the path refuses the page's open and close, and the page is sent the archive it still has", {skip}, async t => {
+  const other = makeArchive([["x.zip", ["only"]]]);
+  const {ws, daemon} = await page(t, {daemon: {
+    archivePath: ARCHIVE_PATH, keepFails: true, archives: {[ARCHIVE_PATH]: ARCHIVE, "/other.zip": other},
+  }});
+  ws.send({type: "archive-load", bank: 1, index: 1});
+  await until(() => daemon.identity.source === "archive", 3000, "the load");
+  await sleep(100);
+  ws.drain();
+  const kept = view(1, 1);
+
+  ws.send({type: "archive-open", path: "/other.zip"});
+  assert.deepEqual(await ws.next("error"),
+    {type: "error", for: "archive-open", code: "internal_error", message: "cannot keep archive path"});
+  assert.deepEqual(await ws.next("archive"), kept, "the view the page already had");
+  ws.send({type: "archive-close"});
+  assert.deepEqual(await ws.next("error"),
+    {type: "error", for: "archive-close", code: "internal_error", message: "cannot forget archive path"});
+  assert.deepEqual(await ws.next("archive"), kept);
+
+  assert.equal(daemon.archive.rev, 1, "archive_rev did not move");
+  assert.equal(daemon.archive.path, ARCHIVE_PATH);
+  assert.deepEqual(daemon.identity.archivePatch, 1, "the playing patch still points into the open archive");
+  assert.ok(!ws.ended, "the page stays connected");
+
+  // The same requests go through once the daemon can keep the path again.
+  daemon.keepFails = false;
+  ws.send({type: "archive-open", path: "/other.zip"});
+  assert.deepEqual(await ws.next("archive"),
+    {type: "archive", rev: 2, open: true, path: "/other.zip", banks: ["x.zip"], bank: null, patches: []});
 });
 
 // -- older daemons ------------------------------------------------------------------

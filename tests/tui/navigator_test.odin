@@ -338,7 +338,7 @@ test_banks_level_lists_the_ordinary_bank_then_the_archives :: proc(t: ^testing.T
 		t,
 		gone,
 		">  Factory  2/128",
-		"   archive not open: /media/usb/gone.zip   A retries   Z opens another",
+		"   archive not open: /media/usb/gone.zip   Z opens another",
 		"1/1   Enter browse   O patch file   L bank file   Z archive   Esc hide",
 		"playing: Solo Lead | Factory | slot 5",
 		"no archive - Z opens one",
@@ -445,14 +445,6 @@ test_navigator_levels_remember_where_they_were :: proc(t: ^testing.T) {
 	testing.expect_value(t, nav.cursor, 0)
 	tui.nav_descend(&nav, tui.ORDINARY, beta)
 	testing.expect_value(t, nav.cursor, 0)
-
-	// A: the archive's banks, on the bank it has open, or its first.
-	tui.nav_open_archive(&nav)
-	testing.expect_value(t, nav.level, tui.Nav_Level.Banks)
-	testing.expect_value(t, nav.cursor, 2)
-	nav.archive.bank = -1
-	tui.nav_open_archive(&nav)
-	testing.expect_value(t, nav.cursor, 1)
 }
 
 @(test)
@@ -500,16 +492,6 @@ test_navigator_follows_the_daemons_open_bank :: proc(t: ^testing.T) {
 	testing.expect_value(t, nav.level, tui.Nav_Level.Patches)
 	testing.expect_value(t, nav.browsing, tui.ORDINARY)
 	testing.expect_value(t, nav.cursor, 5)
-}
-
-@(test)
-test_legacy_archive_path_goes_only_to_a_daemon_that_remembers_none :: proc(t: ^testing.T) {
-	legacy :: "/home/someone/zipbank.zip"
-	testing.expect(t, tui.legacy_archive_handoff({bank = -1}, legacy))
-	testing.expect(t, !tui.legacy_archive_handoff({bank = -1}, ""))
-	// Remembered, even if it would not open: a choice made since.
-	testing.expect(t, !tui.legacy_archive_handoff({bank = -1, path = "/media/usb/gone.zip"}, legacy))
-	testing.expect(t, !tui.legacy_archive_handoff({open = true, banks = 2, bank = -1, path = BANKS}, legacy))
 }
 
 // A daemon's control server with the factory bank, the archive and the
@@ -704,9 +686,42 @@ test_two_tuis_share_the_open_bank_but_not_the_sound :: proc(t: ^testing.T) {
 		"1 5 ok open=1 banks=2 bank=0 patches=2 archive_rev=5\npath=tests/standalone/fixtures/banks.zip\nbank_name=Alpha.zip")
 }
 
-// A path an older TUI kept in config.conf goes to a daemon that remembers no
-// archive, once; the caller drops it from config.conf only when this says
-// the daemon took it.
+// A refusal is an answer, not a disconnect or an invisible false return.
+@(test)
+test_archive_persistence_refusals_are_kept_for_the_tui :: proc(t: ^testing.T) {
+	for action in 0 ..< 3 {
+		message := action == 2 ? "cannot forget archive path" : "cannot keep archive path"
+		client, far := answering(fmt.tprintf("1 1 err internal_error %s", message))
+		defer {tui.client_close(&client); posix.close(far)}
+		switch action {
+		case 0:
+			_, ok := tui.client_archive_open(&client, BANKS)
+			testing.expect(t, !ok)
+		case 1:
+			testing.expect(t, !tui.tui_hand_over_archive(&client, BANKS))
+		case 2:
+			testing.expect(t, !tui.client_archive_close(&client))
+		}
+		testing.expect_value(t, client.notice, message)
+		testing.expect(t, client.fd >= 0)
+		cap := capture_begin()
+		tui.render_notice(client.notice, plain_theme())
+		screen := capture_end(cap)
+		testing.expect(t, strings.contains(screen, fmt.tprintf("Error: %s", message)))
+	}
+}
+
+@(test)
+test_legacy_handoff_is_one_daemon_authoritative_request :: proc(t: ^testing.T) {
+	for adopted in 0 ..< 2 {
+		client, far := answering(fmt.tprintf("1 1 ok adopted=%d open=1 banks=2 archive_rev=1", adopted))
+		defer {tui.client_close(&client); posix.close(far)}
+		testing.expect_value(t, tui.tui_hand_over_archive(&client, BANKS), adopted == 1)
+		testing.expect_value(t, take_frame(far), "1 1 archive.adopt tests/standalone/fixtures/banks.zip")
+		testing.expect_value(t, client.next_id, 2)
+	}
+}
+
 @(test)
 test_legacy_archive_path_is_handed_to_the_daemon :: proc(t: ^testing.T) {
 	r, started := rig_start("nav-legacy")
@@ -803,6 +818,7 @@ test_legacy_archive_line_leaves_config_conf_only_once_the_daemon_takes_it :: pro
 		testing.expect_value(t, held, BANKS)
 	}
 	dropped := tui.Client{fd = -1}
+	defer tui.client_close(&dropped)
 	after, held := migrate(&dropped, file, legacy)
 	testing.expect_value(t, after, legacy)
 	testing.expect_value(t, held, BANKS)
@@ -832,4 +848,129 @@ test_legacy_archive_line_leaves_config_conf_only_once_the_daemon_takes_it :: pro
 	testing.expect_value(t, wire_ask(peer, "1 8 archive.current"),
 		"1 8 ok open=1 banks=2 bank=-1 patches=0 archive_rev=3\npath=tests/standalone/fixtures/banks.zip\nbank_name=")
 	testing.expect(t, client.fd >= 0)
+
+	check_config_edits(t, file)
+	check_archive_setting_edits(t, file)
+}
+
+// Called under the migration test's isolated config environment, since the
+// environment is process-wide even when the runner uses several threads.
+@(private = "file")
+check_config_edits :: proc(t: ^testing.T, file: string) {
+	handwritten := "# keep my note\r\n\r\narchive = /later.zip\r\n  bank\t= /old.json\r\ncolour = blue\r\ncolour = green"
+	testing.expect(t, os.write_entire_file_from_string(file, handwritten) == nil)
+	settings := tui.config_load()
+	defer tui.config_free(&settings)
+	delete(settings.bank_path)
+	settings.bank_path = strings.clone("/new bank.json")
+	old, opened := os.open(file)
+	if !testing.expect(t, opened == nil) { return }
+	defer os.close(old)
+	testing.expect(t, tui.config_save(settings))
+	data, _ := os.read_entire_file(file, context.temp_allocator)
+	testing.expect_value(t, string(data), "# keep my note\r\n\r\narchive = /later.zip\r\n  bank\t= /new bank.json\r\ncolour = blue\r\ncolour = green")
+	tui.config_drop_archive()
+	data, _ = os.read_entire_file(file, context.temp_allocator)
+	testing.expect_value(t, string(data), "# keep my note\r\n\r\n  bank\t= /new bank.json\r\ncolour = blue\r\ncolour = green")
+	// The old descriptor still sees the entire old file: neither successful
+	// edit truncated or rewrote the inode a reader was using.
+	before := make([]u8, len(handwritten), context.temp_allocator)
+	n, err := os.read_at(old, before, 0)
+	testing.expect(t, err == nil)
+	testing.expect_value(t, string(before[:n]), handwritten)
+
+	// Only the last bank key is effective; preserve earlier duplicates and
+	// trailing whitespace. Clearing it must not reactivate an earlier value.
+	duplicate := "bank=first\nbank = second \t\r\nunknown = raw"
+	testing.expect(t, os.write_entire_file_from_string(file, duplicate) == nil)
+	testing.expect(t, tui.config_save(tui.Config{}))
+	data, _ = os.read_entire_file(file, context.temp_allocator)
+	testing.expect_value(t, string(data), "bank=first\nbank =  \t\r\nunknown = raw")
+	cleared := tui.config_load()
+	testing.expect_value(t, cleared.bank_path, "")
+	tui.config_free(&cleared)
+
+	// A failed read cannot be treated as an absent config and overwritten.
+	testing.expect(t, os.remove(file) == nil)
+	testing.expect(t, os.make_directory(file) == nil)
+	testing.expect(t, !tui.config_save(settings))
+	testing.expect(t, !tui.config_drop_archive())
+	testing.expect(t, os.is_directory(file))
+	testing.expect(t, os.remove(file) == nil)
+	testing.expect(t, tui.config_save(settings))
+	data, _ = os.read_entire_file(file, context.temp_allocator)
+	testing.expect_value(t, string(data), "bank = /new bank.json\n")
+
+	// Read-only directory, writable file: a direct truncating write would
+	// succeed here, but no atomic replacement is possible. Not a root test.
+	if posix.geteuid() != 0 {
+		dir := file[:strings.last_index_byte(file, '/')]
+		testing.expect(t, os.chmod(dir, {.Read_User, .Execute_User}) == nil)
+		defer os.chmod(dir, {.Read_User, .Write_User, .Execute_User})
+		testing.expect(t, !tui.config_save(tui.Config{bank_path = "/refused"}))
+		data, _ = os.read_entire_file(file, context.temp_allocator)
+		testing.expect_value(t, string(data), "bank = /new bank.json\n")
+	}
+}
+
+@(private = "file")
+check_archive_setting_edits :: proc(t: ^testing.T, file: string) {
+	text := "# my note\r\n\r\narchive = /old.zip\r\nunknown = x\narchive=/last.zip\nbank = /unchanged.json\nunknown = y"
+	want := "# my note\r\n\r\nunknown = x\nbank = /unchanged.json\nunknown = y"
+	for path in ([]string{"/new.zip", ""}) {
+		for accepted in ([]bool{false, true}) {
+			testing.expect(t, os.write_entire_file_from_string(file, text) == nil)
+			settings := tui.config_load()
+			defer tui.config_free(&settings)
+			reply := accepted ? "1 1 ok archive_rev=2" : "1 1 err internal_error cannot keep archive path"
+			client, far := answering(reply)
+			defer {tui.client_close(&client); posix.close(far)}
+			testing.expect_value(t, tui.tui_set_archive(&client, &settings, path), accepted)
+			data, _ := os.read_entire_file(file, context.temp_allocator)
+			testing.expect_value(t, string(data), accepted ? want : text)
+			testing.expect_value(t, settings.archive_path, accepted ? "" : "/last.zip")
+			testing.expect_value(t, take_frame(far), path == "" ? "1 1 archive.close" : "1 1 archive.open /new.zip")
+		}
+	}
+
+	// No legacy line: an accepted edit has nothing to drop, so config.conf is
+	// left alone -- byte for byte, not created when absent, not even read when
+	// it cannot be or there is no config directory -- and no notice claims it
+	// could not be updated.
+	mine := "# mine\r\n\r\nbank = /unchanged.json\nunknown = z"
+	xdg := file[:strings.last_index(file, "/quesynth/")]
+	for setup in 0 ..< 4 {
+		for path in ([]string{"/new.zip", ""}) {
+			switch setup {
+			case 0:
+				testing.expect(t, os.write_entire_file_from_string(file, mine) == nil)
+			case 1:
+				testing.expect(t, os.remove(file) == nil || !os.exists(file))
+			case 2:
+				testing.expect(t, os.make_directory(file) == nil)
+			case 3:
+				os.unset_env("XDG_CONFIG_HOME")
+				os.unset_env("HOME")
+			}
+			settings := tui.Config{}
+			client, far := answering("1 1 ok archive_rev=2")
+			defer {tui.client_close(&client); posix.close(far)}
+			testing.expect(t, tui.tui_set_archive(&client, &settings, path))
+			testing.expect_value(t, client.notice, "")
+			testing.expect_value(t, take_frame(far), path == "" ? "1 1 archive.close" : "1 1 archive.open /new.zip")
+			switch setup {
+			case 0:
+				data, _ := os.read_entire_file(file, context.temp_allocator)
+				testing.expect_value(t, string(data), mine)
+			case 1:
+				testing.expect(t, !os.exists(file))
+			case 2:
+				testing.expect(t, os.is_directory(file))
+				testing.expect(t, os.remove(file) == nil)
+			case 3:
+				os.set_env("XDG_CONFIG_HOME", xdg)
+				testing.expect(t, !os.exists(file))
+			}
+		}
+	}
 }

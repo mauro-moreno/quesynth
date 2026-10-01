@@ -122,8 +122,10 @@ run :: proc(path: string) -> int {
 		case:
 			render(rows[:], groups, current_group, selected, metrics, path, prov, current_midi, theme)
 		}
+		render_notice(client.notice, theme)
 
 		key := read_key_timeout(REFRESH_MS)
+		if key != .Tick { client_set_notice(&client, "") }
 
 		// The settings screen sits over everything; handle it first.
 		if configuring {
@@ -145,7 +147,7 @@ run :: proc(path: string) -> int {
 				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
 			case .Escape, .Config:
 				configuring = false
-			case .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Midi, .Open_Archive, .Other:
+			case .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Midi, .Open_Archive, .Other:
 			// Ignored on the settings screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -214,10 +216,10 @@ run :: proc(path: string) -> int {
 				if connected && tui_open_archive(&client, theme) {
 					tui_read_provenance(&client, &prov)
 					tui_sync_navigator(&client, &nav, prov, true)
-					nav_open_archive(&nav)
+					nav.level = .Banks
+					nav.cursor = nav_bank_row(max(nav.archive.bank, 0))
+					nav_move(&nav, 0)
 				}
-			case .Archive:
-				if connected && tui_enter_archive(&client, &nav, prov, theme) { nav_open_archive(&nav) }
 			case .Left, .Right, .Reset, .Tab, .Config, .Midi, .Other:
 			// Ignored in the navigator.
 			}
@@ -275,7 +277,7 @@ run :: proc(path: string) -> int {
 				choosing_midi = false
 			case .Tick:
 				if connected { tui_refresh_midi_selected(&client, &midi_selected) }
-			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Archive, .Config, .Open_Archive, .Other:
+			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Config, .Open_Archive, .Other:
 			// Ignored on the MIDI screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -360,8 +362,6 @@ run :: proc(path: string) -> int {
 				nav_open(&nav, prov)
 				nav_descend(&nav, ORDINARY, prov)
 			}
-		case .Archive:
-			if connected && tui_enter_archive(&client, &nav, prov, theme) { nav_open_archive(&nav) }
 		case .Config:
 			// The archive path it shows is the daemon's, read afresh.
 			if connected { tui_sync_navigator(&client, &nav, prov, true) }
@@ -573,40 +573,20 @@ tui_refresh_midi_selected :: proc(client: ^Client, selected: ^string) -> bool {
 	return true
 }
 
-// A: open the archive for browsing if the daemon has none open. The archive
-// the daemon remembers is tried first; only when there is none, or it fails,
-// is a path asked for.
-@(private)
-tui_enter_archive :: proc(client: ^Client, nav: ^Navigator, prov: Provenance, theme: Theme) -> bool {
-	tui_sync_navigator(client, nav, prov, true)
-	if nav.archive.open { return true }
-	opened := false
-	if nav.archive.path != "" { _, opened = client_archive_open(client, "") }
-	if !opened { opened = tui_open_archive(client, theme) }
-	if opened { tui_sync_navigator(client, nav, prov, true) }
-	return opened
-}
-
 // Legacy: before the daemon kept the archive path, this front-end kept it in
 // config.conf. It is handed to a daemon that remembers none, and leaves
 // config.conf only once the daemon has taken it, so a path that does not open
 // now is not lost.
 tui_migrate_archive :: proc(client: ^Client, config: ^Config) {
 	if !tui_hand_over_archive(client, config.archive_path) { return }
-	delete(config.archive_path)
-	config.archive_path = ""
-	config_drop_archive()
+	tui_drop_legacy_archive(client, config)
 }
 
 // Whether the daemon took `legacy` as its archive. Never over a path the
 // daemon already has: that is a choice made since, in some front-end.
 tui_hand_over_archive :: proc(client: ^Client, legacy: string) -> bool {
-	state, ok := client_archive_current(client)
-	if !ok { return false }
-	defer archive_state_free(&state)
-	if !legacy_archive_handoff(state, legacy) { return false }
-	_, opened := client_archive_open(client, legacy)
-	return opened
+	if legacy == "" { return false }
+	return client_archive_adopt(client, legacy)
 }
 
 // Edit one remembered setting from the settings screen. The archive path is
@@ -622,33 +602,51 @@ tui_edit_setting :: proc(client: ^Client, config: ^Config, field: int, theme: Th
 		if !ok {
 			return
 		}
-		trimmed := strings.trim_space(path)
-		done := false
-		if trimmed == "" {
-			done = client_archive_close(client)
-		} else {
-			_, done = client_archive_open(client, trimmed)
-		}
-		// A path still in config.conf would be handed over again the next
-		// time the daemon remembers none -- after a forget, too.
-		if done && config.archive_path != "" {
-			delete(config.archive_path)
-			config.archive_path = ""
-			config_save(config^)
-		}
+		tui_set_archive(client, config, path)
 	} else {
 		path, ok := prompt_line(1, "User bank path: ", theme)
 		if !ok {
 			return
 		}
 		trimmed := strings.trim_space(path)
-		delete(config.bank_path)
-		config.bank_path = strings.clone(trimmed)
-		config_save(config^)
-		if trimmed != "" {
-			client_bank_load_file(client, trimmed)
+		if config_save(Config{bank_path = trimmed}) {
+			delete(config.bank_path)
+			config.bank_path = strings.clone(trimmed)
+			if trimmed != "" { client_bank_load_file(client, trimmed) }
+		} else {
+			client_set_notice(client, "cannot save config.conf")
 		}
 	}
+}
+
+// Apply the settings edit only after the daemon accepts it. In particular,
+// a persistence refusal must not discard a pending legacy path here.
+tui_set_archive :: proc(client: ^Client, config: ^Config, path: string) -> bool {
+	trimmed := strings.trim_space(path)
+	done := false
+	if trimmed == "" {
+		done = client_archive_close(client)
+	} else {
+		_, done = client_archive_open(client, trimmed)
+	}
+	// A path still in config.conf would be handed over again the next time
+	// the daemon remembers none -- after a forget, too. With none there,
+	// config.conf is not touched at all.
+	if !done || config.archive_path == "" { return done }
+	return tui_drop_legacy_archive(client, config)
+}
+
+// The daemon has accepted the path change. Keep the retry in memory too if
+// removing it from disk fails, and tell the user rather than claim success.
+@(private)
+tui_drop_legacy_archive :: proc(client: ^Client, config: ^Config) -> bool {
+	if !config_drop_archive() {
+		client_set_notice(client, "archive changed; cannot update config.conf")
+		return false
+	}
+	delete(config.archive_path)
+	config.archive_path = ""
+	return true
 }
 
 // Move the selected parameter by one step, clamped to its domain, and adopt the

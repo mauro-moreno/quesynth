@@ -416,3 +416,229 @@ test_peers_share_the_archive_and_ordinary_changes_leave_it_open :: proc(t: ^test
 	testing.expect(t, strings.has_prefix(say(a, "1 9 patch.current"), "1 9 ok slot=5 bank_rev=2 revision=0 source=bank archive_rev=3 archive_bank=-1 archive_patch=-1\n"))
 	testing.expect_value(t, say(a, "1 11 archive.patches 0 2"), "1 11 ok total=2 bank=0 archive_rev=3\npatch=0 name=Alpha One\npatch=1 name=Alpha Two")
 }
+
+// A kept path for a handler of its own, as run_daemon points the daemon's at
+// the config directory.
+@(private = "file")
+keep_for :: proc(m: ^Multi, root: string) -> string {
+	keep := fmt.tprintf("%s/config dir/quesynth/archive.path", root)
+	standalone.archive_restore(&m.archive, keep)
+	return keep
+}
+
+// What the kept file holds, or a marker that there is none.
+@(private = "file")
+kept :: proc(keep: string) -> string {
+	data, err := os.read_entire_file(keep, context.temp_allocator)
+	return err == nil ? string(data) : "<no file>"
+}
+
+@(test)
+test_archive_adopt_takes_the_path_when_nothing_is_remembered :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-adopt-take-%d", posix.getpid())
+	defer os.remove_all(root)
+	m := multi_make()
+	defer multi_free(m)
+	keep := keep_for(m, root)
+
+	// The path is kept as given, trimmed, and the archive opens with no bank.
+	testing.expect_value(t, multi_ask(&m.cc, fmt.tprintf("1 1 archive.adopt   %s  ", BANKS)), "1 1 ok adopted=1 open=1 banks=2 archive_rev=1")
+	testing.expect_value(t, multi_ask(&m.cc, "1 2 archive.current"), archive_reply(2, 1, 2, -1, 0, 1, BANKS, ""))
+	testing.expect_value(t, kept(keep), BANKS + "\n")
+}
+
+@(test)
+test_archive_adopt_leaves_an_archive_a_peer_opened :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-adopt-peer-%d", posix.getpid())
+	defer os.remove_all(root)
+	m := multi_make()
+	defer multi_free(m)
+	cc := &m.cc
+	keep := keep_for(m, root)
+	multi_ask(cc, fmt.tprintf("1 1 archive.open %s", BANKS))
+	multi_ask(cc, "1 2 archive.bank 1")
+	testing.expect(t, strings.has_prefix(multi_ask(cc, "1 3 archive.load 2"), "1 3 ok"))
+	multi_drain(&m.ring)
+	current := multi_ask(cc, "1 4 archive.current")
+	playing := multi_ask(cc, "1 5 patch.current")
+
+	// Nothing changes: not the open bank, the generation, the file, nor the
+	// indices of the patch playing from it.
+	testing.expect_value(t, multi_ask(cc, fmt.tprintf("1 6 archive.adopt %s", FIXTURE_NESTED)), "1 6 ok adopted=0 open=1 banks=2 archive_rev=2")
+	testing.expect_value(t, multi_ask(cc, "1 4 archive.current"), current)
+	testing.expect_value(t, multi_ask(cc, "1 5 patch.current"), playing)
+	testing.expect_value(t, kept(keep), BANKS + "\n")
+}
+
+@(test)
+test_archive_adopt_leaves_a_remembered_path_that_will_not_open :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-adopt-remembered-%d", posix.getpid())
+	defer os.remove_all(root)
+	missing := fmt.tprintf("%s/elsewhere/gone.zip", root)
+	keep := fmt.tprintf("%s/config dir/quesynth/archive.path", root)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/config dir/quesynth", root)) == nil)
+	testing.expect(t, os.write_entire_file_from_string(keep, fmt.tprintf("%s\n", missing)) == nil)
+	m := multi_make()
+	defer multi_free(m)
+	standalone.archive_restore(&m.archive, keep)
+
+	// A choice made since: the unmounted disk's path is not replaced, and it is
+	// not opened either.
+	testing.expect_value(t, multi_ask(&m.cc, fmt.tprintf("1 1 archive.adopt %s", BANKS)), "1 1 ok adopted=0 open=0 banks=0 archive_rev=0")
+	testing.expect_value(t, multi_ask(&m.cc, "1 2 archive.current"), archive_reply(2, 0, 0, -1, 0, 0, missing, ""))
+	testing.expect_value(t, kept(keep), fmt.tprintf("%s\n", missing))
+}
+
+@(test)
+test_archive_adopt_refusals :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-adopt-refuse-%d", posix.getpid())
+	defer os.remove_all(root)
+	m := multi_make()
+	defer multi_free(m)
+	cc := &m.cc
+	keep := keep_for(m, root)
+
+	testing.expect_value(t, multi_ask(cc, "1 1 archive.adopt"), "1 1 err invalid_payload adopt needs a path")
+	testing.expect_value(t, multi_ask(cc, "1 2 archive.adopt    "), "1 2 err invalid_payload adopt needs a path")
+	// A path that will not open is not remembered, so a later adopt still can.
+	testing.expect_value(t, multi_ask(cc, "1 3 archive.adopt /tmp/quesynth-no-such-adopt.zip"), "1 3 err invalid_payload cannot open archive")
+	testing.expect_value(t, multi_ask(cc, "1 4 archive.adopt tools/s1probe/fixtures/unison-four.sy1"), "1 4 err invalid_payload cannot open archive")
+	testing.expect_value(t, multi_ask(cc, "1 5 archive.current"), archive_reply(5, 0, 0, -1, 0, 0, "", ""))
+	testing.expect(t, !os.exists(keep))
+	testing.expect_value(t, multi_ask(cc, fmt.tprintf("1 6 archive.adopt %s", BANKS)), "1 6 ok adopted=1 open=1 banks=2 archive_rev=1")
+
+	cc.archive = nil
+	testing.expect_value(t, multi_ask(cc, "1 7 archive.adopt /x.zip"), "1 7 err daemon_not_ready no archive support")
+}
+
+// The former race: two front-ends start together, each holding a legacy path,
+// and each hands it over. The first to be served chooses; the second finds the
+// choice made and leaves it.
+@(test)
+test_the_second_of_two_adopting_clients_leaves_the_first_ones_archive :: proc(t: ^testing.T) {
+	m := multi_make()
+	defer multi_free(m)
+	cs := standalone.Control_Server{path = fmt.tprintf("/tmp/quesynth-adopt-%d.sock", posix.getpid()), ctx = m.cc}
+	if !testing.expect(t, standalone.control_server_start(&cs)) {return}
+	defer standalone.control_server_stop(&cs)
+
+	a, aok := connect_unix(cs.path)
+	b, bok := connect_unix(cs.path)
+	if !testing.expect(t, aok && bok) {return}
+	defer {posix.close(a); posix.close(b)}
+	say :: proc(fd: posix.FD, line: string) -> string {
+		reliability_send(fd, line)
+		return reliability_reply(fd)
+	}
+	// Closed by the server thread that opened it, so it is freed with the
+	// allocator that made it.
+	defer say(a, "1 99 archive.close")
+
+	testing.expect_value(t, say(a, fmt.tprintf("1 1 archive.adopt %s", BANKS)), "1 1 ok adopted=1 open=1 banks=2 archive_rev=1")
+	testing.expect_value(t, say(b, fmt.tprintf("1 1 archive.adopt %s", FIXTURE_NESTED)), "1 1 ok adopted=0 open=1 banks=2 archive_rev=1")
+	testing.expect_value(t, say(b, "1 2 archive.current"), archive_reply(2, 1, 2, -1, 0, 1, BANKS, ""))
+}
+
+// A path that cannot be kept is not opened: the daemon would otherwise show an
+// archive the next start forgets, with no one told. <keep>.tmp as a directory
+// fails the write wherever it runs, root included.
+@(test)
+test_a_path_that_cannot_be_kept_changes_nothing :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-keep-fails-%d", posix.getpid())
+	defer os.remove_all(root)
+	m := multi_make()
+	defer multi_free(m)
+	cc := &m.cc
+	keep := keep_for(m, root)
+	multi_ask(cc, fmt.tprintf("1 1 archive.open %s", BANKS))
+	multi_ask(cc, "1 2 archive.bank 1")
+	testing.expect(t, strings.has_prefix(multi_ask(cc, "1 3 archive.load 2"), "1 3 ok"))
+	multi_drain(&m.ring)
+	current := multi_ask(cc, "1 4 archive.current")
+	playing := multi_ask(cc, "1 5 patch.current")
+	blocker := fmt.tprintf("%s.tmp", keep)
+	testing.expect(t, os.make_directory_all(blocker) == nil)
+
+	// archive.open of an explicit path: the archive open stays, with its bank,
+	// its path, its generation and the playing patch's indices.
+	testing.expect_value(t, multi_ask(cc, fmt.tprintf("1 6 archive.open %s", FIXTURE_NESTED)), "1 6 err internal_error cannot keep archive path")
+	testing.expect_value(t, multi_ask(cc, "1 4 archive.current"), current)
+	testing.expect_value(t, multi_ask(cc, "1 5 patch.current"), playing)
+	testing.expect_value(t, kept(keep), BANKS + "\n")
+	testing.expect(t, os.is_directory(blocker))
+
+	// Reopening the remembered path writes nothing, so it does not need the
+	// file to be writable.
+	testing.expect_value(t, multi_ask(cc, "1 7 archive.open"), "1 7 ok banks=2 archive_rev=3")
+
+	// Once the blocker is gone the same request goes through and is kept.
+	testing.expect(t, os.remove(blocker) == nil)
+	testing.expect_value(t, multi_ask(cc, fmt.tprintf("1 8 archive.open %s", FIXTURE_NESTED)), "1 8 ok banks=1 archive_rev=4")
+	testing.expect_value(t, kept(keep), FIXTURE_NESTED + "\n")
+	testing.expect(t, !os.exists(blocker))
+
+	// archive.adopt, adopting: nothing is open or remembered yet.
+	fresh := multi_make()
+	defer multi_free(fresh)
+	adopt_keep := fmt.tprintf("%s/adopt/archive.path", root)
+	standalone.archive_restore(&fresh.archive, adopt_keep)
+	adopt_blocker := fmt.tprintf("%s.tmp", adopt_keep)
+	testing.expect(t, os.make_directory_all(adopt_blocker) == nil)
+	testing.expect_value(t, multi_ask(&fresh.cc, fmt.tprintf("1 1 archive.adopt %s", BANKS)), "1 1 err internal_error cannot keep archive path")
+	testing.expect_value(t, multi_ask(&fresh.cc, "1 2 archive.current"), archive_reply(2, 0, 0, -1, 0, 0, "", ""))
+	testing.expect(t, !os.exists(adopt_keep))
+	testing.expect(t, os.remove(adopt_blocker) == nil)
+	testing.expect_value(t, multi_ask(&fresh.cc, fmt.tprintf("1 3 archive.adopt %s", BANKS)), "1 3 ok adopted=1 open=1 banks=2 archive_rev=1")
+	testing.expect_value(t, kept(adopt_keep), BANKS + "\n")
+}
+
+// The write is the temp file then a rename: when the rename fails the temp
+// file does not stay beside the kept path.
+@(test)
+test_a_kept_path_that_cannot_be_replaced_leaves_no_temp_file :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-keep-rename-%d", posix.getpid())
+	defer os.remove_all(root)
+	keep := fmt.tprintf("%s/archive.path", root)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/inside", keep)) == nil)
+	m := multi_make()
+	defer multi_free(m)
+	standalone.archive_restore(&m.archive, keep)
+
+	testing.expect_value(t, multi_ask(&m.cc, fmt.tprintf("1 1 archive.open %s", BANKS)), "1 1 err internal_error cannot keep archive path")
+	testing.expect(t, !os.exists(fmt.tprintf("%s.tmp", keep)))
+	testing.expect(t, os.is_directory(fmt.tprintf("%s/inside", keep)))
+	testing.expect_value(t, multi_ask(&m.cc, "1 2 archive.current"), archive_reply(2, 0, 0, -1, 0, 0, "", ""))
+}
+
+// A kept path that is a directory with something in it cannot be removed,
+// whoever asks: nothing is released, since the next start would reopen what
+// the daemon had said it forgot.
+@(test)
+test_an_archive_close_that_cannot_forget_the_path_releases_nothing :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/quesynth-forget-fails-%d", posix.getpid())
+	defer os.remove_all(root)
+	m := multi_make()
+	defer multi_free(m)
+	cc := &m.cc
+	keep := keep_for(m, root)
+	multi_ask(cc, fmt.tprintf("1 1 archive.open %s", BANKS))
+	multi_ask(cc, "1 2 archive.bank 1")
+	testing.expect(t, strings.has_prefix(multi_ask(cc, "1 3 archive.load 2"), "1 3 ok"))
+	multi_drain(&m.ring)
+	current := multi_ask(cc, "1 4 archive.current")
+	playing := multi_ask(cc, "1 5 patch.current")
+
+	testing.expect(t, os.remove(keep) == nil)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/inside", keep)) == nil)
+	testing.expect_value(t, multi_ask(cc, "1 6 archive.close"), "1 6 err internal_error cannot forget archive path")
+	testing.expect_value(t, multi_ask(cc, "1 4 archive.current"), current)
+	testing.expect_value(t, multi_ask(cc, "1 5 patch.current"), playing)
+	testing.expect(t, os.is_directory(fmt.tprintf("%s/inside", keep)))
+
+	// With the obstacle gone, and then with the file already missing, the
+	// close goes through.
+	testing.expect(t, os.remove_all(keep) == nil)
+	testing.expect_value(t, multi_ask(cc, "1 7 archive.close"), "1 7 ok archive_rev=3")
+	testing.expect_value(t, multi_ask(cc, "1 8 archive.current"), archive_reply(8, 0, 0, -1, 0, 3, "", ""))
+	testing.expect_value(t, multi_ask(cc, "1 5 patch.current"), strings.concatenate({"1 5 ok slot=-1 bank_rev=0 revision=0 source=archive archive_rev=3 archive_bank=-1 archive_patch=-1", "\nbank=Beta Bank.zip\nname=Beta Three"}, context.temp_allocator))
+}
