@@ -568,7 +568,12 @@ jobs:
       # Assemble the .component (build-au.sh makes the native arm64 slice and the
       # Info.plist), then add the x86_64 slice and lipo the two into one universal
       # binary, so the release runs on both Apple Silicon and Intel.
+      # The tag is stamped into the Info.plist so each release carries its own
+      # version; a host only revalidates a unit whose version changed. Empty on
+      # a workflow_dispatch run, which builds the script's default version.
       - name: Build the bundle (universal)
+        env:
+          QUESYNTH_VERSION: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p build
           bash tools/build-au.sh build/au-stage
@@ -629,8 +634,9 @@ jobs:
 
               xattr -dr com.apple.quarantine Quesynth.component
 
-          This build has no custom editor yet: the host draws its own generic
-          controls. The audio engine, parameters and MIDI are the plugin.
+          If Logic does not list it, open Logic Pro > Settings > Plug-in Manager,
+          select Quesynth and choose "Reset & Rescan Selection": Logic keeps an
+          earlier failed validation until it is told to look again.
 
           This is experimental software. Please read the disclaimer:
           https://github.com/mauro-moreno/quesynth

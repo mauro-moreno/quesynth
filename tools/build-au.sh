@@ -22,6 +22,11 @@
 # unit without a view and without the panel, for when a host or validator
 # cannot live with one.
 #
+# QUESYNTH_VERSION (a release tag such as v1.2.3, or 1.2.3) is stamped into the
+# Info.plist. It has to change from release to release: Logic, and the system's
+# AudioUnit cache, key a unit's validation result on its version, so a unit that
+# keeps one version keeps whatever result an earlier build of it got.
+#
 # Usage: tools/build-au.sh [output-dir]   (default build/au-stage)
 set -euo pipefail
 
@@ -37,6 +42,19 @@ case "$editor" in
 		exit 1
 		;;
 esac
+
+version="${QUESYNTH_VERSION:-0.1.0}"
+version="${version#v}"
+if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+	echo "QUESYNTH_VERSION must be major.minor.patch, optionally with a leading v: $version" >&2
+	exit 1
+fi
+major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+if ((major > 65535 || minor > 255 || patch > 255)); then
+	echo "QUESYNTH_VERSION does not fit an AudioComponent version: $version" >&2
+	exit 1
+fi
+component_version=$((major << 16 | minor << 8 | patch))
 
 bundle="$stage/$name.component"
 macos_dir="$bundle/Contents"/MacOS
@@ -105,8 +123,8 @@ fi
 # hosts/au/plugin.odin; auval searches by exactly these. `factoryFunction` is the
 # exported symbol the system calls to make an instance, and `name` is the
 # "manufacturer: plugin" string a host shows. version is major<<16|minor<<8|patch
-# = 0.1.0.
-cat > "$bundle/Contents/Info.plist" <<'PLIST'
+# of QUESYNTH_VERSION.
+cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -122,9 +140,9 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>$version</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.0</string>
+	<string>$version</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>AudioComponents</key>
@@ -141,7 +159,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 			<key>description</key>
 			<string>Synth1-compatible virtual analogue synthesiser</string>
 			<key>version</key>
-			<integer>256</integer>
+			<integer>$component_version</integer>
 			<key>factoryFunction</key>
 			<string>QuesynthAUFactory</string>
 			<key>sandboxSafe</key>
@@ -154,4 +172,4 @@ PLIST
 
 printf 'BNDL????' > "$bundle/Contents/PkgInfo"
 
-echo "assembled $bundle"
+echo "assembled $bundle (version $version)"

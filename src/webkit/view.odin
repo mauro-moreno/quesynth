@@ -44,19 +44,21 @@ View :: struct {
 	on_message:  Message_Proc,
 	user:        rawptr,
 
-    // Each +1 and ours. The controller is kept to remove the handler at
-    // destroy; the handler's ivar points back at this View.
-    webview:     ^WK_Web_View,
-    content:     ^WK_User_Content_Controller,
-    handler:     ^NS.Object,
-    delegate:    ^NS.Object,
+	// Each +1 and ours. The controller is kept to remove the handler at
+	// destroy; the handler's ivar points back at this View.
+	webview:     ^WK_Web_View,
+	content:     ^WK_User_Content_Controller,
+	handler:     ^NS.Object,
+	delegate:    ^NS.Object,
 
-    ready:       bool,
+	ready:       bool,
 
-    ctx:         runtime.Context,
+	ctx:         runtime.Context,
 }
 
-// The file-input delegate is required by WKWebView for <input type=file>.
+// The WKUIDelegate class, registered once per image on first create. WKWebView
+// shows no file chooser of its own: without a delegate answering the open-panel
+// call, <input type=file> -- the panel's patch loader -- does nothing.
 @(private)
 delegate_once: sync.Once
 @(private)
@@ -64,31 +66,61 @@ delegate_class: Class
 @(private)
 delegate_ok: bool
 
+@(private)
 register_delegate_class :: proc() {
-    methods := []Method{{"webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:", rawptr(run_open_panel), "v@:@@@?"}}
-    delegate_class, delegate_ok = register_class("QuesynthUIDelegate", intrinsics.objc_find_class("NSObject"), methods, "WKUIDelegate")
+	methods := []Method{{"webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:", rawptr(run_open_panel), "v@:@@@@?"}}
+	delegate_class, delegate_ok = register_class("QuesynthUIDelegate", intrinsics.objc_find_class("NSObject"), methods, "WKUIDelegate")
 }
 
+// The head of a block literal, as the Blocks ABI lays it out. Only invoke is
+// read: it is the block's function, and takes the block itself first.
+@(private)
+Block_Literal :: struct {
+	isa:      rawptr,
+	flags:    i32,
+	reserved: i32,
+	invoke:   proc "c" (block: ^Block_Literal, urls: ^NS.Array),
+}
+
+// Calls WebKit's completion handler, a void (^)(NSArray<NSURL *> *), with the
+// chosen files or nil for a cancel. Called through the block's own invoke
+// pointer, and not NS.Block_invoke: that sends the message invoke: to the
+// block, which no block answers, and the exception it raises is uncaught in a
+// DAW's run loop -- it took the host down the moment a file was chosen.
+@(private)
+complete_open_panel :: proc "c" (completion: ^NS.Block, urls: ^NS.Array) {
+	block := (^Block_Literal)(rawptr(completion))
+	if block.invoke != nil {
+		block.invoke(block, urls)
+	}
+}
+
+// webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler: --
+// WebKit calls it on the main thread. The handler must be called exactly once,
+// on every path, or the page's file input is left waiting.
 @(private)
 run_open_panel :: proc "c" (self: ^NS.Object, cmd: NS.SEL, webview: ^WK_Web_View, parameters: ^WK_Open_Panel_Parameters, frame: ^NS.Object, completion: ^NS.Block) {
-    if completion == nil {
-        return
-    }
-    panel := NS.OpenPanel_openPanel()
-    if panel == nil {
-        NS.Block_invoke(completion, nil)
-        return
-    }
-    allow_directories := parameters != nil && WK_Open_Panel_Parameters_allowsDirectories(parameters)
-    allow_multiple := parameters != nil && WK_Open_Panel_Parameters_allowsMultipleSelection(parameters)
-    NS.OpenPanel_setCanChooseFiles(panel, !allow_directories)
-    NS.OpenPanel_setCanChooseDirectories(panel, allow_directories)
-    NS.OpenPanel_setAllowsMultipleSelection(panel, allow_multiple)
-    if NS.SavePanel_runModal(panel) == .OK {
-        NS.Block_invoke(completion, NS.OpenPanel_URLs(panel))
-    } else {
-        NS.Block_invoke(completion, nil)
-    }
+	if completion == nil {
+		return
+	}
+	pool := pool_push()
+	defer pool_pop(pool)
+
+	panel := NS.OpenPanel_openPanel()
+	if panel == nil {
+		complete_open_panel(completion, nil)
+		return
+	}
+	allow_directories := parameters != nil && bool(WK_Open_Panel_Parameters_allowsDirectories(parameters))
+	allow_multiple := parameters != nil && bool(WK_Open_Panel_Parameters_allowsMultipleSelection(parameters))
+	NS.OpenPanel_setCanChooseFiles(panel, NS.BOOL(!allow_directories))
+	NS.OpenPanel_setCanChooseDirectories(panel, NS.BOOL(allow_directories))
+	NS.OpenPanel_setAllowsMultipleSelection(panel, NS.BOOL(allow_multiple))
+	if NS.SavePanel_runModal(panel) == .OK {
+		complete_open_panel(completion, NS.OpenPanel_URLs(panel))
+	} else {
+		complete_open_panel(completion, nil)
+	}
 }
 
 // The WKScriptMessageHandler class, registered once per image on first create.
@@ -118,10 +150,10 @@ create :: proc(v: ^View) -> bool {
 	if !handler_ok {
 		return false
 	}
-    sync.once_do(&delegate_once, register_delegate_class)
-    if !delegate_ok {
-        return false
-    }
+	sync.once_do(&delegate_once, register_delegate_class)
+	if !delegate_ok {
+		return false
+	}
 	v.ctx = context
 	v.ready = false
 
@@ -170,13 +202,13 @@ create :: proc(v: ^View) -> bool {
 		return false
 	}
 	v.webview = webview
-    delegate := alloc_instance(delegate_class)->init()
-    if delegate == nil {
-        destroy(v)
-        return false
-    }
-    v.delegate = delegate
-    WK_Web_View_setUIDelegate(webview, delegate)
+	delegate := alloc_instance(delegate_class)->init()
+	if delegate == nil {
+		destroy(v)
+		return false
+	}
+	v.delegate = delegate
+	WK_Web_View_setUIDelegate(webview, delegate)
 	view_set_autoresizing_mask(webview, VIEW_WIDTH_SIZABLE | VIEW_HEIGHT_SIZABLE)
 	(^NS.View)(v.parent)->addSubview(webview)
 
@@ -229,13 +261,13 @@ destroy :: proc(v: ^View) {
 		v.handler->release()
 		v.handler = nil
 	}
-    if v.webview != nil {
-        WK_Web_View_setUIDelegate(v.webview, nil)
-    }
-    if v.delegate != nil {
-        v.delegate->release()
-        v.delegate = nil
-    }
+	if v.webview != nil {
+		WK_Web_View_setUIDelegate(v.webview, nil)
+	}
+	if v.delegate != nil {
+		v.delegate->release()
+		v.delegate = nil
+	}
 	if v.webview != nil {
 		view_remove_from_superview(v.webview)
 		v.webview->release()
