@@ -323,10 +323,11 @@ beside the bank and is touched only by the control thread:
 | on success | slot | source | bank | name | archive_bank/patch |
 |---|---|---|---|---|---|
 | daemon start, `patch.clear` | -1 | `none` | empty | empty | -1/-1 |
-| `patch.load k`, native Program Change | k | `bank` | bank label | slot name | -1/-1 |
+| `patch.load k`, native Program Change of slot k | k | `bank` | bank label | slot name | -1/-1 |
 | `patch.save k [name]` | k | `bank` | bank label | final name | -1/-1 |
 | `patch.load_file p` | -1 | `file` | `file` | patch's name, else file name | -1/-1 |
 | `archive.load i [b]` | -1 | `archive` | open bank's file name | patch's name, else entry name | b/i: the bank and patch loaded |
+| native Program Change of archive patch i | -1 | `archive` | its bank's file name | patch's name, else entry name | b/i: the bank the sound came from, patch i |
 | `bank.load_file p` | -1 | unchanged | unchanged | unchanged | unchanged |
 | `archive.open`, `archive.close` | unchanged | unchanged | unchanged | unchanged | -1/-1 |
 | `archive.bank b` | unchanged | unchanged | unchanged | unchanged | unchanged |
@@ -495,29 +496,43 @@ A page the browser adapter serves claims MIDI input for the host and never
 uses Web MIDI: its MIDI button shows and changes this selection, so a note
 reaches the daemon by exactly one path. Pages in other hosts keep Web MIDI.
 
-Native Bank Select and Program Change also use the daemon's current bank.
-Each of the 16 MIDI channels keeps MSB (CC 0) and LSB (CC 32), initially zero.
-Either half updates only itself; both persist after successful or failed
-Program Changes. CC 0/32 do not reach ordinary controller routing. A Program
-Change selects slot 0–127 in bank `MSB * 128 + LSB`. Only bank 0 exists, the
-current `Slots` loaded at startup or by `bank.load_file`, not an archive index.
-Missing banks, absent/empty slots and invalid MIDI data leave the sound and
-identity unchanged. The unused third byte of a packed Program Change is ignored.
+Native Bank Select and Program Change select from the daemon's banks. Each of
+the 16 MIDI channels keeps MSB (CC 0) and LSB (CC 32), initially zero, and
+whether it has received either one. Either half updates only itself; both
+persist after successful or failed Program Changes, and a channel that has
+chosen a bank keeps having chosen one. CC 0/32 do not reach ordinary
+controller routing. On a channel that has chosen a bank, a Program Change
+selects slot 0–127 in bank `MSB * 128 + LSB`. Only bank 0 exists, the current
+`Slots` loaded at startup or by `bank.load_file`, not an archive index — even
+while the sound plays from an archive bank, since choosing bank 0 is a request
+for it. On a channel that has chosen none, which is how most keyboards send a
+Program Change, it stays in the bank the sound is playing from: patch 0–127 of
+the archive bank `patch.current` names (`source=archive`, `archive_bank` not
+-1), else slot 0–127 of bank 0. An open archive the sound did not come from is
+not used. An archive patch loads, and is named, exactly as `archive.load`
+loads it. When a peer has opened another bank since, the patch is read from
+the bank the sound came from without opening it: the archive, its open bank,
+its path and `archive_rev` stay as they are. Missing banks, absent/empty
+slots, archive patches past the bank's end or that do not read, parse or set a
+parameter, and invalid MIDI data leave the sound, the identity and the channel
+unchanged. The unused third byte of a packed Program Change is ignored.
 
 The audio thread forwards CC 0/32 and Program Change through a bounded MIDI
 queue, preserving channel and order. The control thread drains it on every
 10 ms poll tick, even without clients; the main loop does so on platforms
 without a control server. Every valid Program Change, including duplicates,
-uses `patch.load`'s slot loader and `Commit_Patch` replacement. Identity updates
-on successful enqueue; revision moves once when audio applies it, and
-`bank_rev` does not move. A Program Change the ring has no room for (two whole
-loads fit per audio block) waits at the head of the queue, is resolved again
-against the then-current bank and loads on a later tick, in order, with nothing
-behind it loaded first; `control_dropped` does not move for it. Forwarding-queue
-drops still join the existing shutdown MIDI warning. The callback never accesses
-the bank or allocates. Ordinary CCs, notes and pitch bend keep their existing
-route and omni behavior. Browser/TUI loads and MIDI device selection do not
-reset the pending halves.
+uses `patch.load`'s slot loader or `archive.load`'s patch loader and
+`Commit_Patch` replacement. Identity updates on successful enqueue; revision
+moves once when audio applies it, and `bank_rev` does not move. A Program
+Change the ring has no room for (room for a whole slot's load; two fit per
+audio block) waits at the head of the queue, is resolved again against the
+then-current bank and identity and loads on a later tick, in order, with
+nothing behind it loaded first; `control_dropped` does not move for it. One
+that selects nothing never waits. Forwarding-queue drops still join the
+existing shutdown MIDI warning. The callback never accesses the bank or
+allocates. Ordinary CCs, notes and pitch bend keep their existing route and
+omni behavior. Browser/TUI loads and MIDI device selection do not reset the
+pending halves or whether a channel has chosen a bank.
 
 **Dependencies.** Slices 1, 2.
 

@@ -1,6 +1,8 @@
 package standalone
 
+import "base:runtime"
 import "core:os"
+import "core:slice"
 import "core:strings"
 
 import "../../src/control"
@@ -12,8 +14,9 @@ import "../../src/zip"
 // all. Expanding that into memory would be absurd, so nothing here does: the
 // archive keeps only the outer central directory (a light index) and reads on
 // demand, holding at most one inner bank (tens of kilobytes) and one inflated
-// patch at a time. Entries are pulled straight from the file with read_at, so the
-// archive file itself is never resident either.
+// patch at a time -- and, for as long as one load takes, the bank a Program
+// Change reads beside it. Entries are pulled straight from the file with
+// read_at, so the archive file itself is never resident either.
 //
 // The structure is two levels -- banks, then patches -- and the protocol mirrors
 // it: open an archive, page through its banks, open one bank, page through its
@@ -218,31 +221,43 @@ archive_open_bank :: proc(a: ^Archive, bank: int) -> bool {
 	if a.bank_open && a.bank_at == bank {
 		return true
 	}
-	bytes, ok := archive_read_entry(a, a.entries[a.bank_indices[bank]], context.allocator)
+	bytes, z, patches, ok := archive_read_bank(a, bank)
 	if !ok {
 		return false
 	}
-	z, zok := zip.zip_open(bytes)
-	if !zok {
-		delete(bytes)
-		return false
-	}
 	archive_close_bank(a)
-	// Keep only the .sy1 patches, in order, so browsing and loading skip the
-	// directory markers and stray files a bank zip carries.
-	patches: [dynamic]int
-	for i in 0 ..< zip.zip_count(&z) {
-		if strings.has_suffix(strings.to_lower(zip.zip_name(&z, i), context.temp_allocator), ".sy1") {
-			append(&patches, i)
-		}
-	}
 	a.bank_bytes = bytes
 	a.bank = z
-	a.patch_indices = patches[:]
+	a.patch_indices = patches
 	a.bank_name = base_name(a.entries[a.bank_indices[bank]].name)
 	a.bank_at = bank
 	a.bank_open = true
 	return true
+}
+
+// Read an inner bank and find its patches, touching nothing open: what opening
+// a bank and a Program Change from a bank not open both read, so a patch index
+// means the same patch to both. The caller owns bytes, z and patches.
+@(private = "file")
+archive_read_bank :: proc(a: ^Archive, bank: int) -> (bytes: []u8, z: zip.Zip, patches: []int, ok: bool) {
+	bytes, ok = archive_read_entry(a, a.entries[a.bank_indices[bank]], context.allocator)
+	if !ok {
+		return
+	}
+	z, ok = zip.zip_open(bytes)
+	if !ok {
+		delete(bytes)
+		return nil, {}, nil, false
+	}
+	// Keep only the .sy1 patches, in order, so browsing and loading skip the
+	// directory markers and stray files a bank zip carries.
+	found: [dynamic]int
+	for i in 0 ..< zip.zip_count(&z) {
+		if strings.has_suffix(strings.to_lower(zip.zip_name(&z, i), context.temp_allocator), ".sy1") {
+			append(&found, i)
+		}
+	}
+	return bytes, z, found[:], true
 }
 
 // How many loadable patches the open bank has.
@@ -554,35 +569,25 @@ control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 			return
 		}
 	}
-	if i < 0 || i >= archive_patch_count(a) {
+	applied, result := archive_load_patch(cc, &a.bank, a.patch_indices, a.bank_name, a.bank_at, i)
+	switch result {
+	case .Out_Of_Range:
 		control_write_err(out, req, .Invalid_Payload, "patch index out of range")
 		return
-	}
-	data, read_ok := zip.zip_read(&a.bank, a.patch_indices[i], context.temp_allocator)
-	if !read_ok {
+	case .Unreadable:
 		control_write_err(out, req, .Invalid_Payload, "cannot read patch")
 		return
-	}
-	parsed, perr := patch.parse_sy1(data)
-	if perr != .None {
+	case .Unparseable:
 		control_write_err(out, req, .Invalid_Payload, "cannot parse patch")
 		return
-	}
-	values: [patch.PARAMETER_COUNT]i32
-	for j in 0 ..< patch.PARAMETER_COUNT {values[j] = i32(parsed.values[j])}
-	applied, full := control_apply_patch(cc, values, parsed.present)
-	if full {
-		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
-		return
-	}
-	if applied == 0 {
+	case .No_Parameters:
 		control_write_err(out, req, .Invalid_Payload, "patch set no parameters")
 		return
+	case .Queue_Full, .No_Room:
+		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
+		return
+	case .Ok:
 	}
-	// Named as archive.patches lists it: its own name, else its file name.
-	shown := strings.trim_space(parsed.name)
-	if shown == "" {shown = base_name(zip.zip_name(&a.bank, a.patch_indices[i]))}
-	identity_set(cc.identity, .Archive, -1, a.bank_name, shown, a.bank_at, i)
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " count=")
@@ -593,6 +598,89 @@ control_archive_load :: proc(cc: ^Control_Context, req: control.Request, out: ^s
 	strings.write_int(out, a.bank_at)
 	strings.write_string(out, " patch=")
 	strings.write_int(out, i)
+}
+
+@(private = "file")
+Archive_Load_Result :: enum {
+	Ok,
+	Out_Of_Range,
+	Unreadable,
+	Unparseable,
+	No_Parameters,
+	Queue_Full,
+	// Only for a load that waits: it would load, but the ring has no room
+	// for a whole one yet.
+	No_Room,
+}
+
+// Load patch i of an inner bank as one replacement and name it as the playing
+// patch. Both archive.load and a native Program Change come here, so a patch
+// cannot load one way from a client and another from a keyboard. Anything but
+// Ok has queued nothing and left the identity alone. A Program Change waits
+// for room rather than be refused, so it passes `wait`: a load the ring has no
+// room for is then No_Room before the ring is offered anything, which would
+// count it as dropped. Reads the entry into the temp allocator.
+@(private = "file")
+archive_load_patch :: proc(
+	cc: ^Control_Context,
+	z: ^zip.Zip,
+	patches: []int,
+	bank_name: string,
+	bank, i: int,
+	wait := false,
+) -> (
+	applied: int,
+	result: Archive_Load_Result,
+) {
+	if i < 0 || i >= len(patches) {return 0, .Out_Of_Range}
+	data, read_ok := zip.zip_read(z, patches[i], context.temp_allocator)
+	if !read_ok {return 0, .Unreadable}
+	parsed, perr := patch.parse_sy1(data)
+	if perr != .None {return 0, .Unparseable}
+	// Before any question of room: a patch that sets nothing selects nothing,
+	// and must not wait for room it would never use.
+	if !slice.contains(parsed.present[:], true) {return 0, .No_Parameters}
+	if wait && !bank_load_has_room(cc) {return 0, .No_Room}
+	values: [patch.PARAMETER_COUNT]i32
+	for j in 0 ..< patch.PARAMETER_COUNT {values[j] = i32(parsed.values[j])}
+	n, full := control_apply_patch(cc, values, parsed.present)
+	if full {return 0, .Queue_Full}
+	// Named as archive.patches lists it: its own name, else its file name.
+	shown := strings.trim_space(parsed.name)
+	if shown == "" {shown = base_name(zip.zip_name(z, patches[i]))}
+	identity_set(cc.identity, .Archive, -1, bank_name, shown, bank, i)
+	return n, .Ok
+}
+
+// A native Program Change's patch i of `bank`, a bank of the open archive: the
+// one the sound is playing from, which need not be the one open, since a peer
+// may have browsed another since. A Program Change must not move what every
+// client is browsing -- archive.bank does that, and counts it -- so a bank
+// that is not open is read beside the open one and let go at once. False when
+// the patch would load but the ring has no room for a whole load: it waits, as
+// a slot's load does. Anything else that does not load changes nothing.
+//
+// It can run on every drain tick for as long as the daemon does, and the
+// control thread never frees its temp allocator, so what it reads there goes
+// when it returns.
+@(private)
+archive_program_load :: proc(cc: ^Control_Context, bank, i: int) -> bool {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	a := cc.archive
+	if a.bank_open && a.bank_at == bank {
+		_, result := archive_load_patch(cc, &a.bank, a.patch_indices, a.bank_name, bank, i, wait = true)
+		return result != .No_Room
+	}
+	bytes, z, patches, ok := archive_read_bank(a, bank)
+	if !ok {return true}
+	defer {
+		zip.zip_close(&z)
+		delete(bytes)
+		delete(patches)
+	}
+	name := base_name(a.entries[a.bank_indices[bank]].name)
+	_, result := archive_load_patch(cc, &z, patches, name, bank, i, wait = true)
+	return result != .No_Room
 }
 
 // archive.close: release the archive and any open bank, and forget the path, so

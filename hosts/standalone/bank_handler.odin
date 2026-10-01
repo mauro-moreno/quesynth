@@ -120,7 +120,8 @@ bank_load_slot :: proc(cc: ^Control_Context, slot: int) -> (applied: int, result
 }
 
 // Whether the ring can take bank_load_slot's whole load: every parameter and
-// the commit. A missing ring is nothing to wait for; bank_load_slot refuses.
+// the commit, which covers any archive patch too. A missing ring is nothing to
+// wait for; the load refuses.
 @(private)
 bank_load_has_room :: proc(cc: ^Control_Context) -> bool {
 	return cc.ring == nil || param_ring_free_space(cc.ring) >= patch.PARAMETER_COUNT + 1

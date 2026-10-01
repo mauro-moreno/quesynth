@@ -158,8 +158,11 @@ twice. By default every input is open, as it always has been.
 
 A native controller can also select patches: CC 0 and CC 32 hold the bank's
 MSB and LSB per MIDI channel, and Program Change loads slot 0–127. Bank 0 is
-the daemon's current factory or user bank. Other banks and empty slots leave
-the sound unchanged. Both halves start at zero; sending only one keeps the
+the daemon's current factory or user bank. A channel that has never sent
+Bank Select stays in the bank the sound is playing from instead, so after a
+patch is loaded from an archive bank, Program Change picks patch 0–127 of
+that bank. Other banks, empty slots and patches past a bank's end leave the
+sound unchanged. Both halves start at zero; sending only one keeps the
 other's last value, and Program Change does not reset them. Loads use the same
 atomic replacement as the TUI and browser, with held notes kept sounding.
 
