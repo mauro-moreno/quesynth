@@ -14,13 +14,21 @@ import "base:intrinsics"
 // The audio thread never blocks on this: pop is wait-free, and a full ring
 // drops on the producer side with a count, exactly as the MIDI queue does.
 
-// Every mutation crosses the ring as a run of Set commands ended by a Commit.
-// The audio thread stages the Sets and applies them together on the Commit,
+// Every mutation crosses the ring as a run of Set commands ended by a commit.
+// The audio thread stages the Sets and applies them together on the commit,
 // bumping the revision once, so a batch is atomic relative to a block: no block
 // ever renders half a transaction, and a reader never sees a partial one.
+//
+// The commit says what the batch is. Commit ends a run of ordinary edits, a
+// knob or two, which must glide and keep every tail. Commit_Patch ends a whole
+// patch: the audio thread replaces the patch instead, so nothing the previous
+// one left in the effects, the smoothers or a reassigned controller is heard
+// under the new one. Appended rather than inserted so the two older values
+// keep their numbers.
 Param_Command_Kind :: enum i32 {
 	Set,
 	Commit,
+	Commit_Patch,
 }
 
 Param_Command :: struct {

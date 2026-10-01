@@ -91,7 +91,7 @@ test_archive_load_applies_patch_as_transaction :: proc(t: ^testing.T) {
 	}
 	commit, has_commit := standalone.param_ring_pop(&ring)
 	testing.expect(t, has_commit)
-	testing.expect_value(t, commit.kind, standalone.Param_Command_Kind.Commit)
+	testing.expect_value(t, commit.kind, standalone.Param_Command_Kind.Commit_Patch)
 }
 
 @(test)

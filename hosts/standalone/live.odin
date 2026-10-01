@@ -73,7 +73,7 @@ Live :: struct {
 	revision: int,
 
 	// Transaction staging: a batch's Set commands accumulate here until their
-	// Commit, so the batch applies all-or-nothing within one block. It persists
+	// commit, so the batch applies all-or-nothing within one block. It persists
 	// across blocks in case a transaction is split across the ring.
 	txn_staging: [TXN_STAGING_MAX]Param_Command,
 	txn_count:   int,
@@ -94,7 +94,7 @@ Live :: struct {
 
 // Drain queued control edits, applying each committed transaction to the engine
 // and returning whether anything was applied. A transaction's Set commands are
-// staged until its Commit, so a batch applies at once and bumps the revision
+// staged until its commit, so a batch applies at once and bumps the revision
 // once; a transaction split across the ring simply finishes on a later block.
 // Extracted from the audio callback so a test can drive it without a device.
 live_drain_control :: proc(s: ^Live) -> (applied: bool) {
@@ -103,7 +103,8 @@ live_drain_control :: proc(s: ^Live) -> (applied: bool) {
 		if !ok {
 			break
 		}
-		if cmd.kind == .Commit {
+		switch cmd.kind {
+		case .Commit:
 			for i in 0 ..< s.txn_count {
 				edit := s.txn_staging[i]
 				engine.engine_set_stored(&s.eng, int(edit.index), int(edit.stored))
@@ -111,12 +112,43 @@ live_drain_control :: proc(s: ^Live) -> (applied: bool) {
 			s.txn_count = 0
 			s.revision += 1
 			applied = true
-		} else if s.txn_count < TXN_STAGING_MAX {
-			s.txn_staging[s.txn_count] = cmd
-			s.txn_count += 1
+		case .Commit_Patch:
+			live_replace_patch(s)
+			s.txn_count = 0
+			s.revision += 1
+			applied = true
+		case .Set:
+			if s.txn_count < TXN_STAGING_MAX {
+				s.txn_staging[s.txn_count] = cmd
+				s.txn_count += 1
+			}
 		}
 	}
 	return applied
+}
+
+// Replace the patch with the staged transaction, as one change rather than as
+// ninety-nine edits. Applied one by one, each value would glide from the last
+// patch's, the delay and chorus would play the last patch's tail back under the
+// new one, and a controller slot reassigned to another number would keep the
+// old wheel's position and bend the new patch by it. engine_apply_patch with
+// `snap` clears all of that; see it for the controller rule.
+//
+// The pool is kept: this is the audio thread, which must not allocate, and the
+// key that is down must keep sounding. Parameters the transaction does not name
+// keep the values the engine holds, because a file or an archive entry may name
+// only some of them and loading one has always meant applying what it names.
+// A replacement that changes no value still clears the effects: loading the
+// same patch again is how a player silences what it left ringing.
+@(private = "file")
+live_replace_patch :: proc(s: ^Live) {
+	next := s.eng.patch
+	for i in 0 ..< s.txn_count {
+		edit := s.txn_staging[i]
+		if edit.index < 0 || int(edit.index) >= patch.PARAMETER_COUNT {continue}
+		next.values[edit.index] = int(edit.stored)
+	}
+	engine.engine_apply_patch(&s.eng, next, snap = true, keep_voice_pool = true)
 }
 
 // The audio callback. Everything it touches is preallocated or atomic.
@@ -147,7 +179,7 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 	}
 
 	// Drain control edits at the same block-accurate timing. A transaction's Set
-	// commands are staged and applied together on its Commit, so the block below
+	// commands are staged and applied together on its commit, so the block below
 	// never renders a partial batch.
 	applied := live_drain_control(s)
 	// Republish only when something changed, so an idle daemon does no snapshot

@@ -55,13 +55,16 @@ test_tui_client_lists_and_loads_bank :: proc(t: ^testing.T) {
 	// Loading the first filled slot enqueues its whole preset as a transaction.
 	testing.expect(t, tui.client_patch_load(&client, slots[first].slot))
 	seen := 0
+	last: standalone.Param_Command_Kind
 	for {
 		cmd, popped := standalone.param_ring_pop(&ring)
 		if !popped { break }
 		seen += 1
-		if cmd.kind == .Commit { break }
+		last = cmd.kind
+		if cmd.kind == .Commit_Patch { break }
 	}
 	testing.expect(t, seen > 1)
+	testing.expect_value(t, last, standalone.Param_Command_Kind.Commit_Patch)
 
 	tui.client_close(&client)
 	standalone.control_server_stop(&cs)

@@ -18,7 +18,7 @@ import {sleep} from "./support/ws-client.mjs";
 
 const SCRIPTS = ["host.js", "params.js", "layout.js", "bridge.js", "app.js", "midi.js", "sy1.js",
   "midimap.js", "patchfile.js", "modal.js", "browser.js", "options.js"];
-const WRITES = new Set(["parameter.set", "parameter.set_many", "patch.load", "patch.clear", "patch.save",
+const WRITES = new Set(["parameter.set", "parameter.set_many", "patch.apply", "patch.load", "patch.clear", "patch.save",
   "bank.load_file", "bank.keep", "midi", "volume"]);
 
 function bootPanel(port) {

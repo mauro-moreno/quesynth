@@ -70,7 +70,7 @@ What each message of `ui/bridge.js` does here:
 |---|---|
 | `sync` | nothing; the page is sent `bank`, `state`, `patch`, `midi`, in that order |
 | `set` | `parameter.set <id> <value>` |
-| `state` | see below: dropped, `patch.load <k>`, or `parameter.set_many` then `patch.clear` |
+| `state` | see below: dropped, `patch.load <k>`, or `patch.apply` then `patch.clear` |
 | `edit` | nothing, by design: gesture brackets are for hosts that record automation, and the daemon records none |
 | `note` | `midi 144\|128 <note> <velocity>` (on the message's channel) |
 | `wheel` | pitch: `midi 224 <lsb> <msb>` (−1..1 onto 0..16383); mod: `midi 176 1 <0..127>` |
@@ -101,8 +101,12 @@ A `state` is a whole patch, and three things send one:
   filled slot's (the page's PREV/NEXT and bank browser load by value). It
   becomes `patch.load <k>`, the slot already current if it matches, else the
   lowest, so the daemon records the identity every client then shows.
-- **Anything else** (a patch file): `parameter.set_many` of every value the
-  daemon exposes, then `patch.clear`, since a sound no slot holds has no name.
+- **Anything else** (a patch file): `patch.apply` of every value the daemon
+  exposes, then `patch.clear`, since a sound no slot holds has no name. It is
+  `patch.apply` and never `parameter.set_many`: a whole patch is an atomic
+  replacement on the audio thread, which resets the previous patch's effect
+  tails and smoothers as `patch.load` does, while `set_many` is an ordinary
+  batch edit that leaves them running. A `set` is still `parameter.set`.
 
 A `bank` from the page is how the panel stores a patch (`SynthBank.store`): it
 posts the whole bank with one slot changed. When exactly one slot differs, it

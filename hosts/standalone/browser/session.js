@@ -286,7 +286,10 @@ class Session {
       this.expectValue(i, v);
     });
     // Slot k's sound, sent by value, is loaded as slot k so the daemon
-    // records which patch it is. Same transaction as set_many, one revision.
+    // records which patch it is. A whole patch is a replacement, not a run of
+    // edits: patch.load and patch.apply both make the audio thread reset the
+    // previous patch's effect tails and smoothers, which a parameter.set_many
+    // batch deliberately does not, so it must never be sent as one.
     const slot = values.length === this.count
       ? bank.findSlot(this.model, values, this.identity ? this.identity.slot : -1)
       : -1;
@@ -298,7 +301,7 @@ class Session {
     this.run("state", async () => {
       // A sound the bank does not hold has no name the daemon could record,
       // so the identity is cleared rather than left naming the one before.
-      if (await this.write("state", `parameter.set_many ${pairs.join(" ")}`, indices)) {
+      if (await this.write("state", `patch.apply ${pairs.join(" ")}`, indices)) {
         await this.daemon.request("patch.clear");
       }
     });

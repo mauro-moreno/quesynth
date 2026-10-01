@@ -55,13 +55,16 @@ test_tui_archive_browse_and_load :: proc(t: ^testing.T) {
 
 	testing.expect(t, tui.client_archive_load(&client, 0))
 	seen := 0
+	last: standalone.Param_Command_Kind
 	for {
 		cmd, popped := standalone.param_ring_pop(&ring)
 		if !popped { break }
 		seen += 1
-		if cmd.kind == .Commit { break }
+		last = cmd.kind
+		if cmd.kind == .Commit_Patch { break }
 	}
 	testing.expect(t, seen > 1)
+	testing.expect_value(t, last, standalone.Param_Command_Kind.Commit_Patch)
 
 	testing.expect(t, tui.client_archive_close(&client))
 	tui.client_close(&client)

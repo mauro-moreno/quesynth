@@ -328,6 +328,46 @@ bank and is touched only by the control thread:
 Anything else, and any failed command, leaves it alone: a knob tweak edits the
 sound, it does not rename the patch.
 
+One more for a front-end that holds a whole patch itself — the browser page
+opening a patch file of its own — same version:
+
+- `patch.apply <id> <value> [<id> <value> ...]` → `ok count=<pairs given>
+  revision=<int>`, the revision being the snapshot's at reply time, as with
+  `parameter.set_many`. The grammar and the validation are `set_many`'s:
+  registry ids, integer values, each checked against its range, and the first
+  bad member refuses the whole command with nothing queued. Refusals:
+  `err invalid_payload apply needs id value pairs` (no pairs, or an odd token
+  count), `err invalid_payload value is not an integer`, `err unknown_parameter
+  no such parameter`, `err out_of_range value out of range`,
+  `err transaction_failed too many parameters in one transaction` (more than
+  128 pairs), and `err daemon_not_ready control queue full` when the ring has
+  no room for the pairs and their commit (counted once in `control_dropped`).
+  Pairs are staged as given and in order, so a repeated id ends at its last
+  value. It names no patch and leaves the identity alone; a client that wants
+  it cleared says `patch.clear`.
+
+**Patch replacement.** A patch load is not a batch of edits. Every mutation
+still crosses the ring as Sets ended by a commit, but there are two commits.
+`Commit` ends ordinary edits — `parameter.set`, `parameter.set_many` — and the
+audio thread applies each Set through `engine_set_stored`, so a knob glides
+and every tail keeps ringing. `Commit_Patch` ends a whole patch — `patch.load`,
+`patch.load_file`, `archive.load`, `patch.apply` — and the audio thread
+overlays the staged values on the patch it holds and replaces it in one call to
+`engine_apply_patch(snap = true, keep_voice_pool = true)`. That clears the
+delay, chorus, effect-unit and equaliser memory and snaps the cutoff, gain and
+pan smoothers to the new targets, so nothing of the previous patch is heard
+under the next. Sounding voices, held keys, the pitch bend, the tempo and the
+voice pool are kept: the key that is down keeps sounding, and the audio thread
+never allocates. A controller's position is kept only while its slot listens to
+the same CC number; a slot the new patch routes to another number starts at
+zero, so a wheel nobody is holding cannot bend the new patch. Parameters a load
+does not name — a sparse file, an archive entry, the seven `patch.apply` cannot
+carry — keep the values they had. The revision moves once per replacement, and
+a replacement that changes no value still clears the tails. Polyphony (94) is
+daemon configuration (handoff §37): the pool keeps the size it started with,
+while the snapshot reports, and `patch.save` captures, the patch's own stored
+value.
+
 The daemon also owns which native MIDI inputs it listens to, so two
 front-ends cannot each attach the same keyboard and play every note twice.
 Three more commands, same version:

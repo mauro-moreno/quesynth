@@ -61,7 +61,7 @@ test("a value the daemon refuses is reported and the page is put back", {skip}, 
 
 test("a whole patch the daemon refuses is reported and the page is put back", {skip}, async t => {
   const {ws, daemon} = await page(t);
-  daemon.intercept = req => (req.command === "parameter.set_many"
+  daemon.intercept = req => (req.command === "patch.apply"
     ? {err: ["daemon_not_ready", "control queue full"]} : undefined);
   const values = DEFAULTS.map((v, i) => (i === 19 ? 3 : v));
   ws.send({type: "state", values});

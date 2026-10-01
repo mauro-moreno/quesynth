@@ -81,8 +81,9 @@ test_patch_load_applies_slot_as_one_transaction :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(reply, fmt.tprintf("slot=%d", first)))
 	testing.expect(t, strings.contains(reply, fmt.tprintf("count=%d", patch.PARAMETER_COUNT)))
 
-	// The whole preset reached the ring as PARAMETER_COUNT Sets then one Commit,
-	// in parameter-index order, each value the slot's.
+	// The whole preset reached the ring as PARAMETER_COUNT Sets then one
+	// Commit_Patch, in parameter-index order, each value the slot's: a slot is
+	// a whole patch, replaced on the audio thread rather than edited.
 	for i in 0 ..< patch.PARAMETER_COUNT {
 		cmd, popped := standalone.param_ring_pop(&ring)
 		testing.expect(t, popped)
@@ -92,7 +93,7 @@ test_patch_load_applies_slot_as_one_transaction :: proc(t: ^testing.T) {
 	}
 	commit, has_commit := standalone.param_ring_pop(&ring)
 	testing.expect(t, has_commit)
-	testing.expect_value(t, commit.kind, standalone.Param_Command_Kind.Commit)
+	testing.expect_value(t, commit.kind, standalone.Param_Command_Kind.Commit_Patch)
 	_, leftover := standalone.param_ring_pop(&ring)
 	testing.expect(t, !leftover)
 }
@@ -179,13 +180,16 @@ test_patch_load_file_and_bank_write_round_trip :: proc(t: ^testing.T) {
 	reply := reliability_reply(fd)
 	testing.expect(t, strings.has_prefix(reply, "1 1 ok"))
 	drained := 0
+	last: standalone.Param_Command_Kind
 	for {
 		cmd, popped := standalone.param_ring_pop(&ring)
 		if !popped {break}
 		drained += 1
-		if cmd.kind == .Commit {break}
+		last = cmd.kind
+		if cmd.kind == .Commit_Patch {break}
 	}
-	testing.expect(t, drained > 1) // at least one Set plus the Commit
+	testing.expect(t, drained > 1) // at least one Set plus the commit
+	testing.expect_value(t, last, standalone.Param_Command_Kind.Commit_Patch)
 
 	// Write the bank to a temp path and confirm it parses back as a bank.
 	out_path := fmt.tprintf("/tmp/quesynth-bankout-%d.json", posix.getpid())

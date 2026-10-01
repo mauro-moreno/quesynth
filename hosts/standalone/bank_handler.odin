@@ -1,6 +1,5 @@
 package standalone
 
-import "base:intrinsics"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -9,12 +8,13 @@ import "../../src/control"
 import "../../src/patch"
 
 // The bank half of the control protocol: browse the patch bank, load a patch
-// (from a slot or a file) as one atomic transaction, capture the live state into
-// a slot, and write the bank to disk. Loading a patch is exactly the transaction
-// Slice 7 built -- a run of Set commands ended by a Commit -- so the audio thread
-// applies a whole preset at once and bumps the revision once, and no block ever
-// renders half a patch. Everything here runs on the control thread; the bank is
-// touched by nothing else, so it needs no lock.
+// (from a slot or a file) as one atomic replacement, capture the live state
+// into a slot, and write the bank to disk. Loading a patch is the transaction
+// Slice 7 built -- a run of Set commands -- ended by a Commit_Patch rather than
+// a Commit, so the audio thread replaces the whole preset at once, clears what
+// the last one left ringing, bumps the revision once, and no block ever renders
+// half a patch. Everything here runs on the control thread; the bank is touched
+// by nothing else, so it needs no lock.
 
 // bank.list: the bank's label, how many slots are filled, and one record line
 // per slot -- all of them, filled or empty -- with its index, name and whether it
@@ -291,11 +291,13 @@ control_write_bank_rev :: proc(cc: ^Control_Context, out: ^strings.Builder) {
 	strings.write_uint(out, cc.identity.bank_rev)
 }
 
-// Stage the present parameters of a patch and commit them as one transaction,
-// all-or-nothing: nothing reaches the ring unless the whole batch and its commit
-// fit. Values are pushed by patch index -- the same path startup loading takes --
-// so a preset applies faithfully and atomically. Returns the number applied, and
-// whether the ring was too full to take the batch.
+// Stage the present parameters of a patch and commit them as one replacement,
+// all-or-nothing: nothing reaches the ring unless the whole batch and its
+// commit fit. Values are pushed by patch index -- the same path startup loading
+// takes -- so a preset applies faithfully and atomically. Commit_Patch rather
+// than Commit, because a slot, a file and an archive entry are whole patches:
+// the audio thread must replace the sound, not edit the one that is playing.
+// Returns the number applied, and whether the ring was too full for the batch.
 @(private)
 control_apply_patch :: proc(
 	cc: ^Control_Context,
@@ -314,14 +316,7 @@ control_apply_patch :: proc(
 	}
 	if n == 0 {return 0, false}
 	if cc.ring == nil {return 0, true}
-	if param_ring_free_space(cc.ring) < n + 1 {
-		intrinsics.atomic_add_explicit(&cc.ring.dropped, 1, .Relaxed)
-		return 0, true
-	}
-	for i in 0 ..< n {
-		param_ring_push(cc.ring, staged[i])
-	}
-	param_ring_push(cc.ring, Param_Command{kind = .Commit})
+	if !control_enqueue(cc.ring, staged[:n], .Commit_Patch) {return 0, true}
 	return n, false
 }
 

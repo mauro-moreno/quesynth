@@ -7,7 +7,7 @@ import {sleep} from "./support/ws-client.mjs";
 
 const skip = !unix;
 // Everything that changes the daemon, as opposed to reading it.
-const WRITES = new Set(["parameter.set", "parameter.set_many", "patch.load", "patch.clear", "patch.save",
+const WRITES = new Set(["parameter.set", "parameter.set_many", "patch.apply", "patch.load", "patch.clear", "patch.save",
   "bank.load_file", "bank.keep", "midi", "volume"]);
 
 function writes(daemon) {
@@ -42,7 +42,7 @@ test("set becomes parameter.set, and another page and client see it", {skip}, as
   assert.deepEqual(await ws.quiet(80), [], "the writer is not sent its own value back");
 });
 
-test("a whole-patch state no slot holds becomes set_many, then patch.clear", {skip}, async t => {
+test("a whole-patch state no slot holds becomes patch.apply, then patch.clear", {skip}, async t => {
   const {ws, daemon} = await page(t);
   const values = DEFAULTS.slice();
   values[19] = 3;
@@ -51,9 +51,93 @@ test("a whole-patch state no slot holds becomes set_many, then patch.clear", {sk
   await until(() => writes(daemon).length === 2, 3000, "two writes");
   const pairs = values.map((v, i) => [i, v]).filter(([i]) => REGISTRY.some(d => d.index === i))
     .map(([i, v]) => `${REGISTRY.find(d => d.index === i).id} ${v}`);
-  assert.deepEqual(writes(daemon), [`parameter.set_many ${pairs.join(" ")}`, "patch.clear"]);
+  assert.deepEqual(writes(daemon), [`patch.apply ${pairs.join(" ")}`, "patch.clear"]);
   assert.equal(daemon.published.values[19], 3);
   assert.equal(daemon.published.values[25], 7);
+});
+
+// A whole patch is an atomic replacement on the audio thread -- effect tails
+// and smoothers reset -- where parameter.set_many is an ordinary batch edit
+// that leaves them running. So a page's whole patch must never take that path.
+test("a whole-patch state is one patch.apply and one patch.clear, never set_many", {skip}, async t => {
+  const {ws, daemon} = await page(t);
+  const values = DEFAULTS.map((v, i) => (i === 19 ? 3 : i === 37 ? 9 : v));
+  ws.send({type: "state", values});
+  await until(() => daemon.commands("patch.clear").length === 1, 3000, "patch.clear");
+  await sleep(40);
+  assert.deepEqual(writes(daemon).map(l => l.split(" ")[0]), ["patch.apply", "patch.clear"]);
+  assert.deepEqual(daemon.commands("parameter.set_many"), []);
+  assert.deepEqual(daemon.commands("parameter.set"), []);
+  assert.equal(daemon.published.values[19], 3);
+  assert.equal(daemon.published.values[37], 9);
+});
+
+test("a partial state applies exactly the pairs it carries, in index order", {skip}, async t => {
+  const {ws, daemon} = await page(t);
+  const values = DEFAULTS.slice(0, 40);
+  values[19] = 5;
+  values[35] = 11;
+  ws.send({type: "state", values});
+  await until(() => writes(daemon).length === 2, 3000, "two writes");
+  const pairs = [];
+  values.forEach((v, i) => {
+    const d = REGISTRY.find(r => r.index === i);
+    if (d) pairs.push(`${d.id} ${v}`);
+  });
+  assert.deepEqual(writes(daemon), [`patch.apply ${pairs.join(" ")}`, "patch.clear"]);
+  assert.equal(pairs.length, REGISTRY.filter(d => d.index < 40).length);
+  assert.equal(daemon.published.values[19], 5);
+  assert.equal(daemon.published.values[35], 11);
+  assert.equal(daemon.published.values[60], DEFAULTS[60], "what the state did not carry is untouched");
+});
+
+test("an out-of-range whole patch is refused by the adapter before any daemon write", {skip}, async t => {
+  const {ws, daemon} = await page(t);
+  ws.send({type: "state", values: DEFAULTS.map((v, i) => (i === 19 ? 100000 : v))});
+  const error = await ws.next("error");
+  assert.deepEqual(error, {type: "error", for: "state", code: "out_of_range",
+    message: "value for parameter 19 out of range"});
+  assert.deepEqual((await ws.next("state")).values, daemon.published.values);
+  await sleep(40);
+  assert.deepEqual(writes(daemon), []);
+});
+
+test("a patch.apply the daemon refuses is reported, the page is put back, and the identity is kept", {skip}, async t => {
+  const {env, ws, daemon} = await page(t);
+  const peer = await connectRaw(env.socketPath);
+  t.after(() => peer.close());
+  await peer.request("patch.load 5");
+  await ws.next(m => m.type === "patch" && m.index === 5);
+  daemon.intercept = req => (req.command === "patch.apply"
+    ? {err: ["daemon_not_ready", "control queue full"]} : undefined);
+  const values = DEFAULTS.map((v, i) => (i === 19 ? 3 : v));
+  ws.send({type: "state", values});
+  assert.deepEqual(await ws.next("error"),
+    {type: "error", for: "state", code: "daemon_not_ready", message: "control queue full"});
+  assert.deepEqual((await ws.next("state")).values, daemon.published.values);
+  await sleep(40);
+  assert.equal(daemon.commands("patch.apply").length, 1);
+  assert.deepEqual(daemon.commands("patch.clear"), []);
+  assert.deepEqual(daemon.commands("parameter.set_many"), []);
+  assert.equal(daemon.identity.slot, 5);
+});
+
+test("a single set stays exactly parameter.set", {skip}, async t => {
+  const {ws, daemon} = await page(t);
+  ws.send({type: "set", index: 25, value: 40});
+  await until(() => writes(daemon).length === 1, 3000, "one write");
+  await sleep(40);
+  assert.deepEqual(writes(daemon), ["parameter.set amp.attack 40"]);
+});
+
+test("a state equal to a bank slot is patch.load and never patch.apply", {skip}, async t => {
+  const {ws, daemon} = await page(t);
+  ws.send({type: "state", values: daemon.bank.slots[3].values});
+  await until(() => writes(daemon).length === 1, 3000, "slot load");
+  await sleep(40);
+  assert.deepEqual(writes(daemon), ["patch.load 3"]);
+  assert.deepEqual(daemon.commands("patch.apply"), []);
+  assert.deepEqual(daemon.commands("patch.clear"), []);
 });
 
 test("notes reach the daemon's MIDI queue as exact bytes", {skip}, async t => {
@@ -123,7 +207,7 @@ test("with slot 0 empty the adoption echo is the Init patch", {skip}, async t =>
   assert.deepEqual(writes(daemon), []);
   ws.send({type: "state", values: DEFAULTS});
   await until(() => writes(daemon).length === 2, 3000, "Init by value");
-  assert.match(writes(daemon)[0], /^parameter\.set_many /);
+  assert.match(writes(daemon)[0], /^patch\.apply /);
   assert.equal(writes(daemon)[1], "patch.clear");
 });
 

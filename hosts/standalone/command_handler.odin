@@ -87,6 +87,8 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 		control_bank_list(cc, req, out)
 	case "patch.load":
 		control_patch_load(cc, req, out)
+	case "patch.apply":
+		control_patch_apply(cc, req, out)
 	case "patch.load_file":
 		control_patch_load_file(cc, req, out)
 	case "patch.save":
@@ -317,10 +319,33 @@ control_set :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Bu
 
 @(private = "file")
 control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	control_pairs_transaction(cc, req, out, .Commit, "set_many needs id value pairs")
+}
+
+// patch.apply: a whole patch sent by value, which is how a front-end that holds
+// one loads it -- the browser page opening a patch file of its own. The grammar
+// and the validation are set_many's; only the commit differs, so the audio
+// thread replaces the patch rather than editing it. Which patch it is stays for
+// the client to say: patch.load names a slot, this names nothing.
+@(private = "file")
+control_patch_apply :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+	control_pairs_transaction(cc, req, out, .Commit_Patch, "apply needs id value pairs")
+}
+
+// `id value` pairs, validated as a whole and enqueued as one transaction ended
+// by `commit`. Duplicates are staged as given, in order, so the later one wins.
+@(private = "file")
+control_pairs_transaction :: proc(
+	cc: ^Control_Context,
+	req: control.Request,
+	out: ^strings.Builder,
+	commit: Param_Command_Kind,
+	needs_pairs: string,
+) {
 	tokens := strings.fields(req.rest)
 	defer delete(tokens)
 	if len(tokens) == 0 || len(tokens) % 2 != 0 {
-		control_write_err(out, req, .Invalid_Payload, "set_many needs id value pairs")
+		control_write_err(out, req, .Invalid_Payload, needs_pairs)
 		return
 	}
 	count := len(tokens) / 2
@@ -355,17 +380,10 @@ control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strin
 		staged[i] = Param_Command{kind = .Set, index = i32(d.index), stored = i32(stored)}
 	}
 
-	// Enqueue the whole batch and its commit, or nothing: checking free space
-	// first keeps a partial transaction off the ring.
-	if param_ring_free_space(cc.ring) < count + 1 {
-		intrinsics.atomic_add_explicit(&cc.ring.dropped, 1, .Relaxed)
+	if !control_enqueue(cc.ring, staged[:count], commit) {
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
 	}
-	for i in 0 ..< count {
-		param_ring_push(cc.ring, staged[i])
-	}
-	param_ring_push(cc.ring, Param_Command{kind = .Commit})
 
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
@@ -373,6 +391,22 @@ control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strin
 	strings.write_int(out, count)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+}
+
+// Enqueue a whole transaction -- its Sets, then the commit that says what kind
+// of transaction it is -- or nothing: checking free space first keeps a partial
+// transaction off the ring, and a refusal is counted once, not once per Set.
+@(private)
+control_enqueue :: proc(ring: ^Param_Ring, sets: []Param_Command, commit: Param_Command_Kind) -> bool {
+	if param_ring_free_space(ring) < len(sets) + 1 {
+		intrinsics.atomic_add_explicit(&ring.dropped, 1, .Relaxed)
+		return false
+	}
+	for cmd in sets {
+		param_ring_push(ring, cmd)
+	}
+	param_ring_push(ring, Param_Command{kind = commit})
+	return true
 }
 
 @(private = "file")

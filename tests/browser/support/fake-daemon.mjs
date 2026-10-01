@@ -283,6 +283,27 @@ export class FakeDaemon {
     return s && s.name ? s.name : "Init";
   }
 
+  // The id/value pairs of a set_many or patch.apply, validated as the daemon
+  // does: the pairs, or the error answer as a string.
+  pairs(req, name) {
+    const describe = id => REGISTRY.find(d => d.id === id);
+    const int = text => (/^[-+]?\d+$/.test(text || "") ? Number(text) : NaN);
+    const t = req.rest.split(/\s+/).filter(Boolean);
+    if (!t.length || t.length % 2) return `err invalid_payload ${name} needs id value pairs`;
+    if (t.length / 2 > TXN_MAX) return "err transaction_failed too many parameters in one transaction";
+    const batch = [];
+    for (let i = 0; i < t.length; i += 2) {
+      const value = int(t[i + 1]);
+      if (Number.isNaN(value)) return "err invalid_payload value is not an integer";
+      const d = describe(t[i]);
+      if (!d) return "err unknown_parameter no such parameter";
+      const p = PARAMS[d.index];
+      if (value < p.min || value > p.max) return "err out_of_range value out of range";
+      batch.push([d.index, value]);
+    }
+    return batch;
+  }
+
   handle(req) {
     const describe = id => REGISTRY.find(d => d.id === id);
     const int = text => (/^[-+]?\d+$/.test(text || "") ? Number(text) : NaN);
@@ -313,19 +334,18 @@ export class FakeDaemon {
         return `ok value=${value} revision=${this.published.revision}`;
       }
       case "parameter.set_many": {
-        const t = req.rest.split(/\s+/).filter(Boolean);
-        if (!t.length || t.length % 2) return "err invalid_payload set_many needs id value pairs";
-        if (t.length / 2 > TXN_MAX) return "err transaction_failed too many parameters in one transaction";
-        const batch = [];
-        for (let i = 0; i < t.length; i += 2) {
-          const value = int(t[i + 1]);
-          if (Number.isNaN(value)) return "err invalid_payload value is not an integer";
-          const d = describe(t[i]);
-          if (!d) return "err unknown_parameter no such parameter";
-          const p = PARAMS[d.index];
-          if (value < p.min || value > p.max) return "err out_of_range value out of range";
-          batch.push([d.index, value]);
-        }
+        const batch = this.pairs(req, "set_many");
+        if (typeof batch === "string") return batch;
+        this.queue.push(batch);
+        return `ok count=${batch.length} revision=${this.published.revision}`;
+      }
+      // A whole patch: the same grammar and validation as set_many, and the
+      // same queued batch here -- the difference the real daemon makes (the
+      // audio thread resets effect memory and smoothers) is not modelled, only
+      // that it is a different command. The identity is left alone.
+      case "patch.apply": {
+        const batch = this.pairs(req, "apply");
+        if (typeof batch === "string") return batch;
         this.queue.push(batch);
         return `ok count=${batch.length} revision=${this.published.revision}`;
       }
