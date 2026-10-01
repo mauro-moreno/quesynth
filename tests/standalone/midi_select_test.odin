@@ -349,6 +349,16 @@ test_only_the_selected_input_reaches_the_queue :: proc(t: ^testing.T) {
 	play(b, "hw:1,0", 0x643C90)
 	play(b, "hw:2,0", 0x643E90)
 	expect_queue(t, b, {0x643E90})
+	// Bank and program words obey the same selection, channel bits intact.
+	for id in ([?]string{"hw:1,0", "hw:2,0", "hw:3,0"}) {
+		play(b, id, 0x0000BF)
+		play(b, id, 0x0020BF)
+		play(b, id, 0x0006CF)
+	}
+	expect_queue(t, b, {0x0000BF, 0x0020BF, 0x0006CF})
+	testing.expect(t, strings.has_prefix(midi_ask(&b.cc, "1 3 midi.select none"), "1 3 ok"))
+	play(b, "hw:2,0", 0x0007CF)
+	expect_queue(t, b, {})
 }
 
 @(test)

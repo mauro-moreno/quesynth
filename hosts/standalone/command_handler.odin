@@ -42,6 +42,11 @@ Control_Context :: struct {
 	// bare handler test, a platform without one): midi.list, midi.select and
 	// midi.current then report that there is no MIDI input.
 	midi_select: ^Midi_Selection,
+	// The running Bank Select of every MIDI channel, and the queue the audio
+	// thread forwards Bank Select and Program Change into. Drained on this
+	// thread, like the bank it loads from. nil in a bare handler test, where a
+	// Program Change loads nothing.
+	program:  ^Program_Select,
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This

@@ -33,7 +33,14 @@ import "../../src/patch"
 MIDI_NOTE_OFF :: 0x80
 MIDI_NOTE_ON :: 0x90
 MIDI_CONTROL_CHANGE :: 0xB0
+MIDI_PROGRAM_CHANGE :: 0xC0
 MIDI_PITCH_BEND :: 0xE0
+
+// Bank Select, from the MIDI specification: two controllers that set a pending
+// bank, coarse and fine, which the next Program Change acts on. The bank is
+// MSB * 128 + LSB.
+MIDI_BANK_SELECT_MSB :: 0
+MIDI_BANK_SELECT_LSB :: 32
 
 // The 14-bit MIDI bend range is 0..16383 with 8192 at rest. Both halves are
 // divided by 8192 so the centre is exactly zero, which is the same convention
@@ -56,6 +63,13 @@ Master_Volume :: struct {
 Live :: struct {
 	eng:   engine.Engine,
 	queue: Midi_Queue,
+
+	// Bank Select and Program Change, passed on rather than played. Choosing
+	// a patch reads the bank and writes the ring, and both belong to the
+	// control thread, so this thread only forwards them: it is the queue's one
+	// producer and the control thread its one consumer. run_daemon initialises
+	// it before the stream starts.
+	select_queue: Midi_Queue,
 
 	// De-interleave scratch. `engine_process` writes separate left and right
 	// spans but every audio API on the planet wants them interleaved, so the
@@ -277,7 +291,16 @@ live_handle_midi :: proc(s: ^Live, message: u32) {
 		engine.engine_note_off(&s.eng, int(data1))
 
 	case MIDI_CONTROL_CHANGE:
-		engine.engine_control_change(&s.eng, int(data1), int(data2))
+		// Bank Select is pending state, not an ordinary routed controller.
+		// Forward the channel intact; the control thread owns patch loading.
+		if data1 == MIDI_BANK_SELECT_MSB || data1 == MIDI_BANK_SELECT_LSB {
+			midi_queue_push(&s.select_queue, message)
+		} else {
+			engine.engine_control_change(&s.eng, int(data1), int(data2))
+		}
+
+	case MIDI_PROGRAM_CHANGE:
+		midi_queue_push(&s.select_queue, message)
 
 	case MIDI_PITCH_BEND:
 		raw := int(data1) | (int(data2) << 7)

@@ -134,6 +134,7 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	defer delete(patch_name)
 
 	midi_queue_init(&d.live.queue)
+	midi_queue_init(&d.live.select_queue)
 
 	engine.engine_load_patch(&d.live.eng, parsed, audio.format.sample_rate)
 	defer engine.engine_destroy(&d.live.eng)
@@ -218,8 +219,8 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 
 	// Start serving only after audio and the published context are initialized.
 	// Binding above already excludes a second daemon; the context exposes only
-	// the command ring, the snapshot, the patch bank, the volume atomic and the
-	// MIDI input selection, never the engine.
+	// the command ring, the snapshot, the patch bank, the volume atomic, the
+	// MIDI input selection and the forwarded Program Changes, never the engine.
 	bank := new(patch.Slots)
 	defer free(bank)
 	patch.factory_prepare()
@@ -237,6 +238,9 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// given on the command line was not loaded from a slot of this bank.
 	identity := new_clone(Patch_Identity{slot = -1})
 	defer free(identity)
+	// Every channel's running Bank Select, fed by the audio thread's forwards.
+	program := new_clone(Program_Select{queue = &d.live.select_queue})
+	defer free(program)
 	cs.ctx = Control_Context {
 		ring     = &d.live.ring,
 		snapshot = &d.live.snapshot,
@@ -247,6 +251,7 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 		archive  = arch,
 		identity = identity,
 		volume   = &d.live.volume,
+		program  = program,
 	}
 	if midi_ok {
 		cs.ctx.midi_select = &midi_selection
@@ -261,6 +266,12 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// The handler only sets a flag, so the actual teardown happens here on the
 	// main thread where blocking and freeing are legal.
 	for !shutdown_requested() {
+		// With no control server nothing else would load what a keyboard's
+		// Program Change selects, so this thread does, in its place. With one
+		// it must not: the context is that thread's alone.
+		if !control_ok {
+			program_select_drain(&cs.ctx)
+		}
 		sleep_ms(50)
 	}
 
@@ -277,7 +288,8 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// starts pulling memory out from under it.
 	audio.stop(&audio)
 
-	if dropped := midi_queue_dropped(&d.live.queue); dropped > 0 {
+	dropped := midi_queue_dropped(&d.live.queue) + midi_queue_dropped(&d.live.select_queue)
+	if dropped > 0 {
 		fmt.eprintfln("warning: dropped %d MIDI messages", dropped)
 	}
 	return 0

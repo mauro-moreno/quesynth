@@ -22,7 +22,10 @@ import "../../src/control"
 // our response. Bound pending output and disconnect a client that exceeds it.
 
 CONTROL_READ_BUFFER :: 4096
-CONTROL_POLL_TIMEOUT_MS :: 100
+// Short because the poll tick is also how soon a Program Change from a
+// keyboard is loaded: the audio thread forwards it, and nothing wakes this
+// thread for it but the timeout. Ten milliseconds is about one audio period.
+CONTROL_POLL_TIMEOUT_MS :: 10
 MAX_CONNECTIONS :: 16
 CONTROL_OUTPUT_LIMIT :: 256 * 1024
 
@@ -183,7 +186,7 @@ control_server_run :: proc(data: rawptr) {
 		// can steer -- an orphaned daemon that "keeps sounding" after its socket
 		// is gone. Throttled to about once a second at the poll cadence.
 		own_check += 1
-		if own_check >= 10 {
+		if own_check >= 1000 / CONTROL_POLL_TIMEOUT_MS {
 			own_check = 0
 			if !control_owns_endpoint(cs) {
 				request_shutdown()
@@ -207,6 +210,8 @@ control_server_run :: proc(data: rawptr) {
 		}
 
 		ready := posix.poll(&pollset[0], posix.nfds_t(nfds), CONTROL_POLL_TIMEOUT_MS)
+		// Every tick, a client or not: a keyboard choosing a patch needs none.
+		program_select_drain(&cs.ctx)
 		if ready <= 0 {
 			continue
 		}

@@ -403,6 +403,30 @@ A page the browser adapter serves claims MIDI input for the host and never
 uses Web MIDI: its MIDI button shows and changes this selection, so a note
 reaches the daemon by exactly one path. Pages in other hosts keep Web MIDI.
 
+Native Bank Select and Program Change also use the daemon's current bank.
+Each of the 16 MIDI channels keeps MSB (CC 0) and LSB (CC 32), initially zero.
+Either half updates only itself; both persist after successful or failed
+Program Changes. CC 0/32 do not reach ordinary controller routing. A Program
+Change selects slot 0–127 in bank `MSB * 128 + LSB`. Only bank 0 exists, the
+current `Slots` loaded at startup or by `bank.load_file`, not an archive index.
+Missing banks, absent/empty slots and invalid MIDI data leave the sound and
+identity unchanged. The unused third byte of a packed Program Change is ignored.
+
+The audio thread forwards CC 0/32 and Program Change through a bounded MIDI
+queue, preserving channel and order. The control thread drains it on every
+10 ms poll tick, even without clients; the main loop does so on platforms
+without a control server. Every valid Program Change, including duplicates,
+uses `patch.load`'s slot loader and `Commit_Patch` replacement. Identity updates
+on successful enqueue; revision moves once when audio applies it, and
+`bank_rev` does not move. A Program Change the ring has no room for (two whole
+loads fit per audio block) waits at the head of the queue, is resolved again
+against the then-current bank and loads on a later tick, in order, with nothing
+behind it loaded first; `control_dropped` does not move for it. Forwarding-queue
+drops still join the existing shutdown MIDI warning. The callback never accesses
+the bank or allocates. Ordinary CCs, notes and pitch bend keep their existing
+route and omni behavior. Browser/TUI loads and MIDI device selection do not
+reset the pending halves.
+
 **Dependencies.** Slices 1, 2.
 
 ---

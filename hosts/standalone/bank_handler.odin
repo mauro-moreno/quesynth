@@ -59,24 +59,26 @@ control_patch_load :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 		return
 	}
 	slot, sok := strconv.parse_int(req.operands[0])
-	if !sok || slot < 0 || slot >= patch.FACTORY_SLOTS {
+	if !sok {
 		control_write_err(out, req, .Invalid_Payload, "slot out of range")
 		return
 	}
-	values, ok := patch.slots_patch(cc.bank, slot)
-	if !ok {
+	applied, result := bank_load_slot(cc, slot)
+	switch result {
+	case .No_Bank:
+		control_write_err(out, req, .Daemon_Not_Ready, "no bank")
+		return
+	case .Out_Of_Range:
+		control_write_err(out, req, .Invalid_Payload, "slot out of range")
+		return
+	case .Empty:
 		control_write_err(out, req, .Unknown_Parameter, "slot is empty")
 		return
-	}
-	present: [patch.PARAMETER_COUNT]bool
-	for i in 0 ..< patch.PARAMETER_COUNT {present[i] = true}
-
-	applied, full := control_apply_patch(cc, values, present)
-	if full {
+	case .Queue_Full:
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
+	case .Ok:
 	}
-	identity_set(cc.identity, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
 	snap := snapshot_read(cc.snapshot)
 	control_write_ok(out, req)
 	strings.write_string(out, " slot=")
@@ -87,6 +89,41 @@ control_patch_load :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 	strings.write_int(out, applied)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+}
+
+@(private)
+Bank_Load_Result :: enum {
+	Ok,
+	No_Bank,
+	Out_Of_Range,
+	Empty,
+	Queue_Full,
+}
+
+// Load a bank slot as one replacement and name it as the playing patch. Both
+// patch.load and a native Program Change come here, so a slot cannot load one
+// way from a client and another from a keyboard. Anything but Ok has queued
+// nothing and left the identity alone.
+@(private)
+bank_load_slot :: proc(cc: ^Control_Context, slot: int) -> (applied: int, result: Bank_Load_Result) {
+	if cc.bank == nil {return 0, .No_Bank}
+	if slot < 0 || slot >= patch.FACTORY_SLOTS {return 0, .Out_Of_Range}
+	values, ok := patch.slots_patch(cc.bank, slot)
+	if !ok {return 0, .Empty}
+	present: [patch.PARAMETER_COUNT]bool
+	for i in 0 ..< patch.PARAMETER_COUNT {present[i] = true}
+
+	n, full := control_apply_patch(cc, values, present)
+	if full {return 0, .Queue_Full}
+	identity_set(cc.identity, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
+	return n, .Ok
+}
+
+// Whether the ring can take bank_load_slot's whole load: every parameter and
+// the commit. A missing ring is nothing to wait for; bank_load_slot refuses.
+@(private)
+bank_load_has_room :: proc(cc: ^Control_Context) -> bool {
+	return cc.ring == nil || param_ring_free_space(cc.ring) >= patch.PARAMETER_COUNT + 1
 }
 
 // patch.load_file <path>: parse a .sy1 or .json patch and apply its parameters.
