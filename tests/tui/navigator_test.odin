@@ -3,6 +3,7 @@ package tui_tests
 
 import "core:c"
 import "core:fmt"
+import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:sys/posix"
@@ -524,8 +525,9 @@ Rig :: struct {
 	cs:       standalone.Control_Server,
 }
 
+// archive=false stands in for a daemon that cannot answer archive.current.
 @(private = "file")
-rig_start :: proc(tag: string) -> (^Rig, bool) {
+rig_start :: proc(tag: string, archive := true) -> (^Rig, bool) {
 	r := new(Rig)
 	patch.factory_prepare()
 	patch.slots_load_factory(&r.bank)
@@ -537,7 +539,7 @@ rig_start :: proc(tag: string) -> (^Rig, bool) {
 		snapshot = &r.snap,
 		state    = &r.state,
 		bank     = &r.bank,
-		archive  = &r.archive,
+		archive  = archive ? &r.archive : nil,
 		identity = &r.identity,
 	}
 	return r, standalone.control_server_start(&r.cs)
@@ -732,5 +734,102 @@ test_legacy_archive_path_is_handed_to_the_daemon :: proc(t: ^testing.T) {
 	testing.expect(t, !tui.tui_hand_over_archive(&client, ""))
 	testing.expect_value(t, wire_ask(peer, "1 4 archive.current"),
 		"1 4 ok open=0 banks=0 bank=-1 patches=0 archive_rev=2\npath=\nbank_name=")
+	testing.expect(t, client.fd >= 0)
+}
+
+// What tui.run does at start with an `archive =` line an older TUI left in
+// config.conf, over `text` as that file: the file afterwards, and the path the
+// TUI still holds for a later save.
+@(private = "file")
+migrate :: proc(client: ^tui.Client, file, text: string) -> (after, held: string) {
+	_ = os.write_entire_file_from_string(file, text)
+	config := tui.config_load()
+	defer tui.config_free(&config)
+	tui.tui_migrate_archive(client, &config)
+	data, _ := os.read_entire_file(file, context.temp_allocator)
+	return string(data), strings.clone(config.archive_path, context.temp_allocator)
+}
+
+// The legacy line leaves config.conf only once the daemon has taken its path,
+// and nothing else in the file goes with it; while the hand-off fails the file
+// is left byte for byte as it was. One test for every case, because each
+// points XDG_CONFIG_HOME at a scratch directory and the environment is shared
+// by the whole test process.
+@(test)
+test_legacy_archive_line_leaves_config_conf_only_once_the_daemon_takes_it :: proc(t: ^testing.T) {
+	r, started := rig_start("nav-migrate")
+	defer rig_stop(r)
+	old, old_started := rig_start("nav-migrate-old", archive = false)
+	defer rig_stop(old)
+	if !testing.expect(t, started && old_started) {return}
+	client, cok := tui.client_connect(r.cs.path)
+	defer tui.client_close(&client)
+	peer, pok := wire_connect(r.cs.path)
+	if !testing.expect(t, cok && pok) {return}
+	defer posix.close(peer)
+	defer wire_ask(peer, "1 99 archive.close")
+
+	root := fmt.tprintf("/tmp/quesynth-tui-migrate-%d", posix.getpid())
+	defer os.remove_all(root)
+	old_xdg, had_xdg := os.lookup_env("XDG_CONFIG_HOME", context.temp_allocator)
+	old_home, had_home := os.lookup_env("HOME", context.temp_allocator)
+	defer {
+		if had_xdg {os.set_env("XDG_CONFIG_HOME", old_xdg)} else {os.unset_env("XDG_CONFIG_HOME")}
+		if had_home {os.set_env("HOME", old_home)} else {os.unset_env("HOME")}
+	}
+	os.set_env("XDG_CONFIG_HOME", root)
+	if !testing.expect(t, os.make_directory_all(fmt.tprintf("%s/quesynth", root)) == nil) {return}
+	file := fmt.tprintf("%s/quesynth/config.conf", root)
+	none := "ok open=0 banks=0 bank=-1 patches=0 archive_rev=0\npath=\nbank_name="
+
+	// Paths that do not open: missing, not a zip, a directory.
+	missing := fmt.tprintf("/tmp/quesynth-no-such-archive-%d.zip", posix.getpid())
+	for path, i in ([]string{missing, "patches/quesynth/factory.json", "tests"}) {
+		text := fmt.tprintf("# Quesynth front-end settings.\narchive = %s\nbank = /tmp/my bank.json\n", path)
+		after, held := migrate(&client, file, text)
+		testing.expect_value(t, after, text)
+		testing.expect_value(t, held, path)
+		testing.expect_value(t, wire_ask(peer, fmt.tprintf("1 %d archive.current", i + 1)), fmt.tprintf("1 %d %s", i + 1, none))
+	}
+
+	// A daemon that cannot answer archive.current, and a connection that has
+	// dropped: nothing is handed over, so nothing leaves the file.
+	legacy := fmt.tprintf("# Quesynth front-end settings.\narchive = %s\nbank = /tmp/my bank.json\n", BANKS)
+	older, ook := tui.client_connect(old.cs.path)
+	defer tui.client_close(&older)
+	if testing.expect(t, ook) {
+		after, held := migrate(&older, file, legacy)
+		testing.expect_value(t, after, legacy)
+		testing.expect_value(t, held, BANKS)
+	}
+	dropped := tui.Client{fd = -1}
+	after, held := migrate(&dropped, file, legacy)
+	testing.expect_value(t, after, legacy)
+	testing.expect_value(t, held, BANKS)
+	testing.expect_value(t, wire_ask(peer, "1 4 archive.current"), fmt.tprintf("1 4 %s", none))
+
+	// Taken: only the archive line goes.
+	after, held = migrate(&client, file, legacy)
+	testing.expect_value(t, after, "# Quesynth front-end settings.\nbank = /tmp/my bank.json\n")
+	testing.expect_value(t, held, "")
+	taken := "ok open=1 banks=2 bank=-1 patches=0 archive_rev=1\npath=tests/standalone/fixtures/banks.zip\nbank_name="
+	testing.expect_value(t, wire_ask(peer, "1 5 archive.current"), fmt.tprintf("1 5 %s", taken))
+
+	// The daemon remembers one now: a leftover is not handed over and stays.
+	leftover := "archive = tests/zip/fixtures/nested.zip\nbank = /tmp/my bank.json\n"
+	after, held = migrate(&client, file, leftover)
+	testing.expect_value(t, after, leftover)
+	testing.expect_value(t, held, "tests/zip/fixtures/nested.zip")
+	testing.expect_value(t, wire_ask(peer, "1 6 archive.current"), fmt.tprintf("1 6 %s", taken))
+
+	// A file the user edited by hand: their comment, a key this TUI does not
+	// know and a last line with no newline all stay as they were.
+	testing.expect_value(t, wire_ask(peer, "1 7 archive.close"), "1 7 ok archive_rev=2")
+	edited := fmt.tprintf("# my own note\n\narchive = %s\nbank = /tmp/my bank.json\ncolour = blue", BANKS)
+	after, held = migrate(&client, file, edited)
+	testing.expect_value(t, after, "# my own note\n\nbank = /tmp/my bank.json\ncolour = blue")
+	testing.expect_value(t, held, "")
+	testing.expect_value(t, wire_ask(peer, "1 8 archive.current"),
+		"1 8 ok open=1 banks=2 bank=-1 patches=0 archive_rev=3\npath=tests/standalone/fixtures/banks.zip\nbank_name=")
 	testing.expect(t, client.fd >= 0)
 }

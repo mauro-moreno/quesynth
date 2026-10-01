@@ -591,12 +591,11 @@ tui_enter_archive :: proc(client: ^Client, nav: ^Navigator, prov: Provenance, th
 // config.conf. It is handed to a daemon that remembers none, and leaves
 // config.conf only once the daemon has taken it, so a path that does not open
 // now is not lost.
-@(private)
 tui_migrate_archive :: proc(client: ^Client, config: ^Config) {
 	if !tui_hand_over_archive(client, config.archive_path) { return }
 	delete(config.archive_path)
 	config.archive_path = ""
-	config_save(config^)
+	config_drop_archive()
 }
 
 // Whether the daemon took `legacy` as its archive. Never over a path the

@@ -88,6 +88,36 @@ config_save :: proc(c: Config) {
 	_ = os.write_entire_file_from_string(path, strings.to_string(b))
 }
 
+// Take the `archive =` lines out of the settings file once the daemon has the
+// path, and leave every other byte as it is: the rest is the user's, not the
+// hand-off's to rewrite. Best effort, as config_save is.
+config_drop_archive :: proc() {
+	path, ok := config_file_path(context.temp_allocator)
+	if !ok {
+		return
+	}
+	data, rerr := os.read_entire_file(path, context.temp_allocator)
+	if rerr != nil {
+		return
+	}
+	b := strings.builder_make(context.temp_allocator)
+	rest := string(data)
+	for len(rest) > 0 {
+		raw := rest
+		if nl := strings.index_byte(rest, '\n'); nl >= 0 {
+			raw = rest[:nl + 1]
+		}
+		rest = rest[len(raw):]
+		line := strings.trim_space(raw)
+		eq := strings.index_byte(line, '=')
+		if len(line) > 0 && line[0] != '#' && eq >= 0 && strings.trim_space(line[:eq]) == "archive" {
+			continue
+		}
+		strings.write_string(&b, raw)
+	}
+	_ = os.write_entire_file_from_string(path, strings.to_string(b))
+}
+
 @(private = "file")
 make_directory_all_config :: proc(dir: string) {
 	for i in 1 ..< len(dir) {
