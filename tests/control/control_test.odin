@@ -140,10 +140,53 @@ test_error_code_names_round_trip :: proc(t: ^testing.T) {
 		.Unknown_Parameter,
 		.Out_Of_Range,
 		.Daemon_Not_Ready,
+		.Transaction_Failed,
 		.Internal_Error,
+		.Revision_Conflict,
 	}
 	for code in codes {
 		back := control.error_code_from_name(control.error_code_name(code))
 		testing.expect_value(t, back, code)
 	}
+}
+
+@(test)
+test_revision_conflict_has_its_own_wire_name_and_parses_as_an_error_reply :: proc(t: ^testing.T) {
+	testing.expect_value(t, control.error_code_name(.Revision_Conflict), "revision_conflict")
+	testing.expect_value(t, control.error_code_from_name("revision_conflict"), control.Error_Code.Revision_Conflict)
+	resp, ok := control.response_parse(bytes("1 9 err revision_conflict current_revision=4"))
+	testing.expect(t, ok)
+	testing.expect_value(t, resp.status, control.Status.Err)
+	testing.expect_value(t, resp.error, control.Error_Code.Revision_Conflict)
+	current, has := control.response_field(resp.fields, "current_revision")
+	testing.expect(t, has)
+	testing.expect_value(t, current, "4")
+}
+
+@(test)
+test_the_error_codes_that_existed_keep_their_numbers_and_names :: proc(t: ^testing.T) {
+	// Fixed here so a code added later is appended, never inserted: numbers
+	// are what a compiled client holds, names are what travels on the wire.
+	expected := []struct {
+		code:   control.Error_Code,
+		number: int,
+		name:   string,
+	} {
+		{.None, 0, "none"},
+		{.Unsupported_Version, 1, "unsupported_version"},
+		{.Unknown_Command, 2, "unknown_command"},
+		{.Invalid_Payload, 3, "invalid_payload"},
+		{.Unknown_Parameter, 4, "unknown_parameter"},
+		{.Out_Of_Range, 5, "out_of_range"},
+		{.Daemon_Not_Ready, 6, "daemon_not_ready"},
+		{.Transaction_Failed, 7, "transaction_failed"},
+		{.Internal_Error, 8, "internal_error"},
+		{.Revision_Conflict, 9, "revision_conflict"},
+	}
+	for e in expected {
+		testing.expect_value(t, int(e.code), e.number)
+		testing.expect_value(t, control.error_code_name(e.code), e.name)
+	}
+	// A name this build does not know is an internal error, not a new code.
+	testing.expect_value(t, control.error_code_from_name("revision_conflicts"), control.Error_Code.Internal_Error)
 }

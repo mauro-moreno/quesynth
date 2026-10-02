@@ -35,6 +35,7 @@ USAGE :: `usage:
   quesynth [--bank <bank.json>] [patch.sy1]              run the synthesiser
   quesynth --daemon [--bank <bank.json>] [patch.sy1]     run the headless daemon
   quesynth --browser [--bank <bank.json>] [patch.sy1]    open the shared browser UI
+  quesynth --mcp                                         serve local MCP over stdio
   quesynth --stop                                        stop a running daemon
   quesynth --selftest <patch.sy1> <out.wav>              render offline, open no device`
 
@@ -44,6 +45,7 @@ Mode :: enum {
 	Browser,
 	Stop,
 	Selftest,
+	MCP,
 	Help,
 	Usage_Error,
 }
@@ -71,14 +73,14 @@ parse_args :: proc(args: []string) -> Cli {
 	case "--help", "-h":
 		return Cli{mode = .Help}
 
-	case "--stop":
+	case "--stop", "--mcp":
 		if len(operands) > 1 {
 			return Cli {
 				mode = .Usage_Error,
 				message = fmt.tprintf("error: unexpected extra argument %q", operands[1]),
 			}
 		}
-		return Cli{mode = .Stop}
+		return Cli{mode = operands[0] == "--mcp" ? .MCP : .Stop}
 
 	case "--selftest":
 		// Exactly two operands. Being strict here matters: a missing output
@@ -141,6 +143,8 @@ parse_run_operands :: proc(ops: []string) -> (patch_path, bank_path: string, ok:
 main :: proc() {
 	cli := parse_args(os.args)
 	switch cli.mode {
+	case .MCP:
+		os.exit(run_mcp())
 	case .Selftest:
 		os.exit(run_selftest(cli.patch_path, cli.output_path))
 	case .Daemon:

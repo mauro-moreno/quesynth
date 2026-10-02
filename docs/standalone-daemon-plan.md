@@ -32,8 +32,8 @@ Confirmed with the maintainer:
 So the process picture is:
 
 ```
-  quesynth              quesynth --browser        (future clients)
-  (TUI front-end)       (browser front-end)       quesynth-mcp, ...
+  quesynth              quesynth --browser        quesynth --mcp
+  (TUI front-end)       (browser front-end)       (MCP stdio client), ...
         \                     |                        /
          \                    |                       /
           `------ Quesynth Control Protocol (Unix socket) ------'

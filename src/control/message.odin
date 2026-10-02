@@ -36,6 +36,7 @@ Error_Code :: enum {
 	Daemon_Not_Ready,
 	Transaction_Failed,
 	Internal_Error,
+	Revision_Conflict,
 }
 
 // The machine-readable token for each error. A client keys off this rather than
@@ -60,6 +61,8 @@ error_code_name :: proc(code: Error_Code) -> string {
 		return "transaction_failed"
 	case .Internal_Error:
 		return "internal_error"
+	case .Revision_Conflict:
+		return "revision_conflict"
 	}
 	return "internal_error"
 }
@@ -84,6 +87,8 @@ error_code_from_name :: proc(name: string) -> Error_Code {
 		return .Transaction_Failed
 	case "internal_error":
 		return .Internal_Error
+	case "revision_conflict":
+		return .Revision_Conflict
 	}
 	return .Internal_Error
 }

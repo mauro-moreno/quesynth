@@ -351,8 +351,19 @@ control_pairs_transaction :: proc(
 	commit: Param_Command_Kind,
 	needs_pairs: string,
 ) {
-	tokens := strings.fields(req.rest)
-	defer delete(tokens)
+	all_tokens := strings.fields(req.rest)
+	defer delete(all_tokens)
+	tokens := all_tokens
+	expected := -1
+	if commit == .Commit && len(tokens) > 0 && strings.has_prefix(tokens[0], "expected_revision=") {
+		ok: bool
+		expected, ok = strconv.parse_int(tokens[0][len("expected_revision="):])
+		if !ok || expected < 0 {
+			control_write_err(out, req, .Invalid_Payload, "expected_revision needs a nonnegative integer")
+			return
+		}
+		tokens = tokens[1:]
+	}
 	if len(tokens) == 0 || len(tokens) % 2 != 0 {
 		control_write_err(out, req, .Invalid_Payload, needs_pairs)
 		return
@@ -389,6 +400,11 @@ control_pairs_transaction :: proc(
 		staged[i] = Param_Command{kind = .Set, index = i32(d.index), stored = i32(stored)}
 	}
 
+	if expected >= 0 {
+		control_checked_transaction(cc, req, out, staged[:count], expected)
+		return
+	}
+
 	if !control_enqueue(cc.ring, staged[:count], commit) {
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
 		return
@@ -400,6 +416,49 @@ control_pairs_transaction :: proc(
 	strings.write_int(out, count)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+}
+
+// A set_many whose sender names the revision it saw. The batch goes on the ring
+// ended by Commit_Checked, and the audio thread -- the only one that knows the
+// revision in ring order, after every edit queued ahead of this one -- applies
+// it or discards it and says which. This thread waits a bounded time for that
+// answer, so a success is never reported for a batch that was refused, and a
+// refusal carries the revision that beat it. If the wait runs out the batch is
+// still queued and may yet apply, and the reply says the outcome is unknown.
+@(private = "file")
+control_checked_transaction :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder, sets: []Param_Command, expected: int) {
+	ring := cc.ring
+	if ring == nil {
+		control_write_err(out, req, .Daemon_Not_Ready, "no audio")
+		return
+	}
+	if param_ring_free_space(ring) < len(sets) + 1 {
+		intrinsics.atomic_add_explicit(&ring.dropped, 1, .Relaxed)
+		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
+		return
+	}
+	ring.checked_serial += 1
+	serial := ring.checked_serial
+	for cmd in sets { param_ring_push(ring, cmd) }
+	param_ring_push(ring, Param_Command{kind = .Commit_Checked, expected_revision = expected, serial = serial})
+	start := time.tick_now()
+	for intrinsics.atomic_load_explicit(&ring.completed_serial, .Acquire) != serial {
+		if time.tick_since(start) >= 250 * time.Millisecond {
+			control_write_err(out, req, .Daemon_Not_Ready, "commit outcome unknown; inspect state before retrying")
+			return
+		}
+		time.sleep(time.Millisecond)
+	}
+	if !ring.completed_applied {
+		control_write_err(out, req, .Revision_Conflict, "current_revision=")
+		strings.write_int(out, ring.completed_revision)
+		return
+	}
+	control_write_ok(out, req)
+	strings.write_string(out, " count=")
+	strings.write_int(out, len(sets))
+	strings.write_string(out, " revision=")
+	strings.write_int(out, ring.completed_revision)
 }
 
 // Enqueue a whole transaction -- its Sets, then the commit that says what kind

@@ -173,19 +173,26 @@ atomic replacement as the TUI and browser, with held notes kept sounding.
 native standalone: build and `--selftest`, the daemon's lifecycle and socket,
 the TUI, the browser front-end, ordinary and ZIP banks, patch identity, MIDI
 input selection with Bank Select and Program Change, the files Quesynth keeps,
-troubleshooting, and safety.
+the MCP server, troubleshooting, and safety. `man -l docs/quesynth.1` shows the
+[man page](docs/quesynth.1), which lists every mode.
 
 ```sh
 ./build/quesynth                  # attach the TUI, starting the daemon if needed
 ./build/quesynth --browser        # the same daemon, in a browser at 127.0.0.1:8177
+./build/quesynth --mcp            # serve MCP over stdio to a running daemon
 ./build/quesynth --stop           # stop the daemon
 ```
 
-A local stdio [MCP server](docs/quesynth-manual.md#mcp-server) in
-`hosts/standalone/mcp/` exposes typed daemon tools (status, parameters,
-patches, banks, archives, MIDI) to an MCP client. The project registers it in
-[`.mcp.json`](.mcp.json) as `node hosts/standalone/mcp/serve.js`. Start a daemon
-first. It needs Node.js 20 or later.
+`quesynth --mcp` is a local stdio [MCP server](docs/quesynth-manual.md#mcp-server)
+built into the same executable. It is a client of the daemon's control socket,
+and it offers two tools, `inspect_synth` and `apply_parameters` (an atomic batch
+of parameter values, applied only if the daemon's revision is still the one you
+name), and two resources, `quesynth://parameters` and `quesynth://patch`. The
+project registers it in [`.mcp.json`](.mcp.json) as `quesynth --mcp`, so
+`quesynth` has to be on your `PATH`; the manual shows how. Start a daemon
+first: until one is running, the calls that need it return
+`daemon_unavailable`. The MCP server needs no Node.js. Only `--browser` does,
+and it needs Node.js 20 or later.
 
 ## Compatibility and verification
 

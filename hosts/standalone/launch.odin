@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 
+import "mcp"
 import "tui"
 
 // Where the control socket lives, and the client half of `quesynth --stop`.
@@ -47,6 +48,15 @@ run_stop :: proc() -> int {
 	}
 	fmt.println("stop requested")
 	return 0
+}
+
+// `quesynth --mcp`: a stdio MCP server that is only a client of the daemon's
+// socket. It starts no audio and no daemon, so it answers the protocol with the
+// daemon down and reports the daemon unavailable where it needs one.
+run_mcp :: proc() -> int {
+	path := control_socket_path()
+	defer delete(path)
+	return mcp.run(path)
 }
 
 // The default `quesynth`: make sure a daemon is running, then attach the TUI to

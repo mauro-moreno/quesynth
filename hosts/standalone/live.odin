@@ -126,6 +126,22 @@ live_drain_control :: proc(s: ^Live) -> (applied: bool) {
 			s.txn_count = 0
 			s.revision += 1
 			applied = true
+		case .Commit_Checked:
+			accepted := s.revision == cmd.expected_revision
+			if accepted {
+				for i in 0 ..< s.txn_count {
+					edit := s.txn_staging[i]
+					engine.engine_set_stored(&s.eng, int(edit.index), int(edit.stored))
+				}
+				s.revision += 1
+				applied = true
+			}
+			s.txn_count = 0
+			// Publish before acknowledging so a following read sees the edit.
+			live_publish_snapshot(s)
+			s.ring.completed_revision = s.revision
+			s.ring.completed_applied = accepted
+			intrinsics.atomic_store_explicit(&s.ring.completed_serial, cmd.serial, .Release)
 		case .Commit_Patch:
 			live_replace_patch(s)
 			s.txn_count = 0
@@ -198,14 +214,7 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 	applied := live_drain_control(s)
 	// Republish only when something changed, so an idle daemon does no snapshot
 	// work per block. A reader between now and the next edit sees this state.
-	if applied {
-		data: Snapshot_Data
-		data.revision = s.revision
-		for i in 0 ..< patch.PARAMETER_COUNT {
-			data.values[i] = i32(engine.engine_patch_value(&s.eng, i))
-		}
-		snapshot_publish(&s.snapshot, data)
-	}
+	if applied { live_publish_snapshot(s) }
 
 	// One relaxed atomic per block so daemon.info can report the live voice
 	// count without the control thread ever reaching into the engine.
@@ -247,6 +256,16 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 			out[base + c] = 0
 		}
 	}
+}
+
+@(private = "file")
+live_publish_snapshot :: proc(s: ^Live) {
+	data: Snapshot_Data
+	data.revision = s.revision
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		data.values[i] = i32(engine.engine_patch_value(&s.eng, i))
+	}
+	snapshot_publish(&s.snapshot, data)
 }
 
 // Scale the finished block by the master volume, ramping linearly from the

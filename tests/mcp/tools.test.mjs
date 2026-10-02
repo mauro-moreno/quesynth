@@ -1,116 +1,189 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { daemonFixture } from "./support/daemon.mjs";
-import { skip, startClient } from "./support/client.mjs";
+import { tmpdir } from "node:os";
+import { daemonFixture, synthModel } from "./support/daemon.mjs";
+import { skip } from "./support/binary.mjs";
+import { errorOf, resultOf, startClient } from "./support/client.mjs";
 
-test("typed tools send only their documented daemon command and preserve replies", {skip}, async t => {
-  const daemon = await daemonFixture(t, () => "ok count=0\nname=  Ünicode = value  \nname=duplicate\n");
-  const client = startClient(t, { args: ["--socket", daemon.socket] });
+const SET_MANY = "parameter.set_many";
+
+async function ready(t, model = synthModel(), answer = model.answer) {
+  const daemon = await daemonFixture(t, answer);
+  // Not the repository root: the launch must not depend on the working directory.
+  const client = startClient(t, { runtime: daemon.runtime, cwd: tmpdir() });
   await client.initialize();
-  const examples = [
-    ["daemon_status", {}, "daemon.status"],
-    ["daemon_info", {}, "daemon.info"],
-    ["parameter_list", {}, "parameter.list"],
-    ["parameter_get", { id: "filter.cutoff" }, "parameter.get filter.cutoff"],
-    ["parameter_set", { id: "filter.cutoff", value: 0 }, "parameter.set filter.cutoff 0"],
-    ["patch_current", {}, "patch.current"],
-    ["patch_load", { slot: 0 }, "patch.load 0"],
-    ["patch_load_file", { path: "  /patch dir/a;$(ignored).sy1  " }, "patch.load_file   /patch dir/a;$(ignored).sy1  "],
-    ["bank_list", {}, "bank.list"],
-    ["bank_load_file", { path: "relative bank.json" }, "bank.load_file relative bank.json"],
-    ["archive_current", {}, "archive.current"],
-    ["archive_open", {}, "archive.open"],
-    ["archive_open", { path: "" }, "archive.open "],
-    ["archive_open", { path: "/tmp/with spaces.zip" }, "archive.open /tmp/with spaces.zip"],
-    ["archive_banks", {}, "archive.banks"],
-    ["archive_banks", { offset: 0, count: 0 }, "archive.banks 0 0"],
-    ["archive_banks", { count: 1000 }, "archive.banks 0 1000"],
-    ["archive_bank", { index: 0 }, "archive.bank 0"],
-    ["archive_patches", { offset: 7 }, "archive.patches 7"],
-    ["archive_load", { index: 2 }, "archive.load 2"],
-    ["archive_load", { index: 2, bank: 0 }, "archive.load 2 0"],
-    ["archive_close", {}, "archive.close"],
-    ["midi_list", {}, "midi.list"],
-    ["midi_current", {}, "midi.current"],
-    ["midi_select", { id: "none" }, "midi.select none"],
-    ["midi_send", { status: 192, data1: 0, data2: 0 }, "midi 192 0 0"],
-  ];
-  const listed = (await client.request("tools/list")).result.tools;
-  assert.deepEqual(listed.map(tool => tool.name).sort(), [...new Set(examples.map(row => row[0]))].sort());
-  for (const [name, args, command] of examples) {
-    const response = await client.call(name, args);
-    assert.equal(response.result.isError, undefined, name);
-    const expected = { fields: "count=0", lines: ["name=  Ünicode = value  ", "name=duplicate", ""] };
-    assert.deepEqual(response.result.structuredContent, expected, name);
-    assert.deepEqual(JSON.parse(response.result.content[0].text), expected, name);
-    assert.equal(daemon.commands.at(-1), command);
-  }
-  for (const tool of listed) {
-    assert.equal(tool.inputSchema.type, "object");
-    assert.equal(tool.inputSchema.additionalProperties, false);
-    assert.equal(tool.outputSchema.properties.lines.type, "array");
-    assert.equal(tool.annotations.openWorldHint, false);
-  }
-  // midi.select only opens and closes inputs; the control thread has no engine
-  // to release a note with (hosts/standalone/command_handler.odin).
-  const select = listed.find(tool => tool.name === "midi_select").description;
-  assert.match(select, /Releases no held notes/);
-  assert.doesNotMatch(select, /may be released/);
+  return { daemon, client, model };
+}
+
+test("the tools are exactly inspect_synth and apply_parameters", {skip}, async t => {
+  const { client } = await ready(t);
+  const tools = (await client.request("tools/list")).result.tools;
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ["apply_parameters", "inspect_synth"]);
+  const [inspect, apply] = ["inspect_synth", "apply_parameters"].map(name => tools.find(tool => tool.name === name));
+  assert.equal(inspect.inputSchema.type, "object");
+  assert.deepEqual(inspect.inputSchema.properties, {});
+  assert.deepEqual([...apply.inputSchema.required].sort(), ["expected_revision", "parameters"]);
+  assert.equal(apply.inputSchema.properties.expected_revision.type, "integer");
+  assert.equal(apply.inputSchema.properties.parameters.type, "array");
 });
 
-test("invalid tool arguments cannot reach the daemon", {skip}, async t => {
-  const daemon = await daemonFixture(t);
-  const client = startClient(t, { args: ["--socket", daemon.socket] });
-  await client.initialize();
+test("inspect_synth reads the daemon's snapshot, patch and registry and keeps its records verbatim", {skip}, async t => {
+  const model = synthModel();
+  model.revision = 6;
+  model.values["filter.cutoff"] = 99;
+  model.patch = "slot=3 bank_rev=2 revision=6 source=bank archive_rev=5 archive_bank=-1 archive_patch=-1\n" +
+    "bank=  My Bank = x \nname=Ünicode  Name = value  ";
+  const { daemon, client } = await ready(t, model);
+  const result = resultOf(await client.call("inspect_synth"));
+  assert.deepEqual(daemon.commands, ["state.snapshot", "patch.current", "parameter.list"]);
+  assert.equal(result.revision, 6);
+  assert.deepEqual(result.state, {
+    fields: "revision=6 count=3",
+    lines: ["id=filter.cutoff value=99", "id=filter.resonance value=0", "id=osc1.shape value=2"],
+  });
+  assert.deepEqual(result.patch, {
+    fields: "slot=3 bank_rev=2 revision=6 source=bank archive_rev=5 archive_bank=-1 archive_patch=-1",
+    lines: ["bank=  My Bank = x ", "name=Ünicode  Name = value  "],
+  });
+  assert.deepEqual(result.parameters, {
+    fields: "count=3",
+    lines: [
+      "id=filter.cutoff group=filter index=19 min=0 max=127 default=81 label=Cutoff",
+      "id=filter.resonance group=filter index=20 min=0 max=127 default=0 label=Resonance",
+      "id=osc1.shape group=osc1 index=0 min=0 max=3 default=2 label=Shape",
+    ],
+  });
+});
+
+test("the resources read the same daemon state", {skip}, async t => {
+  const model = synthModel();
+  model.revision = 4;
+  const { daemon, client } = await ready(t, model);
+  const read = async uri => {
+    const { contents } = (await client.request("resources/read", { uri })).result;
+    assert.equal(contents.length, 1);
+    assert.equal(contents[0].uri, uri);
+    assert.equal(contents[0].mimeType, "application/json");
+    return JSON.parse(contents[0].text);
+  };
+
+  const parameters = await read("quesynth://parameters");
+  assert.deepEqual(daemon.commands, ["parameter.list"]);
+  assert.equal(parameters.lines.length, 3);
+  assert.equal(parameters.lines[0], "id=filter.cutoff group=filter index=19 min=0 max=127 default=81 label=Cutoff");
+
+  daemon.commands.length = 0;
+  const patch = await read("quesynth://patch");
+  assert.deepEqual(daemon.commands, ["state.snapshot", "patch.current"]);
+  assert.equal(patch.revision, 4);
+  assert.equal(patch.patch.lines[0], "bank=");
+  assert.equal(patch.state.lines.length, 3);
+});
+
+test("apply_parameters sends the whole batch in one command and moves the revision once", {skip}, async t => {
+  const { daemon, client, model } = await ready(t);
+  const before = resultOf(await client.call("inspect_synth")).revision;
+  assert.equal(before, 0);
+  daemon.commands.length = 0;
+  const applied = resultOf(await client.call("apply_parameters", {
+    expected_revision: before,
+    parameters: [{ id: "filter.cutoff", value: 40 }, { id: "filter.resonance", value: 20 }],
+  }));
+  assert.deepEqual(applied, { count: 2, revision: 1 });
+  assert.deepEqual(daemon.commands, [`${SET_MANY} expected_revision=0 filter.cutoff 40 filter.resonance 20`]);
+  assert.deepEqual(model.values, { "filter.cutoff": 40, "filter.resonance": 20, "osc1.shape": 2 });
+
+  const after = resultOf(await client.call("inspect_synth"));
+  assert.equal(after.revision, applied.revision);
+  assert.deepEqual(after.state.lines.slice(0, 2), ["id=filter.cutoff value=40", "id=filter.resonance value=20"]);
+});
+
+test("a stale expected_revision is refused and the daemon's state is unchanged", {skip}, async t => {
+  const { daemon, client, model } = await ready(t);
+  const edit = value => ({ expected_revision: 0, parameters: [{ id: "filter.cutoff", value }] });
+  assert.deepEqual(resultOf(await client.call("apply_parameters", edit(40))), { count: 1, revision: 1 });
+
+  const conflict = errorOf(await client.call("apply_parameters", edit(80)));
+  assert.equal(conflict.code, "revision_conflict");
+  assert.match(JSON.stringify(conflict), /current_revision\D+1\b/);
+  assert.equal(model.revision, 1);
+  assert.equal(model.values["filter.cutoff"], 40);
+  // The refusal came from the daemon after one command; the MCP did not retry or reread.
+  assert.equal(daemon.commands.filter(command => command.startsWith(SET_MANY)).length, 2);
+
+  // Retrying with the revision the daemon reported succeeds.
+  assert.deepEqual(
+    resultOf(await client.call("apply_parameters", { ...edit(80), expected_revision: 1 })),
+    { count: 1, revision: 2 },
+  );
+});
+
+test("order and duplicate ids are forwarded as given and the daemon decides which wins", {skip}, async t => {
+  const { daemon, client, model } = await ready(t);
+  const applied = resultOf(await client.call("apply_parameters", {
+    expected_revision: 0,
+    parameters: [{ id: "osc1.shape", value: 1 }, { id: "filter.cutoff", value: 5 }, { id: "osc1.shape", value: 3 }],
+  }));
+  assert.deepEqual(applied, { count: 3, revision: 1 });
+  assert.equal(daemon.commands.at(-1), `${SET_MANY} expected_revision=0 osc1.shape 1 filter.cutoff 5 osc1.shape 3`);
+  assert.equal(model.values["osc1.shape"], 3);
+});
+
+test("integer-valued numbers and Unicode ids reach the daemon as written", {skip}, async t => {
+  const { daemon, client } = await ready(t, synthModel(), () => "ok count=2 revision=1");
+  client.write(JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "tools/call",
+    params: { name: "apply_parameters", arguments: { expected_revision: 0, parameters: [] } },
+  }).replace("[]", '[{"id":"a","value":1.0},{"id":"caf\u00e9\u00a1","value":1e2},{"id":"b","value":-5}]') + "\n");
+  const [reply] = await client.take();
+  assert.equal(reply.result.isError, undefined, JSON.stringify(reply));
+  assert.deepEqual(daemon.commands, [`${SET_MANY} expected_revision=0 a 1 caf\u00e9\u00a1 100 b -5`]);
+});
+
+test("the daemon's own refusals come through verbatim and nothing is checked locally", {skip}, async t => {
+  const { daemon, client, model } = await ready(t);
+  const apply = parameters => client.call("apply_parameters", { expected_revision: 0, parameters });
+  assert.deepEqual(errorOf(await apply([{ id: "filter.cutoff", value: 5 }, { id: "filter.cutoff", value: 200 }])),
+    { code: "out_of_range", message: "filter.cutoff" });
+  assert.deepEqual(errorOf(await apply([{ id: "no.such", value: 1 }])), { code: "unknown_parameter", message: "no.such" });
+  assert.equal(daemon.commands.filter(command => command.startsWith(SET_MANY)).length, 2);
+  assert.equal(model.revision, 0);
+  assert.equal(model.values["filter.cutoff"], 81);
+});
+
+test("an empty parameters array is never reported as applied", {skip}, async t => {
+  const { daemon, client, model } = await ready(t);
+  const error = errorOf(await client.call("apply_parameters", { expected_revision: 0, parameters: [] }));
+  assert.ok(["invalid_arguments", "invalid_payload"].includes(error.code), error.code);
+  assert.deepEqual(daemon.commands.filter(command => !command.startsWith(SET_MANY + " expected_revision=0")), []);
+  assert.equal(model.revision, 0);
+});
+
+test("invalid arguments never reach the daemon", {skip}, async t => {
+  const { daemon, client } = await ready(t);
+  const ok = { id: "filter.cutoff", value: 1 };
+  const separators = [" ", "\t", "\n", "\r", "\u000b", "\u000c", "\u0000", "\u0001", "\u001b", "\u001f", "\u007f",
+    "\u0080", "\u0085", "\u009f", "\u00a0", "\u1680", "\u2000", "\u200a", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000"];
   const invalid = [
-    ["daemon_info", { command: "daemon.shutdown" }],
-    ["parameter_get", {}], ["parameter_get", { id: "" }],
-    ["parameter_get", { id: "filter.cutoff 99" }],
-    ["parameter_get", { id: "filter.cutoff\n" }],
-    ["parameter_set", { id: "filter.cutoff", value: "4" }],
-    ["parameter_set", { id: "filter.cutoff", value: 1.5 }],
-    ["parameter_set", { id: "filter.cutoff", value: null }],
-    ["patch_load", { slot: -1 }], ["patch_load", { slot: 128 }],
-    ["archive_bank", { index: Number.MAX_SAFE_INTEGER + 1 }],
-    ["archive_load", { index: 0, bank: null }],
-    ["archive_banks", { count: -1 }],
-    ["midi_send", { status: 256, data1: 0, data2: 0 }],
-    ["midi_send", { status: 144, data1: 128, data2: 0 }],
-    ["midi_send", { status: 144, data1: 0, data2: -1 }],
-    ["midi_send", { status: 192, data1: 0 }],
-    ["midi_select", { id: "all\tnone" }],
-    ["archive_open", { path: "file.zip\n1 7 daemon.shutdown" }],
-    ["bank_load_file", { path: "file.json\r" }],
-    ["patch_load_file", { path: "file\u0000.sy1" }],
-    ["archive_open", { path: "\ud800" }],
-    ["archive_current", null], ["archive_current", []],
-    ...["\u0001", "\t", "\u001b", "\u001f", "\u007f", "\u0080", "\u0085", "\u009f", "\u2028", "\u2029"].flatMap(c => [
-      ["parameter_get", { id: `a${c}b` }], ["midi_select", { id: `a${c}b` }],
-      ["patch_load_file", { path: `a${c}b` }], ["bank_load_file", { path: `a${c}b` }],
-      ["archive_open", { path: `a${c}b` }],
-    ]),
+    {},
+    { parameters: [ok] },
+    { expected_revision: 0 },
+    ...[-1, 1.5, "0", null, true, [0], {}].map(expected_revision => ({ expected_revision, parameters: [ok] })),
+    ...[{}, "x", null, 5, true].map(parameters => ({ expected_revision: 0, parameters })),
+    ...[5, null, "a", [], [[]]].map(entry => ({ expected_revision: 0, parameters: [entry] })),
+    ...[{ value: 1 }, { id: "a" }, { id: 5, value: 1 }, { id: null, value: 1 }, { id: "", value: 1 },
+      { id: "a", value: "1" }, { id: "a", value: 1.5 }, { id: "a", value: null }, { id: "a", value: true },
+      { id: "a", value: [1] }, { id: "a", value: {} }].map(entry => ({ expected_revision: 0, parameters: [ok, entry] })),
+    ...separators.flatMap(c => [`a${c}b`, `${c}a`, `a${c}`, c].map(id => ({ expected_revision: 0, parameters: [{ id, value: 1 }] }))),
   ];
-  for (const [name, args] of invalid) {
-    const result = (await client.call(name, args)).result;
-    assert.equal(result.isError, true, `${name} ${JSON.stringify(args)}`);
-    assert.equal(JSON.parse(result.content[0].text).code, "invalid_arguments");
+  for (const args of invalid) {
+    const error = errorOf(await client.call("apply_parameters", args));
+    assert.equal(error.code, "invalid_arguments", JSON.stringify(args));
   }
+  for (const args of [[], "x", null]) {
+    const response = await client.request("tools/call", { name: "apply_parameters", arguments: args });
+    assert.equal(errorOf(response).code, "invalid_arguments", JSON.stringify(args));
+  }
+  assert.equal(errorOf(await client.request("tools/call", { name: "apply_parameters" })).code, "invalid_arguments");
   assert.deepEqual(daemon.commands, []);
-  assert.equal((await client.call("daemon_shutdown")).error.code, -32602);
-  assert.equal((await client.call("__proto__")).error.code, -32602);
-});
-
-test("paths and ids just outside the rejected ranges still reach the daemon verbatim", {skip}, async t => {
-  const daemon = await daemonFixture(t);
-  const client = startClient(t, { args: ["--socket", daemon.socket] });
-  await client.initialize();
-  const path = "a b\u00e9\u00a0\u00a1.sy1";
-  for (const [name, args, command] of [
-    ["patch_load_file", { path }, `patch.load_file ${path}`],
-    ["bank_load_file", { path }, `bank.load_file ${path}`],
-    ["parameter_get", { id: "caf\u00e9\u00a1" }, "parameter.get caf\u00e9\u00a1"],
-  ]) {
-    assert.equal((await client.call(name, args)).result.isError, undefined, name);
-    assert.equal(daemon.commands.at(-1), command);
-  }
 });

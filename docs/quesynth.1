@@ -1,0 +1,264 @@
+.TH QUESYNTH 1 "October 2026" "Quesynth" "User Commands"
+.SH NAME
+quesynth \- native standalone Synth1-compatible synthesiser, with a daemon, a terminal UI, a browser front-end and a local MCP server
+.SH SYNOPSIS
+.B quesynth
+.RB [ \-\-bank
+.IR bank.json ]
+.RI [ patch.sy1 ]
+.br
+.B quesynth \-\-daemon
+.RB [ \-\-bank
+.IR bank.json ]
+.RI [ patch.sy1 ]
+.br
+.B quesynth \-\-browser
+.RB [ \-\-bank
+.IR bank.json ]
+.RI [ patch.sy1 ]
+.br
+.B quesynth \-\-mcp
+.br
+.B quesynth \-\-stop
+.br
+.B quesynth \-\-selftest
+.I patch.sy1 out.wav
+.br
+.B quesynth \-\-help
+.SH DESCRIPTION
+.B quesynth
+is the native standalone build of Quesynth.
+A daemon owns the audio device, the engine, the MIDI inputs, the patch bank, the archive and a control socket.
+Front-ends attach to it over that socket and can come and go without interrupting the sound: the terminal UI, a browser page and an MCP client.
+.PP
+Without a mode option,
+.B quesynth
+attaches the terminal UI to the daemon, and starts a detached daemon first when none is listening.
+Quitting the UI leaves the daemon and its audio running.
+.PP
+The full reference is the Quesynth standalone manual,
+.IR docs/quesynth-manual.md ,
+in the source repository.
+.SH MODES AND OPTIONS
+.TP
+.I no mode option
+Attach the terminal UI, starting the daemon if needed.
+It takes an optional
+.B \-\-bank
+.I bank.json
+and an optional
+.I patch.sy1
+operand.
+They apply only when this command starts the daemon.
+.TP
+.B \-\-daemon
+Run the headless daemon in the foreground until Ctrl-C, SIGTERM or
+.BR "quesynth \-\-stop" .
+It plays
+.I patch.sy1
+if given, and the built-in defaults otherwise.
+.B \-\-bank
+names a bank of patches in JSON to browse instead of the factory bank.
+A second daemon while one is listening prints a message and exits 0.
+.TP
+.B \-\-browser
+Attach to or start the daemon, then serve the shared browser panel from a local Node.js adapter at 127.0.0.1:8177 and open it in the default browser.
+It takes the same
+.B \-\-bank
+and
+.I patch.sy1
+operands as
+.BR \-\-daemon .
+Node.js 20 or later is required for this mode only.
+.TP
+.B \-\-mcp
+Serve the Model Context Protocol over standard input and output, as a client of a running daemon's control socket.
+It takes no operands or options.
+See
+.BR MCP .
+.TP
+.B \-\-stop
+Ask a running daemon to shut down.
+Prints
+.B stop requested
+and exits 0, or reports that no daemon is listening and exits 1.
+.TP
+.BI \-\-selftest " patch.sy1 out.wav"
+Render the patch offline to a 48 kHz stereo WAV file without opening an audio or MIDI device.
+Exits 0 only if the patch loaded and the file was written.
+.TP
+.BR \-\-help ", " \-h
+Print the usage to standard output and exit 0.
+.PP
+Only the Linux build has a control socket.
+On Windows the daemon plays and listens to MIDI, and the terminal UI,
+.BR \-\-browser ,
+.B \-\-stop
+and
+.B \-\-mcp
+report that they are not supported there yet.
+.SH MCP
+.B quesynth \-\-mcp
+speaks newline-delimited JSON-RPC 2.0 on standard input and output.
+It holds no engine or parameter state and does not start audio or a daemon; the daemon stays the authority for parameter metadata and values.
+It exits 0 when standard input closes.
+.PP
+The client must call
+.B initialize
+and send the
+.B notifications/initialized
+notification before it lists or calls anything else.
+The protocol versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25 are accepted.
+Without a daemon,
+.BR initialize ,
+.BR ping ,
+.B tools/list
+and
+.B resources/list
+still work, and calls that need the daemon return
+.BR daemon_unavailable .
+.PP
+There are exactly two tools:
+.TP
+.B inspect_synth
+Read the daemon's parameter values and revision, its parameter registry and the sounding patch's identity.
+It changes nothing.
+.TP
+.B apply_parameters
+Set stored parameter values as one all-or-nothing batch, given as
+.B parameters
+(an array of
+.B id
+and
+.B value
+objects) and
+.BR expected_revision .
+The batch is applied only if the daemon's revision is still the one named, which is the
+.B revision
+reported by
+.B inspect_synth
+or by the previous successful apply.
+Otherwise the call returns
+.B revision_conflict
+and changes nothing.
+If a timeout or a disconnect leaves the outcome unknown, call
+.B inspect_synth
+before sending anything again; the server never repeats a request.
+.PP
+There are exactly two resources, both of type application/json:
+.B quesynth://parameters
+(the parameter registry) and
+.B quesynth://patch
+(the revision, the current values and the patch identity).
+.PP
+To register the server in an MCP client, use the command
+.B quesynth
+with the argument
+.BR \-\-mcp ,
+as the
+.I .mcp.json
+in the source repository does.
+.B quesynth
+must be on the client's
+.BR PATH ,
+for example by linking
+.I build/quesynth
+into
+.IR ~/.local/bin .
+.SH ENVIRONMENT
+.TP
+.B XDG_RUNTIME_DIR
+When set and not empty, the control socket is
+.IR $XDG_RUNTIME_DIR/quesynth/quesynth.sock ,
+in a directory created with mode 0700.
+The daemon, the terminal UI,
+.B \-\-stop
+and
+.B \-\-mcp
+use the same path, so they must run with the same value.
+.TP
+.B XDG_CONFIG_HOME
+Directory under which the
+.I quesynth
+configuration directory lives.
+Defaults to
+.IR $HOME/.config .
+.TP
+.B HOME
+Used for the configuration directory when
+.B XDG_CONFIG_HOME
+is not set.
+When neither is set, nothing is saved.
+.TP
+.B QUESYNTH_ROOT
+The repository root, from which
+.B \-\-browser
+loads
+.I ui/
+and its adapter.
+Defaults to the working directory.
+.TP
+.B NO_COLOR
+When set and not empty, the terminal UI uses no colour.
+.PP
+The
+.B quesynth
+binary does not read
+.BR QUESYNTH_SOCKET ;
+only the browser adapter does.
+.SH FILES
+.TP
+.I $XDG_RUNTIME_DIR/quesynth/quesynth.sock
+The daemon's control socket, mode 0600.
+.TP
+.I /tmp/quesynth-UID.sock
+The control socket when
+.B XDG_RUNTIME_DIR
+is unset or empty.
+.I UID
+is the numeric user id.
+.TP
+.I SOCKET.lock
+A lock file beside the socket, held while a daemon runs.
+.TP
+.I $XDG_CONFIG_HOME/quesynth/
+The configuration directory, or
+.I ~/.config/quesynth/
+when
+.B XDG_CONFIG_HOME
+is unset.
+It holds
+.I archive.path
+(the remembered ZIP archive),
+.I bank.json
+(the user bank),
+.I config.conf
+(settings written by the terminal UI) and
+.I theme.conf
+(the terminal UI's colours).
+.SH EXIT STATUS
+.TP
+.B 0
+Success, including end of input for
+.BR \-\-mcp ,
+a daemon that is already running when
+.B \-\-daemon
+is started again, and
+.BR \-\-help .
+.TP
+.B 1
+A run-time failure: no usable audio device, no daemon to reach or stop, a patch that cannot be loaded, a failed
+.BR \-\-selftest ,
+or a failed browser adapter, whose own exit status
+.B \-\-browser
+returns.
+.TP
+.B 2
+A usage error: an unknown option, a missing or extra operand, or an operand after
+.B \-\-stop
+or
+.BR \-\-mcp .
+The error and the usage go to standard error.
+.SH SEE ALSO
+.IR docs/quesynth-manual.md ,
+the Quesynth standalone manual, for the daemon, the terminal UI, banks and archives, MIDI, configuration and the MCP server in full.

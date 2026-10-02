@@ -1,5 +1,7 @@
 package standalone_tests
 
+import "core:fmt"
+import "core:strings"
 import "core:testing"
 
 import standalone "../../hosts/standalone"
@@ -120,4 +122,95 @@ test_every_state_has_a_name :: proc(t: ^testing.T) {
 	for state in states {
 		testing.expect(t, standalone.daemon_state_name(state) != "unknown")
 	}
+}
+
+@(test)
+test_mcp_is_its_own_mode_and_takes_no_operands :: proc(t: ^testing.T) {
+	cli := standalone.parse_args([]string{"quesynth", "--mcp"})
+	testing.expect_value(t, cli.mode, standalone.Mode.MCP)
+	testing.expect_value(t, cli.message, "")
+	testing.expect_value(t, cli.patch_path, "")
+	testing.expect_value(t, cli.bank_path, "")
+	testing.expect_value(t, cli.output_path, "")
+
+	// Anything after it is refused with the same words --stop uses, so the MCP
+	// server never grows a socket option, a bank or a patch of its own.
+	for extra in ([]string{"--bank", "patch.sy1", "--daemon", "--socket", "--timeout-ms", "--help", "--mcp", ""}) {
+		cli := standalone.parse_args([]string{"quesynth", "--mcp", extra})
+		testing.expect_value(t, cli.mode, standalone.Mode.Usage_Error)
+		testing.expect_value(t, cli.message, fmt.tprintf("error: unexpected extra argument %q", extra))
+	}
+	several := standalone.parse_args([]string{"quesynth", "--mcp", "--bank", "b.json", "p.sy1"})
+	testing.expect_value(t, several.mode, standalone.Mode.Usage_Error)
+	testing.expect_value(t, several.message, `error: unexpected extra argument "--bank"`)
+}
+
+@(test)
+test_mcp_is_only_a_mode_and_never_an_operand_of_another :: proc(t: ^testing.T) {
+	for args in ([][]string {
+			{"quesynth", "--daemon", "--mcp"},
+			{"quesynth", "--browser", "--mcp"},
+			{"quesynth", "--mcp", "--stop"},
+			{"quesynth", "lead.sy1", "--mcp"},
+			{"quesynth", "--bank", "b.json", "--mcp"},
+			{"quesynth", "--stop", "--mcp"},
+		}) {
+		testing.expect_value(t, standalone.parse_args(args).mode, standalone.Mode.Usage_Error)
+	}
+}
+
+@(test)
+test_adding_mcp_left_every_other_mode_parsing_as_it_did :: proc(t: ^testing.T) {
+	check :: proc(t: ^testing.T, args: []string, mode: standalone.Mode, patch_path, bank_path, output_path: string, loc := #caller_location) {
+		cli := standalone.parse_args(args)
+		testing.expect_value(t, cli.mode, mode, loc = loc)
+		testing.expect_value(t, cli.patch_path, patch_path, loc = loc)
+		testing.expect_value(t, cli.bank_path, bank_path, loc = loc)
+		testing.expect_value(t, cli.output_path, output_path, loc = loc)
+		testing.expect_value(t, cli.message, "", loc = loc)
+	}
+	check(t, {"quesynth"}, .Run, "", "", "")
+	check(t, {"quesynth", "lead.sy1"}, .Run, "lead.sy1", "", "")
+	check(t, {"quesynth", "--bank", "b.json", "lead.sy1"}, .Run, "lead.sy1", "b.json", "")
+	check(t, {"quesynth", "--daemon"}, .Daemon, "", "", "")
+	check(t, {"quesynth", "--daemon", "pad.sy1"}, .Daemon, "pad.sy1", "", "")
+	check(t, {"quesynth", "--daemon", "--bank", "b.json", "pad.sy1"}, .Daemon, "pad.sy1", "b.json", "")
+	check(t, {"quesynth", "--daemon", "pad.sy1", "--bank", "b.json"}, .Daemon, "pad.sy1", "b.json", "")
+	check(t, {"quesynth", "--browser"}, .Browser, "", "", "")
+	check(t, {"quesynth", "--browser", "--bank", "b.json"}, .Browser, "", "b.json", "")
+	check(t, {"quesynth", "--stop"}, .Stop, "", "", "")
+	check(t, {"quesynth", "--selftest", "in.sy1", "out.wav"}, .Selftest, "in.sy1", "", "out.wav")
+	check(t, {"quesynth", "--help"}, .Help, "", "", "")
+	check(t, {"quesynth", "-h"}, .Help, "", "", "")
+
+	extra_stop := standalone.parse_args([]string{"quesynth", "--stop", "now"})
+	testing.expect_value(t, extra_stop.mode, standalone.Mode.Usage_Error)
+	testing.expect_value(t, extra_stop.message, `error: unexpected extra argument "now"`)
+	for option in ([]string{"--socket", "--timeout-ms", "--mcpx", "--MCP", "mcp"}) {
+		cli := standalone.parse_args([]string{"quesynth", "--daemon", option})
+		testing.expect(t, cli.mode != .MCP)
+	}
+	// "mcp" without dashes is a patch path, as any other bare word is.
+	bare := standalone.parse_args([]string{"quesynth", "mcp"})
+	testing.expect_value(t, bare.mode, standalone.Mode.Run)
+	testing.expect_value(t, bare.patch_path, "mcp")
+}
+
+@(test)
+test_usage_names_every_mode_with_its_description_in_one_column :: proc(t: ^testing.T) {
+	lines := strings.split(standalone.USAGE, "\n", context.temp_allocator)
+	testing.expect_value(t, lines[0], "usage:")
+	testing.expect_value(t, len(lines), 7)
+	column := -1
+	has_mcp := false
+	for line in lines[1:] {
+		gap := strings.index(line[2:], "  ") + 2
+		testing.expectf(t, gap >= 2, "no description column in %q", line)
+		start := gap
+		for start < len(line) && line[start] == ' ' { start += 1 }
+		if column < 0 { column = start }
+		testing.expectf(t, start == column, "description of %q starts at column %d, not %d", line, start, column)
+		if strings.has_prefix(line, "  quesynth --mcp ") { has_mcp = true }
+	}
+	testing.expect(t, has_mcp)
 }

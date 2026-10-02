@@ -23,18 +23,24 @@ import "base:intrinsics"
 // knob or two, which must glide and keep every tail. Commit_Patch ends a whole
 // patch: the audio thread replaces the patch instead, so nothing the previous
 // one left in the effects, the smoothers or a reassigned controller is heard
-// under the new one. Appended rather than inserted so the two older values
-// keep their numbers.
+// under the new one. Commit_Checked ends a run of ordinary edits only if the
+// revision the audio thread has reached is the `expected_revision` it carries;
+// otherwise the run is discarded. Either way the audio thread answers through
+// the ring's completed_* fields, tagged with the commit's `serial`. Appended
+// rather than inserted so the older values keep their numbers.
 Param_Command_Kind :: enum i32 {
 	Set,
 	Commit,
 	Commit_Patch,
+	Commit_Checked,
 }
 
 Param_Command :: struct {
-	kind:   Param_Command_Kind,
-	index:  i32,
-	stored: i32,
+	kind:              Param_Command_Kind,
+	index:             i32,
+	stored:            i32,
+	expected_revision: int,
+	serial:            u64,
 }
 
 // The most edits one transaction can stage. Larger than the whole registry, so
@@ -50,6 +56,16 @@ Param_Ring :: struct {
 	head:    u32, // consumer-owned (audio thread)
 	tail:    u32, // producer-owned (control thread)
 	dropped: u32, // rejected enqueue attempts (one per refused transaction)
+	// The answer to the latest Commit_Checked, kept here rather than on a
+	// waiting caller's stack: a caller that gave up must not leave the audio
+	// callback holding a dangling pointer. The control thread numbers each
+	// checked commit (`checked_serial`); the audio thread writes the outcome,
+	// then publishes `completed_serial` last, and a waiter trusts the outcome
+	// only when that is the serial it is waiting for.
+	checked_serial:     u64, // producer-owned (control thread)
+	completed_serial:   u64, // consumer-owned (audio thread), atomic
+	completed_revision: int,
+	completed_applied:  bool,
 }
 
 // Producer side, on the control thread. Returns false when the ring is full.

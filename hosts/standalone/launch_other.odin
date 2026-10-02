@@ -29,3 +29,8 @@ run_stop :: proc() -> int {
 	fmt.eprintfln("error: --stop is not supported on this platform yet")
 	return 1
 }
+
+run_mcp :: proc() -> int {
+	fmt.eprintfln("error: --mcp is not supported on this platform yet")
+	return 1
+}
