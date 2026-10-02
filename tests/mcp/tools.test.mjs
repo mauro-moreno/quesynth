@@ -84,6 +84,11 @@ test("invalid tool arguments cannot reach the daemon", {skip}, async t => {
     ["patch_load_file", { path: "file\u0000.sy1" }],
     ["archive_open", { path: "\ud800" }],
     ["archive_current", null], ["archive_current", []],
+    ...["\u0001", "\t", "\u001b", "\u001f", "\u007f", "\u0080", "\u0085", "\u009f", "\u2028", "\u2029"].flatMap(c => [
+      ["parameter_get", { id: `a${c}b` }], ["midi_select", { id: `a${c}b` }],
+      ["patch_load_file", { path: `a${c}b` }], ["bank_load_file", { path: `a${c}b` }],
+      ["archive_open", { path: `a${c}b` }],
+    ]),
   ];
   for (const [name, args] of invalid) {
     const result = (await client.call(name, args)).result;
@@ -93,4 +98,19 @@ test("invalid tool arguments cannot reach the daemon", {skip}, async t => {
   assert.deepEqual(daemon.commands, []);
   assert.equal((await client.call("daemon_shutdown")).error.code, -32602);
   assert.equal((await client.call("__proto__")).error.code, -32602);
+});
+
+test("paths and ids just outside the rejected ranges still reach the daemon verbatim", {skip}, async t => {
+  const daemon = await daemonFixture(t);
+  const client = startClient(t, { args: ["--socket", daemon.socket] });
+  await client.initialize();
+  const path = "a b\u00e9\u00a0\u00a1.sy1";
+  for (const [name, args, command] of [
+    ["patch_load_file", { path }, `patch.load_file ${path}`],
+    ["bank_load_file", { path }, `bank.load_file ${path}`],
+    ["parameter_get", { id: "caf\u00e9\u00a1" }, "parameter.get caf\u00e9\u00a1"],
+  ]) {
+    assert.equal((await client.call(name, args)).result.isError, undefined, name);
+    assert.equal(daemon.commands.at(-1), command);
+  }
 });

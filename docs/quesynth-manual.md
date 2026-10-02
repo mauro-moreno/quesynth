@@ -64,7 +64,7 @@ The binary finds `ui/` and the browser adapter relative to the working
 directory. If you run it from elsewhere, set `QUESYNTH_ROOT` to the repository
 root (see [Browser](#browser)).
 
-Usage, as the binary prints it:
+The command forms are:
 
 ```sh
 ./build/quesynth [--bank bank.json] [patch.sy1]
@@ -74,8 +74,10 @@ Usage, as the binary prints it:
 ./build/quesynth --selftest patch.sy1 out.wav
 ```
 
-`--bank` may appear once. A second positional argument, a second `--bank` or
-an unknown option prints the usage and exits 2.
+`./build/quesynth --help` prints them to stdout with a short description of
+each and exits 0. `--bank` may appear once. A second positional argument, a
+second `--bank` or an unknown option prints an error and the usage to stderr
+and exits 2.
 
 ## The daemon
 
@@ -594,9 +596,11 @@ tool list is a fixed allowlist, not a way to send arbitrary commands.
 
 The server checks arguments against each tool's schema before it contacts the
 daemon. Unknown arguments are rejected. A missing required argument, a value of
-the wrong type, a non-integer, a number out of range, or a string with a line
-break, a control character, a lone surrogate (or, for ids, any whitespace) never
-reaches the daemon.
+the wrong type, a non-integer or a number out of range never reaches the
+daemon. Neither does a string that holds a lone surrogate, a C0 or C1 control
+character (U+0000 to U+001F, U+0080 to U+009F), DEL (U+007F), U+2028 or U+2029,
+or, for ids, any whitespace. Ordinary spaces and non-ASCII text are fine in a
+path, and the empty string is a valid path.
 
 A tool failure is a normal result with `isError: true` and a JSON text body of
 exactly `{"code": "...", "message": "..."}`:
@@ -673,8 +677,8 @@ session stays usable:
 - `patch_load_file`, `bank_load_file` and `archive_open` make the daemon read
   the path you give. The daemon trims leading and trailing whitespace from it,
   resolves a relative path against its own working directory, does no `~` or
-  shell expansion, and runs with your permissions. A whitespace-only
-  `archive_open` path reopens the remembered archive.
+  shell expansion, and runs with your permissions. A path of only spaces for
+  `archive_open` reopens the remembered archive.
   The tools only read files. Writing a bank or a patch is not exposed.
 - `archive_open` with a path and `archive_close` change what the daemon
   remembers across restarts.

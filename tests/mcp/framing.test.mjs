@@ -36,3 +36,9 @@ test("a final request without a trailing newline is answered before exit", {skip
   assert.deepEqual(await client.exited, [0, null]);
   assert.deepEqual(client.messages, [{ jsonrpc: "2.0", id: 7, result: {} }]);
 });
+
+test("one very long request line is answered without rescanning it per chunk", {skip}, async t => {
+  const client = startClient(t);
+  const ping = await client.request("ping", { note: "x".repeat(32 * 1024 * 1024) });
+  assert.deepEqual(ping.result, {});
+});

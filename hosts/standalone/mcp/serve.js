@@ -125,8 +125,10 @@ function main({ socket, timeoutMs }) {
   };
   let buffered = "";
   process.stdin.setEncoding("utf8").on("data", text => {
-    const lines = (buffered + text).split("\n");
-    buffered = lines.pop();
+    const end = text.lastIndexOf("\n");
+    if (end < 0) { buffered += text; return; }
+    const lines = (buffered + text.slice(0, end)).split("\n");
+    buffered = text.slice(end + 1);
     lines.forEach(receive);
   }).on("end", () => {
     if (buffered) receive(buffered);

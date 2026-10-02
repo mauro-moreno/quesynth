@@ -3,11 +3,11 @@
 const integer = (description, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) =>
   ({ type: "integer", minimum, maximum, description });
 const token = {
-  type: "string", minLength: 1, pattern: "^[^\\s\\u0000-\\u001f\\u007f]+$",
+  type: "string", minLength: 1, pattern: "^[^\\s\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
   description: "One daemon identifier, exactly as listed.",
 };
 const path = {
-  type: "string", pattern: "^[^\\u0000\\r\\n]*$",
+  type: "string", pattern: "^[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]*$",
   description: "Local path read by the daemon, relative to its cwd; no shell or tilde expansion.",
 };
 const page = {
