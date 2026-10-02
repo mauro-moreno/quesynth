@@ -39,6 +39,7 @@ async function setup(t) {
     client,
     token: pattern(property("parameter_get", "id")),
     pairId: pattern(property("parameter_set_many", "parameters").items.properties.id),
+    patchId: pattern(property("patch_apply", "parameters").items.properties.id),
     path: pattern(property("patch_load_file", "path")),
     optional: pattern(property("archive_open", "path")),
     name: pattern(property("patch_save", "name")),
@@ -56,8 +57,7 @@ async function pipeline(client, calls) {
 }
 
 test("the patterns for ids are the binary's rule for ids, for every Unicode scalar value", {skip}, async t => {
-  const { client, token, pairId } = await setup(t);
-  assert.equal(token.source, pairId.source);
+  const { client, token, pairId, patchId } = await setup(t);
   // A batch of ids is one request; it is refused at the first bad one, and the
   // message names which and by what code point.
   const rejected = new Set();
@@ -77,7 +77,10 @@ test("the patterns for ids are the binary's rule for ids, for every Unicode scal
   }
   let wrong = [];
   for (const c of scalars) {
-    if (token.test(text(c)) === rejected.has(c)) wrong.push(hex(c));
+    // No single character starts the reserved prefix, so the three agree here.
+    for (const pattern of [token, pairId, patchId]) {
+      if (pattern.test(text(c)) === rejected.has(c)) wrong.push(hex(c));
+    }
   }
   assert.deepEqual(wrong, [], "the pattern and the binary disagree on these code points");
   assert.ok(rejected.size > 20 && rejected.size < 120, String(rejected.size));
@@ -89,6 +92,40 @@ test("the patterns for ids are the binary's rule for ids, for every Unicode scal
     assert.equal(refused(replies[2 * i]), rejected.has(c), `parameter_get U+${hex(c)}`);
     assert.equal(refused(replies[2 * i + 1]), rejected.has(c), `midi_select U+${hex(c)}`);
   });
+});
+
+// The daemon reads a first id that begins expected_revision= as the guard of a
+// parameter_set_many, so that tool refuses such an id at any position and its
+// schema has to say so. patch_apply has no guard and takes the same id.
+test("the pattern for the ids of parameter_set_many leaves out the reserved prefix as the binary does, and patch_apply's does not", {skip}, async t => {
+  const { client, token, pairId, patchId } = await setup(t);
+  assert.equal(pairId.source, `^(?!expected_revision=)${token.source.slice(1)}`);
+  assert.equal(patchId.source, token.source);
+  const reserved = ["expected_revision=", "expected_revision=3", "expected_revision==", "expected_revision=a=b",
+    "expected_revision=\u00e9", "expected_revision=\u{1f3b9}"];
+  const others = ["expected_revision", "expected_revision:3", "expected_revisio=3", "Expected_Revision=3", "xexpected_revision=3",
+    "a.expected_revision=3", "=expected_revision=", "expected_revision=3 ", "expected_revision =3", "\u00e9xpected_revision="];
+  const ids = [...reserved, ...others];
+  const calls = ids.flatMap(id => [
+    ["parameter_set_many", { parameters: [{ id, value: 1 }] }],
+    ["parameter_set_many", { expected_revision: 5, parameters: [{ id, value: 1 }] }],
+    ["parameter_set_many", { parameters: [{ id: "a", value: 1 }, { id: "b", value: 2 }, { id, value: 3 }] }],
+    ["patch_apply", { parameters: [{ id, value: 1 }] }],
+  ]);
+  const replies = await pipeline(client, calls);
+  ids.forEach((id, i) => {
+    const [alone, guarded, third, applied] = replies.slice(4 * i, 4 * i + 4);
+    for (const reply of [alone, guarded, third]) assert.equal(refused(reply), !pairId.test(id), `parameter_set_many ${JSON.stringify(id)}`);
+    assert.equal(refused(applied), !patchId.test(id), `patch_apply ${JSON.stringify(id)}`);
+    if (reserved.includes(id)) {
+      assert.equal(refused(alone), true, `parameter_set_many ${JSON.stringify(id)}`);
+      assert.equal(refused(applied), false, `patch_apply ${JSON.stringify(id)}`);
+      assert.match(JSON.parse(alone.result.content[0].text).message, /^parameters\[0\]\.id must not begin with expected_revision=$/);
+    }
+  });
+  for (const id of others.filter(id => !/\s/.test(id))) {
+    assert.equal(pairId.test(id), true, JSON.stringify(id));
+  }
 });
 
 // The interior of a text: all but a control character or a line separator.

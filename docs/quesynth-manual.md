@@ -190,7 +190,7 @@ last one wins. The reply is `ok count=<n> revision=<r>`, where `r` is the
 revision the daemon had published when it queued the batch.
 
 The request may instead start with `expected_revision=<n>`, as its first token
-and with `n` a non-negative integer:
+and with `n` a non-negative integer in decimal digits:
 
 ```text
 parameter.set_many [expected_revision=<n>] <id> <value> ...
@@ -207,8 +207,10 @@ audio thread has not answered within 250 ms the reply is
 `err daemon_not_ready commit outcome unknown; inspect state before retrying`:
 the batch stays queued and may still be applied. A first token that starts with
 `expected_revision=` and is not followed by a non-negative integer is refused
-with `invalid_payload expected_revision needs a nonnegative integer`.
-`patch.apply` takes no `expected_revision`.
+with `invalid_payload expected_revision needs a nonnegative integer`. Only the
+digits 0 to 9 make one: a sign, a `0x` or `0b` prefix, an underscore, nothing at
+all and a number above 9223372036854775807 are refused the same way, and
+leading zeros are allowed. `patch.apply` takes no `expected_revision`.
 
 The daemon serves at most 16 connections at once. It drops a client whose
 unread output passes 256 KiB. You rarely need to speak the protocol by hand,
@@ -715,9 +717,15 @@ file or else after the file, and returns that name as a `name=` record line.
 the playing patch after the slot. The slot lives in the daemon's memory until
 `bank_keep` or `bank_write` writes the bank out. Without a `name`, or with an
 empty one, the slot keeps its current name, which is `Init` for an empty slot.
-The daemon keeps at most 48 bytes of a name. `patch_current` reads the patch
-identity described under [Patch identity](#patch-identity), and `patch_clear`
-forgets where the sound came from while the values and the banks stay.
+The daemon keeps at most 48 bytes of a name. If that cut falls inside a
+multi-byte character, the name the daemon stores is not valid UTF-8, and JSON
+cannot carry it. The save succeeds, but `patch_current`, `inspect_synth` and the
+`quesynth://patch` resource then fail with `daemon_error` and the message
+`QCP response is not valid UTF-8`, until `patch_clear` or the load of a
+different patch replaces the identity. Loading the same slot again does not.
+`patch_current` reads the patch identity described under
+[Patch identity](#patch-identity), and `patch_clear` forgets where the sound
+came from while the values and the banks stay.
 
 #### Bank tools
 
@@ -773,7 +781,7 @@ changing the archive.
 | `midi_list` | `midi.list` | none | yes | no | yes |
 | `midi_select` | `midi.select` | `input` token | no | no | yes |
 | `midi_current` | `midi.current` | none | yes | no | yes |
-| `midi_send` | `midi` | `status` integer 0..255; `data1` integer 0..127; `data2` integer 0..127 | no | no | no |
+| `midi_send` | `midi` | `status` integer 0..255; `data1` integer 0..127; `data2` integer 0..127 | no | yes | no |
 
 `midi_list` returns the inputs the daemon finds now, each with an `id` and a
 `name`, and the current selection. `midi_select` takes `all`, `none` or an id
@@ -783,7 +791,11 @@ the hardware inputs use. The status byte carries the channel in its low four
 bits: 144 is note on and 128 note off on channel 1, 176 control change, 192
 program change and 224 pitch bend. Send 0 for the missing data byte of a program
 change. A note on keeps sounding until its note off arrives, and nothing
-releases held notes but a note off or stopping the daemon.
+releases held notes but a note off or stopping the daemon. A program change
+loads the patch it picks, as under
+[Bank Select and Program Change](#bank-select-and-program-change), which
+replaces the sound and any edit of it that was not saved, so `midi_send` is
+destructive.
 
 #### Volume tool
 
@@ -804,7 +816,7 @@ the client negotiated. They describe the tool in the tables above.
 | Annotation | Meaning here |
 |---|---|
 | `readOnlyHint` | The call changes nothing in the daemon, on disk or anywhere else. |
-| `destructiveHint` | The call can overwrite or discard something the daemon keeps nowhere else: parameter values, the sounding patch, a bank slot or the bank, a file on disk, the remembered archive, the patch identity, or the daemon itself. It is `false` for effects that last only for the session or only add to it: the master volume, the MIDI selection, an injected MIDI message, browsing an archive bank and `archive_adopt`. |
+| `destructiveHint` | The call can overwrite or discard something the daemon keeps nowhere else: parameter values, the sounding patch, a bank slot or the bank, a file on disk, the remembered archive, the patch identity, or the daemon itself. It is `false` for effects that last only for the session or only add to it: the master volume, the MIDI selection, browsing an archive bank and `archive_adopt`. It is `true` for `midi_send`, because a program change replaces the sounding patch. |
 | `idempotentHint` | Repeating the same call leaves the same state and does nothing more that you can hear or see, leaving aside the counters `revision`, `bank_rev`, `archive_rev` and `midi_rev`. It is `false` for the four calls that replace the whole patch, because loading again clears what the last load left ringing, and for `midi_send`. |
 | `openWorldHint` | Always `false`. The only party a call reaches is the local daemon. |
 
@@ -830,6 +842,9 @@ For the 31 tools after the first two:
 - An argument the tool does not declare is refused as `unknown argument: <name>`,
   naming the first such name in alphabetical order. This is deliberate. A
   misspelt `expected_revision` would otherwise drop its guard without a word.
+  The empty string is a name like any other, so `{"":1}` is refused as
+  `unknown argument: ` with nothing after the colon and space. It comes first in
+  alphabetical order.
 - A required argument must be present. `null` is never the same as leaving an
   argument out, because it has the wrong type. Nothing is converted, so the
   string `"5"` is not the integer 5.
@@ -855,13 +870,14 @@ For the 31 tools after the first two:
   required `text` must not be empty. An optional one that is an empty string
   counts as left out.
 - `pairs` is an array of 1 to 128 objects. Each has exactly an `id` token and a
-  `value` integer, and any other key is refused. The limit of 128 is the
+  `value` integer, and any other key is refused, one named with the empty string
+  too, as `parameters[<n>] has an unknown key: `. The limit of 128 is the
   daemon's. An `id` that starts with `expected_revision=` is refused by
   `parameter_set_many`, because the daemon would read it as the guard.
 
 The two original tools keep their own checks, described under
 [`apply_parameters`](#apply_parameters), and keep ignoring keys they do not
-declare.
+declare, one named with the empty string included.
 
 The server does not limit how long a text is. The daemon keeps at most 48 bytes
 of a patch name, and a request line over the 64 KiB frame limit is refused by
@@ -875,6 +891,7 @@ binary, and none of them reached the daemon.
 | `parameter_get` | `[]` | `arguments must be an object` |
 | `parameter_get` | `{}` | `missing argument: id` |
 | `parameter_get` | `{"id":"filter.cutoff","extra":1}` | `unknown argument: extra` |
+| `parameter_get` | `{"id":"filter.cutoff","":1}` | `unknown argument: ` |
 | `parameter_get` | `{"id":null}` | `id must be a string` |
 | `parameter_get` | `{"id":""}` | `id must not be empty` |
 | `parameter_get` | `{"id":"filter cutoff"}` | `id must not contain whitespace or control characters (U+0020)` |
@@ -888,6 +905,7 @@ binary, and none of them reached the daemon.
 | `parameter_set_many` | `{"parameters":[{"id":"a"}]}` | `parameters[0] needs id and value` |
 | `parameter_set_many` | `{"parameters":[{"id":1,"value":1}]}` | `parameters[0].id must be a string` |
 | `parameter_set_many` | `{"parameters":[{"id":"a","value":1,"x":2}]}` | `parameters[0] has an unknown key: x` |
+| `parameter_set_many` | `{"parameters":[{"id":"a","value":1,"":2}]}` | `parameters[0] has an unknown key: ` |
 | `parameter_set_many` | `{"parameters":[{"id":"expected_revision=3","value":1}]}` | `parameters[0].id must not begin with expected_revision=` |
 | `parameter_set_many` | `{"expected_revision":-1,"parameters":[{"id":"a","value":1}]}` | `expected_revision must be an integer from 0 to 9007199254740991` |
 | `parameter_set_many` | `{"expected_revison":3,"parameters":[{"id":"a","value":1}]}` | `unknown argument: expected_revison` |
@@ -912,7 +930,7 @@ The input schema of each of the 31 tools is a closed object: `"type":"object"`,
 `required` list, which is left out when nothing is required. Integers carry a
 `minimum` and a `maximum`, and an array carries `minItems` and `maxItems`. A
 token or a text carries a `pattern` that accepts exactly the strings the server
-accepts. The three patterns are these, in ECMA-262 syntax for the `u` flag. The
+accepts. The four patterns are these, in ECMA-262 syntax for the `u` flag. The
 whitespace is spelled out because `\s` means something different in JavaScript
 and in Odin.
 
@@ -920,15 +938,22 @@ and in Odin.
 token          ^[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200b\u200e\u200f\u2028\u2029\u202f\u205f\u3000\ufeff]+$
 text           ^[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000](?:[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000])?$
 optional text  ^(?:[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000](?:[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000])?)?$
+set_many id    ^(?!expected_revision=)[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200b\u200e\u200f\u2028\u2029\u202f\u205f\u3000\ufeff]+$
 ```
 
 `optional text` is the pattern of an optional `text` argument, which also
 accepts the empty string. A required `text` has `"minLength":1` as well, and a
-`token` has it too. As an example, this is the complete entry that `tools/list`
-returns for `volume`:
+`token` has it too. `set_many id` is the pattern of the `id` in each entry of
+the `parameters` of `parameter_set_many`: the token pattern behind a negative
+lookahead, because that tool refuses an id that begins with `expected_revision=`
+at any position, as the daemon would read it as the guard. The `id` of an entry
+of `patch_apply` has the plain token pattern, since that command has no guard.
+
+As an example, this is the complete entry that `tools/list` returns for
+`volume`:
 
 ```json
-{"annotations":{"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,"readOnlyHint":false},"description":"Set the daemon's master output level for every client: 0 is silent, 1000 is full level, the level at each start. It is the listener's level, not a patch parameter, so no revision changes. daemon_info reports the current level.","inputSchema":{"additionalProperties":false,"properties":{"milli":{"description":"Level in thousandths of full scale.","maximum":1000,"minimum":0,"type":"integer"}},"required":["milli"],"type":"object"},"name":"volume","outputSchema":{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}},"type":"object"}}
+{"annotations":{"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,"readOnlyHint":false},"description":"Set the daemon's master output level for every client: 0 is silent, 1000 is full level, the level at each start. It is the listener's level, not a patch parameter, so no revision changes. daemon_info reports the current level.","inputSchema":{"additionalProperties":false,"properties":{"milli":{"description":"Level in thousandths of full scale.","maximum":1000,"minimum":0,"type":"integer"}},"required":["milli"],"type":"object"},"name":"volume","outputSchema":{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"fields":{"description":"The text after ok on the first line of the daemon's reply, without the one space that separates it from ok.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}},"type":"object"}}
 ```
 
 The input schemas of the two original tools are the ones the server has always
@@ -952,7 +977,7 @@ enumeration, since the daemon owns its tokens. A success with an extra key, a
 failure without its `message` and a payload with both shapes all fail the check.
 
 ```json
-{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}},"type":"object"}
+{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"fields":{"description":"The text after ok on the first line of the daemon's reply, without the one space that separates it from ok.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}},"type":"object"}
 ```
 
 `inspect_synth` and `apply_parameters` describe their own results in the same
@@ -978,12 +1003,21 @@ From protocol `2025-06-18` on, the same object is also returned as
 
 `fields` is the text after `ok` on the reply's first line, without the one
 space that separates it from `ok`, and `lines` are the record lines that follow
-it, one string each, unchanged and in the daemon's order. Any other space,
-at either end of `fields` too, is kept. A reply with nothing after `ok` has an empty `fields`, and one without
-record lines has an empty `lines`. The server does not rename, reorder or tidy
-anything. If the daemon folds the spaces of a name into underscores in a field,
-as `patch_save` does in `name=`, you get the underscores. If it keeps them in a
-record line, as `patch_current` does, you get the spaces. The fields of each
+it, one string each, unchanged and in the daemon's order. Any other space, at
+either end of `fields` too, is kept. A reply with nothing after `ok` has an
+empty `fields`, and one without record lines has an empty `lines`.
+
+The daemon writes a newline before each record line and none after the last, so
+the server splits what follows the first line on newlines and each record is one
+string. A newline that ends the reply does not add an empty string at the end of
+`lines`. A patch name that ends in a newline shows it: the daemon's reply to
+`patch_load_file` then ends in `name=Trail` and a newline, and `lines` is
+`["name=Trail"]`.
+
+The server does not rename, reorder or tidy anything. If the daemon folds the
+spaces of a name into underscores in a field, as `patch_save` does in `name=`,
+you get the underscores. If it keeps them in a record line, as `patch_current`
+does, you get the spaces. The fields of each
 reply are the ones the daemon documents under [Control protocol](#control-protocol),
 [Banks and archives](#banks-and-archives), [Patch identity](#patch-identity)
 and [MIDI](#midi), and the examples below show real ones.
@@ -1130,7 +1164,7 @@ Failures of the protocol itself are JSON-RPC errors with a `code` and a
 
 | Code | Meaning |
 |---|---|
-| `-32700` | The line is not valid JSON. `id` is `null`. Text after the value, a trailing comma, a malformed number or string and nesting more than 100 levels deep are refused the same way, and so is an empty line. |
+| `-32700` | The line is not valid JSON. `id` is `null`. Text after the value, a trailing comma, a malformed number or string and nesting more than 100 levels deep are refused the same way, and so is an empty line. So is a request in which one object has the same member name twice, at any depth and however the name is spelt, so a client cannot match the reply to its request; only a name that is the empty string may repeat. |
 | `-32600` | Not a JSON-RPC 2.0 request: not an object, `jsonrpc` is not `"2.0"`, `method` is not a string, or `id` is neither a string nor an integer-valued number. `id` is `null`. A second `initialize` also returns `-32600`, with its own `id`. |
 | `-32601` | Method not found. |
 | `-32602` | Bad parameters: `initialize` without its fields, `params` that is not an object, `tools/call` without a tool name or with a name that is not one of the 33 tools, `resources/read` without a string `uri`. |

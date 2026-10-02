@@ -180,15 +180,53 @@ test_a_bad_member_rejects_the_whole_batch_even_when_the_revision_matches :: proc
 test_a_malformed_expected_revision_is_an_invalid_payload_and_enqueues_nothing :: proc(t: ^testing.T) {
 	b := bench_make(draining = false)
 	defer bench_free(b)
-	for token in ([]string{"expected_revision=", "expected_revision=abc", "expected_revision=-1", "expected_revision=1.5"}) {
-		line := strings.concatenate({"1 3 parameter.set_many ", token, " filter.cutoff 40"}, context.temp_allocator)
+	// The revision is 0. After the first four, which are no integer at all, come
+	// the spellings a parser that takes a sign, a base prefix or an underscore,
+	// or wraps past the largest int, reads as 0, and the ones just out of range.
+	tails := []string {
+		"", "abc", "-1", "1.5",
+		"-0", "+0", "0x0", "0b0", "0o0", "0d0", "0_0", "_",
+		"18446744073709551616", "36893488147419103232", "99999999999999999999999", "9223372036854775808",
+	}
+	for tail in tails {
+		line := strings.concatenate({"1 3 parameter.set_many expected_revision=", tail, " filter.cutoff 40"}, context.temp_allocator)
 		testing.expect_value(
 			t,
 			revision_request(b, line),
 			"1 3 err invalid_payload expected_revision needs a nonnegative integer",
 		)
-		testing.expectf(t, ring_is_empty(b), "%q left something on the ring", token)
+		testing.expectf(t, ring_is_empty(b), "%q left something on the ring", tail)
 	}
+}
+
+@(test)
+test_an_expected_revision_is_the_number_its_decimal_digits_say :: proc(t: ^testing.T) {
+	b := bench_make()
+	defer bench_free(b)
+	testing.expect_value(t, revision_request(b, "1 1 parameter.set_many expected_revision=0 filter.cutoff 40"), "1 1 ok count=1 revision=1")
+	// Each of these is 1 to a parser that wraps, or takes a prefix, a sign or an
+	// underscore, so the guard would pass for a batch that names another revision.
+	for tail in ([]string{"18446744073709551617", "+1", "0x1", "0b1", "0o1", "0d1", "1_", "0_1", "_1"}) {
+		line := strings.concatenate({"1 2 parameter.set_many expected_revision=", tail, " filter.cutoff 90"}, context.temp_allocator)
+		reply := revision_request(b, line)
+		testing.expectf(t, reply == "1 2 err invalid_payload expected_revision needs a nonnegative integer", "%q -> %q", tail, reply)
+	}
+	testing.expect_value(t, published_revision(b), 1)
+	testing.expect_value(t, published_value(b, "filter.cutoff"), 40)
+
+	// Digits are taken as they are, leading zeros too, up to the largest int.
+	testing.expect_value(t, revision_request(b, "1 3 parameter.set_many expected_revision=1 filter.cutoff 41"), "1 3 ok count=1 revision=2")
+	testing.expect_value(
+		t,
+		revision_request(b, "1 4 parameter.set_many expected_revision=0000000000000000000000000002 filter.cutoff 42"),
+		"1 4 ok count=1 revision=3",
+	)
+	testing.expect_value(
+		t,
+		revision_request(b, "1 5 parameter.set_many expected_revision=9223372036854775807 filter.cutoff 43"),
+		"1 5 err revision_conflict current_revision=3",
+	)
+	testing.expect_value(t, published_value(b, "filter.cutoff"), 42)
 }
 
 @(test)

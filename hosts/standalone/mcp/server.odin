@@ -91,11 +91,69 @@ integer :: proc(value: json.Value) -> (int, bool) {
 MAX_JSON_DEPTH :: 100
 
 @(private)
-well_formed :: proc(text: string) -> bool {
+well_formed :: proc(text: string, empty: ^[dynamic]Where) -> bool {
 	i := 0
-	if !scan_value(text, &i, 0) { return false }
+	if !scan_value(text, &i, 0, {place = .Message}, empty) { return false }
 	skip_space(text, &i)
 	return i == len(text)
+}
+
+// The parser also keeps no member whose name is "", so a call that spelt one
+// would be judged as though it had not. The scan that reads every byte anyway
+// records each one inside the `arguments` of a call, so that put_back_empty_names
+// can restore it for the checks that refuse a name the tool does not declare.
+// Only two places matter: the arguments themselves, and an object in an array
+// that one of them holds, where a pair stands. Any other object an argument can
+// hold is refused for its type, whatever its members are called.
+@(private)
+Place :: enum {Elsewhere, Message, Params, Arguments, Member, Entry}
+
+@(private)
+Where :: struct {
+	place: Place,
+	// Member and Entry: the member of the arguments that is, or holds, this value.
+	argument: string,
+	// Entry: its position in that member's array.
+	index: int,
+}
+
+// Names are compared as the parser stores them, escapes decoded, so
+// "\u0061rguments" is the member `arguments` here as it is there.
+@(private)
+member_of :: proc(at: Where, raw_name: string) -> Where {
+	name :: proc(raw: string) -> string {
+		decoded, _ := json.unquote_string(json.Token{kind = .String, text = raw}, .JSON, context.temp_allocator)
+		return decoded
+	}
+	switch at.place {
+	case .Message: if name(raw_name) == "params" { return {place = .Params} }
+	case .Params: if name(raw_name) == "arguments" { return {place = .Arguments} }
+	case .Arguments: return {place = .Member, argument = name(raw_name)}
+	case .Member, .Entry, .Elsewhere:
+	}
+	return {}
+}
+
+@(private)
+element_of :: proc(at: Where, index: int) -> Where {
+	if at.place != .Member { return {} }
+	return {place = .Entry, argument = at.argument, index = index}
+}
+
+@(private)
+put_back_empty_names :: proc(args: ^json.Object, empty: []Where) {
+	for at in empty {
+		if at.place == .Arguments {
+			args[""] = json.Null{}
+			continue
+		}
+		entries, is_array := args[at.argument].(json.Array)
+		if !is_array { continue }
+		entry, is_object := entries[at.index].(json.Object)
+		if !is_object { continue }
+		entry[""] = json.Null{}
+		entries[at.index] = entry
+	}
 }
 
 @(private)
@@ -104,7 +162,7 @@ skip_space :: proc(text: string, i: ^int) {
 }
 
 @(private)
-scan_value :: proc(text: string, i: ^int, depth: int) -> bool {
+scan_value :: proc(text: string, i: ^int, depth: int, at: Where, empty: ^[dynamic]Where) -> bool {
 	skip_space(text, i)
 	if i^ >= len(text) { return false }
 	switch text[i^] {
@@ -115,11 +173,14 @@ scan_value :: proc(text: string, i: ^int, depth: int) -> bool {
 		if i^ < len(text) && text[i^] == '}' { i^ += 1; return true }
 		for {
 			skip_space(text, i)
+			start := i^
 			if !scan_string(text, i) { return false }
+			name := text[start:i^]
 			skip_space(text, i)
 			if i^ >= len(text) || text[i^] != ':' { return false }
 			i^ += 1
-			if !scan_value(text, i, depth + 1) { return false }
+			if name == `""` && (at.place == .Arguments || at.place == .Entry) { append(empty, at) }
+			if !scan_value(text, i, depth + 1, member_of(at, name), empty) { return false }
 			skip_space(text, i)
 			if i^ >= len(text) { return false }
 			c := text[i^]
@@ -132,8 +193,8 @@ scan_value :: proc(text: string, i: ^int, depth: int) -> bool {
 		i^ += 1
 		skip_space(text, i)
 		if i^ < len(text) && text[i^] == ']' { i^ += 1; return true }
-		for {
-			if !scan_value(text, i, depth + 1) { return false }
+		for index := 0; ; index += 1 {
+			if !scan_value(text, i, depth + 1, element_of(at, index), empty) { return false }
 			skip_space(text, i)
 			if i^ >= len(text) { return false }
 			c := text[i^]
@@ -392,7 +453,8 @@ tool_result :: proc(s: ^Session, id: json.Value, value: json.Object, err: Failur
 // allocator. Only the protocol phase/version survive between requests.
 handle :: proc(s: ^Session, line, path: string) -> string {
 	context.allocator = context.temp_allocator
-	if !well_formed(line) { return rpc_error(nil, -32700, "Invalid JSON") }
+	empty: [dynamic]Where
+	if !well_formed(line, &empty) { return rpc_error(nil, -32700, "Invalid JSON") }
 	message, parse_err := json.parse(transmute([]u8)line, spec = .JSON)
 	if parse_err != .None { return rpc_error(nil, -32700, "Invalid JSON") }
 	obj, is_object := message.(json.Object)
@@ -481,6 +543,7 @@ handle :: proc(s: ^Session, line, path: string) -> string {
 		if a, exists := params["arguments"]; exists {
 			args, ok = a.(json.Object)
 			if !ok { return tool_result(s, id, nil, {"invalid_arguments", "arguments must be an object"}) }
+			put_back_empty_names(&args, empty[:])
 		}
 		value: json.Object
 		err: Failure

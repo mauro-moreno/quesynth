@@ -23,6 +23,8 @@ Arg_Spec :: struct {
 	type:     enum {Integer, Token, Text, Pairs},
 	required: bool,
 	min, max: int,
+	// Pairs only: the prefix the daemon reads as something else than an id.
+	reserved: string,
 }
 
 Tool_Spec :: struct {
@@ -64,7 +66,10 @@ SPECS := [?]Tool_Spec {
 	{
 		name = "parameter_set_many",
 		command = "parameter.set_many",
-		args = {{name = "expected_revision", type = .Integer, min = 0, max = SAFE}, {name = "parameters", type = .Pairs, required = true}},
+		args = {
+			{name = "expected_revision", type = .Integer, min = 0, max = SAFE},
+			{name = "parameters", type = .Pairs, required = true, reserved = "expected_revision="},
+		},
 		destructive = true,
 		idempotent = true,
 	},
@@ -169,6 +174,8 @@ SPECS := [?]Tool_Spec {
 			{name = "data1", type = .Integer, required = true, min = 0, max = 127},
 			{name = "data2", type = .Integer, required = true, min = 0, max = 127},
 		},
+		// A Program Change replaces the sounding patch and with it any edit not saved.
+		destructive = true,
 	},
 	{
 		name = "volume",
@@ -186,7 +193,7 @@ CODE_PROPERTY :: `"code":{"description":"On a failed call, the error token: the 
 MESSAGE_PROPERTY :: `"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}`
 // The one output schema of every tool but the two older ones: a reply, or a
 // failure, as one closed object. Keys are sorted, as the server writes them.
-REPLY_OUTPUT :: `{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{` + CODE_PROPERTY + `,"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},` + MESSAGE_PROPERTY + `},"type":"object"}`
+REPLY_OUTPUT :: `{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{` + CODE_PROPERTY + `,"fields":{"description":"The text after ok on the first line of the daemon's reply, without the one space that separates it from ok.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},` + MESSAGE_PROPERTY + `},"type":"object"}`
 
 @(private = "file")
 RECORDS_OUTPUT :: `{"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"}`
@@ -414,7 +421,11 @@ expect_property :: proc(t: ^testing.T, tool: string, properties: json.Object, a:
 		entry, _ := items["properties"].(json.Object)
 		testing.expect_value(t, len(entry), 2)
 		id, _ := entry["id"].(json.Object)
-		testing.expect_value(t, text_of(id["pattern"]), mcp.TOKEN_PATTERN)
+		// An id the daemon would read as the guard is not one, and the pattern,
+		// which clients check ids against, has to say so.
+		id_pattern := mcp.TOKEN_PATTERN
+		if a.reserved != "" { id_pattern = strings.concatenate({"^(?!", a.reserved, ")", mcp.TOKEN_PATTERN[1:]}, context.temp_allocator) }
+		testing.expect_value(t, text_of(id["pattern"]), id_pattern)
 		value, _ := entry["value"].(json.Object)
 		testing.expect_value(t, text_of(value["type"]), "integer")
 		lowest, highest := number_of(value["minimum"]), number_of(value["maximum"])

@@ -261,7 +261,128 @@ test_an_argument_that_is_not_declared_is_refused_by_name_whatever_else_is_wrong 
 	testing.expect(t, !is_error, text)
 	text, is_error = call_tool(&s, "apply_parameters", `{"expected_revision":3,"parameters":[{"id":"a","value":1,"note":"x"}],"comment":"x"}`, standin.path)
 	testing.expect(t, !is_error, text)
+	// An empty name is one more name they do not know.
+	text, is_error = call_tool(&s, "inspect_synth", `{"":1}`, standin.path)
+	testing.expect(t, !is_error, text)
+	text, is_error = call_tool(&s, "apply_parameters", `{"expected_revision":3,"parameters":[{"id":"a","value":1,"":0}],"":1}`, standin.path)
+	testing.expect(t, !is_error, text)
 	standin_stop(&standin)
+}
+
+// json.parse keeps no member whose name is "", so a call that spelt one would
+// read as though it had not: the arguments of `{"":1}` would be taken for none,
+// and a pair with `"":0` for a valid one. The schemas close the arguments and
+// the pairs, so an empty name is refused like any other the tool does not know.
+@(test)
+test_an_argument_named_with_the_empty_string_is_refused_like_any_undeclared_one :: proc(t: ^testing.T) {
+	expect_refused(
+		t,
+		"daemon_status",
+		{`{"":1}`, `{"":null}`, `{"":true}`, `{"":"x"}`, `{"":{}}`, `{"":[]}`, `{"":{"":1}}`, `{ "" : 1 }`, `{"":1,"":2}`, `{"zeta":1,"":2}`, `{"":2,"alpha":1}`},
+		"unknown argument: ",
+	)
+	// Before anything else that is wrong with the call, as for any other name.
+	expect_refused(t, "parameter_get", {`{"id":"filter.cutoff","":1}`, `{"":"x"}`, `{"id":5,"":1}`}, "unknown argument: ")
+	expect_refused(t, "volume", {`{"milli":5,"":0}`, `{"milli":"x","":0}`, `{"":0}`}, "unknown argument: ")
+	expect_refused(t, "parameter_set_many", {`{"expected_revision":3,"":0,"parameters":[{"id":"a","value":1}]}`, `{"parameters":[{"id":"a","value":1}],"":0}`}, "unknown argument: ")
+	expect_refused(t, "patch_load_file", {`{"path":"/tmp/a.sy1","":0}`}, "unknown argument: ")
+	// The empty name is the first by name, so it is the one reported.
+	expect_refused(t, "midi_send", {`{"status":144,"data1":60,"data2":100,"":1,"channel":1}`}, "unknown argument: ")
+}
+
+@(test)
+test_a_pair_key_named_with_the_empty_string_is_refused_like_any_unknown_key :: proc(t: ^testing.T) {
+	for tool in ([]string{"parameter_set_many", "patch_apply"}) {
+		expect_refused(
+			t,
+			tool,
+			{
+				`{"parameters":[{"id":"a","value":1,"":0}]}`,
+				`{"parameters":[{"":0,"id":"a","value":1}]}`,
+				`{"parameters":[{"id":"a","value":1,"":{"":0}}]}`,
+				`{"parameters":[{"":1}]}`,
+				`{"parameters":[{"id":"a","value":1,"":0},{"id":"b","value":2}]}`,
+			},
+			"parameters[0] has an unknown key: ",
+		)
+		expect_refused(t, tool, {`{"parameters":[{"id":"a","value":1},{"id":"b","value":2,"":3}]}`}, "parameters[1] has an unknown key: ")
+		// The name of the argument is read as the parser reads it.
+		expect_refused(t, tool, {`{"par\u0061meters":[{"id":"a","value":1,"":0}]}`}, "parameters[0] has an unknown key: ")
+		// An entry is judged in order, so an earlier one that is wrong is the one named.
+		expect_refused(t, tool, {`{"parameters":[{"id":"a b","value":1},{"id":"b","value":2,"":3}]}`}, "parameters[0].id must not contain whitespace or control characters (U+0020)")
+	}
+	expect_refused(t, "parameter_set_many", {`{"expected_revision":3,"parameters":[{"id":"a","value":1,"":0}]}`}, "parameters[0] has an unknown key: ")
+	// The argument comes before the pair.
+	expect_refused(t, "patch_apply", {`{"":1,"parameters":[{"id":"a","value":1,"":0}]}`}, "unknown argument: ")
+}
+
+// What reaches the parser as the name of a member on the way to the arguments
+// is read as the parser reads it, spelt out or escaped.
+@(test)
+test_the_empty_name_is_found_under_the_arguments_however_the_path_to_them_is_spelt :: proc(t: ^testing.T) {
+	lines := []string {
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","arguments":{"":1}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","\u0061rguments":{"":1}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","p\u0061rams":{"name":"daemon_status","arguments":{"":1}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"":1},"name":"daemon_status"}}`,
+		`{"method":"tools/call","params":{"name":"daemon_status","arguments":{"":1}},"id":1,"jsonrpc":"2.0"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","arguments":{"":1},"_meta":{"":1}}}`,
+	}
+	standin: Standin
+	standin_start(&standin, OK_ALL[:])
+	s := ready()
+	for line in lines {
+		reply := send(&s, line, standin.path)
+		result, _ := parse_object(reply)["result"].(json.Object)
+		testing.expectf(t, flag_of(result["isError"]), "%s -> %s", line, reply)
+		content, _ := result["content"].(json.Array)
+		first: json.Object
+		if len(content) > 0 { first, _ = content[0].(json.Object) }
+		body := parse_object(text_of(first["text"]))
+		testing.expectf(t, text_of(body["code"]) == "invalid_arguments" && text_of(body["message"]) == "unknown argument: ", "%s -> %s", line, reply)
+	}
+	standin_stop(&standin)
+	testing.expectf(t, standin_connections(&standin) == 0, "a refused call reached the daemon")
+}
+
+// The refusal is for the arguments of a call, not for every object that has an
+// empty name: nothing else in a request is the tool's to judge.
+@(test)
+test_an_empty_name_anywhere_else_in_a_request_is_not_refused :: proc(t: ^testing.T) {
+	standin: Standin
+	standin_start(&standin, OK_ALL[:])
+	s := ready()
+	lines := []string {
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","arguments":{},"_meta":{"":1}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","arguments":{},"":1}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","":1,"params":{"name":"daemon_status","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","arguments":{},"_meta":{"arguments":{"":1}}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","arguments":{"":1},"params":{"name":"daemon_status","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"daemon_status","arguments":{},"params":{"arguments":{"":1}}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"parameter_get","arguments":{"id":"a"},"_meta":{"":[{"":1}]}}}`,
+	}
+	for line in lines {
+		reply := send(&s, line, standin.path)
+		result, _ := parse_object(reply)["result"].(json.Object)
+		testing.expectf(t, result != nil && !flag_of(result["isError"]), "%s -> %s", line, reply)
+	}
+	standin_stop(&standin)
+	testing.expect_value(t, standin_connections(&standin), len(lines))
+
+	// Nor in the other methods, with a daemon or without one.
+	for line in ([]string {
+		`{"jsonrpc":"2.0","id":1,"method":"ping","":1,"params":{"":1}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"quesynth://nothing","arguments":{"":1},"":1}}`,
+	}) {
+		reply := send(&s, line)
+		testing.expectf(t, !strings.contains(reply, "-32700") && !strings.contains(reply, "invalid_arguments"), "%s -> %s", line, reply)
+	}
+	fresh: mcp.Session
+	reply := send(
+		&fresh,
+		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"":{}},"clientInfo":{"name":"t","version":"1","":2},"":3}}`,
+	)
+	testing.expectf(t, !strings.contains(reply, `"error"`), "initialize with empty member names -> %s", reply)
 }
 
 @(test)

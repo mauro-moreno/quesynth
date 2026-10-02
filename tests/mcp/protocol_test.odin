@@ -202,6 +202,27 @@ test_a_line_that_is_not_one_json_value_is_a_parse_error_with_a_null_id :: proc(t
 	}
 }
 
+// The library parser refuses an object that names a member twice, and the reply
+// cannot carry the request's id. Its one blind spot is the name "", which it
+// never stores, so that name may repeat; the manual says both.
+@(test)
+test_a_member_name_twice_in_one_object_is_invalid_json_and_only_the_empty_name_may_repeat :: proc(t: ^testing.T) {
+	s := ready()
+	refused := []string {
+		`{"jsonrpc":"2.0","id":1,"method":"ping","id":2}`,
+		`{"jsonrpc":"2.0","id":1,"method":"ping","\u0069d":2}`,
+		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{"a":1,"a":2}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"parameter_get","arguments":{"id":"a","id":"b"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"parameter_set_many","arguments":{"parameters":[{"id":"a","value":1,"id":"b"}]}}}`,
+	}
+	for line in refused {
+		e := expect_error(t, send(&s, line), -32700)
+		_, id_is_null := e.id.(json.Null)
+		testing.expectf(t, id_is_null, "%q: the reply id must be null", line)
+	}
+	testing.expect_value(t, send(&s, `{"jsonrpc":"2.0","id":1,"method":"ping","":1,"":2}`), `{"id":1,"jsonrpc":"2.0","result":{}}`)
+}
+
 @(test)
 test_a_surrogate_pair_escape_is_one_valid_character :: proc(t: ^testing.T) {
 	s: mcp.Session

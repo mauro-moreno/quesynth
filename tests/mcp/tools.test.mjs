@@ -222,3 +222,64 @@ test("invalid arguments never reach the daemon", {skip}, async t => {
   assert.equal(errorOf(await client.request("tools/call", { name: "apply_parameters" })).code, "invalid_arguments");
   assert.deepEqual(daemon.commands, []);
 });
+
+// JSON.parse and the library parser of the server differ on one thing: a member
+// named "" is kept by one and dropped by the other, and a call that spelt one
+// must not be read as though it had not. The schemas close the arguments and
+// the pairs, so it is refused as any other name that is not declared.
+test("an argument or a pair key named with the empty string is refused as unknown and nothing reaches the daemon", {skip}, async t => {
+  const { daemon, client, model } = await ready(t);
+  const refusal = async (name, args) => errorOf(await client.call(name, args));
+  const ok = { id: "filter.cutoff", value: 90 };
+  const unknownArgument = { code: "invalid_arguments", message: "unknown argument: " };
+
+  assert.deepEqual(await refusal("daemon_status", { "": 1 }), unknownArgument);
+  assert.deepEqual(await refusal("parameter_get", { id: "filter.cutoff", "": 1 }), unknownArgument);
+  assert.deepEqual(await refusal("parameter_get", { "": "x" }), unknownArgument);
+  assert.deepEqual(await refusal("volume", { milli: 5, "": 0 }), unknownArgument);
+  for (const tool of ["parameter_set_many", "patch_apply"]) {
+    assert.deepEqual(await refusal(tool, { parameters: [{ ...ok, "": 0 }] }),
+      { code: "invalid_arguments", message: "parameters[0] has an unknown key: " }, tool);
+    assert.deepEqual(await refusal(tool, { parameters: [ok, { ...ok, "": 0 }] }),
+      { code: "invalid_arguments", message: "parameters[1] has an unknown key: " }, tool);
+    assert.deepEqual(await refusal(tool, { parameters: [ok], "": 0 }), unknownArgument, tool);
+  }
+  assert.deepEqual(await refusal("parameter_set_many", { expected_revision: 0, parameters: [{ ...ok, "": 0 }] }),
+    { code: "invalid_arguments", message: "parameters[0] has an unknown key: " });
+
+  // The same names written out, with a duplicate that JSON.stringify cannot make.
+  const line = text => `{"jsonrpc":"2.0","id":901,"method":"tools/call","params":${text}}\n`;
+  for (const [params, message] of [
+    ['{"name":"daemon_status","arguments":{"":1,"":2}}', "unknown argument: "],
+    ['{"name":"daemon_status","\\u0061rguments":{"":1}}', "unknown argument: "],
+    ['{"arguments":{"":1},"name":"daemon_status"}', "unknown argument: "],
+    ['{"name":"parameter_set_many","arguments":{"par\\u0061meters":[{"id":"filter.cutoff","value":1,"":0}]}}', "parameters[0] has an unknown key: "],
+  ]) {
+    client.write(line(params));
+    const [reply] = await client.take();
+    assert.deepEqual(errorOf(reply), { code: "invalid_arguments", message }, params);
+  }
+
+  // Nothing was applied, and nothing was sent.
+  assert.equal(model.revision, 0);
+  assert.equal(model.values["filter.cutoff"], 81);
+  assert.deepEqual(daemon.commands, []);
+});
+
+test("an empty member name elsewhere in a request is accepted, and the older tools ignore it as they ignore any name", {skip}, async t => {
+  const model = synthModel();
+  const { daemon, client } = await ready(t, model, command => (command === "daemon.status" ? "ok" : model.answer(command)));
+  assert.deepEqual(resultOf(await client.request("tools/call", { name: "daemon_status", arguments: {}, _meta: { "": 1 } })), { fields: "", lines: [] });
+  assert.deepEqual(resultOf(await client.request("tools/call", { name: "daemon_status", arguments: {}, "": 1 })), { fields: "", lines: [] });
+  assert.deepEqual(resultOf(await client.request("tools/call", { name: "daemon_status", arguments: {}, _meta: { arguments: { "": 1 } } })), { fields: "", lines: [] });
+  assert.equal(resultOf(await client.call("inspect_synth", { "": 1 })).revision, 0);
+  assert.deepEqual(resultOf(await client.call("apply_parameters", { expected_revision: 0, "": 1, parameters: [{ id: "filter.cutoff", value: 4, "": 0 }] })), { count: 1, revision: 1 });
+  assert.equal(daemon.commands.filter(command => command === "daemon.status").length, 3);
+
+  const fresh = startClient(t);
+  const initialized = await fresh.request("initialize", {
+    protocolVersion: "2025-11-25", capabilities: { "": {} }, clientInfo: { name: "quesynth-test", version: "1", "": 2 }, "": 3,
+  });
+  assert.equal(initialized.error, undefined, JSON.stringify(initialized));
+  assert.equal(initialized.result.protocolVersion, "2025-11-25");
+});

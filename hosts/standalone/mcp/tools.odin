@@ -201,7 +201,7 @@ COUNT :: Arg {
 }
 
 @(private)
-REPLY_SCHEMA :: `{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string","description":"The text after ok on the first line of the daemon's reply."},"lines":{"type":"array","items":{"type":"string"},"description":"The record lines that follow it, unchanged and in the daemon's order."}}}`
+REPLY_SCHEMA :: `{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string","description":"The text after ok on the first line of the daemon's reply, without the one space that separates it from ok."},"lines":{"type":"array","items":{"type":"string"},"description":"The record lines that follow it, unchanged and in the daemon's order."}}}`
 
 @(private)
 RECORDS :: `{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}}`
@@ -517,6 +517,9 @@ TOOLS := [?]Tool {
 				description = "Second data byte: the velocity or value. Send 0 for a program change.",
 			},
 		},
+		// A Program Change loads a slot, which replaces the sound and any edit
+		// of it that was not saved.
+		destructive = true,
 	},
 	{
 		name = "volume",
@@ -737,6 +740,9 @@ arg_schema :: proc(a: Arg) -> json.Object {
 	case .Pairs:
 		id := json.Object{"type" = "string", "minLength" = json.Integer(1), "pattern" = TOKEN_PATTERN}
 		if a.reserved != "" {
+			// A client checks an id against the pattern alone, so the refusal
+			// has to be in it and not only in the description.
+			id["pattern"] = fmt.tprintf("^(?!%s)%s", a.reserved, TOKEN_PATTERN[1:])
 			id["description"] = fmt.tprintf("Parameter id exactly as parameter_list gives it. An id that begins with %s is refused.", a.reserved)
 		}
 		value := json.Object{"type" = "integer", "minimum" = json.Integer(-MAX_SAFE_INTEGER), "maximum" = json.Integer(MAX_SAFE_INTEGER)}

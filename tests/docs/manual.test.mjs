@@ -488,14 +488,16 @@ test("each tool sends the command the manual names, and nothing else", { skip },
 test("the manual's argument column, patterns and schemas are the ones tools/list returns", { skip }, () => {
   const tools = binaryTools();
   const shown = {};
-  for (const m of toolsPart.matchAll(/^(token|text|optional text) {2,}(\^\S+\$)$/gm)) shown[m[1]] = m[2];
-  assert.deepEqual(Object.keys(shown).sort(), ["optional text", "text", "token"]);
+  for (const m of toolsPart.matchAll(/^(token|text|optional text|set_many id) {2,}(\^\S+\$)$/gm)) shown[m[1]] = m[2];
+  assert.deepEqual(Object.keys(shown).sort(), ["optional text", "set_many id", "text", "token"]);
+  // The ids of parameter_set_many are tokens that do not begin with what the daemon reads as its guard.
+  assert.equal(shown["set_many id"], `^(?!expected_revision=)${shown.token.slice(1)}`);
   const used = new Set();
   const describe = schema => {
     if (schema.type === "integer") return `integer ${schema.minimum === -schema.maximum ? `±${schema.maximum}` : `${schema.minimum}..${schema.maximum}`}`;
     if (schema.type === "string") {
       used.add(schema.pattern);
-      if (schema.pattern === shown.token) { assert.equal(schema.minLength, 1); return "token"; }
+      if (schema.pattern === shown.token || schema.pattern === shown["set_many id"]) { assert.equal(schema.minLength, 1); return "token"; }
       if (schema.pattern === shown.text) { assert.equal(schema.minLength, 1); return "text"; }
       assert.equal(schema.pattern, shown["optional text"]);
       assert.equal(schema.minLength, undefined);
@@ -523,6 +525,8 @@ test("the manual's argument column, patterns and schemas are the ones tools/list
     assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} is a closed object`);
     for (const name of tool.inputSchema.required ?? []) assert.ok(name in tool.inputSchema.properties, `${tool.name}: ${name}`);
     assert.deepEqual(fromManual(row.arguments), fromSchema(tool.inputSchema), `the manual's arguments for ${tool.name}`);
+    const entry = tool.inputSchema.properties.parameters?.items;
+    if (entry) assert.equal(entry.properties.id.pattern === shown["set_many id"], tool.name === "parameter_set_many", `${tool.name} pair id pattern`);
   }
   // The patterns the manual prints are exactly those in use, and no others are.
   assert.deepEqual([...used].sort(), Object.values(shown).sort());
@@ -564,6 +568,19 @@ test("the refusals the manual lists are what the binary says, and none of them r
     assert.deepEqual(JSON.parse(reply.result.content[0].text), { code: "invalid_arguments", message }, `${name} ${args}`);
   }
   assert.deepEqual(daemon.commands, [], "a refused call reached the daemon");
+});
+
+test("the manual counts a program change as destructive, and the binary marks midi_send so and not idempotent", { skip }, () => {
+  const annotations = part(manual, "#### Annotations").replace(/\s+/g, " ");
+  assert.ok(annotations.includes("It is `true` for `midi_send`, because a program change replaces the sounding patch."));
+  assert.ok(!annotations.includes("an injected MIDI message"), "the manual still lists a MIDI message as not destructive");
+  const midi = binaryTools().find(tool => tool.name === "midi_send");
+  assert.equal(midi.annotations.destructiveHint, true);
+  assert.equal(midi.annotations.idempotentHint, false);
+  // What the manual lists as not destructive is still so.
+  for (const name of ["volume", "midi_select", "archive_bank", "archive_adopt"]) {
+    assert.equal(binaryTools().find(tool => tool.name === name).annotations.destructiveHint, false, name);
+  }
 });
 
 test("the manual's rules for omitted arguments and for the zero-width characters hold for the binary", { skip }, async t => {
@@ -875,11 +892,13 @@ test("the protocol facts the manual states hold for the built binary", { skip },
 test("lines that are not requests are answered with the JSON-RPC errors the manual lists, and a last line without a newline is answered", { skip }, async t => {
   const raw = startServer(t, await runtimeDir(t));
   const lines = ["{broken", "[]", "null", '{"jsonrpc":"1.0","method":"ping","id":1}', '{"jsonrpc":"2.0","method":7,"id":1}',
-    '{"jsonrpc":"2.0","method":"ping","id":null}', '{"jsonrpc":"2.0","method":"ping","id":{}}'];
+    '{"jsonrpc":"2.0","method":"ping","id":null}', '{"jsonrpc":"2.0","method":"ping","id":{}}',
+    '{"jsonrpc":"2.0","id":3,"method":"ping","id":4}', '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"parameter_get","arguments":{"id":"a","\\u0069d":"b"}}}'];
   for (const line of lines) raw.child.stdin.write(line + "\n");
   raw.child.stdin.write('{"jsonrpc":"2.0","id":9,"method":"ping"}');
   const done = await raw.finish();
-  assert.deepEqual(done.replies.map(reply => reply.error?.code ?? reply.result), [-32700, -32600, -32600, -32600, -32600, -32600, -32600, {}]);
+  assert.deepEqual(done.replies.map(reply => reply.error?.code ?? reply.result),
+    [-32700, -32600, -32600, -32600, -32600, -32600, -32600, -32700, -32700, {}]);
   assert.deepEqual(done.replies.slice(0, -1).map(reply => reply.id), lines.map(() => null));
   assert.equal(done.replies.at(-1).id, 9);
   assert.deepEqual([done.code, done.stderr], [0, ""]);

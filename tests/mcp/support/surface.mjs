@@ -13,7 +13,7 @@ const HINTS = {
   patch_load_file: "d", patch_save: "d i", patch_current: "r i", patch_clear: "d i", bank_list: "r i",
   bank_write: "d i", bank_load_file: "d i", bank_keep: "d i", archive_open: "d i", archive_adopt: "i",
   archive_current: "r i", archive_banks: "r i", archive_bank: "i", archive_patches: "r i", archive_load: "d",
-  archive_close: "d i", midi_list: "r i", midi_select: "i", midi_current: "r i", midi_send: "", volume: "i",
+  archive_close: "d i", midi_list: "r i", midi_select: "i", midi_current: "r i", midi_send: "d", volume: "i",
 };
 
 export const TOOL_NAMES = Object.keys(HINTS);

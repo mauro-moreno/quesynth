@@ -341,6 +341,20 @@ control_patch_apply :: proc(cc: ^Control_Context, req: control.Request, out: ^st
 	control_pairs_transaction(cc, req, out, .Commit_Patch, "apply needs id value pairs")
 }
 
+// The revision a guard names. strconv.parse_int takes a sign, a base prefix and
+// underscores and wraps past the largest int, so a token it accepted could name
+// a revision other than the one written, and the guard would pass for it.
+@(private = "file")
+parse_revision :: proc(text: string) -> (revision: int, ok: bool) {
+	if text == "" { return 0, false }
+	for c in transmute([]u8)text {
+		digit := int(c) - '0'
+		if digit < 0 || digit > 9 || revision > (max(int) - digit) / 10 { return 0, false }
+		revision = revision * 10 + digit
+	}
+	return revision, true
+}
+
 // `id value` pairs, validated as a whole and enqueued as one transaction ended
 // by `commit`. Duplicates are staged as given, in order, so the later one wins.
 @(private = "file")
@@ -357,8 +371,8 @@ control_pairs_transaction :: proc(
 	expected := -1
 	if commit == .Commit && len(tokens) > 0 && strings.has_prefix(tokens[0], "expected_revision=") {
 		ok: bool
-		expected, ok = strconv.parse_int(tokens[0][len("expected_revision="):])
-		if !ok || expected < 0 {
+		expected, ok = parse_revision(tokens[0][len("expected_revision="):])
+		if !ok {
 			control_write_err(out, req, .Invalid_Payload, "expected_revision needs a nonnegative integer")
 			return
 		}
