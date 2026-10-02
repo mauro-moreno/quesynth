@@ -610,8 +610,17 @@ exactly `{"code": "...", "message": "..."}`:
   malformed or oversized frame, or did not answer within the timeout (3000 ms by
   default). A timeout closes the connection, and the next call opens a new one.
   A mutating call is never replayed after a failure.
-- Any other `code` is the daemon's own error token, for example `out_of_range`,
-  `unknown_parameter`, `invalid_payload` or `daemon_not_ready`, with its message.
+- `daemon_error` is raised by the MCP server, not the daemon. A valid call can
+  reach it when the whole request line (`1 <id> <command>` and its operands,
+  counted in UTF-8 bytes) exceeds the 64 KiB frame payload limit, often because
+  of a very long path. Nothing was sent, the connection stays open, and a
+  shorter call works. The daemon did not answer, and this is not one of its
+  error tokens. The server also uses this code for other local client failures
+  that have no code of their own.
+- The remaining codes are the daemon's own error tokens, listed under
+  [Control protocol](#control-protocol), for example `out_of_range`,
+  `unknown_parameter`, `invalid_payload` or `daemon_not_ready`, with its
+  message.
 
 A request the server cannot handle at all, such as an unknown tool name, an
 unknown method or a malformed message, is a JSON-RPC error instead: `-32700`
