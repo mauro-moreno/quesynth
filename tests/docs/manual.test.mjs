@@ -319,7 +319,7 @@ test("the Node MCP server is gone and no document still describes its files or f
 
 test("no document still says the server has two tools, cannot write, or has no annotations", () => {
   const stale = [/exactly two tools/i, /offers two tools/i, /\btwo tools\b/i, /cannot load a patch/i, /not reachable from MCP/i,
-    /no `?outputSchema/i, /no tool annotations/i, /read-only\s+resources\s+and\s+nothing\s+else/i];
+    /no `?outputSchema/i, /no tool annotations/i, /not described by an `?outputSchema/i, /skip failed calls/i, /read-only\s+resources\s+and\s+nothing\s+else/i];
   for (const file of ["README.md", "CONTRIBUTING.md", "docs/quesynth-manual.md", "docs/quesynth.1", "docs/architecture.md",
     "hosts/standalone/browser/README.md", "hosts/wasm/README.md"]) {
     const text = read(file).replace(/\s+/g, " ");
@@ -533,6 +533,15 @@ test("the manual's argument column, patterns and schemas are the ones tools/list
   for (const name of originalTools) assert.ok(isShown(tools.find(tool => tool.name === name).inputSchema), `the manual does not show the input schema of ${name}`);
   for (const tool of tools) assert.ok(isShown(tool.outputSchema), `the manual does not show the output schema of ${tool.name}`);
   assert.equal(new Set(tools.filter(tool => !originalTools.includes(tool.name)).map(tool => JSON.stringify(tool.outputSchema))).size, 1);
+  // A failed call's {code, message} is described by the same schema as a success,
+  // so a client that checks structuredContent without reading isError accepts it.
+  for (const tool of tools) {
+    assert.equal(tool.outputSchema.additionalProperties, false, tool.name);
+    assert.deepEqual(tool.outputSchema.oneOf.at(-1), { required: ["code", "message"] }, `${tool.name} describes its failure`);
+    assert.equal(tool.outputSchema.properties.code.type, "string", tool.name);
+    assert.equal(tool.outputSchema.properties.message.type, "string", tool.name);
+  }
+  assert.ok(/oneOf/.test(toolsPart) && /`code` and `message`/.test(toolsPart), "the manual does not say the schema covers a failure");
   assert.ok(blocks.some(block => isDeepStrictEqual(block, tools.find(tool => tool.name === "volume"))), "the manual does not show the entry for volume");
   // Ranges the prose states.
   const property = (name, key) => tools.find(tool => tool.name === name).inputSchema.properties[key];

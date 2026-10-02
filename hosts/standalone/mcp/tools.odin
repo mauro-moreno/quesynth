@@ -84,8 +84,9 @@ Tool :: struct {
 	read_only:     bool,
 	destructive:   bool,
 	idempotent:    bool,
-	// Set only for the two older tools, whose schemas are written out exactly
-	// as they have always been sent.
+	// Set only for the two older tools. The input schema is written out exactly
+	// as it has always been sent. The output schema is the success shape alone;
+	// output_schema() adds the failure shape to it, for every tool alike.
 	input_schema:  string,
 	output_schema: string,
 }
@@ -753,14 +754,42 @@ arg_schema :: proc(a: Arg) -> json.Object {
 	return schema
 }
 
+// What structuredContent can be, as one closed object. A failed call carries
+// {code, message} in the same place a success carries its result, and a client
+// that checks structuredContent against outputSchema does not look at isError
+// first. So the schema lists the properties of both shapes and requires one set
+// or the other, and every tool gets it from here. `code` is not an enum: the
+// daemon's own tokens are the daemon's to add to.
+@(private)
+output_schema :: proc(tool: ^Tool) -> json.Object {
+	success := parse(tool.output_schema != "" ? tool.output_schema : REPLY_SCHEMA).(json.Object)
+	properties := success["properties"].(json.Object)
+	properties["code"] = json.Object {
+		"type" = "string",
+		"description" = "On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.",
+	}
+	properties["message"] = json.Object {
+		"type" = "string",
+		"description" = "On a failed call, the daemon's message, or the server's reason.",
+	}
+	return json.Object {
+		"type" = "object",
+		"properties" = properties,
+		"additionalProperties" = false,
+		"oneOf" = json.Array {
+			json.Object{"required" = success["required"]},
+			json.Object{"required" = json.Array{"code", "message"}},
+		},
+	}
+}
+
 @(private)
 tool_json :: proc(tool: ^Tool) -> json.Object {
-	output := tool.output_schema != "" ? parse(tool.output_schema) : parse(REPLY_SCHEMA)
 	return json.Object {
 		"name" = tool.name,
 		"description" = tool.description,
 		"inputSchema" = input_schema(tool),
-		"outputSchema" = output,
+		"outputSchema" = output_schema(tool),
 		"annotations" = json.Object {
 			"readOnlyHint" = tool.read_only,
 			"destructiveHint" = tool.destructive,

@@ -928,7 +928,7 @@ accepts the empty string. A required `text` has `"minLength":1` as well, and a
 returns for `volume`:
 
 ```json
-{"annotations":{"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,"readOnlyHint":false},"description":"Set the daemon's master output level for every client: 0 is silent, 1000 is full level, the level at each start. It is the listener's level, not a patch parameter, so no revision changes. daemon_info reports the current level.","inputSchema":{"additionalProperties":false,"properties":{"milli":{"description":"Level in thousandths of full scale.","maximum":1000,"minimum":0,"type":"integer"}},"required":["milli"],"type":"object"},"name":"volume","outputSchema":{"additionalProperties":false,"properties":{"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"}}
+{"annotations":{"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,"readOnlyHint":false},"description":"Set the daemon's master output level for every client: 0 is silent, 1000 is full level, the level at each start. It is the listener's level, not a patch parameter, so no revision changes. daemon_info reports the current level.","inputSchema":{"additionalProperties":false,"properties":{"milli":{"description":"Level in thousandths of full scale.","maximum":1000,"minimum":0,"type":"integer"}},"required":["milli"],"type":"object"},"name":"volume","outputSchema":{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}},"type":"object"}}
 ```
 
 The input schemas of the two original tools are the ones the server has always
@@ -942,25 +942,29 @@ had. They have no `additionalProperties` and no ranges beyond the minimum shown:
 {"type":"object","required":["expected_revision","parameters"],"properties":{"expected_revision":{"type":"integer","minimum":0},"parameters":{"type":"array","items":{"type":"object","required":["id","value"],"properties":{"id":{"type":"string"},"value":{"type":"integer"}}}}}}
 ```
 
-The 31 tools share one `outputSchema`. It describes a successful call:
+The 31 tools share one `outputSchema`. The structured content of a call is the
+daemon's reply on success and `{"code": ..., "message": ...}` on failure, and a
+client library may check it against the schema without looking at `isError`
+first. So the schema is one closed object that lists the properties of both
+shapes and says, with `oneOf`, that exactly one set is present: `fields` and
+`lines`, or `code` and `message`. The `code` is the error token and is not an
+enumeration, since the daemon owns its tokens. A success with an extra key, a
+failure without its `message` and a payload with both shapes all fail the check.
 
 ```json
-{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string","description":"The text after ok on the first line of the daemon's reply."},"lines":{"type":"array","items":{"type":"string"},"description":"The record lines that follow it, unchanged and in the daemon's order."}}}
+{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}},"type":"object"}
 ```
 
-`inspect_synth` and `apply_parameters` describe their own results:
+`inspect_synth` and `apply_parameters` describe their own results in the same
+way, each with the failure shape beside its success shape:
 
 ```json
-{"type":"object","required":["revision","state","patch","parameters"],"additionalProperties":false,"properties":{"revision":{"type":"integer"},"state":{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}},"patch":{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}},"parameters":{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}}}}
+{"additionalProperties":false,"oneOf":[{"required":["revision","state","patch","parameters"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"},"parameters":{"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"},"patch":{"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"},"revision":{"type":"integer"},"state":{"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"}},"type":"object"}
 ```
 
 ```json
-{"type":"object","required":["count","revision"],"additionalProperties":false,"properties":{"count":{"type":"integer"},"revision":{"type":"integer"}}}
+{"additionalProperties":false,"oneOf":[{"required":["count","revision"]},{"required":["code","message"]}],"properties":{"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"},"count":{"type":"integer"},"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"},"revision":{"type":"integer"}},"type":"object"}
 ```
-
-A failed call is not described by an `outputSchema`. It has `isError: true` and
-carries `{"code": ..., "message": ...}`, as the next section says. A client that
-checks `structuredContent` against the `outputSchema` has to skip failed calls.
 
 #### Results
 
@@ -998,7 +1002,9 @@ The two original tools return the results described under
 A failed call is a normal result with `isError: true`. It carries the object
 `{"code": ..., "message": ...}` in the same places as a success does. A refusal
 by the daemon comes through with its error token as `code` and its message
-unchanged, and `message` is empty if the daemon gave none.
+unchanged, and `message` is empty if the daemon gave none. Each tool's
+`outputSchema` accepts this object as well as the success result (see
+[Schemas](#schemas)), so a failed call passes the same check as a successful one.
 
 #### inspect_synth
 

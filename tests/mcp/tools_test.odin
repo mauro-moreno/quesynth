@@ -178,8 +178,15 @@ SPECS := [?]Tool_Spec {
 	},
 }
 
-// The one reply schema of every tool but the two older ones.
-REPLY_OUTPUT :: `{"additionalProperties":false,"properties":{"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"}`
+// What a failed call carries in structuredContent, as every outputSchema lists
+// it beside the success properties.
+@(private = "file")
+CODE_PROPERTY :: `"code":{"description":"On a failed call, the error token: the daemon's own, or invalid_arguments, daemon_unavailable, daemon_timeout or daemon_error.","type":"string"}`
+@(private = "file")
+MESSAGE_PROPERTY :: `"message":{"description":"On a failed call, the daemon's message, or the server's reason.","type":"string"}`
+// The one output schema of every tool but the two older ones: a reply, or a
+// failure, as one closed object. Keys are sorted, as the server writes them.
+REPLY_OUTPUT :: `{"additionalProperties":false,"oneOf":[{"required":["fields","lines"]},{"required":["code","message"]}],"properties":{` + CODE_PROPERTY + `,"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"},` + MESSAGE_PROPERTY + `},"type":"object"}`
 
 @(private = "file")
 RECORDS_OUTPUT :: `{"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"}`
@@ -469,13 +476,13 @@ test_every_tool_declares_the_output_it_returns :: proc(t: ^testing.T) {
 		if !testing.expectf(t, has_output, "%q has no outputSchema", spec.name) { continue }
 		switch spec.name {
 		case "inspect_synth":
-			want := `{"additionalProperties":false,"properties":{"parameters":` + RECORDS_OUTPUT + `,"patch":` + RECORDS_OUTPUT + `,"revision":{"type":"integer"},"state":` + RECORDS_OUTPUT + `},"required":["revision","state","patch","parameters"],"type":"object"}`
+			want := `{"additionalProperties":false,"oneOf":[{"required":["revision","state","patch","parameters"]},{"required":["code","message"]}],"properties":{` + CODE_PROPERTY + `,` + MESSAGE_PROPERTY + `,"parameters":` + RECORDS_OUTPUT + `,"patch":` + RECORDS_OUTPUT + `,"revision":{"type":"integer"},"state":` + RECORDS_OUTPUT + `},"type":"object"}`
 			testing.expect_value(t, encoded(output), want)
 		case "apply_parameters":
 			testing.expect_value(
 				t,
 				encoded(output),
-				`{"additionalProperties":false,"properties":{"count":{"type":"integer"},"revision":{"type":"integer"}},"required":["count","revision"],"type":"object"}`,
+				`{"additionalProperties":false,"oneOf":[{"required":["count","revision"]},{"required":["code","message"]}],"properties":{` + CODE_PROPERTY + `,"count":{"type":"integer"},` + MESSAGE_PROPERTY + `,"revision":{"type":"integer"}},"type":"object"}`,
 			)
 		case:
 			testing.expect_value(t, encoded(output), REPLY_OUTPUT)

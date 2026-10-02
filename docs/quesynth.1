@@ -131,7 +131,7 @@ The tools are an allowlist.
 None takes a command name, a protocol line, a shell string or a URL, and a
 .B tools/call
 with any other name returns the JSON-RPC error \-32602.
-Every tool checks its arguments before it contacts the daemon, has an output schema, and carries the annotations
+Every tool checks its arguments before it contacts the daemon, has an output schema that accepts both its result and its failure, and carries the annotations
 .BR readOnlyHint ,
 .BR destructiveHint ,
 .B idempotentHint
