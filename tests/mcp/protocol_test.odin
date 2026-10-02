@@ -379,18 +379,19 @@ test_unknown_methods_and_the_unimplemented_templates_list_are_method_not_found :
 }
 
 @(test)
-test_tools_list_names_exactly_inspect_synth_and_apply_parameters :: proc(t: ^testing.T) {
+test_tools_list_leads_with_the_two_older_tools_and_ignores_a_cursor :: proc(t: ^testing.T) {
 	s := ready()
 	reply := send(&s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	result, _ := parse_object(reply)["result"].(json.Object)
 	tools, _ := result["tools"].(json.Array)
-	testing.expect_value(t, len(tools), 2)
+	// Every tool of the control protocol follows them: tools_test.odin.
+	testing.expect_value(t, len(tools), 33)
 	names: [2]string
 	for tool, i in tools {
 		object, _ := tool.(json.Object)
-		names[i], _ = object["name"].(string)
 		schema, _ := object["inputSchema"].(json.Object)
 		testing.expect_value(t, text_of(schema["type"]), "object")
+		if i < len(names) { names[i], _ = object["name"].(string) }
 	}
 	testing.expect_value(t, names[0], "inspect_synth")
 	testing.expect_value(t, names[1], "apply_parameters")
@@ -455,11 +456,10 @@ test_tools_call_envelope_errors_are_protocol_errors_and_bad_arguments_are_tool_e
 	e := expect_error(t, send(&s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`), -32602)
 	testing.expect_value(t, e.message, "tools/call needs a tool name")
 	expect_error(t, send(&s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":4}}`), -32602)
-	e = expect_error(t, send(&s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"midi_send"}}`), -32602)
-	testing.expect_value(t, e.message, "Unknown tool")
-	// No arbitrary tools: the old Node tool names are gone with the Node server.
-	for old in ([]string{"daemon_status", "parameter_set", "patch_load_file", "bank_load_file", "archive_open"}) {
-		e = expect_error(t, send(&s, fmt.tprintf(`{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"%s"}}}}`, old)), -32602)
+	// No gateway: a tool is called by its own name, never by the name of the
+	// QCP command behind it.
+	for command in ([]string{"midi", "daemon.status", "parameter.set", "patch.load_file", "bank.load_file", "archive.open"}) {
+		e = expect_error(t, send(&s, fmt.tprintf(`{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"%s"}}}}`, command)), -32602)
 		testing.expect_value(t, e.message, "Unknown tool")
 	}
 	for arguments in ([]string{`[]`, `null`, `5`, `"x"`, `true`}) {

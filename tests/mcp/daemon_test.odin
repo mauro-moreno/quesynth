@@ -2,6 +2,7 @@
 package mcp_tests
 
 import "base:intrinsics"
+import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
@@ -23,12 +24,22 @@ import "../../src/registry"
 // except the sound card.
 
 Daemon :: struct {
-	live:     ^standalone.Live,
-	state:    standalone.Daemon_State,
-	identity: standalone.Patch_Identity,
-	server:   standalone.Control_Server,
-	done:     b32,
-	audio:    ^thread.Thread,
+	live:       ^standalone.Live,
+	state:      standalone.Daemon_State,
+	identity:   standalone.Patch_Identity,
+	server:     standalone.Control_Server,
+	done:       b32,
+	audio:      ^thread.Thread,
+	// What a running daemon also hands its control server, present only when
+	// daemon_make(full = true) asked for it: the bank, the archive, the master
+	// volume, the runtime facts, a MIDI queue nothing else drains and a MIDI
+	// selection over two made-up inputs.
+	bank:       patch.Slots,
+	archive:    standalone.Archive,
+	metrics:    standalone.Daemon_Metrics,
+	midi_queue: standalone.Midi_Queue,
+	input:      standalone.Midi_Input,
+	selection:  standalone.Midi_Selection,
 }
 
 @(private = "file")
@@ -40,8 +51,7 @@ daemon_audio :: proc(data: rawptr) {
 	}
 }
 
-@(private = "file")
-daemon_make :: proc(draining := true) -> ^Daemon {
+daemon_make :: proc(draining := true, full := false) -> ^Daemon {
 	d := new(Daemon)
 	d.live = new(standalone.Live)
 	p: patch.Patch
@@ -59,17 +69,73 @@ daemon_make :: proc(draining := true) -> ^Daemon {
 		state    = &d.state,
 		identity = &d.identity,
 	}
+	if full { daemon_make_full(d) }
 	assert(standalone.control_server_start(&d.server))
 	if draining { daemon_start_audio(d) }
 	return d
 }
+
+// What run_daemon builds beyond the engine: the factory bank, no archive open,
+// full volume, the facts daemon.info reports, and every MIDI input open.
+@(private = "file")
+daemon_make_full :: proc(d: ^Daemon) {
+	patch.factory_prepare()
+	patch.slots_load_factory(&d.bank)
+	d.metrics = standalone.Daemon_Metrics {
+		sample_rate = 48000,
+		buffer_size = 512,
+		max_voices  = 16,
+		backend     = "Test Backend",
+		start_tick  = time.tick_now(),
+	}
+	d.live.metrics = &d.metrics
+	d.live.volume.milli = standalone.VOLUME_UNITY
+	d.live.volume_prev = standalone.VOLUME_UNITY
+	standalone.midi_queue_init(&d.midi_queue)
+	d.input = standalone.Midi_Input {
+		open         = fake_open,
+		list         = fake_list,
+		open_device  = fake_open_device,
+		close_inputs = fake_close,
+		close        = fake_close,
+	}
+	standalone.midi_selection_init(&d.selection, &d.input, &d.midi_queue)
+	d.server.ctx.bank = &d.bank
+	d.server.ctx.archive = &d.archive
+	d.server.ctx.metrics = &d.metrics
+	d.server.ctx.midi = &d.midi_queue
+	d.server.ctx.volume = &d.live.volume
+	d.server.ctx.midi_select = &d.selection
+}
+
+// Two inputs, one with a name that has two spaces in it. Nothing is opened:
+// the tests read the selection, not what a reader thread would push.
+@(private = "file")
+fake_open :: proc(m: ^standalone.Midi_Input, queue: ^standalone.Midi_Queue) -> bool {
+	return true
+}
+
+@(private = "file")
+fake_list :: proc(m: ^standalone.Midi_Input) -> []standalone.Midi_Device {
+	devices := make([]standalone.Midi_Device, 2)
+	devices[0] = {strings.clone("hw:1,0"), strings.clone("Test Keys")}
+	devices[1] = {strings.clone("hw:2,0"), strings.clone("Second  Pad")}
+	return devices
+}
+
+@(private = "file")
+fake_open_device :: proc(m: ^standalone.Midi_Input, queue: ^standalone.Midi_Queue, id: string) -> bool {
+	return id == "hw:1,0" || id == "hw:2,0"
+}
+
+@(private = "file")
+fake_close :: proc(m: ^standalone.Midi_Input) {}
 
 @(private = "file")
 daemon_start_audio :: proc(d: ^Daemon) {
 	d.audio = thread.create_and_start_with_data(d, daemon_audio)
 }
 
-@(private = "file")
 daemon_free :: proc(d: ^Daemon) {
 	standalone.control_server_stop(&d.server)
 	if d.audio != nil {
@@ -80,17 +146,21 @@ daemon_free :: proc(d: ^Daemon) {
 	lock := strings.clone_to_cstring(fmt.tprintf("%s.lock", d.server.path), context.temp_allocator)
 	posix.unlink(lock)
 	delete(d.server.path)
+	// The archive's memory was allocated on the control thread, which has the
+	// plain heap, not the tracking allocator this thread's tests run under.
+	{
+		context.allocator = runtime.heap_allocator()
+		standalone.archive_close(&d.archive)
+	}
 	engine.engine_destroy(&d.live.eng)
 	free(d.live)
 	free(d)
 }
 
-@(private = "file")
 snapshot_of :: proc(d: ^Daemon) -> standalone.Snapshot_Data {
 	return standalone.snapshot_read(&d.live.snapshot)
 }
 
-@(private = "file")
 stored :: proc(d: ^Daemon, id: string) -> int {
 	descriptor, found := registry.registry_describe(id)
 	assert(found)

@@ -140,11 +140,16 @@ standin_serve :: proc(s: ^Standin, client: posix.FD) {
 	}
 	defer delete(payload)
 
-	// "1 <id> <command...>"
+	// "1 <id> <command...>", kept as it was written after the version and id,
+	// so a space the daemon would trim is still there to be seen.
 	request, parsed := control.request_parse(payload)
 	if !parsed { return }
-	command := request.command
-	if request.rest != "" { command = fmt.tprintf("%s %s", request.command, request.rest) }
+	command := string(payload)
+	for _ in 0 ..< 2 {
+		space := strings.index_byte(command, ' ')
+		if space < 0 { break }
+		command = command[space + 1:]
+	}
 	if s.command_count < len(s.command_text) {
 		s.command_len[s.command_count] = copy(s.command_text[s.command_count][:], command)
 		s.command_count += 1

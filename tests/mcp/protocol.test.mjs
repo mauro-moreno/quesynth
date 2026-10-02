@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { daemonFixture, synthModel } from "./support/daemon.mjs";
 import { skip, quesynthBinary } from "./support/binary.mjs";
 import { config, errorOf, startClient } from "./support/client.mjs";
+import { TOOL_NAMES } from "./support/surface.mjs";
 
 const production = new URL("../../hosts/standalone/mcp/", import.meta.url);
 
@@ -33,7 +34,7 @@ test("the launch initializes, lists and answers without a running daemon", {skip
   assert.deepEqual(initialized.result.capabilities, { tools: {}, resources: {} });
   assert.equal(initialized.result.serverInfo.name, "quesynth");
   const tools = (await client.request("tools/list")).result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ["apply_parameters", "inspect_synth"]);
+  assert.deepEqual(tools.map(tool => tool.name), TOOL_NAMES);
   const resources = (await client.request("resources/list")).result.resources;
   assert.deepEqual(resources.map(resource => resource.uri).sort(), ["quesynth://parameters", "quesynth://patch"]);
   assert.ok(resources.every(resource => resource.mimeType === "application/json"));
@@ -100,7 +101,7 @@ test("lifecycle refusals and malformed input leave stdio usable", {skip}, async 
   assert.equal(initialized.result.protocolVersion, "2025-11-25");
   assert.equal((await client.request("tools/list")).error.code, -32000);
   client.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-  assert.equal((await client.request("tools/list")).result.tools.length, 2);
+  assert.equal((await client.request("tools/list")).result.tools.length, TOOL_NAMES.length);
   assert.equal((await client.request("initialize", {})).error.code, -32600);
 
   assert.equal((await client.request("unknown-method")).error.code, -32601);
@@ -108,7 +109,9 @@ test("lifecycle refusals and malformed input leave stdio usable", {skip}, async 
   assert.equal((await client.request("ping", [1])).error.code, -32602);
   assert.equal((await client.request("tools/call", null)).error.code, -32602);
   assert.equal((await client.request("tools/call", { name: 4 })).error.code, -32602);
-  for (const name of ["daemon_shutdown", "__proto__", "run_command", "read_file"]) {
+  // A tool is called by its own name: the QCP command behind it, and anything
+  // that would run something else, are not tools.
+  for (const name of ["daemon.shutdown", "midi", "__proto__", "run_command", "read_file", "qcp", "command"]) {
     assert.equal((await client.call(name)).error.code, -32602, name);
   }
   assert.equal((await client.request("resources/read", {})).error.code, -32602);

@@ -7,18 +7,21 @@ import "core:io"
 import "core:os"
 import "core:strconv"
 import "core:strings"
-import "core:unicode"
 import "core:unicode/utf8"
 
 import "../../../src/control"
 
 // `quesynth --mcp`: a Model Context Protocol server on stdin and stdout that is
 // nothing but a client of the daemon's control socket. It holds no engine, no
-// registry and no patch -- every value it reports and every limit it enforces
-// comes from the daemon in a QCP reply, and the one thing it checks itself is
-// that a request is well formed enough not to be misread on the daemon's side.
-// It makes no sound and starts no daemon, so it answers the protocol with the
-// daemon down and reports the daemon unavailable where it needs one.
+// registry and no patch -- every value it reports comes from the daemon in a
+// QCP reply, and what it checks itself is only that a request is well formed
+// enough not to be misread on the daemon's side (tools.odin). It makes no sound
+// and starts no daemon, so it answers the protocol with the daemon down and
+// reports the daemon unavailable where it needs one.
+//
+// What it offers is the tool table in tools.odin: one typed tool for each
+// command the daemon takes, and inspect_synth and apply_parameters, which make
+// several requests or check an acknowledgement and so are written out here.
 //
 // Each QCP request gets its own short connection (transport_linux.odin). A
 // request that was written is therefore never repeated by a reconnect: a change
@@ -32,11 +35,6 @@ Session :: struct {
 }
 
 PROTOCOL_VERSION :: "2025-11-25"
-
-TOOLS :: `{"tools":[
- {"name":"inspect_synth","description":"Read current parameter values, the daemon's registry and sounding patch identity. No audio is started.","inputSchema":{"type":"object","properties":{}}},
- {"name":"apply_parameters","description":"Atomically edit stored integer parameters if the daemon revision still matches. Duplicate IDs apply in order, last wins. Inspect again after an uncertain transport failure; mutations are never retried.","inputSchema":{"type":"object","required":["expected_revision","parameters"],"properties":{"expected_revision":{"type":"integer","minimum":0},"parameters":{"type":"array","items":{"type":"object","required":["id","value"],"properties":{"id":{"type":"string"},"value":{"type":"integer"}}}}}}}
-]}`
 
 RESOURCES :: `{"resources":[
  {"uri":"quesynth://parameters","name":"parameters","description":"Daemon parameter registry: IDs, groups, indices, stored ranges, defaults and labels.","mimeType":"application/json"},
@@ -334,7 +332,7 @@ apply :: proc(path: string, args: json.Object) -> (json.Object, Failure) {
 			return nil, {"invalid_arguments", "each parameter needs an id token and an integer value"}
 		}
 		for c in id {
-			if unicode.is_space(c) || c < 0x20 || (c >= 0x7f && c <= 0x9f) {
+			if !is_token_rune(c) {
 				return nil, {"invalid_arguments", "parameter id is not a QCP token"}
 			}
 		}
@@ -426,7 +424,7 @@ handle :: proc(s: ^Session, line, path: string) -> string {
 	case: return rpc_error(id, -32601, "Method not found")
 	}
 	switch method {
-	case "tools/list": return result(id, parse(TOOLS))
+	case "tools/list": return result(id, tool_list())
 	case "resources/list": return result(id, parse(RESOURCES))
 	case "resources/read":
 		uri, ok := params["uri"].(string)
@@ -449,7 +447,8 @@ handle :: proc(s: ^Session, line, path: string) -> string {
 	case "tools/call":
 		name, ok := params["name"].(string)
 		if !ok { return rpc_error(id, -32602, "tools/call needs a tool name") }
-		if name != "inspect_synth" && name != "apply_parameters" { return rpc_error(id, -32602, "Unknown tool") }
+		tool := find_tool(name)
+		if tool == nil { return rpc_error(id, -32602, "Unknown tool") }
 		args := json.Object{}
 		if a, exists := params["arguments"]; exists {
 			args, ok = a.(json.Object)
@@ -457,7 +456,11 @@ handle :: proc(s: ^Session, line, path: string) -> string {
 		}
 		value: json.Object
 		err: Failure
-		if name == "inspect_synth" { value, err = inspect(path, true) } else { value, err = apply(path, args) }
+		switch tool.handler {
+		case .Inspect: value, err = inspect(path, true)
+		case .Apply: value, err = apply(path, args)
+		case .Command: value, err = forward(path, tool, args)
+		}
 		return tool_result(s, id, value, err)
 	}
 	unreachable()

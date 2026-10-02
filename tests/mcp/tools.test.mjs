@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { daemonFixture, synthModel } from "./support/daemon.mjs";
+import { CALLS, TOOL_NAMES, annotationsOf, handlerCommands } from "./support/surface.mjs";
 import { skip } from "./support/binary.mjs";
 import { errorOf, resultOf, startClient } from "./support/client.mjs";
 
@@ -15,16 +17,49 @@ async function ready(t, model = synthModel(), answer = model.answer) {
   return { daemon, client, model };
 }
 
-test("the tools are exactly inspect_synth and apply_parameters", {skip}, async t => {
+test("the tools are the thirty-three of the control protocol, with no way to send a command", {skip}, async t => {
   const { client } = await ready(t);
   const tools = (await client.request("tools/list")).result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ["apply_parameters", "inspect_synth"]);
+  assert.deepEqual(tools.map(tool => tool.name), TOOL_NAMES);
+  for (const tool of tools) {
+    assert.equal(tool.inputSchema.type, "object", tool.name);
+    assert.deepEqual(tool.annotations, annotationsOf(tool.name), tool.name);
+    assert.equal(typeof tool.description, "string", tool.name);
+    assert.equal(tool.outputSchema.type, "object", tool.name);
+  }
+  // The two older tools are described exactly as they always were.
   const [inspect, apply] = ["inspect_synth", "apply_parameters"].map(name => tools.find(tool => tool.name === name));
-  assert.equal(inspect.inputSchema.type, "object");
-  assert.deepEqual(inspect.inputSchema.properties, {});
-  assert.deepEqual([...apply.inputSchema.required].sort(), ["expected_revision", "parameters"]);
-  assert.equal(apply.inputSchema.properties.expected_revision.type, "integer");
-  assert.equal(apply.inputSchema.properties.parameters.type, "array");
+  assert.deepEqual(inspect.inputSchema, { type: "object", properties: {} });
+  assert.deepEqual(apply.inputSchema, {
+    type: "object", required: ["expected_revision", "parameters"],
+    properties: {
+      expected_revision: { type: "integer", minimum: 0 },
+      parameters: {
+        type: "array",
+        items: { type: "object", required: ["id", "value"], properties: { id: { type: "string" }, value: { type: "integer" } } },
+      },
+    },
+  });
+  // Every other tool closes its arguments, and none of them is a command.
+  for (const tool of tools.slice(2)) {
+    assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
+    for (const key of Object.keys(tool.inputSchema.properties)) {
+      assert.ok(!/^(command|cmd|verb|line|raw|qcp|request|operands?|args|argv|arguments|shell|exec|script|url|host|port|payload)$/.test(key), `${tool.name}.${key}`);
+    }
+  }
+});
+
+test("every command the daemon dispatches on has exactly one tool, and each tool sends its own", {skip}, async t => {
+  const { daemon, client } = await ready(t, synthModel(), () => "ok");
+  const commands = handlerCommands(readFileSync(new URL("../../hosts/standalone/command_handler.odin", import.meta.url), "utf8"));
+  assert.equal(commands.length, 31);
+  assert.deepEqual(CALLS.map(([, , line]) => line.split(" ")[0]).sort(), [...commands].sort());
+  assert.deepEqual(CALLS.map(([name]) => name), TOOL_NAMES.slice(2));
+  for (const [name, args, line] of CALLS) {
+    const before = daemon.commands.length;
+    resultOf(await client.call(name, args));
+    assert.deepEqual(daemon.commands.slice(before), [line], name);
+  }
 });
 
 test("inspect_synth reads the daemon's snapshot, patch and registry and keeps its records verbatim", {skip}, async t => {
