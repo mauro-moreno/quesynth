@@ -524,16 +524,21 @@ no archive, and removed from `config.conf` once the daemon takes it.
 
 ## MCP server
 
-`quesynth --mcp` is a local Model Context Protocol server over stdio. It lets an
-MCP client, such as an editor or an agent, read a running daemon's parameters
-and patch identity and change parameter values. It is a mode of the standalone
-executable, not a separate program, and it needs no Node.js, Python or other
-runtime.
+`quesynth --mcp` is a local Model Context Protocol server over stdio. It gives
+an MCP client, such as an editor or an agent, one typed tool for every command
+the daemon's control protocol accepts. With them a client can read and edit
+parameters, save and load patches, work with the bank and the archive, choose
+MIDI inputs and send MIDI messages, set the master volume and stop the daemon.
+It is a mode of the standalone executable, not a separate program, and it needs
+no Node.js, Python or other runtime.
 
 The server is a client of the daemon's control socket, the way the TUI is. It
 does not start audio, it does not start a daemon, and it holds no engine,
-registry or parameter state: the daemon stays the only authority for parameter
-metadata and values, and every reply carries what the daemon said. It exits
+registry or parameter state. The daemon stays the only authority for parameter
+metadata and values, and every reply carries what the daemon said. The server
+runs no shell, has no network listener and opens no file of its own. When a tool
+takes a path, the daemon reads or writes that path, with your permissions, and
+resolves a relative one against the daemon's working directory. The server exits
 with status 0 when its standard input closes.
 
 ### Launching it
@@ -608,14 +613,326 @@ ignored. Every other method, including `resources/templates/list`, returns
 
 ### Tools
 
-There are exactly two tools, listed by `tools/list`:
+`tools/list` returns 33 tools. `inspect_synth` and `apply_parameters` came
+first and keep their names, input schemas and results. Each of the other 31
+sends one command of the control protocol, and there is one for every command
+that `control_handle` in `hosts/standalone/command_handler.odin` accepts. A
+tool is named after its command with the dot written as an underscore, except
+that the command `midi` is the tool `midi_send`.
 
-| Tool | What it does |
+The tools are an allowlist. No tool takes a command name, a protocol line, a
+shell string, a URL or a free-form list of operands, so a client can ask only
+for what a row below describes. A `tools/call` with any other name fails with
+the JSON-RPC error `-32602` and the message `Unknown tool`. That includes the
+daemon's own spellings, such as `daemon.status` and `midi`.
+
+The tables follow the order of `tools/list`. The arguments column gives each
+argument's name, its type and its range, and says `optional` when it can be
+left out; the types are explained under [Arguments and checks](#arguments-and-checks).
+The last three columns are the tool's annotations, explained under
+[Annotations](#annotations).
+
+#### The two original tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `inspect_synth` | `state.snapshot`, `patch.current`, `parameter.list` | none; other keys are ignored | yes | no | yes |
+| `apply_parameters` | `parameter.set_many` | `expected_revision` and `parameters`, as [described below](#apply_parameters) | no | yes | yes |
+
+#### Daemon tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `daemon_status` | `daemon.status` | none | yes | no | yes |
+| `daemon_info` | `daemon.info` | none | yes | no | yes |
+| `daemon_shutdown` | `daemon.shutdown` | none | no | yes | yes |
+
+`daemon_status` returns the daemon's `state`, the protocol version `proto` and
+the parameter `revision`. `daemon_info` adds how many control and MIDI messages
+the daemon dropped because a queue was full and, as far as it can report them,
+`sample_rate`, `buffer`, `voices`, `max_voices`, `uptime` in seconds, `volume`
+and `backend`. `backend` comes last because its value, such as `ALSA (default)`,
+has spaces.
+
+`daemon_shutdown` does what `quesynth --stop` does. The daemon answers first,
+then stops the sound and exits. Nothing is saved, so a bank slot you have not
+written out is lost. Every tool then returns `daemon_unavailable` until a daemon
+is started again.
+
+#### Parameter and state tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `parameter_list` | `parameter.list` | none | yes | no | yes |
+| `parameter_get` | `parameter.get` | `id` token | yes | no | yes |
+| `parameter_set` | `parameter.set` | `id` token; `value` integer ±9007199254740991 | no | yes | yes |
+| `parameter_set_many` | `parameter.set_many` | `parameters` pairs 1..128; `expected_revision` integer 0..9007199254740991, optional | no | yes | yes |
+| `state_snapshot` | `state.snapshot` | none | yes | no | yes |
+
+`parameter_list` returns the registry as record lines, `parameter_get` one
+stored value with the revision, and `state_snapshot` the revision, the sample
+rate, the buffer size and every stored value from one consistent snapshot.
+Values are stored integers, not Hz or dB.
+
+`parameter_set` sets one parameter, and `parameter_set_many` sets a batch that
+the audio thread applies together. The daemon checks every id and value first,
+and a batch with one bad member changes nothing. A repeated id is set again in
+order, so the last value wins. With `expected_revision`, the daemon applies the
+batch only if its revision is still that number, and it answers after the audio
+thread has decided. If the revision has moved it returns `revision_conflict`
+with `current_revision=<n>` and changes nothing. If the audio thread does not
+answer within 250 ms, the call fails with `daemon_not_ready` and the message
+`commit outcome unknown; inspect state before retrying`, and the batch may still
+be applied. Without `expected_revision`,
+the batch is queued and the call can overwrite an edit made since you looked.
+Send the guard unless you mean to overwrite.
+
+#### Patch tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `patch_load` | `patch.load` | `slot` integer 0..127 | no | yes | no |
+| `patch_apply` | `patch.apply` | `parameters` pairs 1..128 | no | yes | no |
+| `patch_load_file` | `patch.load_file` | `path` text | no | yes | no |
+| `patch_save` | `patch.save` | `slot` integer 0..127; `name` text, optional | no | yes | yes |
+| `patch_current` | `patch.current` | none | yes | no | yes |
+| `patch_clear` | `patch.clear` | none | no | yes | yes |
+
+`patch_load`, `patch_apply`, `patch_load_file` and the archive tool
+`archive_load` replace the whole sound at once and clear what the last patch
+left ringing. Held notes keep sounding. Loading the same patch again is how a
+player silences a ringing tail, which is why these four are not idempotent.
+
+`patch_load` loads a filled slot of the ordinary bank, and an empty slot comes
+back as the daemon's `unknown_parameter` error. `patch_apply` applies the pairs
+you give as one patch, the way a front-end loads a patch it holds, and
+parameters you do not name keep their values. It leaves the playing patch's name
+as it was; `patch_clear` forgets it. `patch_load_file` makes the daemon read a
+`.sy1` or JSON patch file, names the playing patch after the name inside the
+file or else after the file, and returns that name as a `name=` record line.
+
+`patch_save` stores the sound as it is now in a slot, overwriting it, and names
+the playing patch after the slot. The slot lives in the daemon's memory until
+`bank_keep` or `bank_write` writes the bank out. Without a `name`, or with an
+empty one, the slot keeps its current name, which is `Init` for an empty slot.
+The daemon keeps at most 48 bytes of a name. `patch_current` reads the patch
+identity described under [Patch identity](#patch-identity), and `patch_clear`
+forgets where the sound came from while the values and the banks stay.
+
+#### Bank tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `bank_list` | `bank.list` | none | yes | no | yes |
+| `bank_write` | `bank.write` | `path` text | no | yes | yes |
+| `bank_load_file` | `bank.load_file` | `path` text | no | yes | yes |
+| `bank_keep` | `bank.keep` | none | no | yes | yes |
+
+`bank_list` returns the bank's label, how many slots are filled and one record
+line for each of the 128 slots, empty ones included. `bank_write` makes the
+daemon write the whole bank as JSON to the path you give, and it replaces a file
+that is already there. `bank_load_file` replaces the browsable bank with a JSON
+bank the daemon reads. The sound does not change, and the bank is not saved.
+`bank_keep` takes no path. It writes `bank.json` in the daemon's configuration
+directory, which the daemon loads at its next start.
+
+#### Archive tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `archive_open` | `archive.open` | `path` text, optional | no | yes | yes |
+| `archive_adopt` | `archive.adopt` | `path` text | no | no | yes |
+| `archive_current` | `archive.current` | none | yes | no | yes |
+| `archive_banks` | `archive.banks` | `offset` integer 0..9007199254740991, optional; `count` integer 0..9007199254740991, optional | yes | no | yes |
+| `archive_bank` | `archive.bank` | `index` integer 0..9007199254740991 | no | no | yes |
+| `archive_patches` | `archive.patches` | `offset` integer 0..9007199254740991, optional; `count` integer 0..9007199254740991, optional | yes | no | yes |
+| `archive_load` | `archive.load` | `index` integer 0..9007199254740991; `bank` integer 0..9007199254740991, optional | no | yes | no |
+| `archive_close` | `archive.close` | none | no | yes | yes |
+
+These work on the one archive the daemon shares with every front-end, as
+described under [Banks and archives](#banks-and-archives). `archive_open`
+indexes a ZIP of bank ZIPs and remembers its path for the next daemon start. It
+loads no sound. With no `path`, or an empty one, it opens the remembered
+archive again. `archive_adopt` offers a path that the daemon takes only if it
+has no archive open and remembers none, and the reply says `adopted=1` or
+`adopted=0`. `archive_close` closes the archive and forgets the path.
+
+`archive_banks` and `archive_patches` return a page. `count` defaults to 64 and
+the daemon returns at most 256, so a larger `count` is clamped. Zero returns
+none. A `count` with no `offset` starts at offset 0. `archive_bank` opens a bank
+for browsing, for every client, and does not change the sound. `archive_load`
+loads one patch. With `bank`, that bank is opened first; send it when another
+client may have browsed elsewhere since you listed the patches. Without it the
+open bank is used. Read `archive_rev` in the replies to notice another client
+changing the archive.
+
+#### MIDI tools
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `midi_list` | `midi.list` | none | yes | no | yes |
+| `midi_select` | `midi.select` | `input` token | no | no | yes |
+| `midi_current` | `midi.current` | none | yes | no | yes |
+| `midi_send` | `midi` | `status` integer 0..255; `data1` integer 0..127; `data2` integer 0..127 | no | no | no |
+
+`midi_list` returns the inputs the daemon finds now, each with an `id` and a
+`name`, and the current selection. `midi_select` takes `all`, `none` or an id
+from that list, for every client; see [MIDI](#midi). `midi_current` returns the
+selection and `midi_rev`. `midi_send` injects one message into the queue that
+the hardware inputs use. The status byte carries the channel in its low four
+bits: 144 is note on and 128 note off on channel 1, 176 control change, 192
+program change and 224 pitch bend. Send 0 for the missing data byte of a program
+change. A note on keeps sounding until its note off arrives, and nothing
+releases held notes but a note off or stopping the daemon.
+
+#### Volume tool
+
+| Tool | QCP command | Arguments | Read-only | Destructive | Idempotent |
+|---|---|---|---|---|---|
+| `volume` | `volume` | `milli` integer 0..1000 | no | no | yes |
+
+`volume` sets the master output level for every client, in thousandths: 0 is
+silent and 1000 is full level, which is where each daemon start begins. It is
+the listener's level, not a patch parameter, so no revision moves. There is no
+tool that reads it alone; `daemon_info` reports the current level.
+
+#### Annotations
+
+Every tool carries all four annotations as booleans, whatever protocol version
+the client negotiated. They describe the tool in the tables above.
+
+| Annotation | Meaning here |
 |---|---|
-| `inspect_synth` | Reads the daemon's parameter values and revision, its parameter registry and the sounding patch's identity. Starts no audio and changes nothing. |
-| `apply_parameters` | Changes the sound: sets stored parameter values as one batch, if the daemon's revision is still the one you name. |
+| `readOnlyHint` | The call changes nothing in the daemon, on disk or anywhere else. |
+| `destructiveHint` | The call can overwrite or discard something the daemon keeps nowhere else: parameter values, the sounding patch, a bank slot or the bank, a file on disk, the remembered archive, the patch identity, or the daemon itself. It is `false` for effects that last only for the session or only add to it: the master volume, the MIDI selection, an injected MIDI message, browsing an archive bank and `archive_adopt`. |
+| `idempotentHint` | Repeating the same call leaves the same state and does nothing more that you can hear or see, leaving aside the counters `revision`, `bank_rev`, `archive_rev` and `midi_rev`. It is `false` for the four calls that replace the whole patch, because loading again clears what the last load left ringing, and for `midi_send`. |
+| `openWorldHint` | Always `false`. The only party a call reaches is the local daemon. |
 
-Their input schemas are:
+`destructiveHint` and `idempotentHint` mean something only for a tool that is
+not read-only. The server still sets them on every tool, and a read-only tool is
+always not destructive and idempotent. Annotations are hints for the client, for
+example to ask you before a destructive call. They do not stop a call, and the
+server enforces nothing based on them.
+
+#### Arguments and checks
+
+The server checks every call before it contacts the daemon. A call that fails a
+check returns `invalid_arguments`, names the argument in its message and sends
+nothing. The checks cover the types, required arguments and ranges in the
+tables, and whatever would make the daemon read something other than what you
+wrote. They never decide whether a parameter exists, whether a value is inside
+a parameter's range, whether a slot is filled, whether an archive is open or
+whether a device is plugged in. Those are the daemon's to say.
+
+For the 31 tools after the first two:
+
+- `arguments` must be an object. Leaving it out is the same as `{}`.
+- An argument the tool does not declare is refused as `unknown argument: <name>`,
+  naming the first such name in alphabetical order. This is deliberate. A
+  misspelt `expected_revision` would otherwise drop its guard without a word.
+- A required argument must be present. `null` is never the same as leaving an
+  argument out, because it has the wrong type. Nothing is converted, so the
+  string `"5"` is not the integer 5.
+- An `integer` is a whole number inside the stated range. `30.0` and `3e1` count
+  as 30. No integer goes beyond ±9007199254740991, the largest that a JSON
+  number holds exactly.
+- A `token` is one non-empty string with no space and no control character.
+  The control characters are U+0000 to U+001F and U+007F to U+009F. The spaces
+  are what Odin's `unicode.is_space` counts: U+0009 to U+000D, U+0020, U+0085,
+  U+00A0, U+1680, U+2000 to U+200B, U+200E, U+200F, U+2028, U+2029, U+202F,
+  U+205F, U+3000 and U+FEFF. That list includes the zero-width space, the two
+  direction marks and the byte order mark. The daemon splits a request on
+  spaces, so a token containing one would arrive as two. Parameter ids,
+  `midi_select`'s `input` and the ids inside `parameters` are tokens.
+- A `text` is a string the daemon reads to the end of the line: a path or a
+  name. It may hold spaces inside, as in `my patches/lead.sy1`. It may not hold a
+  control character, U+2028 or U+2029, because those would end the line. It may
+  not start or end with whitespace either, because the daemon trims both ends and
+  would then use a different path. The whitespace it trims is U+0009 to U+000D,
+  U+0020, U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F,
+  U+205F and U+3000. That is narrower than what splits a token, so U+200B,
+  U+200E, U+200F and U+FEFF are allowed anywhere in a text and not in a token. A
+  required `text` must not be empty. An optional one that is an empty string
+  counts as left out.
+- `pairs` is an array of 1 to 128 objects. Each has exactly an `id` token and a
+  `value` integer, and any other key is refused. The limit of 128 is the
+  daemon's. An `id` that starts with `expected_revision=` is refused by
+  `parameter_set_many`, because the daemon would read it as the guard.
+
+The two original tools keep their own checks, described under
+[`apply_parameters`](#apply_parameters), and keep ignoring keys they do not
+declare.
+
+The server does not limit how long a text is. The daemon keeps at most 48 bytes
+of a patch name, and a request line over the 64 KiB frame limit is refused by
+the server itself as `daemon_error` and not sent.
+
+These calls are refused with these messages. Each row was run against the built
+binary, and none of them reached the daemon.
+
+| Tool | Arguments | Message |
+|---|---|---|
+| `parameter_get` | `[]` | `arguments must be an object` |
+| `parameter_get` | `{}` | `missing argument: id` |
+| `parameter_get` | `{"id":"filter.cutoff","extra":1}` | `unknown argument: extra` |
+| `parameter_get` | `{"id":null}` | `id must be a string` |
+| `parameter_get` | `{"id":""}` | `id must not be empty` |
+| `parameter_get` | `{"id":"filter cutoff"}` | `id must not contain whitespace or control characters (U+0020)` |
+| `parameter_get` | `{"id":"filter\u200b.cutoff"}` | `id must not contain whitespace or control characters (U+200B)` |
+| `parameter_set` | `{"id":"filter.cutoff","value":1.5}` | `value must be an integer from -9007199254740991 to 9007199254740991` |
+| `patch_load` | `{"slot":128}` | `slot must be an integer from 0 to 127` |
+| `volume` | `{"milli":1001}` | `milli must be an integer from 0 to 1000` |
+| `midi_send` | `{"status":144,"data1":128,"data2":0}` | `data1 must be an integer from 0 to 127` |
+| `parameter_set_many` | `{"parameters":[]}` | `parameters must be an array of 1 to 128 entries` |
+| `parameter_set_many` | `{"parameters":[1]}` | `parameters[0] must be an object with id and value` |
+| `parameter_set_many` | `{"parameters":[{"id":"a"}]}` | `parameters[0] needs id and value` |
+| `parameter_set_many` | `{"parameters":[{"id":1,"value":1}]}` | `parameters[0].id must be a string` |
+| `parameter_set_many` | `{"parameters":[{"id":"a","value":1,"x":2}]}` | `parameters[0] has an unknown key: x` |
+| `parameter_set_many` | `{"parameters":[{"id":"expected_revision=3","value":1}]}` | `parameters[0].id must not begin with expected_revision=` |
+| `parameter_set_many` | `{"expected_revision":-1,"parameters":[{"id":"a","value":1}]}` | `expected_revision must be an integer from 0 to 9007199254740991` |
+| `parameter_set_many` | `{"expected_revison":3,"parameters":[{"id":"a","value":1}]}` | `unknown argument: expected_revison` |
+| `patch_apply` | `{"expected_revision":3,"parameters":[{"id":"a","value":1}]}` | `unknown argument: expected_revision` |
+| `patch_load_file` | `{"path":""}` | `path must not be empty` |
+| `bank_write` | `{"path":"bank.json "}` | `path must not start or end with whitespace` |
+| `bank_write` | `{"path":"a\nb.json"}` | `path must not contain control characters or line separators (U+000A)` |
+| `patch_save` | `{"slot":1,"name":"Lead\u0000"}` | `name must not contain control characters or line separators (U+0000)` |
+| `archive_banks` | `{"offset":-1}` | `offset must be an integer from 0 to 9007199254740991` |
+| `midi_select` | `{"input":"hw:2,0 "}` | `input must not contain whitespace or control characters (U+0020)` |
+| `daemon_shutdown` | `{"now":true}` | `unknown argument: now` |
+
+#### Schemas
+
+`tools/list` describes every tool with a `name`, a `description`, an
+`inputSchema`, an `outputSchema` and `annotations`. It lists the same thing for
+every protocol version, with the annotations and the `outputSchema` always
+present.
+
+The input schema of each of the 31 tools is a closed object: `"type":"object"`,
+`"additionalProperties":false`, a `properties` entry for each argument and a
+`required` list, which is left out when nothing is required. Integers carry a
+`minimum` and a `maximum`, and an array carries `minItems` and `maxItems`. A
+token or a text carries a `pattern` that accepts exactly the strings the server
+accepts. The three patterns are these, in ECMA-262 syntax for the `u` flag. The
+whitespace is spelled out because `\s` means something different in JavaScript
+and in Odin.
+
+```text
+token          ^[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200b\u200e\u200f\u2028\u2029\u202f\u205f\u3000\ufeff]+$
+text           ^[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000](?:[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000])?$
+optional text  ^(?:[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000](?:[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*[^\u0000-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000])?)?$
+```
+
+`optional text` is the pattern of an optional `text` argument, which also
+accepts the empty string. A required `text` has `"minLength":1` as well, and a
+`token` has it too. As an example, this is the complete entry that `tools/list`
+returns for `volume`:
+
+```json
+{"annotations":{"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,"readOnlyHint":false},"description":"Set the daemon's master output level for every client: 0 is silent, 1000 is full level, the level at each start. It is the listener's level, not a patch parameter, so no revision changes. daemon_info reports the current level.","inputSchema":{"additionalProperties":false,"properties":{"milli":{"description":"Level in thousandths of full scale.","maximum":1000,"minimum":0,"type":"integer"}},"required":["milli"],"type":"object"},"name":"volume","outputSchema":{"additionalProperties":false,"properties":{"fields":{"description":"The text after ok on the first line of the daemon's reply.","type":"string"},"lines":{"description":"The record lines that follow it, unchanged and in the daemon's order.","items":{"type":"string"},"type":"array"}},"required":["fields","lines"],"type":"object"}}
+```
+
+The input schemas of the two original tools are the ones the server has always
+had. They have no `additionalProperties` and no ranges beyond the minimum shown:
 
 ```json
 {"type":"object","properties":{}}
@@ -625,11 +942,63 @@ Their input schemas are:
 {"type":"object","required":["expected_revision","parameters"],"properties":{"expected_revision":{"type":"integer","minimum":0},"parameters":{"type":"array","items":{"type":"object","required":["id","value"],"properties":{"id":{"type":"string"},"value":{"type":"integer"}}}}}}
 ```
 
-A successful call returns the tool's result object as JSON text in
-`content[0].text`. From protocol `2025-06-18` on, the same object is also
-returned as `structuredContent`. A failed call has `isError: true` and the
-object `{"code": ..., "message": ...}` in the same places. The server declares
-no `outputSchema` and no tool annotations.
+The 31 tools share one `outputSchema`. It describes a successful call:
+
+```json
+{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string","description":"The text after ok on the first line of the daemon's reply."},"lines":{"type":"array","items":{"type":"string"},"description":"The record lines that follow it, unchanged and in the daemon's order."}}}
+```
+
+`inspect_synth` and `apply_parameters` describe their own results:
+
+```json
+{"type":"object","required":["revision","state","patch","parameters"],"additionalProperties":false,"properties":{"revision":{"type":"integer"},"state":{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}},"patch":{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}},"parameters":{"type":"object","required":["fields","lines"],"additionalProperties":false,"properties":{"fields":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}}}}
+```
+
+```json
+{"type":"object","required":["count","revision"],"additionalProperties":false,"properties":{"count":{"type":"integer"},"revision":{"type":"integer"}}}
+```
+
+A failed call is not described by an `outputSchema`. It has `isError: true` and
+carries `{"code": ..., "message": ...}`, as the next section says. A client that
+checks `structuredContent` against the `outputSchema` has to skip failed calls.
+
+#### Results
+
+A successful call returns the daemon's reply as JSON text in `content[0].text`.
+From protocol `2025-06-18` on, the same object is also returned as
+`structuredContent`. For each of the 31 tools after the first two it is:
+
+```json
+{"fields":"...","lines":["..."]}
+```
+
+`fields` is the text after `ok` on the reply's first line, and `lines` are the
+record lines that follow it, one string each, unchanged and in the daemon's
+order. A reply with nothing after `ok` has an empty `fields`, and one without
+record lines has an empty `lines`. The server does not rename, reorder or tidy
+anything. If the daemon folds the spaces of a name into underscores in a field,
+as `patch_save` does in `name=`, you get the underscores. If it keeps them in a
+record line, as `patch_current` does, you get the spaces. The fields of each
+reply are the ones the daemon documents under [Control protocol](#control-protocol),
+[Banks and archives](#banks-and-archives), [Patch identity](#patch-identity)
+and [MIDI](#midi), and the examples below show real ones.
+
+Some commands only queue their work. `parameter_set`, a `parameter_set_many`
+without `expected_revision`, `patch_load`, `patch_apply`, `patch_load_file` and
+`archive_load` are answered when the change is queued, before the audio thread
+has applied it. The `revision` in such a reply is the one the daemon held at that
+moment, so it is the revision before the change, and a read made straight after
+can still show the old values until the audio thread's next block. A guarded
+`parameter_set_many` is different. The daemon answers after the audio thread has
+decided, and the `revision` in a success is the one after the change.
+
+The two original tools return the results described under
+[`inspect_synth`](#inspect_synth) and [`apply_parameters`](#apply_parameters).
+
+A failed call is a normal result with `isError: true`. It carries the object
+`{"code": ..., "message": ...}` in the same places as a success does. A refusal
+by the daemon comes through with its error token as `code` and its message
+unchanged, and `message` is empty if the daemon gave none.
 
 #### inspect_synth
 
@@ -686,7 +1055,10 @@ it applies nothing, so of two batches that carry the same revision only the
 first is applied. Any change moves the revision, whichever client made it: a
 knob in the TUI, a patch load, a Program Change from a controller. The daemon
 replies after the audio thread has answered, and the new state is already
-published by then, so an `inspect_synth` that follows sees it. A success returns
+published by then, so an `inspect_synth` that follows sees it. If the audio
+thread has not answered within 250 ms, the reply is `daemon_not_ready` with the
+message `commit outcome unknown; inspect state before retrying`, and the batch
+stays queued and may still be applied. A success returns
 
 ```json
 {"count":2,"revision":1}
@@ -697,31 +1069,42 @@ change, the one to pass as `expected_revision` next time. A stale
 `expected_revision` returns `revision_conflict`, with the revision the daemon
 holds now in the message as `current_revision=<n>`, and changes nothing. Call
 `inspect_synth`, look again, then send the batch with the new revision.
+`parameter_set_many` sends the same command with the stricter checks of the
+other 31 tools, and there `expected_revision` is optional.
 
 #### When the outcome is not known
 
 The server gives each request to the daemon on a connection of its own, with a
-deadline of 500 ms. It never sends a request twice. If the answer to an
-`apply_parameters` does not arrive, the batch may or may not have been applied.
-When a request was already sent, the message of the failure ends with
+deadline of 500 ms that starts at the connect and covers the whole exchange. It
+never sends a request twice. A tool that is not read-only is sent as a change.
+If the answer to one does not arrive, the change may or may not have happened.
+When the request was already sent, the message of the failure ends with
 `; the request was sent and the change may have been applied`. The cases are:
 
 - `daemon_timeout`: the deadline passed after the server had connected.
 - `daemon_error`: the daemon closed the connection before it replied, or its
   reply could not be read.
 - `daemon_not_ready` with `commit outcome unknown; inspect state before
-  retrying`: the daemon queued the batch and the audio thread did not answer
-  within 250 ms. The batch stays queued and may still be applied.
+  retrying`: the daemon queued a guarded batch and the audio thread did not
+  answer within 250 ms. The batch stays queued and may still be applied.
 
-In each case call `inspect_synth` and compare before you send anything again.
+In each case read the state before you send anything again: `state_snapshot`
+or `inspect_synth` for parameters, `patch_current`, `bank_list`,
+`archive_current` or `midi_current` for the rest. A read-only tool that fails
+gets the plain message without that sentence, because asking again is safe.
+
+The 500 ms deadline is the same for every command, including those that read or
+write a file. A slow one, such as `archive_open` on a very large archive, can
+overrun it. The server then reports `daemon_timeout` with the sentence above and
+does not repeat the request.
 
 #### Errors
 
 A tool failure is a normal result with `isError: true`. Its `code` is one of:
 
-- `invalid_arguments`: the call failed the check above. Nothing was sent.
+- `invalid_arguments`: the call failed the checks above. Nothing was sent.
 - `daemon_unavailable`: the server could not open the socket or connect to it.
-  Nothing was sent.
+  Nothing was sent. After `daemon_shutdown` every call gets this.
 - `daemon_timeout`: the daemon did not answer within the 500 ms deadline.
 - `daemon_error`: a failure of the server's own, with no daemon error behind it:
   a request over the 64 KiB frame limit, which is not sent; a daemon that
@@ -739,7 +1122,7 @@ Failures of the protocol itself are JSON-RPC errors with a `code` and a
 | `-32700` | The line is not valid JSON. `id` is `null`. Text after the value, a trailing comma, a malformed number or string and nesting more than 100 levels deep are refused the same way, and so is an empty line. |
 | `-32600` | Not a JSON-RPC 2.0 request: not an object, `jsonrpc` is not `"2.0"`, `method` is not a string, or `id` is neither a string nor an integer-valued number. `id` is `null`. A second `initialize` also returns `-32600`, with its own `id`. |
 | `-32601` | Method not found. |
-| `-32602` | Bad parameters: `initialize` without its fields, `params` that is not an object, `tools/call` without a tool name or with a tool that is not one of the two, `resources/read` without a string `uri`. |
+| `-32602` | Bad parameters: `initialize` without its fields, `params` that is not an object, `tools/call` without a tool name or with a name that is not one of the 33 tools, `resources/read` without a string `uri`. |
 | `-32000` | A call before the session is initialized, or a `resources/read` the daemon could not answer. The message is `<code>: <detail>` and `error.data` is `{"code": "<code>"}`. |
 | `-32002` | `resources/read` of a URI that is not one of the two. |
 
@@ -761,7 +1144,7 @@ the message `<code>: <detail>`, for example
 
 ### Example
 
-Both sessions below were captured from `quesynth --mcp`. Each request and each
+The sessions below were captured from `quesynth --mcp`. Each request and each
 reply is one line of JSON, shown as it was sent or received.
 
 #### Without a daemon
@@ -853,18 +1236,251 @@ Read the patch resource. The revision is now 1:
 {"id":5,"jsonrpc":"2.0","result":{"contents":[{"mimeType":"application/json","text":"{\"patch\":{\"fields\":\"slot=-1 bank_rev=0 revision=1 source=none archive_rev=0 archive_bank=-1 archive_patch=-1\",\"lines\":[\"bank=\",\"name=\"]},\"revision\":1,\"state\":{\"fields\":\"revision=1 sample_rate=48000 buffer=512 count=92\",\"lines\":[\"id=osc1.shape value=2\",\"id=osc1.fm value=0\"]}}","uri":"quesynth://patch"}]}}
 ```
 
+#### Driving the daemon
+
+This session used a real daemon with a fresh configuration directory. Its working
+directory held a small archive, `corpus.zip`, with one bank of two patches. The
+requests follow an `initialize` and a `notifications/initialized` like the ones
+above, so the ids start at 2. The values in the replies, such as the revision
+numbers, are what that daemon said at the time.
+
+Silence the instrument first. `daemon_status` is a read: `fields` is the text
+after `ok` and `lines` is empty because the reply has no record lines.
+`midi_select` with `none` stops the daemon listening to MIDI hardware, and
+`volume` with 0 turns the master level down, so nothing below makes a sound.
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"daemon_status","arguments":{}}}
+```
+
+```json
+{"id":2,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"state=running proto=1 revision=0\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"state=running proto=1 revision=0","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"midi_select","arguments":{"input":"none"}}}
+```
+
+```json
+{"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"selected=none midi_rev=1\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"selected=none midi_rev=1","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"volume","arguments":{"milli":0}}}
+```
+
+```json
+{"id":4,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"volume=0\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"volume=0","lines":[]}}}
+```
+
+Read one parameter, then change two with the revision you were shown. The
+daemon applies both together and the revision moves by one:
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"parameter_get","arguments":{"id":"filter.cutoff"}}}
+```
+
+```json
+{"id":5,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"value=81 revision=0\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"value=81 revision=0","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"parameter_set_many","arguments":{"expected_revision":0,"parameters":[{"id":"filter.cutoff","value":70},{"id":"filter.resonance","value":10}]}}}
+```
+
+```json
+{"id":6,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"count=2 revision=1\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"count=2 revision=1","lines":[]}}}
+```
+
+The same revision is stale now. The daemon refuses the batch and changes
+nothing, and its `revision_conflict` comes through unchanged:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"parameter_set_many","arguments":{"expected_revision":0,"parameters":[{"id":"filter.cutoff","value":71}]}}}
+```
+
+```json
+{"id":7,"jsonrpc":"2.0","result":{"content":[{"text":"{\"code\":\"revision_conflict\",\"message\":\"current_revision=1\"}","type":"text"}],"isError":true,"structuredContent":{"code":"revision_conflict","message":"current_revision=1"}}}
+```
+
+Save the sound into slot 5, load that slot, and read the patch identity. The
+daemon folds the space in the name into an underscore in the `name=` field of
+the first two replies, and keeps it in the `name=` record line of the third.
+The load was answered with `revision=1`, before the audio thread applied it, and
+`patch_current` already shows 2:
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"patch_save","arguments":{"slot":5,"name":"Warm Pad"}}}
+```
+
+```json
+{"id":8,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"slot=5 name=Warm_Pad bank_rev=1\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"slot=5 name=Warm_Pad bank_rev=1","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"patch_load","arguments":{"slot":5}}}
+```
+
+```json
+{"id":9,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"slot=5 name=Warm_Pad count=99 revision=1\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"slot=5 name=Warm_Pad count=99 revision=1","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"patch_current","arguments":{}}}
+```
+
+```json
+{"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"slot=5 bank_rev=1 revision=2 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\",\"lines\":[\"bank=Factory\",\"name=Warm Pad\"]}","type":"text"}],"structuredContent":{"fields":"slot=5 bank_rev=1 revision=2 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1","lines":["bank=Factory","name=Warm Pad"]}}}
+```
+
+Loading an empty slot is the daemon's refusal, and it passes through:
+
+```json
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"patch_load","arguments":{"slot":100}}}
+```
+
+```json
+{"id":11,"jsonrpc":"2.0","result":{"content":[{"text":"{\"code\":\"unknown_parameter\",\"message\":\"slot is empty\"}","type":"text"}],"isError":true,"structuredContent":{"code":"unknown_parameter","message":"slot is empty"}}}
+```
+
+A call that fails the server's own checks never reaches the daemon. The path ends
+in a space, which the daemon would have trimmed, so it would have written
+`bank.json` instead of `bank.json `:
+
+```json
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"bank_write","arguments":{"path":"bank.json "}}}
+```
+
+```json
+{"id":12,"jsonrpc":"2.0","result":{"content":[{"text":"{\"code\":\"invalid_arguments\",\"message\":\"path must not start or end with whitespace\"}","type":"text"}],"isError":true,"structuredContent":{"code":"invalid_arguments","message":"path must not start or end with whitespace"}}}
+```
+
+Play a note and release it. Status 144 is note on and 128 is note off, both on
+channel 1, for note 60. Both are accepted, and nothing is heard at volume 0:
+
+```json
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"midi_send","arguments":{"status":144,"data1":60,"data2":100}}}
+```
+
+```json
+{"id":13,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"midi_send","arguments":{"status":128,"data1":60,"data2":0}}}
+```
+
+```json
+{"id":14,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"","lines":[]}}}
+```
+
+Open the archive and walk down to a patch. The path is relative, so the daemon
+resolves it against its own working directory. `archive_load` sends the patch to
+the audio thread, and `archive_close` forgets the archive and its path:
+
+```json
+{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"archive_open","arguments":{"path":"corpus.zip"}}}
+```
+
+```json
+{"id":15,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"banks=1 archive_rev=1\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"banks=1 archive_rev=1","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"archive_banks","arguments":{}}}
+```
+
+```json
+{"id":16,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"total=1 archive_rev=1\",\"lines\":[\"bank=0 name=bankA.zip\"]}","type":"text"}],"structuredContent":{"fields":"total=1 archive_rev=1","lines":["bank=0 name=bankA.zip"]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"archive_bank","arguments":{"index":0}}}
+```
+
+```json
+{"id":17,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"patches=2 bank=0 archive_rev=2\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"patches=2 bank=0 archive_rev=2","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"archive_patches","arguments":{}}}
+```
+
+```json
+{"id":18,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"total=2 bank=0 archive_rev=2\",\"lines\":[\"patch=0 name=Test Patch One\",\"patch=1 name=Test Patch Two\"]}","type":"text"}],"structuredContent":{"fields":"total=2 bank=0 archive_rev=2","lines":["patch=0 name=Test Patch One","patch=1 name=Test Patch Two"]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"archive_load","arguments":{"index":1}}}
+```
+
+```json
+{"id":19,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"count=3 revision=2 bank=0 patch=1\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"count=3 revision=2 bank=0 patch=1","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"archive_close","arguments":{}}}
+```
+
+```json
+{"id":20,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"archive_rev=3\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"archive_rev=3","lines":[]}}}
+```
+
+A name that is not on the list of tools, even the daemon's own spelling of one,
+is a protocol error and nothing is sent:
+
+```json
+{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"daemon.status","arguments":{}}}
+```
+
+```json
+{"error":{"code":-32602,"message":"Unknown tool"},"id":21,"jsonrpc":"2.0"}
+```
+
+Stop the daemon. It answers, then exits. The next call finds nobody listening:
+
+```json
+{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"daemon_shutdown","arguments":{}}}
+```
+
+```json
+{"id":22,"jsonrpc":"2.0","result":{"content":[{"text":"{\"fields\":\"\",\"lines\":[]}","type":"text"}],"structuredContent":{"fields":"","lines":[]}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"daemon_status","arguments":{}}}
+```
+
+```json
+{"id":23,"jsonrpc":"2.0","result":{"content":[{"text":"{\"code\":\"daemon_unavailable\",\"message\":\"no daemon listening on the local socket\"}","type":"text"}],"isError":true,"structuredContent":{"code":"daemon_unavailable","message":"no daemon listening on the local socket"}}}
+```
+
 ### Safety notes for MCP clients
 
-- The server runs no shell and builds no command line. Parameter ids are
-  checked to be single tokens, and a request is one line of the control
-  protocol.
-- It offers two tools and two resources. It cannot load a patch, bank or
-  archive, send MIDI, change the master volume or stop the daemon, and it has no
-  file, command or network tool.
-- `apply_parameters` changes what you hear at once. Keep the level down while
-  you test.
-- Anyone who can start it can change the daemon's parameters as your user.
-  Register it only with clients you trust.
+- The server runs no shell, opens no file and builds no command line from your
+  text. Every tool is one fixed daemon command, the tables above are the whole
+  list, and a call with another name is refused. Tokens, paths and names are
+  checked so that a request stays one line of the control protocol and is read
+  the way it was written.
+- Most tools change something. Through the daemon they can change parameters,
+  replace the sound by loading a patch, a bank slot or an archive entry,
+  overwrite a bank slot, replace the browsable bank, send MIDI, set the master
+  volume and stop the daemon.
+- The daemon reads and writes the paths you give, with your permissions.
+  `patch_load_file`, `bank_load_file`, `archive_open` and `archive_adopt` read a
+  file. `bank_write` writes the bank to any path the daemon can write, and
+  replaces a file that is already there. `bank_keep`, `archive_open`,
+  `archive_adopt` and `archive_close` write or delete the daemon's own files in
+  its configuration directory. Relative paths resolve against the daemon's
+  working directory, which your client may not share, so give absolute paths.
+- The annotations tell a client which tools are destructive. A client can use
+  them to ask you first. A client that does not ask can still call every tool.
+- Parameter edits, patch and archive loads and `midi_send` change what you hear
+  at once. Call `volume` with a low value before you test. A note on keeps
+  sounding until its note off arrives. Nothing releases held notes but a note
+  off or stopping the daemon.
+- Anyone who can start the server controls the daemon as your user, including
+  its shutdown. There is no login. Register it only with clients you trust.
 
 ## Troubleshooting
 
@@ -889,8 +1505,30 @@ session either.
 
 **MCP `revision_conflict`.** The sound changed, from any client, after the
 `revision` you passed. The message gives the revision now as
-`current_revision=<n>`, and nothing was applied. Call `inspect_synth` again and
-send the batch with the new revision.
+`current_revision=<n>`, and nothing was applied. Call `inspect_synth` or
+`state_snapshot` again and send the batch with the new revision.
+
+**MCP `invalid_arguments`.** The server refused the call before it sent
+anything, and the message names the argument. The usual causes are an argument
+the tool does not declare, often a misspelt name, an integer written as a string
+or with a fraction, and a path or name with a space at either end. The daemon
+would have trimmed that space and used another path. The messages are listed under
+[Arguments and checks](#arguments-and-checks).
+
+**MCP `daemon_unavailable` right after `daemon_shutdown`.** That is expected.
+`daemon_shutdown` stops the daemon, and every tool answers `daemon_unavailable`
+until you start one again. The server needs no restart.
+
+**A path tool cannot find a file that exists.** The daemon opens the path, not
+the MCP server, and it resolves a relative path against its own working
+directory. A daemon that the TUI started keeps the directory the TUI was
+started in. Use an absolute path.
+
+**MCP `daemon_timeout` with `the request was sent and the change may have been
+applied`.** Every request has a deadline of 500 ms, and a slow command, such as
+`archive_open` on a large archive, can pass it. The request was already sent and
+the server does not repeat it. Read the state, for example with `archive_current`,
+before you call again.
 
 **Stale socket.** A leftover socket from a crash is removed at the next start.
 If the start fails with `control endpoint is owned or unavailable`, the path is
@@ -945,15 +1583,19 @@ does not know newer commands. Run `./build/quesynth --stop` and start again.
 - The browser adapter binds `127.0.0.1`, rejects other `Host` and `Origin`
   values, and withholds the page's own storage so it cannot overwrite the
   daemon's bank. Do not forward its port to other machines. It has no login.
-- The MCP server is a stdio process with no network listener. It offers two
-  tools, `inspect_synth` and `apply_parameters`, and two read-only resources,
-  and nothing else: no shell, file, command or network access. Anyone who can
-  start it can change the daemon's parameter values, so only add it to clients
-  you trust.
-- `apply_parameters`, patch and archive loads and injected MIDI messages change
-  the sound immediately. Turn your monitors down before testing, since a
-  note-on with a high velocity or an extreme parameter can be loud. The
-  daemon's master volume (`volume` over the socket) is not reachable from MCP.
+- The MCP server is a stdio process with no network listener. It has one typed
+  tool for each command of the control protocol and two read-only resources,
+  and no shell, file, command or network tool of its own. Through the daemon it
+  can still change parameters, load and overwrite patches and bank slots, write
+  the bank to a path of your choosing, send MIDI, set the master volume and stop
+  the daemon. Anyone who can start it controls the daemon as your user, so only
+  add it to clients you trust. See
+  [Safety notes for MCP clients](#safety-notes-for-mcp-clients).
+- Parameter edits, patch and archive loads and injected MIDI messages, whether
+  they come from a front-end or from MCP, change the sound immediately. Turn
+  your monitors down before testing, since a note-on with a high velocity or an
+  extreme parameter can be loud. The master volume is the `volume` command, and
+  the `volume` MCP tool sets it.
 - Notes can hang. There is no all-notes-off. Send a note off, or run
   `./build/quesynth --stop`.
 - The daemon reads the files you name (patches, banks, archives) with your

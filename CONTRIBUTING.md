@@ -85,7 +85,9 @@ The MCP server is `quesynth --mcp`, part of the standalone executable, so
 the binary the way `.mcp.json` does and speak to it over stdio, against a
 stand-in daemon on a Unix socket; `tests/docs` runs the same binary to check
 the manual's MCP examples. Build it first. They use `build/quesynth`, or the
-path in `QUESYNTH_BIN`, and they skip on Windows.
+path in `QUESYNTH_BIN`, and they skip on Windows. `tests/mcp/schema.test.mjs`
+puts every Unicode scalar value to the schema patterns and the binary, so it
+takes about 15 s and uses up to 8 worker processes.
 
 The panel smoke test above boots `ui/` in a stand-in DOM and needs nothing but
 Node. The macOS job goes further: it checks that the macOS editor -- the

@@ -118,7 +118,28 @@ and
 still work, and calls that need the daemon return
 .BR daemon_unavailable .
 .PP
-There are exactly two tools:
+There are 33 tools, listed by
+.B tools/list
+in the order below.
+The first two,
+.B inspect_synth
+and
+.BR apply_parameters ,
+are the older tools and keep their names, input schemas and results.
+Each of the other 31 sends one command of the daemon's control protocol, and there is one for every command the daemon accepts.
+The tools are an allowlist.
+None takes a command name, a protocol line, a shell string or a URL, and a
+.B tools/call
+with any other name returns the JSON-RPC error \-32602.
+Every tool checks its arguments before it contacts the daemon, has an output schema, and carries the annotations
+.BR readOnlyHint ,
+.BR destructiveHint ,
+.B idempotentHint
+and
+.BR openWorldHint .
+A tool that is not read-only is sent once and never repeated.
+If its answer is lost, the change may have been applied, so read the state before calling again.
+The manual lists each tool's arguments, ranges and annotations.
 .TP
 .B inspect_synth
 Read the daemon's parameter values and revision, its parameter registry and the sounding patch's identity.
@@ -144,6 +165,113 @@ and changes nothing.
 If a timeout or a disconnect leaves the outcome unknown, call
 .B inspect_synth
 before sending anything again; the server never repeats a request.
+.TP
+.B daemon_status
+Read the daemon's state, protocol version and revision.
+.TP
+.B daemon_info
+Read the state and revision, the counts of dropped messages, the sample rate, buffer size, voices, uptime, master volume and audio backend.
+.TP
+.B daemon_shutdown
+Stop the daemon, as
+.B quesynth \-\-stop
+does.
+Every tool then returns
+.B daemon_unavailable
+until a daemon is started again.
+.TP
+.B parameter_list
+List every parameter with its group, index, stored range, default and label.
+.TP
+.B parameter_get
+Read one parameter's stored value and the revision.
+.TP
+.B parameter_set
+Set one parameter to a stored integer.
+.TP
+.B parameter_set_many
+Set 1 to 128 parameters as one all-or-nothing batch.
+With
+.B expected_revision
+it applies only if the daemon's revision still matches.
+.TP
+.B state_snapshot
+Read the revision and every stored value from one snapshot.
+.TP
+.B patch_load
+Load a filled slot of the ordinary bank as the sound.
+.TP
+.B patch_apply
+Replace the sound with the given id and value pairs as one patch.
+.TP
+.B patch_load_file
+Make the daemon read a .sy1 or JSON patch file and load it.
+.TP
+.B patch_save
+Store the sound in a slot of the ordinary bank, overwriting it.
+.TP
+.B patch_current
+Read which patch is sounding and the bank and archive counters.
+.TP
+.B patch_clear
+Forget which patch the sound came from.
+.TP
+.B bank_list
+List the label and all 128 slots of the ordinary bank.
+.TP
+.B bank_write
+Make the daemon write the ordinary bank to a JSON file, replacing the file if it exists.
+.TP
+.B bank_load_file
+Replace the ordinary bank with a JSON bank file the daemon reads.
+.TP
+.B bank_keep
+Write the ordinary bank to
+.I bank.json
+in the daemon's configuration directory.
+.TP
+.B archive_open
+Open a ZIP archive of bank ZIPs and remember its path.
+With no path, open the remembered archive again.
+.TP
+.B archive_adopt
+Offer an archive path, which the daemon takes only if it has none open or remembered.
+.TP
+.B archive_current
+Read the shared archive's state.
+.TP
+.B archive_banks
+List a page of the open archive's banks.
+.TP
+.B archive_bank
+Open one bank of the archive for browsing.
+.TP
+.B archive_patches
+List a page of the open bank's patches.
+.TP
+.B archive_load
+Load one patch of an archive bank as the sound.
+.TP
+.B archive_close
+Close the archive and forget its path.
+.TP
+.B midi_list
+List the MIDI inputs the daemon finds and the current selection.
+.TP
+.B midi_select
+Listen to all inputs, none or one input by id, for every client.
+.TP
+.B midi_current
+Read the selected MIDI input.
+.TP
+.B midi_send
+Inject one MIDI message.
+.TP
+.B volume
+Set the daemon's master output level, 0 to 1000.
+.PP
+Paths are read and written by the daemon, not by the server, relative to the daemon's working directory.
+The tools can overwrite files the daemon can write and stop the daemon, so register the server only with clients you trust.
 .PP
 There are exactly two resources, both of type application/json:
 .B quesynth://parameters

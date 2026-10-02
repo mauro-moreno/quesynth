@@ -184,15 +184,24 @@ the MCP server, troubleshooting, and safety. `man -l docs/quesynth.1` shows the
 ```
 
 `quesynth --mcp` is a local stdio [MCP server](docs/quesynth-manual.md#mcp-server)
-built into the same executable. It is a client of the daemon's control socket,
-and it offers two tools, `inspect_synth` and `apply_parameters` (an atomic batch
-of parameter values, applied only if the daemon's revision is still the one you
-name), and two resources, `quesynth://parameters` and `quesynth://patch`. The
-project registers it in [`.mcp.json`](.mcp.json) as `quesynth --mcp`, so
-`quesynth` has to be on your `PATH`; the manual shows how. Start a daemon
-first: until one is running, the calls that need it return
-`daemon_unavailable`. The MCP server needs no Node.js. Only `--browser` does,
-and it needs Node.js 20 or later.
+built into the same executable. It is a client of the daemon's control socket
+and offers 33 typed tools. Two came first: `inspect_synth`, and
+`apply_parameters`, an atomic batch of parameter values that applies only if the
+daemon's revision is still the one you name. The other 31 are one for each
+command the daemon accepts: status, info and shutdown, parameters, the state
+snapshot, patches, the bank, the archive, MIDI and the master volume. Every tool
+checks its arguments
+before it sends anything and carries read-only, destructive and idempotent
+annotations. No tool takes a command, a shell string or a URL, and the server
+opens no file itself. The daemon reads and writes any path a tool names.
+There are also two resources, `quesynth://parameters` and `quesynth://patch`.
+
+The tools can load patches, overwrite a bank file and stop the daemon, so
+register the server only with clients you trust. The project registers it in
+[`.mcp.json`](.mcp.json) as `quesynth --mcp`, so `quesynth` has to be on your
+`PATH`; the manual shows how. Start a daemon first: until one is running, the
+calls that need it return `daemon_unavailable`. The MCP server needs no Node.js.
+Only `--browser` does, and it needs Node.js 20 or later.
 
 ## Compatibility and verification
 
