@@ -12,7 +12,7 @@ import { CALLS } from "./support/surface.mjs";
 // receives is the daemon's reply, or its refusal, in the shape the tool lists.
 
 const REPLY = "ok count=2  volume=7 \nid=a value=1 \n\nname=Lead  Pad  \u00e9\n";
-const RECORDS = { fields: "count=2  volume=7", lines: ["id=a value=1 ", "", "name=Lead  Pad  \u00e9"] };
+const RECORDS = { fields: "count=2  volume=7 ", lines: ["id=a value=1 ", "", "name=Lead  Pad  \u00e9"] };
 
 // 2024-11-05 has no structured content; 2025-06-18 and after do.
 for (const version of ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]) {

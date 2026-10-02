@@ -976,9 +976,10 @@ From protocol `2025-06-18` on, the same object is also returned as
 {"fields":"...","lines":["..."]}
 ```
 
-`fields` is the text after `ok` on the reply's first line, and `lines` are the
-record lines that follow it, one string each, unchanged and in the daemon's
-order. A reply with nothing after `ok` has an empty `fields`, and one without
+`fields` is the text after `ok` on the reply's first line, without the one
+space that separates it from `ok`, and `lines` are the record lines that follow
+it, one string each, unchanged and in the daemon's order. Any other space,
+at either end of `fields` too, is kept. A reply with nothing after `ok` has an empty `fields`, and one without
 record lines has an empty `lines`. The server does not rename, reorder or tidy
 anything. If the daemon folds the spaces of a name into underscores in a field,
 as `patch_save` does in `name=`, you get the underscores. If it keeps them in a
@@ -998,11 +999,14 @@ decided, and the `revision` in a success is the one after the change.
 
 The two original tools return the results described under
 [`inspect_synth`](#inspect_synth) and [`apply_parameters`](#apply_parameters).
+They, and the two resources, strip the spaces at both ends of each `fields` and
+of a failure's `message`, as they always have.
 
 A failed call is a normal result with `isError: true`. It carries the object
 `{"code": ..., "message": ...}` in the same places as a success does. A refusal
-by the daemon comes through with its error token as `code` and its message
-unchanged, and `message` is empty if the daemon gave none. Each tool's
+by the daemon comes through with its error token as `code`, whatever the token
+is, and its message unchanged apart from the one space after the token, and
+`message` is empty if the daemon gave none. Each tool's
 `outputSchema` accepts this object as well as the success result (see
 [Schemas](#schemas)), so a failed call passes the same check as a successful one.
 
@@ -1114,7 +1118,8 @@ A tool failure is a normal result with `isError: true`. Its `code` is one of:
 - `daemon_timeout`: the daemon did not answer within the 500 ms deadline.
 - `daemon_error`: a failure of the server's own, with no daemon error behind it:
   a request over the 64 KiB frame limit, which is not sent; a daemon that
-  hung up; a reply or a frame that could not be read.
+  hung up; a reply or a frame that could not be read; a reply that is not valid
+  UTF-8, which JSON cannot carry unchanged, so none of it is returned.
 - A daemon error token, with the daemon's message: `revision_conflict`,
   `out_of_range`, `unknown_parameter`, `invalid_payload`, `daemon_not_ready`,
   `transaction_failed` and the others in

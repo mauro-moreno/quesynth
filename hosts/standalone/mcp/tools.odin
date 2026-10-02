@@ -695,7 +695,7 @@ pair_operands :: proc(a: Arg, entry: json.Value, i: int) -> (operands: [2]string
 forward :: proc(path: string, tool: ^Tool, args: json.Object) -> (json.Object, Failure) {
 	line, failure := call_line(tool, args)
 	if failure.code != "" { return nil, failure }
-	resp, err := request(path, line, !tool.read_only)
+	resp, err := request(path, line, !tool.read_only, true)
 	if err.code != "" { return nil, err }
 	return records(resp), {}
 }

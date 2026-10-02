@@ -275,17 +275,45 @@ Failure :: struct {
 	message: string,
 }
 
+// QCP envelope tokens are separated by ASCII spaces. Remove only the one
+// separator after a token so the remaining text can be returned verbatim.
 @(private)
-request :: proc(path, command: string, changes := false) -> (control.Response, Failure) {
+reply_token :: proc(text: string) -> (token, rest: string) {
+	i := 0
+	for i < len(text) && text[i] == ' ' { i += 1 }
+	start := i
+	for i < len(text) && text[i] != ' ' { i += 1 }
+	token = text[start:i]
+	if i < len(text) { i += 1 }
+	return token, text[i:]
+}
+
+// The two older tools and the resources trim a reply's text at both ends, as
+// they always have. The other tools pass it on verbatim, minus the single space
+// that separates it from the token before it.
+@(private)
+request :: proc(path, command: string, changes := false, verbatim := false) -> (control.Response, Failure) {
 	payload, failure, sent := roundtrip(path, fmt.tprintf("%d 1 %s", control.PROTOCOL_VERSION, command))
 	if failure.code != "" { return {}, unsure(failure, sent && changes) }
+	// JSON has no verbatim representation for malformed UTF-8. Refuse the
+	// entire reply rather than normalizing it or guessing a byte encoding.
+	if !utf8.valid_string(string(payload)) {
+		return {}, unsure({"daemon_error", "QCP response is not valid UTF-8"}, sent && changes)
+	}
 	resp, ok := control.response_parse(payload)
 	if !ok || resp.version != control.PROTOCOL_VERSION || resp.id != 1 {
 		return {}, unsure({"daemon_error", "invalid QCP response"}, changes)
 	}
+	envelope := string(payload)
+	if end := strings.index_byte(envelope, '\n'); end >= 0 { envelope = envelope[:end] }
+	for _ in 0 ..< 3 { _, envelope = reply_token(envelope) }
 	if resp.status == .Err {
-		return {}, {control.error_code_name(resp.error), resp.fields}
+		// control.Error_Code has no room for a token the daemon added later.
+		code, message := reply_token(envelope)
+		if code == "" { code = control.error_code_name(.Internal_Error) }
+		return {}, {code, verbatim ? message : resp.fields}
 	}
+	if verbatim { resp.fields = envelope }
 	return resp, {}
 }
 

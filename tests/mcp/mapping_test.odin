@@ -96,7 +96,7 @@ test_every_tool_that_sends_one_request_has_a_sample_and_its_line_starts_with_its
 ANSWER :: "ok a=1  b=2 \nfirst  line \n\nname=Lead  Pad \nquote\"é\\"
 
 @(private = "file")
-ANSWER_JSON :: `{"fields":"a=1  b=2","lines":["first  line ","","name=Lead  Pad ","quote\"é\\"]}`
+ANSWER_JSON :: `{"fields":"a=1  b=2 ","lines":["first  line ","","name=Lead  Pad ","quote\"é\\"]}`
 
 @(test)
 test_the_daemons_reply_comes_back_as_fields_and_lines_untouched_for_every_tool :: proc(t: ^testing.T) {
@@ -142,7 +142,7 @@ test_the_result_is_structured_from_2025_06_18_and_text_alone_before :: proc(t: ^
 		structured, has := result["structuredContent"].(json.Object)
 		testing.expect_value(t, has, version >= "2025-06-18")
 		if has {
-			testing.expect_value(t, text_of(structured["fields"]), "a=1  b=2")
+			testing.expect_value(t, text_of(structured["fields"]), "a=1  b=2 ")
 			lines, _ := structured["lines"].(json.Array)
 			testing.expect_value(t, len(lines), 4)
 			testing.expect_value(t, text_of(lines[3]), `quote"é\`)
