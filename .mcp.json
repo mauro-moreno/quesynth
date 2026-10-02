@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "quesynth": {
+      "command": "node",
+      "args": ["hosts/standalone/mcp/serve.js"]
+    }
+  }
+}

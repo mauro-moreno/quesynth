@@ -80,6 +80,7 @@ user manual.
 
 | Topic | Contents |
 |---|---|
+| [Standalone manual](docs/quesynth-manual.md) | Daemon, TUI, browser, banks and archives, MIDI, configuration, MCP server, troubleshooting, safety |
 | [Getting started](https://github.com/mauro-moreno/quesynth/wiki/Getting-Started) | Browser, standalone, and plugin setup |
 | [The panel](https://github.com/mauro-moreno/quesynth/wiki/The-Panel) | Control-by-control reference |
 | [Banks and patches](https://github.com/mauro-moreno/quesynth/wiki/Banks-And-Patches) | Browsing, writing, importing, and persistence |
@@ -165,6 +166,26 @@ that bank. Other banks, empty slots and patches past a bank's end leave the
 sound unchanged. Both halves start at zero; sending only one keeps the
 other's last value, and Program Change does not reset them. Loads use the same
 atomic replacement as the TUI and browser, with held notes kept sounding.
+
+## Standalone manual and MCP server
+
+[`docs/quesynth-manual.md`](docs/quesynth-manual.md) is the reference for the
+native standalone: build and `--selftest`, the daemon's lifecycle and socket,
+the TUI, the browser front-end, ordinary and ZIP banks, patch identity, MIDI
+input selection with Bank Select and Program Change, the files Quesynth keeps,
+troubleshooting, and safety.
+
+```sh
+./build/quesynth                  # attach the TUI, starting the daemon if needed
+./build/quesynth --browser        # the same daemon, in a browser at 127.0.0.1:8177
+./build/quesynth --stop           # stop the daemon
+```
+
+A local stdio [MCP server](docs/quesynth-manual.md#mcp-server) in
+`hosts/standalone/mcp/` exposes typed daemon tools (status, parameters,
+patches, banks, archives, MIDI) to an MCP client. The project registers it in
+[`.mcp.json`](.mcp.json) as `node hosts/standalone/mcp/serve.js`. Start a daemon
+first. It needs Node.js 20 or later.
 
 ## Compatibility and verification
 
