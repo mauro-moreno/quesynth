@@ -114,7 +114,7 @@ function main({ socket, timeoutMs }) {
     finish();
   }
 
-  require("readline").createInterface({ input: process.stdin }).on("line", line => {
+  const receive = line => {
     let message;
     try { message = JSON.parse(line); }
     catch {
@@ -122,7 +122,17 @@ function main({ socket, timeoutMs }) {
       return;
     }
     handle(message);
-  }).on("close", () => { ended = true; finish(); });
+  };
+  let buffered = "";
+  process.stdin.setEncoding("utf8").on("data", text => {
+    const lines = (buffered + text).split("\n");
+    buffered = lines.pop();
+    lines.forEach(receive);
+  }).on("end", () => {
+    if (buffered) receive(buffered);
+    ended = true;
+    finish();
+  });
 }
 
 try {

@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 
@@ -19,7 +18,13 @@ export function startClient(t, { args = [], env = {}, cwd } = {}) {
   const messages = [];
   let id = 0;
   const exited = once(child, "exit");
-  createInterface({ input: child.stdout }).on("line", line => {
+  let buffered = "";
+  child.stdout.setEncoding("utf8").on("data", text => {
+    const lines = (buffered + text).split("\n");
+    buffered = lines.pop();
+    lines.forEach(onLine);
+  });
+  function onLine(line) {
     const message = JSON.parse(line);
     messages.push(message);
     const entry = pending.get(message.id);
@@ -28,7 +33,7 @@ export function startClient(t, { args = [], env = {}, cwd } = {}) {
       clearTimeout(entry.timer);
       entry.resolve(message);
     }
-  });
+  }
   child.on("exit", code => {
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
