@@ -173,8 +173,8 @@ atomic replacement as the TUI and browser, with held notes kept sounding.
 native standalone: build and `--selftest`, the daemon's lifecycle and socket,
 the TUI, the browser front-end, ordinary and ZIP banks, patch identity, MIDI
 input selection with Bank Select and Program Change, the files Quesynth keeps,
-the MCP server, troubleshooting, and safety. `man -l docs/quesynth.1` shows the
-[man page](docs/quesynth.1), which lists every mode.
+the MCP server, troubleshooting, and safety. `quesynth --help` lists every
+mode.
 
 ```sh
 ./build/quesynth                  # attach the TUI, starting the daemon if needed

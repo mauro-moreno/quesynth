@@ -18,7 +18,6 @@ const read = file => readFileSync(path.join(root, file), "utf8");
 const docs = ["README.md", "docs/quesynth-manual.md"];
 const manual = read("docs/quesynth-manual.md");
 const readme = read("README.md");
-const man = read("docs/quesynth.1");
 const mainSource = read("hosts/standalone/main.odin");
 const mcpConfig = JSON.parse(read(".mcp.json"));
 
@@ -55,14 +54,6 @@ const toolRows = [...toolsPart.matchAll(/^\| `([a-z_]+)` \| (.+?) \| (.+?) \| (y
 }));
 const originalTools = ["inspect_synth", "apply_parameters"];
 const MAX_SAFE = 9007199254740991;
-// The man page's source with its escaped hyphens read as plain ones.
-const manText = man.replace(/\\-/g, "-");
-// The man page's text under one `.SH` heading.
-const manSection = title => {
-  const found = new RegExp(`^\\.SH "?${title}"?\\n([\\s\\S]*?)(?=^\\.SH |(?![\\s\\S]))`, "m").exec(manText);
-  assert.ok(found, `the man page has no ${title} section`);
-  return found[1];
-};
 
 // The usage text that `quesynth --help` prints, as main.odin defines it, and its
 // command forms with the description column and the `<placeholder>` brackets off.
@@ -289,10 +280,9 @@ test("every relative link and anchor in the README and the manual resolves", () 
   }
 });
 
-test("the README points to the manual, the man page and the .mcp.json that exist", () => {
+test("the README points to the manual and the .mcp.json that exist", () => {
   assert.match(readme, /\]\(docs\/quesynth-manual\.md\)/);
   assert.match(readme, /\]\(docs\/quesynth-manual\.md#mcp-server\)/);
-  assert.match(readme, /\]\(docs\/quesynth\.1\)/);
   assert.match(readme, /\]\(\.mcp\.json\)/);
   assert.ok(existsSync(path.join(root, ".mcp.json")));
   assert.ok(readme.includes("`quesynth --mcp`"));
@@ -308,7 +298,7 @@ test("the Node MCP server is gone and no document still describes its files or f
   for (const file of ["serve.js", "tools.js"]) {
     assert.ok(!existsSync(path.join(root, "hosts/standalone/mcp", file)), `hosts/standalone/mcp/${file} still exists`);
   }
-  for (const file of ["README.md", "CONTRIBUTING.md", "docs/quesynth-manual.md", "docs/quesynth.1"]) {
+  for (const file of ["README.md", "CONTRIBUTING.md", "docs/quesynth-manual.md"]) {
     const text = read(file);
     for (const stale of ["mcp/serve.js", "mcp/tools.js", "--timeout-ms"]) {
       assert.ok(!text.includes(stale), `${file} still mentions ${stale}`);
@@ -320,7 +310,7 @@ test("the Node MCP server is gone and no document still describes its files or f
 test("no document still says the server has two tools, cannot write, or has no annotations", () => {
   const stale = [/exactly two tools/i, /offers two tools/i, /\btwo tools\b/i, /cannot load a patch/i, /not reachable from MCP/i,
     /no `?outputSchema/i, /no tool annotations/i, /not described by an `?outputSchema/i, /skip failed calls/i, /read-only\s+resources\s+and\s+nothing\s+else/i];
-  for (const file of ["README.md", "CONTRIBUTING.md", "docs/quesynth-manual.md", "docs/quesynth.1", "docs/architecture.md",
+  for (const file of ["README.md", "CONTRIBUTING.md", "docs/quesynth-manual.md", "docs/architecture.md",
     "hosts/standalone/browser/README.md", "hosts/wasm/README.md"]) {
     const text = read(file).replace(/\s+/g, " ");
     for (const pattern of stale) assert.ok(!pattern.test(text), `${file} still says ${pattern}`);
@@ -367,12 +357,11 @@ test("every --flag the manual shows is one the matching program accepts", () => 
   assert.deepEqual([...new Set(flags(mcpSection))].sort(), ["--daemon", "--mcp", "--stop"]);
 });
 
-test("every environment variable the manual and the man page name is read somewhere in the source", () => {
+test("every environment variable the manual names is read somewhere in the source", () => {
   const names = new Set([...manual.matchAll(/\b(?:QUESYNTH_[A-Z_]+|XDG_[A-Z_]+|NO_COLOR)\b/g)].map(m => m[0]));
-  const manNames = new Set([...manText.matchAll(/\b(?:QUESYNTH_[A-Z_]+|XDG_[A-Z_]+|NO_COLOR|HOME)\b/g)].map(m => m[0]));
   const files = [...sourceFiles("hosts"), ...sourceFiles("src")].filter(f => !f.includes("/wasm/"));
   const text = files.map(read);
-  for (const name of new Set([...names, ...manNames])) {
+  for (const name of names) {
     assert.ok(text.some(t => new RegExp(`["'.]${name}\\b`).test(t)), `${name} is not read in the source`);
   }
   assert.ok(names.has("QUESYNTH_ROOT") && names.has("QUESYNTH_SOCKET"));
@@ -380,33 +369,17 @@ test("every environment variable the manual and the man page name is read somewh
   assert.deepEqual(readsSocket, [], "the manual says the Odin binary ignores QUESYNTH_SOCKET");
 });
 
-// ---- the man page -----------------------------------------------------------
+// ---- no man page ------------------------------------------------------------
 
-test("the man page names every mode of --help, the MCP tools, an environment, files and exit statuses", () => {
-  const synopsis = manSection("SYNOPSIS");
-  const modes = usageForms.filter(line => line.startsWith("quesynth")).map(line => line.split(" ")[1])
-    .filter(word => word.startsWith("--") && word !== "--bank");
-  assert.deepEqual([...modes].sort(), ["--browser", "--daemon", "--mcp", "--selftest", "--stop"]);
-  for (const mode of modes) assert.ok(synopsis.includes(mode), `the man page SYNOPSIS lacks ${mode}`);
-  for (const title of ["NAME", "SYNOPSIS", "DESCRIPTION", "MCP", "ENVIRONMENT", "FILES", "EXIT STATUS", "SEE ALSO"]) manSection(title);
-  for (const status of ["0", "1", "2"]) assert.ok(manSection("EXIT STATUS").includes(`\n.B ${status}\n`), `EXIT STATUS lacks ${status}`);
-  assert.equal(toolRows.length, 33);
-  // Each tool has its own entry, `.TP` then `.B <name>` on a line by itself.
-  for (const { name } of toolRows) {
-    assert.ok(new RegExp(`^\\.TP\\n\\.B ${name}$`, "m").test(manSection("MCP")), `the man page has no entry for ${name}`);
+test("there is no man page, and no document points to one", () => {
+  assert.ok(!existsSync(path.join(root, "docs/quesynth.1")), "docs/quesynth.1 still exists");
+  for (const file of ["README.md", "CONTRIBUTING.md", "docs/quesynth-manual.md", "docs/architecture.md",
+    "hosts/standalone/browser/README.md", "hosts/wasm/README.md", "ui/README.md"]) {
+    const text = read(file);
+    for (const stale of [/quesynth\.1\b/, /\bman -l\b/, /\bman page\b/i, /\bgroff\b/]) {
+      assert.ok(!stale.test(text), `${file} still mentions ${stale}`);
+    }
   }
-  for (const name of ["quesynth://parameters", "quesynth://patch"]) {
-    assert.ok(manSection("MCP").includes(name), `the man page does not name ${name}`);
-  }
-});
-
-const groff = spawnSync("groff", ["--version"], { encoding: "utf8" });
-test("the man page is clean under groff -man -ww", {
-  skip: groff.error ? "groff is not installed, so the man page syntax was NOT checked on this machine" : false,
-}, () => {
-  const run = spawnSync("groff", ["-man", "-ww", "-z", path.join(root, "docs/quesynth.1")], { encoding: "utf8" });
-  assert.equal(run.stderr, "");
-  assert.equal(run.status, 0);
 });
 
 // ---- the real binary --------------------------------------------------------
@@ -646,11 +619,10 @@ test("a refusal by the daemon comes through with its token and its message, and 
   assert.ok(mcpSection.replace(/\s+/g, " ").includes("`message` is empty if the daemon gave none"));
 });
 
-test("the number of tools the README, the manual and the man page state is the number the binary lists", { skip }, () => {
+test("the number of tools the README and the manual state is the number the binary lists", { skip }, () => {
   const count = binaryTools().length;
   assert.equal(Number(/offers (\d+) typed tools/.exec(readme)?.[1]), count);
   assert.equal(Number(/`tools\/list` returns (\d+) tools/.exec(manual)?.[1]), count);
-  assert.equal(Number(/There are (\d+) tools/.exec(man)?.[1]), count);
 });
 
 test("the manual's resources are the ones the built binary lists", { skip }, async t => {
