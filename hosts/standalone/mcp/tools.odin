@@ -313,7 +313,7 @@ TOOLS := [?]Tool {
 	{
 		name = "patch_save",
 		command = "patch.save",
-		description = "Store the sound as it is now in a slot of the ordinary bank, overwriting that slot, and name the slot as the playing patch. It lives in the daemon's memory until bank_keep or bank_write is called.",
+		description = "Store the sound as it is now in a slot of the ordinary bank, overwriting that slot, and name the slot as the playing patch. The daemon then writes the whole bank to bank.json in its configuration directory, which it loads at its next start, so the slot survives a restart without bank_keep; if it cannot write the file the call fails and nothing is stored. A start with --bank loads that file instead.",
 		args = {
 			SLOT,
 			{
@@ -365,7 +365,7 @@ TOOLS := [?]Tool {
 	{
 		name = "bank_keep",
 		command = "bank.keep",
-		description = "Write the ordinary bank to bank.json in the daemon's own configuration directory, which the daemon loads at its next start. It takes no path, and replaces the previous file in one step.",
+		description = "Write the ordinary bank to bank.json in the daemon's own configuration directory, which the daemon loads at its next start. patch_save already does this after every save. It takes no path, and replaces the previous file in one step.",
 		destructive = true,
 		idempotent = true,
 	},

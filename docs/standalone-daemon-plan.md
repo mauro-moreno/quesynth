@@ -307,7 +307,8 @@ front-end. These four make two front-ends peers of one daemon:
 - `patch.clear` → `ok`: forget the identity; the values are untouched.
 - `bank.keep` → `ok bytes=<n> path=<path>`: write the bank, atomically, to the
   config path the daemon loads at startup (`$XDG_CONFIG_HOME/quesynth/bank.json`,
-  else `~/.config/quesynth/bank.json`).
+  else `~/.config/quesynth/bank.json`). A successful `patch.save` writes the
+  same file by itself, so a client need not follow it with `bank.keep`.
 - `volume <0..1000>` → `ok volume=<milli>`: master gain in thousandths. Not a
   patch parameter — no `revision`, not in `state.snapshot` — and reported by
   `daemon.info` as `volume=`, just before `backend=`. The control thread stores
@@ -331,6 +332,24 @@ unchanged. If that has not happened within the 250 ms of a guarded batch, or
 the server stops first, the reply is `err daemon_not_ready earlier edits not
 applied; nothing saved` and the bank, the identity and `bank_rev` are left as
 they were.
+
+A save that succeeds is also kept. `Control_Context.bank_keep` is the path
+`bank.keep` writes (`$XDG_CONFIG_HOME/quesynth/bank.json`, else
+`~/.config/quesynth/bank.json`), and only `run_daemon` sets it, as it does the
+archive's `keep_path`, so a test that drives a handler or a server never
+writes the user's config. The slot is staged in the bank, the whole bank is
+written atomically (`write_file_atomic`, as `bank.keep` does) and only then is
+the identity set, `bank_rev` bumped and the `ok` line written. If the write
+fails the slot is put back as it was and the reply is `err internal_error
+cannot keep bank`; nothing else has moved. With no path (no `HOME` and no
+`XDG_CONFIG_HOME`, or a bare handler) nothing is written and a save is
+memory-only, as before. The `ok` line is the same in every case. A save that
+waited is answered from the server's tick, outside the request that began it,
+so the write takes its own temporary-allocator guard. `--bank` is unchanged: a
+start that names one loads it and not `bank.json`, and nothing is written into
+the `--bank` file. `bank.load_file` and every other command keep nothing; a
+later save writes the bank as it is then. `bank.keep` still works and is
+redundant after a save.
 
 The daemon, not each client, owns which patch is playing and where it came
 from — its provenance, which is not what any client is browsing. It lives

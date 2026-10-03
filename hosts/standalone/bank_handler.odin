@@ -1,6 +1,7 @@
 package standalone
 
 import "base:intrinsics"
+import "base:runtime"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -230,10 +231,26 @@ control_save_ready :: proc(cc: ^Control_Context, req: control.Request, save: Wai
 	return true
 }
 
+// What a slot held before a save, to put back when the bank cannot be kept.
+@(private = "file")
+Slot_Was :: struct {
+	values:   [patch.PARAMETER_COUNT]i32,
+	name:     [patch.SLOT_NAME_MAX]u8,
+	name_len: int,
+	filled:   bool,
+}
+
+// Store the save, keep the bank, and only then say so: the slot is staged in
+// the bank, the whole bank is written where the next start reads it, and if
+// that fails the slot goes back as it was and nothing else has moved -- not
+// the identity, not bank_rev, not the sound. Archive.open does the same with
+// its path (archive_replace). So a save is never answered ok for a bank the
+// next start cannot find, and a refused one leaves nothing half done.
 @(private = "file")
 control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save: Wait_Ticket, snap: Snapshot_Data, out: ^strings.Builder) {
 	save := save
 	slot := save.slot
+	was := Slot_Was{cc.bank.values[slot], cc.bank.names[slot], cc.bank.name_len[slot], cc.bank.filled[slot]}
 	for i in 0 ..< patch.PARAMETER_COUNT {
 		cc.bank.values[slot][i] = snap.values[i]
 	}
@@ -241,6 +258,14 @@ control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save:
 	name := string(save.name[:save.name_len])
 	final := name != "" ? name : patch.slots_name(cc.bank, slot)
 	put_slot_name(cc.bank, slot, final)
+	if !bank_keep_write(cc) {
+		cc.bank.values[slot] = was.values
+		cc.bank.names[slot] = was.name
+		cc.bank.name_len[slot] = was.name_len
+		cc.bank.filled[slot] = was.filled
+		control_write_err(out, req, .Internal_Error, "cannot keep bank")
+		return
+	}
 	identity_set(cc.identity, .Bank, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))
 	if cc.identity != nil {cc.identity.bank_rev += 1}
 
@@ -250,6 +275,21 @@ control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save:
 	strings.write_string(out, " name=")
 	control_write_token(out, patch.slots_name(cc.bank, slot))
 	control_write_bank_rev(cc, out)
+}
+
+// Write the bank where the next start loads it from, the file bank.keep
+// writes: the daemon's own copy of what was saved, so no client has to ask for
+// that. False when it cannot be written; true when there is nowhere to keep it
+// (no bank_keep, as in a bare handler or with no config directory), which keeps
+// nothing, as a save always did. This also runs from the server's tick, for a
+// save that waited, which is outside the request guard that gives each
+// request's temporary memory back, so it gives back its own.
+@(private = "file")
+bank_keep_write :: proc(cc: ^Control_Context) -> bool {
+	if cc.bank_keep == "" {return true}
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	json := patch.slots_write_json(cc.bank, context.temp_allocator)
+	return write_file_atomic(cc.bank_keep, json)
 }
 
 // bank.write <path>: serialize the whole bank to a JSON file.

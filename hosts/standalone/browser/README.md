@@ -146,6 +146,10 @@ several slots, another bank, other values, no name) is adopted whole with
 `bank.load_file`, which leaves the identity naming no slot. Either way the
 sender is not sent its bank back.
 
+A `patch.save` also makes the daemon write the bank to `bank.json`, so a patch
+stored this way is there after a daemon restart whatever `save` says. A
+whole-bank adoption is kept only when `save: true` adds `bank.keep`.
+
 ## The shared archive
 
 The daemon browses a patch archive -- a zip of bank zips -- without unpacking

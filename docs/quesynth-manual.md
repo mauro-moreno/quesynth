@@ -238,14 +238,34 @@ within 250 ms, or the daemon is stopped first, the reply is
 `err daemon_not_ready earlier edits not applied; nothing saved`. No slot, name
 or `bank_rev` changed, and the save can be sent again.
 
+The daemon also keeps what it saved. Once the slot is stored it writes the
+whole bank to `bank.json` in the config directory, the file `bank.keep` writes,
+and answers only after that, so the patch is there after a restart whichever
+client saved it, with no `bank.keep` needed. If the file cannot be written the
+reply is `err internal_error cannot keep bank`, and the slot, the playing
+patch and `bank_rev` are as they were before the save. With no config directory
+(neither `XDG_CONFIG_HOME` nor `HOME` set) nothing is written and the save
+stays in memory, as it always did. The reply of a save that succeeds is the
+same either way.
+
 The daemon serves at most 16 connections at once. It drops a client whose
 unread output passes 256 KiB. You rarely need to speak the protocol by hand,
 because the TUI, the browser adapter and the [MCP server](#mcp-server) do.
 
 ### What survives a restart
 
-Kept on disk: the archive path, and the user bank when one was written to the
-config directory (see [Configuration and persistence](#configuration-and-persistence)).
+Kept on disk: the archive path, and the ordinary bank. Every successful
+`patch.save` writes the whole bank to `bank.json` in the config directory (see
+[Configuration and persistence](#configuration-and-persistence)), so a saved
+patch is there after a restart whichever front-end saved it. The file holds the
+bank as it is at that moment, so it also keeps a bank you loaded with
+`bank.load_file` first. Loading a bank file alone is not kept until a save or
+`bank.keep`. A start that gives `--bank` loads that file and not `bank.json`,
+so a patch saved since then is in `bank.json` and not in the file you name;
+write the bank to that file as well (`bank.write`, or the file S offers in the
+TUI) if it has to be there. The same holds for the TUI's `User bank` file,
+which a TUI loads into a daemon that has just started.
+
 Not kept: parameter values, the current patch, the patch identity, the MIDI
 selection (it starts at all inputs), and the master volume (it starts at full
 level). A restarted daemon plays `patch.sy1` if you give one and the built-in
@@ -393,9 +413,13 @@ list. Opening a bank, going back to the banks, opening an archive, or the
 archive's open bank changing clears it. Hiding the navigator keeps it, so B
 comes back to the same rows.
 
-A saved slot lives in the daemon's memory. It survives a restart only if you
-wrote the bank to a file and that file is the daemon's `--bank`, the TUI's
-`User bank` setting, or `bank.json` in the config directory.
+A saved slot is kept for you. The daemon writes the whole bank to `bank.json`
+in the config directory as soon as the save succeeds, and loads that file at its
+next start. If it cannot write the file, the daemon refuses the save and the
+slot is as it was. The file S offers to write is an extra copy, for a bank you
+load yourself, give with `--bank` or set as the `User bank`: a start with
+`--bank` loads that file instead of `bank.json`, and so does a TUI with a
+`User bank` that attaches to a daemon just started.
 
 ### MIDI input screen
 
@@ -476,9 +500,10 @@ bank, archive or MIDI input.
 - The page does not keep its own sound or bank in local storage. It shows what
   the daemon holds.
 
-When the page saves a bank, the adapter also sends `bank.keep`, and the daemon
-writes it to `bank.json` in the config directory, which it loads at its next
-start.
+A patch written into a slot in the page reaches the daemon as `patch.save`,
+which writes the bank to `bank.json` in the config directory, and the daemon
+loads that file at its next start. When the page keeps a whole bank (the Keep
+button), the adapter also sends `bank.keep`.
 
 The message-level contract between the page and the daemon is in
 [hosts/standalone/browser/README.md](../hosts/standalone/browser/README.md).
@@ -635,7 +660,7 @@ is saved.
 | File | Written by | Contents |
 |---|---|---|
 | `archive.path` | the daemon | The archive's path on one line. Written when `archive.open` gets an explicit path. Deleted by `archive.close`. Read at daemon start. |
-| `bank.json` | the daemon, on `bank.keep` | The ordinary bank. The browser sends `bank.keep` when it saves a bank. Read at daemon start unless `--bank` is given. |
+| `bank.json` | the daemon, on every successful `patch.save` and on `bank.keep` | The ordinary bank. Read at daemon start unless `--bank` is given. |
 | `config.conf` | the TUI | `bank = <path>`. May also hold a legacy `archive = <path>` line. |
 | `theme.conf` | the TUI, once | Colours. Created with the default palette if absent. |
 
@@ -796,9 +821,10 @@ and `backend`. `backend` comes last because its value, such as `ALSA (default)`,
 has spaces.
 
 `daemon_shutdown` does what `quesynth --stop` does. The daemon answers first,
-then stops the sound and exits. Nothing is saved, so a bank slot you have not
-written out is lost. Every tool then returns `daemon_unavailable` until a daemon
-is started again.
+then stops the sound and exits. It saves nothing more. A patch saved with
+`patch_save` is already in `bank.json`, but a bank you loaded with
+`bank_load_file` and did not keep is lost. Every tool then returns
+`daemon_unavailable` until a daemon is started again.
 
 #### Parameter and state tools
 
@@ -857,10 +883,14 @@ file or else after the file, and returns that name as a `name=` record line.
 the playing patch after the slot. Every change sent before it counts, from any
 client, even one the audio thread has not applied yet: the daemon answers once
 it has. If that takes more than 250 ms, the call fails with `daemon_not_ready`
-and `earlier edits not applied; nothing saved`, and nothing is stored. The slot
-lives in the daemon's memory until `bank_keep` or `bank_write` writes the bank
-out. Without a `name`, or with an empty one, the slot keeps its current name,
-which is `Init` for an empty slot.
+and `earlier edits not applied; nothing saved`, and nothing is stored. The
+daemon then writes the whole bank to `bank.json` in its configuration directory,
+which it loads at its next start, so the slot survives a restart without
+`bank_keep`. If it cannot write the file, the call fails with `internal_error`
+and `cannot keep bank`, and nothing is stored. With no configuration directory
+the slot stays in memory. A daemon started with a bank file on its command
+line loads that file instead of `bank.json`. Without a `name`, or with an empty
+one, the slot keeps its current name, which is `Init` for an empty slot.
 The daemon keeps at most 48 bytes of a name. If that cut falls inside a
 multi-byte character, the name the daemon stores is not valid UTF-8, and JSON
 cannot carry it. The save succeeds, but `patch_current`, `inspect_synth` and the
@@ -886,7 +916,9 @@ daemon write the whole bank as JSON to the path you give, and it replaces a file
 that is already there. `bank_load_file` replaces the browsable bank with a JSON
 bank the daemon reads. The sound does not change, and the bank is not saved.
 `bank_keep` takes no path. It writes `bank.json` in the daemon's configuration
-directory, which the daemon loads at its next start.
+directory, which the daemon loads at its next start. `patch_save` already does
+this after every save, so `bank_keep` is for a bank you replaced with
+`bank_load_file` and did not save a patch into.
 
 #### Archive tools
 

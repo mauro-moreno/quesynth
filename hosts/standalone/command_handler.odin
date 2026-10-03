@@ -26,6 +26,12 @@ Control_Context :: struct {
 	// written only on the control thread, so it needs no lock. nil in a bare
 	// handler test, where the bank commands report they are unavailable.
 	bank:     ^patch.Slots,
+	// Where the bank is written after each patch.save, so a saved patch is
+	// still there after a restart without any client having to ask for that.
+	// Only run_daemon sets it, as it does the archive's keep_path: "" keeps
+	// nothing, which is what every test driving a handler or a server gets, so
+	// none of them writes the user's config directory. Owned by whoever set it.
+	bank_keep: string,
 	// A patch archive opened for browsing, indexed lazily. nil when unsupported.
 	archive:  ^Archive,
 	// Which patch the sound came from, beside the bank that names it and, like
