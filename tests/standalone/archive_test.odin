@@ -1,6 +1,7 @@
 #+build linux
 package standalone_tests
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
@@ -29,12 +30,23 @@ archive_server :: proc(ring: ^standalone.Param_Ring, snap: ^standalone.Snapshot,
 	return cs, arch
 }
 
+// The archive was opened on the control thread, which has the plain heap, not the
+// tracking allocator this thread's tests run under.
+@(private = "file")
+archive_free :: proc(arch: ^standalone.Archive) {
+	{
+		context.allocator = runtime.heap_allocator()
+		standalone.archive_close(arch)
+	}
+	free(arch)
+}
+
 @(test)
 test_archive_open_lists_banks_and_patches :: proc(t: ^testing.T) {
 	ring: standalone.Param_Ring
 	snap: standalone.Snapshot
 	cs, arch := archive_server(&ring, &snap, "arclist")
-	defer {standalone.archive_close(arch);free(arch)}
+	defer archive_free(arch)
 	if !testing.expect(t, standalone.control_server_start(&cs)) {return}
 	defer standalone.control_server_stop(&cs)
 
@@ -64,7 +76,7 @@ test_archive_load_applies_patch_as_transaction :: proc(t: ^testing.T) {
 	ring: standalone.Param_Ring
 	snap: standalone.Snapshot
 	cs, arch := archive_server(&ring, &snap, "arcload")
-	defer {standalone.archive_close(arch);free(arch)}
+	defer archive_free(arch)
 	if !testing.expect(t, standalone.control_server_start(&cs)) {return}
 	defer standalone.control_server_stop(&cs)
 
@@ -99,7 +111,7 @@ test_archive_bad_paths_and_indices :: proc(t: ^testing.T) {
 	ring: standalone.Param_Ring
 	snap: standalone.Snapshot
 	cs, arch := archive_server(&ring, &snap, "arcbad")
-	defer {standalone.archive_close(arch);free(arch)}
+	defer archive_free(arch)
 	if !testing.expect(t, standalone.control_server_start(&cs)) {return}
 	defer standalone.control_server_stop(&cs)
 
