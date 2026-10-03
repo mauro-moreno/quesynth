@@ -253,8 +253,11 @@ other pages get it.
 
 The daemon's registry leaves out seven parameters (50, 51, 86 to 89, 94; see
 `src/registry/registry.odin`), so they can be neither read nor set over the
-socket. The page is shown the values of the slot the identity names, or the
-Init values when there is none, and a `set` of one of them is refused.
+socket. The page is shown the values of the filled slot the identity names;
+otherwise it keeps the last ones it knew, the Init values at first. So when the
+TUI starts a sound in an empty slot with `patch.load <slot> init`, the daemon
+holds those seven at their defaults while the page keeps the earlier ones. A
+`set` of one of them is refused.
 
 An identity with no name (a fresh daemon, or after `patch.clear`) is sent to
 the page as `Untitled`, the panel's own name for an unnamed sound: the panel
