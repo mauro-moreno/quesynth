@@ -100,10 +100,11 @@ jobs:
       # boots the page's own scripts in a stand-in DOM and checks that the
       # sections, the navigator and the controls came out. It needs no browser,
       # so it costs nothing here; the macOS job runs the same file first, ahead
-      # of a real WebKit render.
+      # of a real WebKit render. The terminal UI's copy of the panel's layout
+      # is checked against ui/layout.js alongside it.
       - name: The panel builds (GUI smoke)
         shell: pwsh
-        run: node --test tests/ui/panel-smoke.test.mjs
+        run: node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
 
       # The measurement tool behind the sub-oscillator level section of
       # docs/null-test.md. It cannot run its own measurement here -- that needs

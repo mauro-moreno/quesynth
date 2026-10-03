@@ -21,9 +21,10 @@ odin build tools/s1probe -out:build/s1probe.exe
 ./build/s1probe.exe compare <patch.sy1>
 ```
 
-The probe needs your own Synth1 installation — see [What is not
-included](README.md#what-is-not-included). Nothing of Synth1's is redistributed
-here, so a fresh clone cannot run the null test until you point it at a copy.
+The probe needs your own Synth1 installation — see [Compatibility and
+verification](README.md#compatibility-and-verification). Nothing of Synth1's is
+redistributed here, so a fresh clone cannot run the null test until you point it
+at a copy.
 
 A change that makes one patch better and three worse is not an improvement. Run
 the whole bank before and after.
@@ -51,12 +52,21 @@ odin test tests/patch
 odin test tests/clap
 odin test tests/panel
 odin test tests/vst3
+odin test tests/control
+odin test tests/registry
+odin test tests/standalone
+odin test tests/tui
+odin test tests/mcp
 odin build hosts/standalone -o:speed -out:build/quesynth
 odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
 odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
-node --test tests/ui/panel-smoke.test.mjs
+node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
+for f in hosts/standalone/browser/*.js; do node --check "$f"; done
+node --test tests/browser/*.test.mjs
+node --test tests/mcp/*.test.mjs
+node --test tests/docs/*.test.mjs
 ```
 
 CI runs these on Windows, Linux, and macOS. The VST3 and CLAP plugins build on
@@ -66,6 +76,19 @@ Windows and Linux -- the Linux editor is WebKitGTK, loaded at run time, so no
 assembles it with `tools/build-au.sh`, validates it with `auval`, and then runs
 it through `pluginval` with `tools/validate-au.sh`, so if you touch `hosts/au`
 or `src/audiounit` without a Mac, lean on the macOS CI job.
+
+The browser adapter's tests need only Node: they run the adapter in process
+against a stand-in daemon on a Unix socket, so they skip on Windows.
+`node --check` is run once per file because it reads only its first argument.
+
+The MCP server is `quesynth --mcp`, part of the standalone executable, so
+`odin test tests/mcp` tests it in Odin. The Node tests in `tests/mcp` launch
+the binary the way `.mcp.json` does and speak to it over stdio, against a
+stand-in daemon on a Unix socket; `tests/docs` runs the same binary to check
+the manual's MCP examples. Build it first. They use `build/quesynth`, or the
+path in `QUESYNTH_BIN`, and they skip on Windows. `tests/mcp/schema.test.mjs`
+puts every Unicode scalar value to the schema patterns and the binary, so it
+takes about 15 s and uses up to 8 worker processes.
 
 The panel smoke test above boots `ui/` in a stand-in DOM and needs nothing but
 Node. The macOS job goes further: it checks that the macOS editor -- the
@@ -87,6 +110,15 @@ parameter table too, or CI will fail on a stale one:
 
 ```
 odin run tools/uiparams
+```
+
+The terminal UI shows the panel's sections and groups in the panel's order, and
+prints each control under the panel's label, from a table generated out of
+`ui/layout.js`. If you touched the layout or a label, regenerate it, or
+`tests/ui/tui-layout.test.mjs` fails on a stale one:
+
+```
+node tools/tuilayout.mjs
 ```
 
 If you touched `src/patch/sy1.odin`, the panel carries a second reader of that

@@ -64,18 +64,46 @@ Audio_Backend :: struct {
 	destroy:    proc(b: ^Audio_Backend),
 }
 
-Midi_Input :: struct {
-	impl:    rawptr,
+// One input the platform reports, open or not. `id` is what midi.select takes:
+// a single token -- no spaces, no line breaks, never "all" or "none" -- that
+// the backend can find the same device by again. `name` is free text, and two
+// identical controllers may share it. Both strings are allocated; a list is
+// released with midi_devices_free.
+Midi_Device :: struct {
+	id:   string,
+	name: string,
+}
 
-	// Number of inputs actually opened, and their names, valid after `open`.
-	// Opening zero devices is not a failure: a machine with no MIDI hardware
-	// still runs the synthesiser, it just has nothing to play it with.
-	count:   int,
-	names:   []string,
+Midi_Input :: struct {
+	impl:         rawptr,
+
+	// Number of inputs currently open, and their names, valid after `open`
+	// or `open_device`. Opening zero devices is not a failure: a machine with
+	// no MIDI hardware still runs the synthesiser, it just has nothing to play
+	// it with.
+	count:        int,
+	names:        []string,
 
 	// Open every available input and push what arrives into `queue`.
-	open:    proc(m: ^Midi_Input, queue: ^Midi_Queue) -> bool,
-	// Stop and close every input. After this returns, nothing further is
-	// pushed into the queue.
-	close:   proc(m: ^Midi_Input),
+	open:         proc(m: ^Midi_Input, queue: ^Midi_Queue) -> bool,
+	// Enumerate every input without opening any. Fresh on every call, so a
+	// controller plugged in since the last call is there.
+	list:         proc(m: ^Midi_Input) -> []Midi_Device,
+	// Open exactly the input `list` reported as `id`. False if it is gone or
+	// refuses; nothing is opened then.
+	open_device:  proc(m: ^Midi_Input, queue: ^Midi_Queue, id: string) -> bool,
+	// Stop and close every open input but keep the backend usable for another
+	// open. After this returns, nothing further is pushed into the queue.
+	// Safe to call with nothing open.
+	close_inputs: proc(m: ^Midi_Input),
+	// Close every input and release the backend itself.
+	close:        proc(m: ^Midi_Input),
+}
+
+midi_devices_free :: proc(devices: []Midi_Device) {
+	for d in devices {
+		delete(d.id)
+		delete(d.name)
+	}
+	delete(devices)
 }

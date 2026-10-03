@@ -35,7 +35,7 @@ install_shutdown_handler :: proc() {
 //
 // Everything the shutdown actually involves -- stopping the stream, joining the
 // audio thread, closing the MIDI devices, freeing the engine -- happens on the
-// main thread in run_live. That is deliberate. This routine runs on an injected
+// main thread in run_daemon. That is deliberate. This routine runs on an injected
 // thread while the rest of the process keeps going, so tearing COM objects down
 // here would race the render thread that is still using them. Returning true
 // tells Windows the signal was handled and suppresses the default kill, which
@@ -52,6 +52,12 @@ console_handler :: proc "system" (control_type: win.DWORD) -> win.BOOL {
 
 shutdown_requested :: proc() -> bool {
 	return bool(intrinsics.atomic_load_explicit(&g_shutdown, .Acquire))
+}
+
+// Set from the control server's daemon.shutdown handler. Raises the same flag
+// the console handler does, so a remote stop unwinds like Ctrl-C.
+request_shutdown :: proc() {
+	intrinsics.atomic_store_explicit(&g_shutdown, true, .Release)
 }
 
 sleep_ms :: proc(milliseconds: int) {
