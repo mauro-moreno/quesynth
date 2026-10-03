@@ -26,7 +26,8 @@ import "../../src/control"
 // connection that sent it is left owed an answer (its Wait_Ticket): it is read
 // no further, and the answer is framed into its output when the audio thread's
 // result for that batch comes by, or the outcome is reported unknown once
-// CHECKED_WAIT_LIMIT has passed. Every other connection is served all the while.
+// CHECKED_WAIT_LIMIT has passed or the server stops. Every other connection is
+// served all the while.
 
 CONTROL_READ_BUFFER :: 4096
 // Short because the poll tick is also how soon a Program Change from a
@@ -38,6 +39,10 @@ CONTROL_POLL_TIMEOUT_MS :: 10
 CONTROL_WAIT_POLL_TIMEOUT_MS :: 1
 // How long a guarded batch may wait for the audio thread's answer.
 CHECKED_WAIT_LIMIT :: 250 * time.Millisecond
+// How long a stopping server gives its last replies to reach clients that are
+// slow to read them. Short, so a client that reads nothing cannot hold up the
+// shutdown: what it has not taken by then is lost with the connection.
+CONTROL_STOP_FLUSH_LIMIT :: 100 * time.Millisecond
 MAX_CONNECTIONS :: 16
 CONTROL_OUTPUT_LIMIT :: 256 * 1024
 
@@ -292,6 +297,14 @@ control_server_run :: proc(data: rawptr) {
 		}
 	}
 
+	// Stopped, by daemon.shutdown, a signal or a lost endpoint. A connection owed
+	// an answer still gets one before it closes -- the result if the audio
+	// thread has posted it, otherwise the unknown outcome at once, since the
+	// batch stays queued and the audio thread runs on until the stream stops --
+	// and nothing more is read from it or served. Then the replies get a short
+	// while to go out, so none is cut off mid-frame.
+	control_resolve_waits(cs, &conns, &builder, stopping = true)
+	control_flush_all(&conns)
 	for ci in 0 ..< MAX_CONNECTIONS {
 		if conns[ci].used {
 			control_close(&conns[ci])
@@ -311,10 +324,11 @@ control_close :: proc(conn: ^Connection) {
 // taken, and goes to the connection whose ticket carries its serial; a result no
 // connection waits for (its sender gave up or hung up) is dropped, and since a
 // serial is never reused it cannot answer any other request. Then a connection
-// whose limit has passed is told the outcome is unknown. A result that is there
-// by now wins over the limit.
+// whose limit has passed is told the outcome is unknown, as is every connection
+// still waiting when the server is `stopping`. A result that is there by now
+// wins over the limit.
 @(private = "file")
-control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Connection, builder: ^strings.Builder) {
+control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Connection, builder: ^strings.Builder, stopping := false) {
 	if cs.ctx.ring != nil {
 		for {
 			result, ok := param_ring_take_result(cs.ctx.ring)
@@ -323,7 +337,7 @@ control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Conn
 				conn := &conns[ci]
 				if conn.used && conn.wait.serial != 0 && conn.wait.serial == result.serial {
 					control_write_checked_reply(builder, conn.wait_req, conn.wait, result)
-					if !control_finish_wait(cs, conn, builder) { control_close(conn) }
+					if !control_finish_wait(cs, conn, builder, stopping) { control_close(conn) }
 					break
 				}
 			}
@@ -331,20 +345,24 @@ control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Conn
 	}
 	for ci in 0 ..< MAX_CONNECTIONS {
 		conn := &conns[ci]
-		if conn.used && conn.wait.serial != 0 && time.tick_since(conn.wait_since) >= CHECKED_WAIT_LIMIT {
+		if conn.used && conn.wait.serial != 0 && (stopping || time.tick_since(conn.wait_since) >= CHECKED_WAIT_LIMIT) {
 			control_write_checked_unknown(builder, conn.wait_req)
-			if !control_finish_wait(cs, conn, builder) { control_close(conn) }
+			if !control_finish_wait(cs, conn, builder, stopping) { control_close(conn) }
 		}
 	}
 }
 
 // The reply to a connection's guarded request is in `builder`: queue it ahead of
 // anything the connection sent after the request, which is already buffered and
-// is answered now, and which may itself start another wait.
+// is answered now, and which may itself start another wait. A stopping server
+// only queues the reply: it executes nothing more, so what was sent after the
+// request is not answered.
 @(private = "file")
-control_finish_wait :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder) -> bool {
+control_finish_wait :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder, stopping: bool) -> bool {
 	conn.wait = {}
-	return control_queue_reply(conn, builder) && control_serve_frames(cs, conn, builder) && control_flush(conn, {})
+	if !control_queue_reply(conn, builder) { return false }
+	if stopping { return true }
+	return control_serve_frames(cs, conn, builder) && control_flush(conn, {})
 }
 
 // Frame the reply in `builder` onto the connection's output. False when that
@@ -425,4 +443,42 @@ control_flush :: proc(conn: ^Connection, re: posix.Poll_Event) -> bool {
 		}
 	}
 	return .HUP not_in re
+}
+
+// The last sends of a stopping server. Each connection with output left gets it
+// sent as its reader takes it, for CONTROL_STOP_FLUSH_LIMIT in all at most; one
+// that has nothing left to send, faults or hangs up is closed at once, and the
+// caller closes whatever is still there after that.
+@(private = "file")
+control_flush_all :: proc(conns: ^[MAX_CONNECTIONS]Connection) {
+	started := time.tick_now()
+	for {
+		pollset: [MAX_CONNECTIONS]posix.pollfd
+		conn_of: [MAX_CONNECTIONS]int
+		nfds := 0
+		for ci in 0 ..< MAX_CONNECTIONS {
+			if !conns[ci].used { continue }
+			if len(conns[ci].output) == 0 {
+				control_close(&conns[ci])
+				continue
+			}
+			pollset[nfds] = {
+				fd     = conns[ci].fd,
+				events = {.OUT},
+			}
+			conn_of[nfds] = ci
+			nfds += 1
+		}
+		left := CONTROL_STOP_FLUSH_LIMIT - time.tick_since(started)
+		if nfds == 0 || left <= 0 { return }
+		if posix.poll(&pollset[0], posix.nfds_t(nfds), c.int(left / time.Millisecond) + 1) <= 0 { continue }
+		for pi in 0 ..< nfds {
+			re := pollset[pi].revents
+			if re == {} { continue }
+			conn := &conns[conn_of[pi]]
+			if re & {.ERR, .NVAL} != {} || !control_flush(conn, re) {
+				control_close(conn)
+			}
+		}
+	}
 }

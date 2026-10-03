@@ -708,6 +708,49 @@ test_a_client_that_hangs_up_while_its_batch_is_pending_leaves_the_daemon_serving
 }
 
 @(test)
+test_a_guarded_batch_pending_when_another_client_shuts_the_daemon_down_still_gets_its_answer :: proc(t: ^testing.T) {
+	b := bench_make(draining = false)
+	defer bench_free(b)
+	other, connected := connect_unix(b.server.path)
+	if !testing.expect(t, connected) { return }
+	defer posix.close(other)
+
+	// The audio thread has not reached the batch, and a read waits behind it.
+	send_together(b.client, strings.concatenate({"1 1 ", BATCH}, context.temp_allocator), "1 2 parameter.get filter.cutoff")
+	if !testing.expect(t, await_queued(b, 3)) { return }
+
+	// Another client stops the daemon and is answered at once.
+	shutdown := answered_promptly(t, other, "1 9 daemon.shutdown", "1 9 ok")
+	testing.expect_value(t, shutdown, "1 9 ok")
+	testing.expect(t, standalone.shutdown_requested(), "daemon.shutdown raises the flag the main thread waits on")
+	_, early := reply_within(b.client, 0)
+	testing.expect(t, !early, "the guarded request was answered before anything decided it")
+
+	// What run_daemon's main thread does once it sees the flag.
+	started := time.tick_now()
+	standalone.control_server_stop(&b.server)
+	stopping := time.tick_since(started)
+	testing.expectf(t, stopping < 200 * time.Millisecond, "stopping took %v, as if it waited out the batch", stopping)
+
+	// The client is told the outcome is unknown, once, and then the connection
+	// ends: the read behind the batch is not answered.
+	reply, arrived := reply_within(b.client, time.Second)
+	testing.expect(t, arrived, "the connection closed without the answer it was owed")
+	testing.expect_value(t, reply, strings.concatenate({"1 1 ", UNKNOWN}, context.temp_allocator))
+	testing.expect(t, reliability_hung_up(b.client, time.Second), "something followed the one answer")
+
+	// Which is true: the batch is still queued, whole, for the audio thread.
+	c1, ok1 := standalone.param_ring_pop(&b.live.ring)
+	c2, ok2 := standalone.param_ring_pop(&b.live.ring)
+	c3, ok3 := standalone.param_ring_pop(&b.live.ring)
+	testing.expect(t, ok1 && ok2 && ok3)
+	testing.expect_value(t, c1.kind, standalone.Param_Command_Kind.Set)
+	testing.expect_value(t, c2.kind, standalone.Param_Command_Kind.Set)
+	testing.expect_value(t, c3.kind, standalone.Param_Command_Kind.Commit_Checked)
+	testing.expect(t, ring_is_empty(b))
+}
+
+@(test)
 test_control_handle_returns_at_once_for_a_guarded_batch_and_leaves_its_reply_to_the_ticket :: proc(t: ^testing.T) {
 	b := bench_make(draining = false, serving = false)
 	defer bench_free(b)

@@ -49,6 +49,16 @@ reliability_read_exact :: proc(fd: posix.FD, data: []u8) -> bool {
 	return true
 }
 
+@(private)
+// Whether the peer closes the connection within the limit, with nothing left to
+// read before the end: a read that returns 0, not a timeout and not more bytes.
+reliability_hung_up :: proc(fd: posix.FD, limit: time.Duration) -> bool {
+	fds := [1]posix.pollfd{{fd = fd, events = {.IN}}}
+	if posix.poll(&fds[0], 1, c.int(limit / time.Millisecond)) <= 0 { return false }
+	next: [1]u8
+	return posix.read(fd, raw_data(next[:]), 1) == 0
+}
+
 @(test)
 test_control_server_self_terminates_when_endpoint_vanishes :: proc(t: ^testing.T) {
 	ring: standalone.Param_Ring
@@ -61,6 +71,16 @@ test_control_server_self_terminates_when_endpoint_vanishes :: proc(t: ^testing.T
 	if !testing.expect(t, standalone.control_server_start(&cs)) { return }
 	defer standalone.control_server_stop(&cs)
 
+	// A client the server has accepted, so its standing down can be seen. The
+	// shutdown flag alone cannot show it: it belongs to the whole process, and
+	// another test's daemon.shutdown may have raised it already.
+	client, connected := connect_unix(cs.path)
+	if !testing.expect(t, connected) { return }
+	defer posix.close(client)
+	reliability_send(client, "1 1 daemon.status")
+	status := reliability_reply(client)
+	testing.expectf(t, strings.has_prefix(status, "1 1 ok"), "daemon.status -> %s", status)
+
 	// Take the socket out from under it, exactly as a newer daemon's takeover or a
 	// stray unlink would. The server must notice it no longer owns its endpoint
 	// and ask the daemon to shut down, rather than keep running unreachably.
@@ -68,15 +88,8 @@ test_control_server_self_terminates_when_endpoint_vanishes :: proc(t: ^testing.T
 	defer delete(cpath)
 	posix.unlink(cpath)
 
-	stopped := false
-	for _ in 0 ..< 60 {
-		if standalone.shutdown_requested() {
-			stopped = true
-			break
-		}
-		time.sleep(50 * time.Millisecond)
-	}
-	testing.expect(t, stopped, "a daemon whose socket vanished must request shutdown")
+	testing.expect(t, reliability_hung_up(client, 3 * time.Second), "a daemon whose socket vanished must stop serving")
+	testing.expect(t, standalone.shutdown_requested(), "a daemon whose socket vanished must request shutdown")
 }
 
 @(test)

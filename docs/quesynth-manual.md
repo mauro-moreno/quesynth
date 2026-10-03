@@ -216,7 +216,10 @@ revision differs, nothing is applied and the reply is
 audio thread has not answered within 250 ms the reply is
 `err daemon_not_ready commit outcome unknown; inspect state before retrying`:
 the batch stays queued and may still be applied, and an answer that comes after
-that is discarded. A first token that starts with
+that is discarded. If the daemon is stopped while the batch waits, that client
+gets the same reply at once, or the audio thread's answer if it has already
+come, before the connection closes, and the requests it sent behind the batch
+are not answered. A first token that starts with
 `expected_revision=` and is not followed by a non-negative integer is refused
 with `invalid_payload expected_revision needs a nonnegative integer`. Only the
 digits 0 to 9 make one: a sign, a `0x` or `0b` prefix, an underscore, nothing at
@@ -1143,7 +1146,8 @@ When the request was already sent, the message of the failure ends with
   reply could not be read.
 - `daemon_not_ready` with `commit outcome unknown; inspect state before
   retrying`: the daemon queued a guarded batch and the audio thread did not
-  answer within 250 ms. The batch stays queued and may still be applied.
+  answer within 250 ms, or the daemon was stopped first. The batch stays queued
+  and may still be applied.
 
 In each case read the state before you send anything again: `state_snapshot`
 or `inspect_synth` for parameters, `patch_current`, `bank_list`,
