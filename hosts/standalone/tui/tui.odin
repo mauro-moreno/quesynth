@@ -99,11 +99,10 @@ run :: proc(path: string) -> int {
 	defer config_free(&config)
 	configuring := false
 	config_sel := 0
-	// A remembered user bank is loaded so it is browsable from the first B.
-	if connected && config.bank_path != "" {
-		client_bank_load_file(&client, config.bank_path)
-	}
 	if connected {
+		// The remembered User bank, so it is browsable from the first B --
+		// unless a client has changed the daemon's bank since it started.
+		tui_load_user_bank(&client, config.bank_path)
 		tui_migrate_archive(&client, &config)
 		tui_read_provenance(&client, &prov)
 		tui_read_midi(&client, &current_midi)
@@ -620,6 +619,20 @@ tui_hand_over_archive :: proc(client: ^Client, legacy: string) -> bool {
 	return client_archive_adopt(client, legacy)
 }
 
+// The User bank from config.conf, loaded as the TUI attaches -- but only into a
+// daemon whose bank nothing has changed since it started (bank_rev 0), the bank
+// it began with from --bank, bank.json or the factory. Once a client has saved
+// into it or loaded a bank, that bank is the one to keep: loading the file over
+// it at every TUI start threw away every save not written to that very file,
+// another TUI's or a browser's too. Onto a fresh daemon the named file still
+// wins, as --bank does. True when it was loaded.
+tui_load_user_bank :: proc(client: ^Client, bank_path: string) -> bool {
+	if bank_path == "" { return false }
+	p, ok := client_provenance(client, context.temp_allocator)
+	if !ok || p.bank_rev != 0 { return false }
+	return client_bank_load_file(client, bank_path)
+}
+
 // Edit one remembered setting from the settings screen. The archive path is
 // the daemon's: a path opens that archive there for every front-end, and a
 // blank one closes it and forgets it, so no start reopens it. Setting the bank
@@ -640,6 +653,13 @@ tui_edit_setting :: proc(client: ^Client, config: ^Config, field: int, theme: Th
 			return
 		}
 		trimmed := strings.trim_space(path)
+		// Kept as the absolute path the daemon is sent, so the setting names
+		// the same file whichever directory a later TUI starts in.
+		if trimmed != "" {
+			abs, resolved := client_absolute_path(client, trimmed)
+			if !resolved { return }
+			trimmed = abs
+		}
 		if config_save(Config{bank_path = trimmed}) {
 			delete(config.bank_path)
 			config.bank_path = strings.clone(trimmed)

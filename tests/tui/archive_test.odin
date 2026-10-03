@@ -2,6 +2,7 @@
 package tui_tests
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
@@ -53,7 +54,8 @@ test_tui_archive_browse_and_load :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(patch_names), 2)
 	testing.expect_value(t, patch_names[0], "Test Patch One")
 
-	// What every peer reads: the archive open, its bank open, the path as given.
+	// What every peer reads: the archive open, its bank open, and the path as
+	// this TUI sent it, under its own working directory.
 	current, cok := tui.client_archive_current(&client)
 	defer tui.archive_state_free(&current)
 	testing.expect(t, cok)
@@ -62,7 +64,8 @@ test_tui_archive_browse_and_load :: proc(t: ^testing.T) {
 	testing.expect_value(t, current.bank, 0)
 	testing.expect_value(t, current.patches, 2)
 	testing.expect_value(t, current.rev, 2)
-	testing.expect_value(t, current.path, "tests/zip/fixtures/nested.zip")
+	cwd, _ := os.get_working_directory(context.temp_allocator)
+	testing.expect_value(t, current.path, fmt.tprintf("%s/tests/zip/fixtures/nested.zip", cwd))
 	testing.expect_value(t, current.bank_name, "bankA.zip")
 
 	// From the open bank, and from the bank named: each one replacement.

@@ -2,6 +2,7 @@ package tui
 
 import "core:c"
 import "core:fmt"
+import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:sys/posix"
@@ -269,7 +270,9 @@ client_patch_load :: proc(cl: ^Client, slot: int, init := false) -> bool {
 // Load a patch file. Returns the patch's own name (from inside the file, cloned;
 // caller frees) and whether it loaded.
 client_patch_load_file :: proc(cl: ^Client, path: string) -> (name: string, ok: bool) {
-	line := fmt.tprintf("%d %d patch.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path)
+	abs, resolved := client_absolute_path(cl, path)
+	if !resolved { return "", false }
+	line := fmt.tprintf("%d %d patch.load_file %s", control.PROTOCOL_VERSION, cl.next_id, abs)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	if !sent { return "", false }
@@ -390,11 +393,40 @@ client_patch_save :: proc(cl: ^Client, slot: int, name: string) -> bool {
 }
 
 client_bank_write :: proc(cl: ^Client, path: string) -> bool {
-	return client_ok(cl, fmt.tprintf("%d %d bank.write %s", control.PROTOCOL_VERSION, cl.next_id, path))
+	abs, resolved := client_absolute_path(cl, path)
+	if !resolved { return false }
+	return client_ok(cl, fmt.tprintf("%d %d bank.write %s", control.PROTOCOL_VERSION, cl.next_id, abs))
 }
 
 client_bank_load_file :: proc(cl: ^Client, path: string) -> bool {
-	return client_ok(cl, fmt.tprintf("%d %d bank.load_file %s", control.PROTOCOL_VERSION, cl.next_id, path))
+	abs, resolved := client_absolute_path(cl, path)
+	if !resolved { return false }
+	return client_ok(cl, fmt.tprintf("%d %d bank.load_file %s", control.PROTOCOL_VERSION, cl.next_id, abs))
+}
+
+// The daemon opens a path it is sent from its own working directory: the one
+// it was started in, which is not this TUI's once another front-end started it
+// or it restarted somewhere else. And archive.open keeps the path as given, to
+// reopen at the next start. So every request that names a file sends it
+// absolute, made so here, where no wrapper that sends one can skip it.
+//
+// A relative path is put under this process's working directory, where the
+// user typed it, and nothing more: no cleaning, no symlink resolved, no check
+// that it exists. os.get_absolute_path does all three on Linux -- it opens the
+// file -- so it would refuse the new file bank.write is asked to create. `~` is
+// not expanded; the prompt never was a shell. "" stays "" (archive.open's
+// "reopen the remembered one"). Without a working directory nothing is sent:
+// a relative path would name a file wherever the daemon happens to be.
+@(private)
+client_absolute_path :: proc(cl: ^Client, path: string) -> (string, bool) {
+	if path == "" || path[0] == '/' { return path, true }
+	cwd, err := os.get_working_directory(context.temp_allocator)
+	if err != nil || cwd == "" {
+		client_set_notice(cl, "cannot read the working directory to resolve a relative path")
+		return "", false
+	}
+	sep := cwd[len(cwd) - 1] == '/' ? "" : "/"
+	return strings.concatenate({cwd, sep, path}, context.temp_allocator), true
 }
 
 // The navigator's archive half. Names are listed in daemon-index order, so a
@@ -403,9 +435,11 @@ client_bank_load_file :: proc(cl: ^Client, path: string) -> bool {
 // archive.open, with no path when `path` is empty: the daemon then reopens the
 // archive it remembers.
 client_archive_open :: proc(cl: ^Client, path: string) -> (banks: int, ok: bool) {
-	line := path == "" \
+	abs, resolved := client_absolute_path(cl, path)
+	if !resolved { return 0, false }
+	line := abs == "" \
 		? fmt.tprintf("%d %d archive.open", control.PROTOCOL_VERSION, cl.next_id) \
-		: fmt.tprintf("%d %d archive.open %s", control.PROTOCOL_VERSION, cl.next_id, path)
+		: fmt.tprintf("%d %d archive.open %s", control.PROTOCOL_VERSION, cl.next_id, abs)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	defer delete(payload)
@@ -417,7 +451,9 @@ client_archive_open :: proc(cl: ^Client, path: string) -> (banks: int, ok: bool)
 // The daemon decides and opens in one request. A peer's existing choice,
 // including a remembered path that will not open, is never overwritten.
 client_archive_adopt :: proc(cl: ^Client, path: string) -> bool {
-	line := fmt.tprintf("%d %d archive.adopt %s", control.PROTOCOL_VERSION, cl.next_id, path)
+	abs, resolved := client_absolute_path(cl, path)
+	if !resolved { return false }
+	line := fmt.tprintf("%d %d archive.adopt %s", control.PROTOCOL_VERSION, cl.next_id, abs)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	defer delete(payload)

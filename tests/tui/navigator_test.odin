@@ -29,6 +29,14 @@ import tui "../../hosts/standalone/tui"
 @(private = "file")
 BANKS :: "tests/standalone/fixtures/banks.zip"
 
+// BANKS as the TUI sends it, and so as the daemon keeps it: under the TUI's
+// working directory, since the daemon need not share it.
+@(private = "file")
+banks_sent :: proc() -> string {
+	cwd, _ := os.get_working_directory(context.temp_allocator)
+	return fmt.tprintf("%s/%s", cwd, BANKS)
+}
+
 // Framing written out by hand -- the documented little-endian u32 length,
 // then the payload -- rather than borrowed from the codec.
 @(private = "file")
@@ -630,7 +638,7 @@ test_two_tuis_share_the_open_bank_but_not_the_sound :: proc(t: ^testing.T) {
 	expect_names(t, nav_b.bank_names, "Alpha.zip", "Beta Bank.zip")
 	testing.expect_value(t, nav_b.archive.bank, 1)
 	testing.expect_value(t, wire_ask(peer, "1 1 archive.current"),
-		"1 1 ok open=1 banks=2 bank=1 patches=3 archive_rev=2\npath=tests/standalone/fixtures/banks.zip\nbank_name=Beta Bank.zip")
+		fmt.tprintf("1 1 ok open=1 banks=2 bank=1 patches=3 archive_rev=2\npath=%s\nbank_name=Beta Bank.zip", banks_sent()))
 	// Browsing loaded nothing.
 	testing.expect_value(t, replacements(&r.ring), 0)
 	testing.expect_value(t, wire_ask(peer, "1 2 patch.current"),
@@ -683,7 +691,7 @@ test_two_tuis_share_the_open_bank_but_not_the_sound :: proc(t: ^testing.T) {
 	testing.expect(t, tui.nav_playing(prov_a, tui.ORDINARY, k))
 	testing.expect(t, !tui.nav_playing(prov_a, 0, k))
 	testing.expect_value(t, wire_ask(peer, "1 5 archive.current"),
-		"1 5 ok open=1 banks=2 bank=0 patches=2 archive_rev=5\npath=tests/standalone/fixtures/banks.zip\nbank_name=Alpha.zip")
+		fmt.tprintf("1 5 ok open=1 banks=2 bank=0 patches=2 archive_rev=5\npath=%s\nbank_name=Alpha.zip", banks_sent()))
 }
 
 // A refusal is an answer, not a disconnect or an invisible false return.
@@ -717,7 +725,7 @@ test_legacy_handoff_is_one_daemon_authoritative_request :: proc(t: ^testing.T) {
 		client, far := answering(fmt.tprintf("1 1 ok adopted=%d open=1 banks=2 archive_rev=1", adopted))
 		defer {tui.client_close(&client); posix.close(far)}
 		testing.expect_value(t, tui.tui_hand_over_archive(&client, BANKS), adopted == 1)
-		testing.expect_value(t, take_frame(far), "1 1 archive.adopt tests/standalone/fixtures/banks.zip")
+		testing.expect_value(t, take_frame(far), fmt.tprintf("1 1 archive.adopt %s", banks_sent()))
 		testing.expect_value(t, client.next_id, 2)
 	}
 }
@@ -735,7 +743,7 @@ test_legacy_archive_path_is_handed_to_the_daemon :: proc(t: ^testing.T) {
 	defer wire_ask(peer, "1 99 archive.close")
 
 	testing.expect(t, tui.tui_hand_over_archive(&client, BANKS))
-	taken := "ok open=1 banks=2 bank=-1 patches=0 archive_rev=1\npath=tests/standalone/fixtures/banks.zip\nbank_name="
+	taken := fmt.tprintf("ok open=1 banks=2 bank=-1 patches=0 archive_rev=1\npath=%s\nbank_name=", banks_sent())
 	testing.expect_value(t, wire_ask(peer, "1 1 archive.current"), fmt.tprintf("1 1 %s", taken))
 
 	// The daemon remembers one now: a leftover never replaces it.
@@ -828,7 +836,7 @@ test_legacy_archive_line_leaves_config_conf_only_once_the_daemon_takes_it :: pro
 	after, held = migrate(&client, file, legacy)
 	testing.expect_value(t, after, "# Quesynth front-end settings.\nbank = /tmp/my bank.json\n")
 	testing.expect_value(t, held, "")
-	taken := "ok open=1 banks=2 bank=-1 patches=0 archive_rev=1\npath=tests/standalone/fixtures/banks.zip\nbank_name="
+	taken := fmt.tprintf("ok open=1 banks=2 bank=-1 patches=0 archive_rev=1\npath=%s\nbank_name=", banks_sent())
 	testing.expect_value(t, wire_ask(peer, "1 5 archive.current"), fmt.tprintf("1 5 %s", taken))
 
 	// The daemon remembers one now: a leftover is not handed over and stays.
@@ -846,7 +854,7 @@ test_legacy_archive_line_leaves_config_conf_only_once_the_daemon_takes_it :: pro
 	testing.expect_value(t, after, "# my own note\n\nbank = /tmp/my bank.json\ncolour = blue")
 	testing.expect_value(t, held, "")
 	testing.expect_value(t, wire_ask(peer, "1 8 archive.current"),
-		"1 8 ok open=1 banks=2 bank=-1 patches=0 archive_rev=3\npath=tests/standalone/fixtures/banks.zip\nbank_name=")
+		fmt.tprintf("1 8 ok open=1 banks=2 bank=-1 patches=0 archive_rev=3\npath=%s\nbank_name=", banks_sent()))
 	testing.expect(t, client.fd >= 0)
 
 	check_config_edits(t, file)

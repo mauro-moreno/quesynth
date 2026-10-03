@@ -338,6 +338,16 @@ It works only in the ordinary bank, since an archive is read-only. Prompts take
 printable ASCII. Escape cancels, so a path with other characters cannot be
 typed there; open it with the browser.
 
+A path typed at a prompt (O, L, the file S offers, Z, and both settings) is
+read from the directory the TUI was started in, and the daemon is sent it as an
+absolute path. The daemon may have started elsewhere, so a relative path sent
+as typed would name a file in its directory, not yours. A path that starts with
+`/` is sent as typed. A relative one is only put after the TUI's directory:
+`..`, `.`, symlinks and spaces stay as you typed them, and the file need not
+exist yet. The prompt is not a shell, so `~` is not expanded. If the TUI cannot
+read its own directory (it was deleted), it sends nothing and the footer says
+`cannot read the working directory to resolve a relative path`.
+
 Enter on an empty slot starts a new sound: every parameter at its default, the
 Init patch an empty slot stands for. The TUI sends `patch.load <slot> init`. The
 daemon applies the defaults of all 99 parameters as one replacement and names
@@ -399,8 +409,11 @@ footer says `the daemon refused ...` and the screen stays open.
 C shows two settings, selected with Up and Down and edited with Enter.
 
 - `Zip archive`. A path opens that archive in the daemon for every front-end. A
-  blank answer closes the archive and forgets its path.
-- `User bank`. The path is written to `config.conf` and loaded now.
+  blank answer closes the archive and forgets its path. Because the path is
+  sent absolute, the daemon reopens the same archive whatever directory it
+  next starts in.
+- `User bank`. The path, made absolute, is written to `config.conf` and loaded
+  now.
 
 The screen footer prints the path of `config.conf`.
 
@@ -640,8 +653,13 @@ follows the link and rewrites the target file, and the link stays a link. The
 write goes to a temporary file in the same directory and is renamed over the
 target, so a crash leaves the old file whole.
 
-Each time a TUI starts, it loads the `bank` file named in `config.conf` into the
-running daemon. That replaces the daemon's browsable bank. An `archive =` line
+When a TUI starts, it loads the `bank` file named in `config.conf` into the
+daemon only if no client has changed the daemon's bank since the daemon started
+(`bank_rev` is still 0). The file then replaces the bank the daemon started
+with, as `--bank` does. Once anything has been saved into the bank or a bank
+file loaded, from any front-end, a TUI starting or attaching leaves the bank as
+it is. A relative `bank` value is made absolute against the TUI's directory when
+it is sent. `config.conf` itself is not rewritten. An `archive =` line
 from before the daemon kept the path itself is offered to a daemon that remembers
 no archive, and removed from `config.conf` once the daemon takes it.
 
