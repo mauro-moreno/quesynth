@@ -250,7 +250,9 @@ refreshes about every 400 ms. It holds no sound state. When the daemon's
 revision moves, because another client loaded a patch or a MIDI controller
 changed something, the values are read again.
 
-Q, Ctrl-C or a closed terminal quits the TUI and leaves the daemon running.
+Q or a closed terminal quits the TUI and leaves the daemon running. Ctrl-C ends
+the TUI too and the daemon keeps running, but it does not restore the terminal;
+see [Key input limits](#key-input-limits).
 If the daemon goes away the footer shows
 `DISCONNECTED - cached values are stale; edits disabled`, and Enter
 reconnects.
@@ -359,7 +361,7 @@ under the keys shows what you typed. While typing:
 | Up, Down | Move among the rows shown |
 | Enter | Stop typing and keep the search |
 | Esc | Stop typing and clear the search |
-| Ctrl-C | Quit the TUI |
+| Ctrl-C | End the TUI, as anywhere else; see [Key input limits](#key-input-limits) |
 
 With a search kept, the keys work as usual on the rows shown: Enter opens or
 loads the selected row, and S saves into it. `/` edits the search again, and
@@ -411,6 +413,13 @@ burst, and an arrow split across two chunks, behave as follows.
   the navigator.
 - Ctrl- and Shift-arrows (`ESC [ 1 ; 5 B`) do nothing outside a search. In an
   open search they move like the plain arrows.
+- On a normal terminal Ctrl-C is not read as a key. The TUI leaves the
+  terminal's signal keys on and has no handler, so Ctrl-C sends SIGINT and ends
+  it at once, on any screen and in an open search. It does not leave the
+  alternate screen or show the cursor again, and the shell sees exit status 130.
+  The daemon keeps running. Quit with Q to avoid this. After a Ctrl-C,
+  `tput rmcup; tput cnorm` restores the screen and the cursor. `reset` may bring
+  back only the cursor.
 
 ## Browser
 
