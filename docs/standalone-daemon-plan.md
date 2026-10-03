@@ -324,6 +324,7 @@ beside the bank and is touched only by the control thread:
 |---|---|---|---|---|---|
 | daemon start, `patch.clear` | -1 | `none` | empty | empty | -1/-1 |
 | `patch.load k`, native Program Change of slot k | k | `bank` | bank label | slot name | -1/-1 |
+| `patch.load k init`, slot k empty | k | `bank` | bank label | `Init` | -1/-1 |
 | `patch.save k [name]` | k | `bank` | bank label | final name | -1/-1 |
 | `patch.load_file p` | -1 | `file` | `file` | patch's name, else file name | -1/-1 |
 | `archive.load i [b]` | -1 | `archive` | open bank's file name | patch's name, else entry name | b/i: the bank and patch loaded |
@@ -331,6 +332,13 @@ beside the bank and is touched only by the control thread:
 | `bank.load_file p` | -1 | unchanged | unchanged | unchanged | unchanged |
 | `archive.open`, `archive.close` | unchanged | unchanged | unchanged | unchanged | -1/-1 |
 | `archive.bank b` | unchanged | unchanged | unchanged | unchanged | unchanged |
+
+`patch.load k init` is how a front-end, the TUI on Enter, starts a new sound in
+an empty slot. It loads the Init patch, every parameter at its default, as one
+`Commit_Patch` replacement and names it as slot k. It writes nothing to the
+bank, so `bank_rev` does not move and slot k stays empty until `patch.save`. On
+a filled slot `init` is a plain load. Only the exact operand `init` counts;
+anything else after the slot is ignored, so an empty slot is still refused.
 
 `archive_bank` and `archive_patch` are -1 unless `source` is `archive` and the
 archive that supplied the patch is still the one open: after `archive.open`
@@ -515,7 +523,8 @@ the bank the sound came from without opening it: the archive, its open bank,
 its path and `archive_rev` stay as they are. Missing banks, absent/empty
 slots, archive patches past the bank's end or that do not read, parse or set a
 parameter, and invalid MIDI data leave the sound, the identity and the channel
-unchanged. The unused third byte of a packed Program Change is ignored.
+unchanged. A Program Change never loads an empty slot as Init: `init` belongs to
+`patch.load` alone. The unused third byte of a packed Program Change is ignored.
 
 The audio thread forwards CC 0/32 and Program Change through a bounded MIDI
 queue, preserving channel and order. The control thread drains it on every
@@ -644,6 +653,14 @@ default; meter throttling.
 **Acceptance.** Metadata-driven UI renders all groups; enum and reset work
 through the protocol only.
 
+**Panel layout (added since).** The tabs are the browser panel's sections and
+the headings its groups, in the panel's order, and each row carries the label
+the panel prints under its control. `tools/tuilayout.mjs` generates them into
+`hosts/standalone/tui/layout.odin` from `ui/layout.js`, and
+`tests/ui/tui-layout.test.mjs` fails on a stale table. A control the daemon does
+not expose is left out, and so is a heading or tab left with nothing under it.
+`parameter.list` keeps the registry's labels.
+
 **Banks and archives (added since).** The synth screen names the sound from
 `patch.current`: `patch: <name>   bank: <label>`, then `   slot <k>` for a
 slot of the ordinary bank or `   archive #<i>` for an archive patch, and
@@ -665,13 +682,21 @@ holds the ordinary bank and the archive's banks, in two levels:
   writes nothing to the bank, `archive.load <i> <bank>` naming the bank
   listed — and returns to the synth screen.
 
-Esc goes up to the banks, on the bank just left, and from there hides the
-navigator, as `B` does from either level; `B` again reopens where it was left.
+`/` searches the names listed, at the banks and in a bank's patches. A row keeps
+its own number, so Enter and `S` act on the row found. The manual's
+[Bank navigator](quesynth-manual.md#bank-navigator) has the keys and the
+matching rules. A search belongs to its list and goes when a bank or an archive
+is opened. Esc clears a search first, then goes up to the banks, on the bank
+just left, and from there hides the navigator, as `B` does from either level;
+`B` again reopens where it was left, search included.
 `S` saves into the cursor's slot only in the ordinary bank's patches. `O` loads
 a patch file, `L` a bank file, `Z` prompts for an archive to open in the
-daemon (blank keeps the one open), and `Q` quits from anywhere. The footer
-shows the archive's path (or `no archive - Z opens one`) and
-`playing: <name> | <bank> | slot <k>` (or `archive #<i>`). There is no separate
+daemon (blank keeps the one open), and `Q` quits from anywhere except a prompt
+or an open search, where it is text. The footer has four lines: the cursor's
+place among the rows shown with the keys, the search line,
+`playing: <name> | <bank> | slot <k>` (or `archive #<i>`), and the archive's
+path (or `no archive - Z opens one`). A footer line wider than the frame ends in
+`…`; a row is cut at the edge without one. There is no separate
 Archive screen or `A` shortcut; ZIP banks are in the same `B` navigator as the
 ordinary bank. The settings screen's "Zip archive" shows and sets the
 daemon's remembered path: a path is `archive.open`, a blank one

@@ -255,6 +255,10 @@ If the daemon goes away the footer shows
 `DISCONNECTED - cached values are stale; edits disabled`, and Enter
 reconnects.
 
+A footer line wider than the frame ends in `…` in its last cell, and so does the
+`Error: ...` line that reports a refused change. A list row or the title that is
+too wide is cut at the edge, with no mark.
+
 The theme is read from `theme.conf` in the config directory, and written there
 with the browser panel's palette the first time the TUI runs. Each line in the
 file overrides one colour of the built-in palette. A `theme.conf` written by an
@@ -267,10 +271,14 @@ anything non-empty turns colour off, and so does `enabled = false`.
 The tabs are the browser panel's sections, in the panel's order: Master,
 Oscillators, Filter and so on. Within a tab the parameters sit under the panel's
 group headings, such as `OSCILLATOR 1` or `UNISON`, each with its value and a
-bar. A parameter the daemon does not expose, such as polyphony, is left out. The
-list scrolls to keep the selected parameter in view, and the tab strip scrolls
-to keep the current tab in view, with `<` and `>` where more tabs are off the
-edge.
+bar. A row carries the label the panel prints under its control: `Waveform`,
+`Gain`, `Key Tracking`, `Dry / Wet`, `Enable`. `parameter.list` still reports
+the registry's label, so the TUI shows `Waveform` for `osc1.shape`, which that
+list calls `Shape`. A parameter the daemon does not expose, such as polyphony,
+is left out, and so is a heading or a tab that would have nothing under it:
+Master has no Controller 1 or Controller 2 heading. The list scrolls to keep the
+selected parameter in view, and the tab strip scrolls to keep the current tab in
+view, with `<` and `>` where more tabs are off the edge.
 
 | Key | Action |
 |---|---|
@@ -317,17 +325,31 @@ printable ASCII. Escape cancels, so a path with other characters cannot be
 typed there; open it with the browser.
 
 Enter on an empty slot starts a new sound: every parameter at its default, the
-Init patch an empty slot stands for. The daemon names it as that slot, the way
-a loaded patch is named, and the slot stays empty until S saves into it. Other
-clients can do the same with `patch.load <slot> init`; without `init` an empty
-slot is refused, as it is for `patch_load` and a Program Change.
+Init patch an empty slot stands for. The TUI sends `patch.load <slot> init`. The
+daemon applies the defaults of all 99 parameters as one replacement and names
+the sound as that slot, with the bank label and the name `Init`, the way a
+loaded patch is named. It writes nothing to the bank: `bank_rev` and the bank
+file stay as they were, and the slot stays empty until S saves into it.
+
+Only `patch.load` takes `init`, and only as that exact lowercase word. Any other
+second operand is ignored, so an empty slot with `INIT` is refused. On a filled
+slot `init` changes nothing: the slot's own patch loads. The MCP tool
+`patch_load` has only a `slot` argument, so an empty slot comes back as
+`unknown_parameter slot is empty`. A Program Change never loads an empty slot.
+The browser page never sends `init`: a patch it loads that no filled slot holds
+exactly, such as the Init values of an empty slot, reaches the daemon as
+`patch.apply` and then `patch.clear`, so the daemon records no name for it.
 
 `/` searches the list on screen: bank names at the banks, slot or patch names
 in a bank. Empty slots are named `Init`, so `/init` finds the free slots. As you
 type, the list keeps only the rows whose name contains the text, ignoring case
-and leading or trailing spaces. The ordinary bank's names show a space as `_`,
-and a space typed matches it. Each row keeps its own number, and the footer
-line under the keys shows what you typed. While typing:
+and leading or trailing spaces. The daemon sends the ordinary bank's label and
+slot names with each space as `_`, and the navigator draws them that way. In
+those rows a space and `_` match each other, so `solo lead` and `solo_lead` both
+find `Solo_Lead`. An archive's bank and patch names are compared as they come,
+so there a space matches only a space. Neither the text you typed nor the names
+on screen are rewritten. Each row keeps its own number, and the footer line
+under the keys shows what you typed. While typing:
 
 | Key | Action |
 |---|---|
@@ -337,6 +359,7 @@ line under the keys shows what you typed. While typing:
 | Up, Down | Move among the rows shown |
 | Enter | Stop typing and keep the search |
 | Esc | Stop typing and clear the search |
+| Ctrl-C | Quit the TUI |
 
 With a search kept, the keys work as usual on the rows shown: Enter opens or
 loads the selected row, and S saves into it. `/` edits the search again, and
@@ -366,6 +389,28 @@ C shows two settings, selected with Up and Down and edited with Enter.
 - `User bank`. The path is written to `config.conf` and loaded now.
 
 The screen footer prints the path of `config.conf`.
+
+### Key input limits
+
+The TUI reads what the terminal has sent one chunk at a time. Keys sent in a
+burst, and an arrow split across two chunks, behave as follows.
+
+- A key read takes at most 8 bytes, and a read in an open search takes 256.
+  Outside a search the TUI acts on the first key of a read and drops the rest,
+  so two Down arrows sent in one write move once. `/` is the exception: it opens
+  the search, and the rest of that read is typed into it. In an open search, an
+  arrow in the same read as the Enter or Esc that ends it still moves.
+- An arrow is `ESC [ A` to `ESC [ D`. If a read ends inside one, the TUI finishes
+  it with the next read, so a cut arrow still moves once. An `ESC [` waits one
+  400 ms refresh tick for its last byte. After that it is dropped, and a `B`
+  that comes later is the B key. A trailing ESC is held only while more input is
+  already waiting.
+- A lone ESC is the Esc key at once. If the ESC of an arrow arrives in a read of
+  its own, as it can on a slow link, it acts as Esc. The arrow's `[` then does
+  nothing, and its `B`, in a read of its own, is the B key, which opens or hides
+  the navigator.
+- Ctrl- and Shift-arrows (`ESC [ 1 ; 5 B`) do nothing outside a search. In an
+  open search they move like the plain arrows.
 
 ## Browser
 
@@ -470,6 +515,7 @@ a patch file. How the identity changes:
 | Event | `source` | `slot` | `bank` | `name` |
 |---|---|---|---|---|
 | Load an ordinary slot, or a Program Change that picks one | `bank` | the slot | the bank label | the slot's name |
+| `patch.load <slot> init` on an empty slot | `bank` | the slot | the bank label | `Init` |
 | Save into a slot | `bank` | the slot | the bank label | the saved name |
 | Load a patch file | `file` | `-1` | `file` | the name in the file, else the file name |
 | Load an archive patch | `archive` | `-1` | the archive bank's file name | the patch name |
@@ -760,7 +806,8 @@ left ringing. Held notes keep sounding. Loading the same patch again is how a
 player silences a ringing tail, which is why these four are not idempotent.
 
 `patch_load` loads a filled slot of the ordinary bank, and an empty slot comes
-back as the daemon's `unknown_parameter` error. `patch_apply` applies the pairs
+back as the daemon's `unknown_parameter` error. The tool has no `init` argument
+(see [Bank navigator](#bank-navigator)). `patch_apply` applies the pairs
 you give as one patch, the way a front-end loads a patch it holds, and
 parameters you do not name keep their values. It leaves the playing patch's name
 as it was; `patch_clear` forgets it. `patch_load_file` makes the daemon read a

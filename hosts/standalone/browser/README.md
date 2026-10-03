@@ -132,7 +132,9 @@ A `state` is a whole patch, and three things send one:
   `patch.apply` and never `parameter.set_many`: a whole patch is an atomic
   replacement on the audio thread, which resets the previous patch's effect
   tails and smoothers as `patch.load` does, while `set_many` is an ordinary
-  batch edit that leaves them running. A `set` is still `parameter.set`.
+  batch edit that leaves them running. A `set` is still `parameter.set`. An
+  empty slot's Init values are anything else too: the page never sends
+  `patch.load <slot> init` (only the TUI does), so the daemon names nothing.
 
 A `bank` from the page is how the panel stores a patch (`SynthBank.store`): it
 posts the whole bank with one slot changed. When exactly one slot differs, it

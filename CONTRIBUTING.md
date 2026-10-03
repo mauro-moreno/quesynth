@@ -21,9 +21,10 @@ odin build tools/s1probe -out:build/s1probe.exe
 ./build/s1probe.exe compare <patch.sy1>
 ```
 
-The probe needs your own Synth1 installation — see [What is not
-included](README.md#what-is-not-included). Nothing of Synth1's is redistributed
-here, so a fresh clone cannot run the null test until you point it at a copy.
+The probe needs your own Synth1 installation — see [Compatibility and
+verification](README.md#compatibility-and-verification). Nothing of Synth1's is
+redistributed here, so a fresh clone cannot run the null test until you point it
+at a copy.
 
 A change that makes one patch better and three worse is not an improvement. Run
 the whole bank before and after.
@@ -111,9 +112,10 @@ parameter table too, or CI will fail on a stale one:
 odin run tools/uiparams
 ```
 
-The terminal UI shows the panel's sections and groups in the panel's order, from
-a table generated out of `ui/layout.js`. If you touched the layout, regenerate
-it, or `tests/ui/tui-layout.test.mjs` fails on a stale one:
+The terminal UI shows the panel's sections and groups in the panel's order, and
+prints each control under the panel's label, from a table generated out of
+`ui/layout.js`. If you touched the layout or a label, regenerate it, or
+`tests/ui/tui-layout.test.mjs` fails on a stale one:
 
 ```
 node tools/tuilayout.mjs
