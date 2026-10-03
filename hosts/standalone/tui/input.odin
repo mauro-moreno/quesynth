@@ -23,57 +23,70 @@ Key :: enum {
 	Midi,
 	Open_Archive,
 	Escape,
+	Search,
 }
 
-// Read one key. Arrow keys arrive as a three-byte escape burst (ESC [ A..D); a
-// single read returns the whole burst, so decoding does not need to reassemble
-// it across reads. A closed stdin reads as Quit so the loop always terminates.
-read_key :: proc() -> Key {
-	buf: [8]u8
-	n := posix.read(posix.STDIN_FILENO, raw_data(buf[:]), c.size_t(len(buf)))
-	if n <= 0 {
-		return .Quit
+// Read one key into buf, and with it what the read held behind a `/`. buf is
+// the caller's, so that `rest` is still there when this returns; its length is
+// how much one read takes.
+read_key :: proc(buf: []u8) -> (key: Key, rest: []u8) {
+	n := posix.read(posix.STDIN_FILENO, raw_data(buf), c.size_t(len(buf)))
+	return decode_key(buf[:max(int(n), 0)])
+}
+
+// The key a read began with. Arrow keys arrive as a three-byte escape burst
+// (ESC [ A..D); a single read returns the whole burst, so decoding does not
+// need to reassemble it across reads. No bytes at all is a closed stdin, which
+// reads as Quit so the loop always terminates. A burst decodes to its first key
+// only, except behind `/`: a paste, or text typed faster than the loop turns,
+// comes in the read that carries the `/`, and what follows it is the start of
+// the search that `/` opens, so it comes back as `rest`.
+decode_key :: proc(input: []u8) -> (key: Key, rest: []u8) {
+	if len(input) == 0 {
+		return .Quit, nil
 	}
-	if buf[0] == 0x1b {
-		if int(n) >= 3 && buf[1] == '[' {
-			switch buf[2] {
+	if input[0] == 0x1b {
+		if len(input) >= 3 && input[1] == '[' {
+			switch input[2] {
 			case 'A':
-				return .Up
+				return .Up, nil
 			case 'B':
-				return .Down
+				return .Down, nil
 			case 'C':
-				return .Right
+				return .Right, nil
 			case 'D':
-				return .Left
+				return .Left, nil
 			}
 		}
-		return int(n) == 1 ? .Escape : .Other
+		return len(input) == 1 ? .Escape : .Other, nil
 	}
-	switch buf[0] {
+	switch input[0] {
 	case 'q', 'Q', 0x03: // q or Ctrl-C
-		return .Quit
+		return .Quit, nil
 	case 'r', 'R':
-		return .Reset
+		return .Reset, nil
 	case 'b', 'B':
-		return .Bank
+		return .Bank, nil
 	case 's', 'S':
-		return .Save
+		return .Save, nil
 	case 'o', 'O':
-		return .Load_File
+		return .Load_File, nil
 	case 'l', 'L':
-		return .Load_Bank
+		return .Load_Bank, nil
 	case 'c', 'C':
-		return .Config
+		return .Config, nil
 	case 'm', 'M':
-		return .Midi
+		return .Midi, nil
 	case 'z', 'Z':
-		return .Open_Archive
+		return .Open_Archive, nil
 	case 0x0d, 0x0a:
-		return .Enter
+		return .Enter, nil
 	case 0x09:
-		return .Tab
+		return .Tab, nil
+	case '/':
+		return .Search, input[1:]
 	}
-	return .Other
+	return .Other, nil
 }
 
 // Read a line of text from a prompt drawn at `row`, in raw mode. Returns the
@@ -115,15 +128,26 @@ prompt_line :: proc(row: int, label: string, theme: Theme) -> (string, bool) {
 // Read a key, or return Tick when none arrives within timeout_ms. That lets the
 // UI refresh its metrics on a timer without a keypress, while still answering a
 // key the instant it is pressed.
-read_key_timeout :: proc(timeout_ms: int) -> Key {
+read_key_timeout :: proc(timeout_ms: int, buf: []u8) -> (key: Key, rest: []u8) {
 	fds := [1]posix.pollfd{{fd = posix.STDIN_FILENO, events = {.IN}}}
 	n := posix.poll(&fds[0], 1, c.int(timeout_ms))
 	if n <= 0 {
-		return .Tick
+		return .Tick, nil
 	}
-	if fds[0].revents & {.HUP, .ERR, .NVAL} != {} { return .Quit }
+	if fds[0].revents & {.HUP, .ERR, .NVAL} != {} { return .Quit, nil }
 	if .IN not_in fds[0].revents {
-		return .Tick
+		return .Tick, nil
 	}
-	return read_key()
+	return read_key(buf)
+}
+
+// Read what the terminal has sent, up to len(buf) bytes, within timeout_ms:
+// the count read, 0 when nothing came, -1 once stdin is closed.
+read_input_timeout :: proc(timeout_ms: int, buf: []u8) -> int {
+	fds := [1]posix.pollfd{{fd = posix.STDIN_FILENO, events = {.IN}}}
+	if posix.poll(&fds[0], 1, c.int(timeout_ms)) <= 0 {return 0}
+	if fds[0].revents & {.HUP, .ERR, .NVAL} != {} {return -1}
+	if .IN not_in fds[0].revents {return 0}
+	n := posix.read(posix.STDIN_FILENO, raw_data(buf), c.size_t(len(buf)))
+	return n <= 0 ? -1 : int(n)
 }

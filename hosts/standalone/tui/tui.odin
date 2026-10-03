@@ -11,10 +11,11 @@ import "../../../src/registry"
 // at a time. It holds no engine state and makes no sound; every value it shows
 // and every change it makes goes through the control socket.
 //
-// Descriptor metadata (ids, labels, ranges, groups) comes from src/registry, the
+// Descriptor metadata (ids, labels, ranges) comes from src/registry, the
 // shared authoritative table the plan makes client-importable; live values and
 // metrics come from the daemon. That split is the point: a client knows the
-// shape of the synth from the registry and its state from the protocol.
+// shape of the synth from the registry and its state from the protocol. The
+// tabs and their order are the browser panel's sections (layout.odin).
 
 // How often the status line refreshes when no key is pressed. The synth is not a
 // game; a few times a second is plenty to watch the voice count and uptime move.
@@ -124,7 +125,23 @@ run :: proc(path: string) -> int {
 		}
 		render_notice(client.notice, theme)
 
-		key := read_key_timeout(REFRESH_MS)
+		if nav.shown && nav.searching {
+			buf: [256]u8
+			n := read_input_timeout(REFRESH_MS, buf[:])
+			if n < 0 { return 0 }
+			if n == 0 {
+				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
+			} else {
+				client_set_notice(&client, "")
+				if nav_search_input(&nav, buf[:n]) == .Quit { return 0 }
+			}
+			if client.fd < 0 { connected = false; metrics = {} }
+			continue
+		}
+		// A read takes 8 bytes at most. What a long paste carries behind a `/`
+		// past that comes in the next read, which the search takes whole.
+		input: [8]u8
+		key, typed := read_key_timeout(REFRESH_MS, input[:])
 		if key != .Tick { client_set_notice(&client, "") }
 
 		// The settings screen sits over everything; handle it first.
@@ -147,7 +164,7 @@ run :: proc(path: string) -> int {
 				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
 			case .Escape, .Config:
 				configuring = false
-			case .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Midi, .Open_Archive, .Other:
+			case .Left, .Right, .Reset, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Midi, .Open_Archive, .Search, .Other:
 			// Ignored on the settings screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -174,8 +191,10 @@ run :: proc(path: string) -> int {
 				nav_escape(&nav)
 			case .Bank:
 				nav.shown = false
+			case .Search:
+				if nav_search_start(&nav, typed) == .Quit { return 0 }
 			case .Enter:
-				if connected && nav.level == .Banks {
+				if connected && nav.level == .Banks && nav_selected(&nav) {
 					tui_browse_bank(&client, &nav, nav_row_bank(nav.cursor), prov)
 				} else if connected {
 					prev_rev := metrics.revision
@@ -190,7 +209,7 @@ run :: proc(path: string) -> int {
 				}
 			case .Save:
 				// Only into the ordinary bank: an archive is read-only.
-				if connected && nav.level == .Patches && nav.browsing == ORDINARY && nav.cursor < len(nav.slots) {
+				if connected && nav.level == .Patches && nav.browsing == ORDINARY && nav_selected(&nav) {
 					tui_save(&client, nav.slots[nav.cursor].slot, theme)
 					tui_read_provenance(&client, &prov)
 					tui_sync_navigator(&client, &nav, prov, true)
@@ -216,6 +235,7 @@ run :: proc(path: string) -> int {
 				if connected && tui_open_archive(&client, theme) {
 					tui_read_provenance(&client, &prov)
 					tui_sync_navigator(&client, &nav, prov, true)
+					nav_search_clear(&nav)
 					nav.level = .Banks
 					nav.cursor = nav_bank_row(max(nav.archive.bank, 0))
 					nav_move(&nav, 0)
@@ -277,7 +297,7 @@ run :: proc(path: string) -> int {
 				choosing_midi = false
 			case .Tick:
 				if connected { tui_refresh_midi_selected(&client, &midi_selected) }
-			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Config, .Open_Archive, .Other:
+			case .Left, .Right, .Tab, .Bank, .Save, .Load_File, .Load_Bank, .Config, .Open_Archive, .Search, .Other:
 			// Ignored on the MIDI screen.
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
@@ -379,8 +399,8 @@ run :: proc(path: string) -> int {
 					choosing_midi = true
 				}
 			}
-		case .Save, .Open_Archive, .Escape, .Other:
-		// Save and Z apply only in the navigator; Escape and Other are ignored.
+		case .Save, .Open_Archive, .Escape, .Search, .Other:
+		// Save, Z and / apply only in the navigator; Escape and Other are ignored.
 		}
 		if client.fd < 0 { connected = false; metrics = {} }
 	}
@@ -540,7 +560,7 @@ tui_browse_bank :: proc(client: ^Client, nav: ^Navigator, bank: int, prov: Prove
 // listed. An archive load names that bank, so it is the patch this list shows
 // even when a peer has opened another bank since the list was read.
 tui_load_cursor :: proc(client: ^Client, nav: ^Navigator) -> bool {
-	if nav.level != .Patches || nav.cursor >= nav_row_count(nav) { return false }
+	if nav.level != .Patches || !nav_selected(nav) { return false }
 	if nav.browsing == ORDINARY {
 		// Only a filled slot; an empty one is a place to save, not load.
 		s := nav.slots[nav.cursor]

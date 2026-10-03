@@ -256,16 +256,25 @@ If the daemon goes away the footer shows
 reconnects.
 
 The theme is read from `theme.conf` in the config directory, and written there
-with the Catppuccin Mocha palette the first time the TUI runs. `NO_COLOR` set to
-anything non-empty turns colour off.
+with the browser panel's palette the first time the TUI runs. Each line in the
+file overrides one colour of the built-in palette. A `theme.conf` written by an
+earlier version holds the old Catppuccin Mocha colours and keeps them. Delete it,
+or the lines you do not want, to get the panel's palette. `NO_COLOR` set to
+anything non-empty turns colour off, and so does `enabled = false`.
 
 ### Synth screen
 
-Parameters are listed one group at a time, each with its value and a bar.
+The tabs are the browser panel's sections, in the panel's order: Master,
+Oscillators, Filter and so on. Within a tab the parameters sit under the panel's
+group headings, such as `OSCILLATOR 1` or `UNISON`, each with its value and a
+bar. A parameter the daemon does not expose, such as polyphony, is left out. The
+list scrolls to keep the selected parameter in view, and the tab strip scrolls
+to keep the current tab in view, with `<` and `>` where more tabs are off the
+edge.
 
 | Key | Action |
 |---|---|
-| Tab | Next parameter group |
+| Tab | Next section |
 | Up, Down | Select a parameter |
 | Left, Right | Change the selected parameter by one stored step |
 | R | Reset the selected parameter to its default |
@@ -294,7 +303,8 @@ is not marked as slot 5 of the ordinary bank.
 |---|---|
 | Up, Down | Move the cursor |
 | Enter | At the banks, open the bank. At the patches, load the patch |
-| Esc | Back from patches to banks, and from banks hide the navigator |
+| / | Search the names in the list |
+| Esc | Clear the search. Without one, go back from patches to banks, and from banks hide the navigator |
 | B | Hide the navigator |
 | S | Save the sound into the selected ordinary-bank slot |
 | O, L | Load a patch file or a bank file |
@@ -305,6 +315,29 @@ S asks for a name, then offers to write the whole bank to a file (blank skips).
 It works only in the ordinary bank, since an archive is read-only. Prompts take
 printable ASCII. Escape cancels, so a path with other characters cannot be
 typed there; open it with the browser.
+
+`/` searches the list on screen: bank names at the banks, slot or patch names
+in a bank. Empty slots are named `Init`, so `/init` finds the free slots. As you
+type, the list keeps only the rows whose name contains the text, ignoring case
+and leading or trailing spaces. Each row keeps its own number, and the footer
+line under the keys shows what you typed. While typing:
+
+| Key | Action |
+|---|---|
+| Any text | Add to the search. Letters are text here, not commands |
+| Backspace | Remove the last character |
+| Ctrl-U | Clear the search and keep typing |
+| Up, Down | Move among the rows shown |
+| Enter | Stop typing and keep the search |
+| Esc | Stop typing and clear the search |
+
+With a search kept, the keys work as usual on the rows shown: Enter opens or
+loads the selected row, and S saves into it. `/` edits the search again, and
+Esc clears it with the cursor left on the same row. When nothing matches, the
+list reads `(no matches)` and Enter and S do nothing. A search belongs to its
+list. Opening a bank, going back to the banks, opening an archive, or the
+archive's open bank changing clears it. Hiding the navigator keeps it, so B
+comes back to the same rows.
 
 A saved slot lives in the daemon's memory. It survives a restart only if you
 wrote the bank to a file and that file is the daemon's `--bank`, the TUI's

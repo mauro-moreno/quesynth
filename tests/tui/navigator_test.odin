@@ -1107,3 +1107,434 @@ check_archive_setting_edits :: proc(t: ^testing.T, file: string) {
 		}
 	}
 }
+
+// ---- `/` search -------------------------------------------------------------
+
+@(private = "file")
+type :: proc(nav: ^tui.Navigator, text: string) -> tui.Search_Outcome {
+	return tui.nav_search_input(nav, transmute([]u8)text)
+}
+
+// Nothing reached the far end of the socket within 50 ms.
+@(private = "file")
+nothing_sent :: proc(far: posix.FD) -> bool {
+	fds := [1]posix.pollfd{{fd = far, events = {.IN}}}
+	return posix.poll(&fds[0], 1, 50) == 0
+}
+
+@(private = "file")
+expect_shown :: proc(t: ^testing.T, nav: ^tui.Navigator, want: ..int, loc := #caller_location) {
+	got := tui.nav_shown_rows(nav)
+	if !testing.expectf(t, len(got) == len(want), "shown %v, want %v", got, want, loc = loc) {return}
+	for row, i in want {testing.expect_value(t, got[i], row, loc = loc)}
+}
+
+@(test)
+test_search_cuts_both_levels_down_to_the_names_that_hold_it :: proc(t: ^testing.T) {
+	nav := fixture_nav()
+	defer delete(nav.query)
+	beta := from_archive(1, 2)
+	tui.nav_open(&nav, from_slot(5))
+	testing.expect_value(t, nav.cursor, 0)
+
+	// The banks: the ordinary bank's label and the archive's bank names, in
+	// any case, each row keeping its own number.
+	nav.searching = true
+	testing.expect_value(t, type(&nav, "BETA"), tui.Search_Outcome.Typing)
+	expect_shown(t, &nav, 2)
+	testing.expect_value(t, nav.cursor, 2)
+	typing := navigator_screen(&nav, beta)
+	expect_rows(t, typing, ">  0001  Beta Bank.zip", "1/1   type to search   up/down move   Enter keep   Esc cancel   ^U clear", "/BETA_")
+	testing.expect(t, !strings.contains(typing, "Alpha.zip"), typing)
+	testing.expect(t, !strings.contains(typing, "Factory  2/128"), typing)
+	testing.expect_value(t, type(&nav, "\r"), tui.Search_Outcome.Done)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, string(nav.query[:]), "BETA")
+	expect_rows(
+		t,
+		navigator_screen(&nav, beta),
+		">  0001  Beta Bank.zip",
+		"1/1   Enter browse   O patch file   L bank file   Z archive   Esc clear",
+		"search: BETA   1 of 3   / edit",
+		"playing: Beta Three | Beta Bank.zip | archive #2",
+	)
+	testing.expect(t, tui.nav_selected(&nav))
+	testing.expect_value(t, tui.nav_row_bank(nav.cursor), 1)
+	nav.searching = true
+	testing.expect_value(t, type(&nav, "\x15fac"), tui.Search_Outcome.Typing)
+	expect_shown(t, &nav, 0)
+	testing.expect_value(t, tui.nav_row_bank(nav.cursor), tui.ORDINARY)
+
+	// Into a bank, and the search goes with the list it was of.
+	tui.nav_descend(&nav, tui.ORDINARY, from_slot(5))
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+	testing.expect_value(t, nav.cursor, 5)
+
+	// An ordinary bank's slots, empty ones (named Init) included.
+	nav.searching = true
+	type(&nav, "solo")
+	expect_shown(t, &nav, 5)
+	testing.expect_value(t, nav.slots[nav.cursor].slot, 5)
+	type(&nav, "\x15Init")
+	testing.expect_value(t, len(tui.nav_shown_rows(&nav)), patch.FACTORY_SLOTS - 2)
+	testing.expect_value(t, nav.cursor, 0)
+	tui.nav_move(&nav, 2)
+	testing.expect_value(t, nav.cursor, 3)
+	expect_rows(t, navigator_screen(&nav, from_slot(5)), "   001  Init", ">  003  Init", "   004  Init", "   006  Init")
+	testing.expect(t, tui.nav_selected(&nav))
+	testing.expect_value(t, nav.slots[nav.cursor].slot, 3)
+
+	// An archive bank's patches.
+	tui.nav_escape(&nav)
+	tui.nav_escape(&nav)
+	tui.nav_descend(&nav, 1, beta)
+	nav.searching = true
+	type(&nav, "three\r")
+	expect_shown(t, &nav, 2)
+	expect_rows(t, navigator_screen(&nav, beta), ">* 00002  Beta Three", "1/1   Enter load   O patch file   Z archive   Esc clear")
+}
+
+@(test)
+test_search_typing_takes_a_paste_whole_and_runs_no_command :: proc(t: ^testing.T) {
+	nav := fixture_nav()
+	defer delete(nav.query)
+	nav.level = .Patches
+	nav.browsing = 1
+	nav.patch_names = slice.clone([]string{"Pad", "Café Ñu", "Pad", "Bass", "quiet strings"}, context.temp_allocator)
+	nav.searching = true
+
+	// One read: typed, rubbed out and typed again, all in order.
+	testing.expect_value(t, type(&nav, "bx\x7f\x7fPad"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "Pad")
+	// Two rows of one name are two rows, in order, each its own patch.
+	expect_shown(t, &nav, 0, 2)
+	testing.expect_value(t, type(&nav, "\x1b[B"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, nav.cursor, 2)
+	testing.expect_value(t, type(&nav, "\x1b[B\x1b[B"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, nav.cursor, 2)
+	type(&nav, "\x1b[A")
+	testing.expect_value(t, nav.cursor, 0)
+
+	// Letters that are commands elsewhere are only text here, and other keys'
+	// escape sequences and control bytes are ignored.
+	testing.expect_value(t, type(&nav, "\x15q s\x1b[1;5C\x1bx\x02"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "q s")
+	testing.expect(t, nav.searching)
+	expect_shown(t, &nav)
+
+	// UTF-8, whole or split across two reads, and Backspace takes off a
+	// character, not a byte.
+	type(&nav, "\x15é")
+	expect_shown(t, &nav, 1)
+	type(&nav, "\x7f")
+	testing.expect_value(t, len(nav.query), 0)
+	type(&nav, "\xc3")
+	type(&nav, "\x89 ñ")
+	testing.expect_value(t, string(nav.query[:]), "É ñ")
+	expect_shown(t, &nav, 1)
+
+	// The query stays as typed, spaces and all; what is matched is it trimmed.
+	type(&nav, "\x15  quiet  ")
+	testing.expect_value(t, string(nav.query[:]), "  quiet  ")
+	expect_shown(t, &nav, 4)
+	expect_rows(t, navigator_screen(&nav, from_slot(5)), ">  00004  quiet strings", "/  quiet  _")
+	// Only spaces is no search: Enter keeps nothing and every row is back.
+	testing.expect_value(t, type(&nav, "\x15   \n"), tui.Search_Outcome.Done)
+	testing.expect_value(t, len(nav.query), 0)
+	expect_shown(t, &nav, 0, 1, 2, 3, 4)
+	testing.expect_value(t, nav.cursor, 4)
+
+	// Esc while typing drops the search; Ctrl-C quits from inside it.
+	nav.searching = true
+	type(&nav, "bass")
+	testing.expect_value(t, nav.cursor, 3)
+	testing.expect_value(t, type(&nav, "\x1b"), tui.Search_Outcome.Done)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+	testing.expect_value(t, nav.cursor, 3)
+	nav.searching = true
+	testing.expect_value(t, type(&nav, "pa\x03d"), tui.Search_Outcome.Quit)
+}
+
+@(test)
+test_search_with_no_match_selects_nothing :: proc(t: ^testing.T) {
+	nav := fixture_nav()
+	defer delete(nav.query)
+	tui.nav_descend(&nav, tui.ORDINARY, from_slot(5))
+	nav.searching = true
+	type(&nav, "zzz\r")
+	expect_shown(t, &nav)
+	testing.expect(t, !tui.nav_selected(&nav))
+	testing.expect_value(t, nav.cursor, 5)
+	tui.nav_move(&nav, 1)
+	tui.nav_move(&nav, -3)
+	testing.expect_value(t, nav.cursor, 5)
+	screen := navigator_screen(&nav, from_slot(5))
+	expect_rows(t, screen, "(no matches)", "0/0   Enter load   S save   O patch file   L bank file   Esc clear", "search: zzz   0 of 128   / edit")
+	testing.expect(t, !strings.contains(screen, "005  Solo Lead"), screen)
+
+	// Enter loads nothing: no request leaves.
+	client, far := answering("1 1 ok")
+	defer {tui.client_close(&client); posix.close(far)}
+	testing.expect(t, !tui.tui_load_cursor(&client, &nav))
+	testing.expect(t, nothing_sent(far))
+
+	// Esc drops the search where the cursor was; the next goes up.
+	tui.nav_escape(&nav)
+	testing.expect_value(t, nav.level, tui.Nav_Level.Patches)
+	testing.expect_value(t, nav.cursor, 5)
+	testing.expect(t, tui.nav_selected(&nav))
+	tui.nav_escape(&nav)
+	testing.expect_value(t, nav.level, tui.Nav_Level.Banks)
+
+	// The same at the banks, and a bank with no patches at all reads empty
+	// rather than unmatched.
+	nav.searching = true
+	type(&nav, "zzz")
+	testing.expect(t, !tui.nav_selected(&nav))
+	expect_rows(t, navigator_screen(&nav, from_slot(5)), "(no matches)", "0/0   type to search   up/down move   Enter keep   Esc cancel   ^U clear")
+	tui.nav_search_clear(&nav)
+	nav.level = .Patches
+	nav.browsing = 0
+	nav.patch_names = nil
+	nav.searching = true
+	type(&nav, "a")
+	testing.expect(t, !tui.nav_selected(&nav))
+	empty := navigator_screen(&nav, from_slot(5))
+	expect_rows(t, empty, "(empty)")
+	testing.expect(t, !strings.contains(empty, "no matches"), empty)
+	testing.expect(t, !tui.tui_load_cursor(&client, &nav))
+	testing.expect(t, nothing_sent(far))
+}
+
+// What a search shows is a view: what loads is the row's own slot or patch.
+@(test)
+test_search_loads_the_row_shown_by_its_own_number :: proc(t: ^testing.T) {
+	nav := fixture_nav()
+	defer delete(nav.query)
+	tui.nav_descend(&nav, tui.ORDINARY, from_slot(2))
+	testing.expect_value(t, nav.cursor, 2)
+	nav.searching = true
+	type(&nav, "LEAD\r")
+	client, far := answering("1 1 ok count=0 revision=1")
+	defer {tui.client_close(&client); posix.close(far)}
+	testing.expect(t, tui.tui_load_cursor(&client, &nav))
+	testing.expect_value(t, take_frame(far), "1 1 patch.load 5")
+
+	tui.nav_escape(&nav)
+	tui.nav_escape(&nav)
+	tui.nav_descend(&nav, 1, from_slot(2))
+	nav.searching = true
+	type(&nav, "two\r")
+	put_frame(far, "1 2 ok count=0 revision=2 bank=1 patch=1")
+	testing.expect(t, tui.tui_load_cursor(&client, &nav))
+	testing.expect_value(t, take_frame(far), "1 2 archive.load 1 1")
+}
+
+@(test)
+test_search_stays_with_its_list_and_goes_with_it :: proc(t: ^testing.T) {
+	nav := fixture_nav()
+	defer delete(nav.query)
+	beta := from_archive(1, 2)
+	tui.nav_open(&nav, beta)
+	tui.nav_descend(&nav, 1, beta)
+	nav.searching = true
+	type(&nav, "two\r")
+	testing.expect_value(t, nav.cursor, 1)
+
+	// Hidden -- B, or a load -- and opened again: the same search and row.
+	nav.shown = false
+	tui.nav_open(&nav, from_slot(5))
+	testing.expect_value(t, string(nav.query[:]), "two")
+	testing.expect_value(t, nav.cursor, 1)
+
+	// The same bank read again keeps it.
+	testing.expect(t, tui.nav_follow(&nav))
+	testing.expect_value(t, string(nav.query[:]), "two")
+	testing.expect_value(t, nav.cursor, 1)
+
+	// A peer opened another bank: another list, so no search.
+	nav.archive.bank = 0
+	tui.nav_follow(&nav)
+	testing.expect_value(t, nav.browsing, 0)
+	testing.expect_value(t, len(nav.query), 0)
+
+	// Or closed the archive: back up to the banks, without it.
+	nav.searching = true
+	type(&nav, "one")
+	nav.archive = {bank = -1}
+	nav.bank_names = nil
+	tui.nav_follow(&nav)
+	testing.expect_value(t, nav.level, tui.Nav_Level.Banks)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+}
+
+// ---- `/` and the text behind it in one read --------------------------------
+
+// A terminal sends a paste, or keys typed faster than the loop turns, as one
+// read. Only a `/` carries the rest of its read on: it is the start of the
+// search that `/` opens. Every other key is the first of its read, as before.
+@(test)
+test_decode_key_takes_the_first_key_of_a_read :: proc(t: ^testing.T) {
+	Case :: struct {
+		read: string,
+		key:  tui.Key,
+		rest: string,
+	}
+	cases := []Case {
+		{"", .Quit, ""}, // stdin closed
+		{"q", .Quit, ""},
+		{"Q", .Quit, ""},
+		{"\x03", .Quit, ""},
+		{"r", .Reset, ""},
+		{"b", .Bank, ""},
+		{"S", .Save, ""},
+		{"o", .Load_File, ""},
+		{"l", .Load_Bank, ""},
+		{"c", .Config, ""},
+		{"m", .Midi, ""},
+		{"z", .Open_Archive, ""},
+		{"\r", .Enter, ""},
+		{"\n", .Enter, ""},
+		{"\t", .Tab, ""},
+		{"x", .Other, ""},
+		{"\x1b", .Escape, ""},
+		{"\x1b[A", .Up, ""},
+		{"\x1b[B", .Down, ""},
+		{"\x1b[C", .Right, ""},
+		{"\x1b[D", .Left, ""},
+		{"\x1bx", .Other, ""},
+		{"\x1b[Z", .Other, ""},
+		// More than one key in a read: the first is the key, the rest is lost.
+		{"qr", .Quit, ""},
+		{"bbbb", .Bank, ""},
+		{"\x1b[Aq", .Up, ""},
+		{"s/query", .Save, ""},
+		// Behind `/` the rest of the read is the start of the search.
+		{"/", .Search, ""},
+		{"/query", .Search, "query"},
+		{"/query\r", .Search, "query\r"},
+		{"/qu\x7fx\r", .Search, "qu\x7fx\r"},
+		{"/\x1b[A", .Search, "\x1b[A"},
+		{"/\x1b", .Search, "\x1b"},
+		{"/a name much longer than a read of eight", .Search, "a name much longer than a read of eight"},
+	}
+	for c in cases {
+		key, rest := tui.decode_key(transmute([]u8)c.read)
+		testing.expectf(t, key == c.key, "%q reads as %v, want %v", c.read, key, c.key)
+		testing.expectf(t, string(rest) == c.rest, "%q leaves %q, want %q", c.read, string(rest), c.rest)
+	}
+}
+
+// One read, as the run loop takes it at the navigator: it must begin with `/`,
+// and the search that opens has the rest typed into it.
+@(private = "file")
+slash :: proc(t: ^testing.T, nav: ^tui.Navigator, read: string, loc := #caller_location) -> tui.Search_Outcome {
+	key, rest := tui.decode_key(transmute([]u8)read)
+	testing.expect_value(t, key, tui.Key.Search, loc = loc)
+	return tui.nav_search_start(nav, rest)
+}
+
+@(test)
+test_slash_and_its_text_in_one_read_search_as_if_typed_one_key_at_a_time :: proc(t: ^testing.T) {
+	beta := from_archive(1, 2)
+
+	// The whole of it in one read: the prompt shows the query, not `/_`.
+	{
+		nav := fixture_nav()
+		defer delete(nav.query)
+		testing.expect_value(t, slash(t, &nav, "/beta"), tui.Search_Outcome.Typing)
+		testing.expect(t, nav.searching)
+		testing.expect_value(t, string(nav.query[:]), "beta")
+		expect_shown(t, &nav, 2)
+		testing.expect_value(t, nav.cursor, 2)
+		expect_rows(t, navigator_screen(&nav, beta), ">  0001  Beta Bank.zip", "/beta_")
+	}
+
+	// With Enter in it, the search is kept and typing is over.
+	{
+		nav := fixture_nav()
+		defer delete(nav.query)
+		testing.expect_value(t, slash(t, &nav, "/beta\r"), tui.Search_Outcome.Done)
+		testing.expect(t, !nav.searching)
+		testing.expect_value(t, string(nav.query[:]), "beta")
+		expect_rows(t, navigator_screen(&nav, beta), ">  0001  Beta Bank.zip", "search: beta   1 of 3   / edit")
+	}
+
+	// Split over two reads: the rest arrives as any text typed in the search.
+	{
+		nav := fixture_nav()
+		defer delete(nav.query)
+		testing.expect_value(t, slash(t, &nav, "/be"), tui.Search_Outcome.Typing)
+		testing.expect_value(t, type(&nav, "ta"), tui.Search_Outcome.Typing)
+		testing.expect_value(t, string(nav.query[:]), "beta")
+		expect_shown(t, &nav, 2)
+	}
+
+	// A `/` on its own, and the text later.
+	{
+		nav := fixture_nav()
+		defer delete(nav.query)
+		testing.expect_value(t, slash(t, &nav, "/"), tui.Search_Outcome.Typing)
+		testing.expect(t, nav.searching)
+		testing.expect_value(t, len(nav.query), 0)
+		expect_shown(t, &nav, 0, 1, 2)
+		expect_rows(t, navigator_screen(&nav, beta), "/_")
+		type(&nav, "beta")
+		expect_shown(t, &nav, 2)
+	}
+
+	// As long as the paste is, past what one key read takes.
+	{
+		nav := fixture_nav()
+		defer delete(nav.query)
+		long := "a name longer than the eight bytes of a read"
+		testing.expect_value(t, slash(t, &nav, fmt.tprintf("/%s", long)), tui.Search_Outcome.Typing)
+		testing.expect_value(t, string(nav.query[:]), long)
+		expect_shown(t, &nav)
+		expect_rows(t, navigator_screen(&nav, beta), "(no matches)", fmt.tprintf("/%s_", long))
+	}
+}
+
+// What is typed behind the `/` is edited, moved and ended by the same keys
+// as in any search: Backspace (a character, not a byte), Ctrl-U, the arrows,
+// Enter, Esc and Ctrl-C.
+@(test)
+test_slash_burst_edits_moves_and_ends_the_search :: proc(t: ^testing.T) {
+	nav := fixture_nav()
+	defer delete(nav.query)
+	nav.level = .Patches
+	nav.browsing = 1
+	nav.patch_names = slice.clone([]string{"Pad", "Café Ñu", "Pad", "Bass"}, context.temp_allocator)
+
+	testing.expect_value(t, slash(t, &nav, "/qu\x7fx\r"), tui.Search_Outcome.Done)
+	testing.expect_value(t, string(nav.query[:]), "qx")
+	expect_shown(t, &nav)
+	tui.nav_search_clear(&nav)
+
+	testing.expect_value(t, slash(t, &nav, "/Caf\xc3\xa9 \xc3\x91\x7f\x7f"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "Café")
+	expect_shown(t, &nav, 1)
+	tui.nav_search_clear(&nav)
+
+	testing.expect_value(t, slash(t, &nav, "/bass\x15pad"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "pad")
+	expect_shown(t, &nav, 0, 2)
+	testing.expect_value(t, nav.cursor, 0)
+	tui.nav_search_clear(&nav)
+
+	// An arrow behind the `/` moves among the rows, and is not typed.
+	testing.expect_value(t, slash(t, &nav, "/pad\x1b[B"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "pad")
+	testing.expect_value(t, nav.cursor, 2)
+	testing.expect(t, nav.searching)
+	tui.nav_search_clear(&nav)
+
+	// A bare Esc ends the search with nothing kept, and Ctrl-C quits.
+	testing.expect_value(t, slash(t, &nav, "/pad\x1b"), tui.Search_Outcome.Done)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+	testing.expect_value(t, slash(t, &nav, "/pad\x03"), tui.Search_Outcome.Quit)
+}

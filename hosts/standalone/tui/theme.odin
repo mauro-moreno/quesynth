@@ -7,12 +7,13 @@ import "core:strings"
 
 // The colour theme for the terminal UI, and its config file.
 //
-// The palette ships as Catppuccin Mocha, baked in so a fresh checkout is themed
-// with no setup. On first run the daemon writes that palette to a config file the
-// user can then edit; on every later run the file, if present, overrides the
-// built-in defaults key by key. Colours are true-colour (24-bit) foreground
-// escapes; a terminal that ignores them, or a user who sets NO_COLOR, gets the
-// same layout in plain text.
+// The palette is the browser panel's own (ui/style.css), baked in so a fresh
+// checkout is themed with no setup and the terminal reads as the same
+// instrument as the page. On first run the TUI writes that palette to a config
+// file the user can then edit; on every later run the file, if present,
+// overrides the built-in defaults key by key. Colours are true-colour (24-bit)
+// foreground escapes; a terminal that ignores them, or a user who sets
+// NO_COLOR, gets the same layout in plain text.
 
 Color :: struct {
 	r, g, b: u8,
@@ -34,21 +35,23 @@ Theme :: struct {
 	warning:      Color,
 }
 
-// Catppuccin Mocha (https://catppuccin.com), the shipped default.
+// The browser panel's tokens, named beside each. Every text colour is at least
+// 4.5:1 against --panel; bar_empty is the unfilled run of a bar, whose `-`
+// already tells it from the `#` of the filled run.
 theme_defaults :: proc() -> Theme {
 	return Theme {
 		enabled      = true,
-		title        = {0xcb, 0xa6, 0xf7, true}, // mauve
-		tab_active   = {0xa6, 0xe3, 0xa1, true}, // green
-		tab_inactive = {0x6c, 0x70, 0x86, true}, // overlay0
-		selected     = {0xb4, 0xbe, 0xfe, true}, // lavender
-		label        = {0xcd, 0xd6, 0xf4, true}, // text
-		value        = {0xfa, 0xb3, 0x87, true}, // peach
-		bar_fill     = {0x94, 0xe2, 0xd5, true}, // teal
-		bar_empty    = {0x45, 0x47, 0x5a, true}, // surface1
-		status       = {0xa6, 0xad, 0xc8, true}, // subtext0
-		dim          = {0x58, 0x5b, 0x70, true}, // surface2
-		warning      = {0xf3, 0x8b, 0xa8, true}, // red
+		title        = {0xe8, 0xe8, 0xec, true}, // --ink
+		tab_active   = {0xcf, 0xd6, 0xe6, true}, // --accent
+		tab_inactive = {0x7d, 0x7d, 0x87, true}, // --ink-faint
+		selected     = {0xcf, 0xd6, 0xe6, true}, // --accent
+		label        = {0xa0, 0xa0, 0xaa, true}, // --ink-dim
+		value        = {0xe8, 0xe8, 0xec, true}, // --ink
+		bar_fill     = {0xcf, 0xd6, 0xe6, true}, // --accent, the knob's arc
+		bar_empty    = {0x4a, 0x4a, 0x52, true}, // --metal-dark
+		status       = {0xa0, 0xa0, 0xaa, true}, // --ink-dim
+		dim          = {0x7d, 0x7d, 0x87, true}, // --ink-faint
+		warning      = {0xc3, 0x9a, 0x5e, true}, // --warn
 	}
 }
 
@@ -148,21 +151,26 @@ theme_config_path :: proc(allocator := context.allocator) -> (string, bool) {
 	return "", false
 }
 
-// Load the theme: Catppuccin Mocha, overlaid by the config file if it exists, or
+// Load the theme: the defaults, overlaid by the config file if it exists, or
 // with that file written out the first time so the user has something to edit.
 // NO_COLOR always wins, per https://no-color.org.
 theme_load :: proc() -> Theme {
 	t := theme_defaults()
 	if path, ok := theme_config_path(context.temp_allocator); ok {
-		if data, rerr := os.read_entire_file(path, context.temp_allocator); rerr == nil {
-			t = theme_parse(string(data), t)
-		} else {
-			theme_write_default(path)
-		}
+		t = theme_load_file(path)
 	}
 	if os.get_env("NO_COLOR", context.temp_allocator) != "" {
 		t.enabled = false
 	}
+	return t
+}
+
+theme_load_file :: proc(path: string) -> Theme {
+	t := theme_defaults()
+	if data, rerr := os.read_entire_file(path, context.temp_allocator); rerr == nil {
+		return theme_parse(string(data), t)
+	}
+	theme_write_default(path)
 	return t
 }
 
@@ -188,20 +196,20 @@ make_directory_all :: proc(dir: string) {
 	os.make_directory(dir)
 }
 
-THEME_DEFAULT_CONFIG :: `# Quesynth terminal UI theme -- Catppuccin Mocha.
+THEME_DEFAULT_CONFIG :: `# Quesynth terminal UI theme -- the browser panel's palette.
 # Colours are #rrggbb. Delete a line to fall back to its built-in default.
 # Set "enabled = false" (or export NO_COLOR) for a plain, uncoloured UI.
 
 enabled      = true
-title        = #cba6f7
-tab_active   = #a6e3a1
-tab_inactive = #6c7086
-selected     = #b4befe
-label        = #cdd6f4
-value        = #fab387
-bar_fill     = #94e2d5
-bar_empty    = #45475a
-status       = #a6adc8
-dim          = #585b70
-warning      = #f38ba8
+title        = #e8e8ec
+tab_active   = #cfd6e6
+tab_inactive = #7d7d87
+selected     = #cfd6e6
+label        = #a0a0aa
+value        = #e8e8ec
+bar_fill     = #cfd6e6
+bar_empty    = #4a4a52
+status       = #a0a0aa
+dim          = #7d7d87
+warning      = #c39a5e
 `

@@ -12,51 +12,58 @@ Row :: struct {
 	value: int,
 }
 
-// A tab: a parameter group and the row indices that belong to it, in order.
+// A tab: one section of the browser panel (ui/layout.js, through layout.odin),
+// the rows in it in the panel's order, and the panel's groups within it, each a
+// run of those rows under its heading.
 Group_View :: struct {
-	name:    string,
-	indices: []int,
+	name:      string,
+	indices:   []int,
+	subgroups: []Subgroup_View,
+}
+
+// A heading and the run of a tab's indices under it: indices[start:][:count].
+Subgroup_View :: struct {
+	label:        string,
+	start, count: int,
 }
 
 BAR_WIDTH :: 20
 
-// Build one tab per group, in first-appearance order, each listing the rows in
-// that group. The caller frees the result with free_groups.
+// Build one tab per panel section that has a registered parameter in it,
+// listing the rows in the panel's order. Rows are matched by the parameter
+// index they carry, so the indices are positions in `rows` whatever order the
+// rows come in; a panel control with no row is left out, and so is a group or
+// a section left with none. The caller frees the result with free_groups.
 build_groups :: proc(rows: []Row) -> []Group_View {
-	names: [dynamic]string
-	defer delete(names)
-	for r in rows {
-		found := false
-		for n in names {
-			if n == r.desc.group {
-				found = true
-				break
-			}
-		}
-		if !found {
-			append(&names, r.desc.group)
-		}
-	}
-
-	views := make([]Group_View, len(names))
-	for name, gi in names {
+	views: [dynamic]Group_View
+	for section in PANEL_LAYOUT {
 		indices: [dynamic]int
-		for r, ri in rows {
-			if r.desc.group == name {
-				append(&indices, ri)
+		subgroups: [dynamic]Subgroup_View
+		for group in section.groups {
+			start := len(indices)
+			for p in group.params {
+				for r, ri in rows {
+					if r.desc.index == p {append(&indices, ri)}
+				}
+			}
+			if len(indices) > start {
+				append(&subgroups, Subgroup_View{label = group.label, start = start, count = len(indices) - start})
 			}
 		}
-		views[gi] = Group_View {
-			name    = name,
-			indices = indices[:],
+		if len(indices) == 0 {
+			delete(indices)
+			delete(subgroups)
+			continue
 		}
+		append(&views, Group_View{name = section.title, indices = indices[:], subgroups = subgroups[:]})
 	}
-	return views
+	return views[:]
 }
 
 free_groups :: proc(views: []Group_View) {
 	for v in views {
 		delete(v.indices)
+		delete(v.subgroups)
 	}
 	delete(views)
 }
@@ -187,8 +194,9 @@ box_line :: proc(content: string, inner: int, theme: Theme) -> string {
 	return fmt.tprintf("%s %s%s %s", edge, c, strings.repeat(" ", pad, context.temp_allocator), edge)
 }
 
-// Draw the parameter view for the current group: a tab strip, the group's rows
-// with value and bar, and a bottom-pinned status/help footer.
+// Draw the parameter view for the current section: a tab strip, the section's
+// rows under their group headings with value and bar, and a bottom-pinned
+// status/help footer. The rows scroll to keep the selected one in view.
 render :: proc(
 	rows: []Row,
 	groups: []Group_View,
@@ -199,6 +207,7 @@ render :: proc(
 	current_midi: string,
 	theme: Theme,
 ) {
+	term_rows, term_cols := terminal_size()
 	body: [dynamic]string
 	body.allocator = context.temp_allocator
 	// Where the sound came from, so what is loaded is always in view.
@@ -208,7 +217,7 @@ render :: proc(
 	if metrics.ok && current_midi != "" {
 		append(&body, paint(theme, theme.value, fmt.tprintf("midi: %s", current_midi)))
 	}
-	append(&body, group_tabs(groups, current_group, theme))
+	append(&body, group_tabs(groups, current_group, theme, max(term_cols, 24) - 4))
 	append(&body, "")
 
 	group := groups[current_group]
@@ -223,15 +232,22 @@ render :: proc(
 		append(&vals, disp)
 		vw = max(vw, visible_width(disp))
 	}
-	for local, k in group.indices {
-		r := rows[local]
-		chosen := k == selected
-		marker := paint(theme, theme.selected, chosen ? ">" : " ")
-		label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", r.desc.label))
-		padded := fmt.tprintf("%s%s", vals[k], strings.repeat(" ", vw - visible_width(vals[k]), context.temp_allocator))
-		value := paint(theme, theme.value, padded)
-		bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
-		append(&body, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
+	lines: [dynamic]string
+	lines.allocator = context.temp_allocator
+	selected_line := 0
+	for sub in group.subgroups {
+		append(&lines, paint(theme, theme.dim, strings.to_upper(sub.label, context.temp_allocator)))
+		for k in sub.start ..< sub.start + sub.count {
+			r := rows[group.indices[k]]
+			chosen := k == selected
+			if chosen {selected_line = len(lines)}
+			marker := paint(theme, theme.selected, chosen ? ">" : " ")
+			label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", r.desc.label))
+			padded := fmt.tprintf("%s%s", vals[k], strings.repeat(" ", vw - visible_width(vals[k]), context.temp_allocator))
+			value := paint(theme, theme.value, padded)
+			bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
+			append(&lines, fmt.tprintf("%s %s %s %s", marker, label, value, bar))
+		}
 	}
 
 	footer: [dynamic]string
@@ -261,26 +277,54 @@ render :: proc(
 		append(&footer, paint(theme, theme.status, "B banks   M midi   C settings"))
 	}
 	append(&footer, paint(theme, theme.dim, fmt.tprintf("daemon: %s", path)))
+
+	// What present leaves above the separator and the footer, less the lines
+	// already in the body: a section can be taller than the screen.
+	body_count := max(term_rows, 6) - 2
+	foot_n := min(len(footer), max(body_count - 1, 0))
+	room := body_count - foot_n - (foot_n > 0 ? 1 : 0) - len(body)
+	start, end := list_window(selected_line, len(lines), max(room, 1))
+	append(&body, ..lines[start:end])
 	present("Quesynth", body[:], footer[:], theme)
 }
 
 // The bank navigator (navigator.odin): the list of banks, or one bank's
-// patches. The cursor is > and the patch the sound came from is *, two marks
-// for two facts; the footer says what is playing whatever is being browsed.
+// patches, cut down to the names a `/` search holds. The cursor is > and the
+// patch the sound came from is *, two marks for two facts; the footer says
+// what is playing whatever is being browsed. Rows keep their own numbers
+// however many a search hides.
 render_navigator :: proc(nav: ^Navigator, prov: Provenance, theme: Theme) {
-	count := nav_row_count(nav)
+	shown := nav_shown_rows(nav)
+	position := 0
+	for row, i in shown {
+		if row == nav.cursor {position = i + 1}
+	}
+	esc := nav.level == .Banks ? "Esc hide" : "Esc banks"
+	if len(nav.query) > 0 {esc = "Esc clear"}
 	keys: string
 	switch {
+	case nav.searching:
+		keys = "type to search   up/down move   Enter keep   Esc cancel   ^U clear"
 	case nav.level == .Banks:
-		keys = "Enter browse   O patch file   L bank file   Z archive   Esc hide"
+		keys = fmt.tprintf("Enter browse   O patch file   L bank file   Z archive   %s", esc)
 	case nav.browsing == ORDINARY:
-		keys = "Enter load   S save   O patch file   L bank file   Esc banks"
+		keys = fmt.tprintf("Enter load   S save   O patch file   L bank file   %s", esc)
 	case:
-		keys = "Enter load   O patch file   Z archive   Esc banks"
+		keys = fmt.tprintf("Enter load   O patch file   Z archive   %s", esc)
+	}
+	search: string
+	switch {
+	case nav.searching:
+		search = paint(theme, theme.selected, fmt.tprintf("/%s_", string(nav.query[:])))
+	case len(nav.query) > 0:
+		search = paint(theme, theme.value, fmt.tprintf("search: %s   %d of %d   / edit", string(nav.query[:]), len(shown), nav_row_count(nav)))
+	case:
+		search = paint(theme, theme.dim, "/ search names")
 	}
 	footer: [dynamic]string
 	footer.allocator = context.temp_allocator
-	append(&footer, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", count == 0 ? 0 : nav.cursor + 1, count, keys)))
+	append(&footer, paint(theme, theme.status, fmt.tprintf("%d/%d   %s", position, len(shown), keys)))
+	append(&footer, search)
 	append(&footer, paint(theme, theme.value, playing_line(prov)))
 	archive := nav.archive.open ? fmt.tprintf("archive: %s", nav.archive.path) : "no archive - Z opens one"
 	append(&footer, paint(theme, theme.dim, archive))
@@ -296,14 +340,16 @@ render_navigator :: proc(nav: ^Navigator, prov: Provenance, theme: Theme) {
 	rows = max(rows, 6)
 	if len(footer) > rows - 4 { resize(&footer, rows - 4) }
 	window := max(rows - 3 - len(footer) - (hint != "" ? 1 : 0), 1)
-	start, end := list_window(nav.cursor, count, window)
+	start, end := list_window(max(position - 1, 0), len(shown), window)
 
 	body: [dynamic]string
 	body.allocator = context.temp_allocator
-	if count == 0 {
+	if nav_row_count(nav) == 0 {
 		append(&body, paint(theme, theme.warning, "(empty)"))
+	} else if len(shown) == 0 {
+		append(&body, paint(theme, theme.warning, "(no matches)"))
 	}
-	for row in start ..< end {
+	for row in shown[start:end] {
 		text: string
 		playing, empty := false, false
 		switch {
@@ -429,19 +475,43 @@ render_config :: proc(cfg: Config, archive_path: string, cfg_path: string, selec
 
 CONFIG_FIELDS :: 2
 
-// The tab strip, with the current group bracketed. Temp-allocated.
+// The tab strip, with the current group bracketed, in at most `width` cells.
+// The panel has more sections than an 80-column strip holds, so the strip
+// scrolls to keep the current one shown, with `<` and `>` where tabs are off
+// either end. Temp-allocated.
 @(private)
-group_tabs :: proc(groups: []Group_View, current_group: int, theme: Theme) -> string {
+group_tabs :: proc(groups: []Group_View, current_group: int, theme: Theme, width: int) -> string {
+	shown :: proc(groups: []Group_View, i, current: int) -> int {
+		return strings.rune_count(groups[i].name) + (i == current ? 2 : 0)
+	}
+	more := current_group < len(groups) - 1 ? 2 : 0
+	first := 0
+	for ; first < current_group; first += 1 {
+		w := first > 0 ? 2 : 0
+		for i in first ..= current_group {w += shown(groups, i, current_group) + (i > first ? 1 : 0)}
+		if w + more <= width {break}
+	}
 	b := strings.builder_make(context.temp_allocator)
-	for g, i in groups {
-		if i > 0 {
-			strings.write_byte(&b, ' ')
+	used := 0
+	if first > 0 {
+		strings.write_string(&b, paint(theme, theme.tab_inactive, "<"))
+		used = 1
+	}
+	for i in first ..< len(groups) {
+		gap := used > 0 ? 1 : 0
+		w := gap + shown(groups, i, current_group)
+		if i > current_group && used + w + (i < len(groups) - 1 ? 2 : 0) > width {
+			strings.write_string(&b, " ")
+			strings.write_string(&b, paint(theme, theme.tab_inactive, ">"))
+			break
 		}
+		if gap > 0 {strings.write_byte(&b, ' ')}
 		if i == current_group {
-			strings.write_string(&b, paint(theme, theme.tab_active, fmt.tprintf("[%s]", g.name)))
+			strings.write_string(&b, paint(theme, theme.tab_active, fmt.tprintf("[%s]", groups[i].name)))
 		} else {
-			strings.write_string(&b, paint(theme, theme.tab_inactive, g.name))
+			strings.write_string(&b, paint(theme, theme.tab_inactive, groups[i].name))
 		}
+		used += w
 	}
 	return strings.to_string(b)
 }

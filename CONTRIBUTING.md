@@ -61,7 +61,7 @@ odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
 odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
-node --test tests/ui/panel-smoke.test.mjs
+node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
 for f in hosts/standalone/browser/*.js; do node --check "$f"; done
 node --test tests/browser/*.test.mjs
 node --test tests/mcp/*.test.mjs
@@ -109,6 +109,14 @@ parameter table too, or CI will fail on a stale one:
 
 ```
 odin run tools/uiparams
+```
+
+The terminal UI shows the panel's sections and groups in the panel's order, from
+a table generated out of `ui/layout.js`. If you touched the layout, regenerate
+it, or `tests/ui/tui-layout.test.mjs` fails on a stale one:
+
+```
+node tools/tuilayout.mjs
 ```
 
 If you touched `src/patch/sy1.odin`, the panel carries a second reader of that

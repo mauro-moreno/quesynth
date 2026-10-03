@@ -55,6 +55,10 @@ Navigator :: struct {
 	// re-reads only what a peer -- or this client -- has since changed.
 	seen_bank_rev:    uint,
 	seen_archive_rev: uint,
+	// The `/` search of the names listed. The cursor stays a row of the whole
+	// list, so what Enter and S act on is that row's own slot, bank or patch.
+	query:            [dynamic]u8,
+	searching:        bool,
 }
 
 nav_free :: proc(nav: ^Navigator) {
@@ -63,6 +67,7 @@ nav_free :: proc(nav: ^Navigator) {
 	archive_state_free(&nav.archive)
 	client_names_free(nav.bank_names)
 	client_names_free(nav.patch_names)
+	delete(nav.query)
 	nav^ = {archive = {bank = -1}}
 }
 
@@ -107,8 +112,121 @@ nav_provenance_bank :: proc(nav: ^Navigator, prov: Provenance) -> int {
 	return ORDINARY
 }
 
+// Move among the rows shown. A cursor on a row the search has just hidden
+// goes to the first row shown; with none shown it stays, and nav_selected is
+// false.
 nav_move :: proc(nav: ^Navigator, delta: int) {
-	nav.cursor = clamp(nav.cursor + delta, 0, max(nav_row_count(nav) - 1, 0))
+	nav.cursor = clamp(nav.cursor, 0, max(nav_row_count(nav) - 1, 0))
+	shown := nav_shown_rows(nav)
+	if len(shown) == 0 {return}
+	at := 0
+	for row, i in shown {
+		if row == nav.cursor {at = i}
+	}
+	nav.cursor = shown[clamp(at + delta, 0, len(shown) - 1)]
+}
+
+nav_row_name :: proc(nav: ^Navigator, row: int) -> string {
+	switch {
+	case nav.level == .Banks && row == 0:
+		return nav.label
+	case nav.level == .Banks:
+		bank := nav_row_bank(row)
+		return bank >= 0 && bank < len(nav.bank_names) ? nav.bank_names[bank] : ""
+	case nav.browsing == ORDINARY:
+		return row >= 0 && row < len(nav.slots) ? nav.slots[row].name : ""
+	}
+	return row >= 0 && row < len(nav.patch_names) ? nav.patch_names[row] : ""
+}
+
+// As in the browser's bank search, the query is trimmed and matched in any
+// case, so a query of only spaces shows every row.
+nav_filtering :: proc(nav: ^Navigator) -> bool {
+	return strings.trim_space(string(nav.query[:])) != ""
+}
+
+nav_row_matches :: proc(nav: ^Navigator, row: int) -> bool {
+	needle := strings.trim_space(string(nav.query[:]))
+	if needle == "" {return true}
+	name := strings.to_lower(nav_row_name(nav, row), context.temp_allocator)
+	return strings.contains(name, strings.to_lower(needle, context.temp_allocator))
+}
+
+// Temp-allocated.
+nav_shown_rows :: proc(nav: ^Navigator) -> []int {
+	shown := make([dynamic]int, context.temp_allocator)
+	for row in 0 ..< nav_row_count(nav) {
+		if nav_row_matches(nav, row) {append(&shown, row)}
+	}
+	return shown[:]
+}
+
+nav_selected :: proc(nav: ^Navigator) -> bool {
+	return nav.cursor >= 0 && nav.cursor < nav_row_count(nav) && nav_row_matches(nav, nav.cursor)
+}
+
+nav_search_clear :: proc(nav: ^Navigator) {
+	clear(&nav.query)
+	nav.searching = false
+}
+
+Search_Outcome :: enum {
+	Typing,
+	Done,
+	Quit,
+}
+
+// What the terminal sent while the query is being typed, a whole read at a
+// time so a paste arrives whole. Nothing typed here is a command: `q` or `s`
+// is part of a name.
+nav_search_input :: proc(nav: ^Navigator, input: []u8) -> Search_Outcome {
+	for i := 0; i < len(input); i += 1 {
+		ch := input[i]
+		switch {
+		case ch == 0x03:
+			return .Quit
+		case ch == 0x0d || ch == 0x0a:
+			nav.searching = false
+			if !nav_filtering(nav) {clear(&nav.query)}
+			nav_move(nav, 0)
+			return .Done
+		case ch == 0x1b && i + 1 < len(input):
+			if input[i + 1] != '[' {
+				i += 1
+				continue
+			}
+			i += 2
+			for i < len(input) && (input[i] < 0x40 || input[i] > 0x7e) {i += 1}
+			if i < len(input) && input[i] == 'A' {nav_move(nav, -1)}
+			if i < len(input) && input[i] == 'B' {nav_move(nav, 1)}
+		case ch == 0x1b:
+			nav_search_clear(nav)
+			nav_move(nav, 0)
+			return .Done
+		case ch == 0x15:
+			clear(&nav.query)
+			nav_move(nav, 0)
+		case ch == 0x7f || ch == 0x08:
+			n := len(nav.query)
+			for n > 0 {
+				n -= 1
+				if nav.query[n] & 0xc0 != 0x80 {break}
+			}
+			resize(&nav.query, n)
+			nav_move(nav, 0)
+		case ch >= 0x20:
+			append(&nav.query, ch)
+			nav_move(nav, 0)
+		}
+	}
+	return .Typing
+}
+
+// `/`: the search opens, and takes what the same read carried behind the
+// slash as if it had come in a read of its own.
+nav_search_start :: proc(nav: ^Navigator, typed: []u8) -> Search_Outcome {
+	nav.searching = true
+	return nav_search_input(nav, typed)
 }
 
 // Show the navigator. The first time it opens on the list of banks, on the
@@ -127,7 +245,9 @@ nav_open :: proc(nav: ^Navigator, prov: Provenance) {
 
 // Into a bank's patches. Lands on the patch that is playing when this bank
 // holds it, so the sound's place in its bank is in view; otherwise at the top.
+// A search was of the list left, so it goes.
 nav_descend :: proc(nav: ^Navigator, bank: int, prov: Provenance) {
+	nav_search_clear(nav)
 	nav.bank_row = nav_bank_row(bank)
 	nav.level = .Patches
 	nav.browsing = bank
@@ -143,9 +263,14 @@ nav_descend :: proc(nav: ^Navigator, bank: int, prov: Provenance) {
 	}
 }
 
-// Esc: up from a bank's patches to the banks, on the bank just left; from the
-// banks, away.
+// Esc: first drops a search, leaving the cursor where it is; then up from a
+// bank's patches to the banks, on the bank just left; from the banks, away.
 nav_escape :: proc(nav: ^Navigator) {
+	if len(nav.query) > 0 {
+		nav_search_clear(nav)
+		nav_move(nav, 0)
+		return
+	}
 	if nav.level == .Patches {
 		nav.level = .Banks
 		nav.cursor = nav.bank_row
@@ -159,16 +284,19 @@ nav_escape :: proc(nav: ^Navigator) {
 // lists have been read again. Browsing an archive bank follows the daemon's
 // open bank, whoever opened it; with no bank open, or no archive, it goes back
 // up to the banks. Browsing the ordinary bank is left alone: the archive rows
-// below it have changed, the bank it shows has not. Returns whether the
-// browsed archive bank's patch names must be read again.
+// below it have changed, the bank it shows has not. A search goes with the
+// list it was of. Returns whether the browsed archive bank's patch names must
+// be read again.
 nav_follow :: proc(nav: ^Navigator) -> (reread_patches: bool) {
 	if nav.level == .Patches && nav.browsing != ORDINARY {
 		a := nav.archive
 		if !a.open || a.bank < 0 || a.bank >= len(nav.bank_names) {
+			nav_search_clear(nav)
 			nav.level = .Banks
 			nav.cursor = nav.bank_row
 		} else {
 			if a.bank != nav.browsing {
+				nav_search_clear(nav)
 				nav.browsing = a.bank
 				nav.bank_row = nav_bank_row(a.bank)
 				nav.cursor = 0
