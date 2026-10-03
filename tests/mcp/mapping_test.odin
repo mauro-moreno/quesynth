@@ -113,8 +113,14 @@ test_the_daemons_reply_comes_back_as_fields_and_lines_untouched_for_every_tool :
 }
 
 @(test)
-test_a_bare_ok_has_no_fields_and_no_lines :: proc(t: ^testing.T) {
-	for reply in ([]string{"ok", "ok ", "ok\n"}) {
+test_record_lines_include_empty_and_final_empty_records :: proc(t: ^testing.T) {
+	for c in ([][2]string{
+		{"ok", `[]`}, {"ok ", `[]`}, {"ok\n", `[""]`},
+		{"ok\n\n", `["",""]`}, {"ok\nx\n", `["x",""]`},
+		{"ok\nx\n\n", `["x","",""]`},
+		{"ok\n \nzero=0\n\n raw  \n", `[" ","zero=0",""," raw  ",""]`},
+	}) {
+		reply := c[0]
 		canned := [?]Canned{{"", reply}}
 		standin: Standin
 		standin_start(&standin, canned[:])
@@ -122,7 +128,7 @@ test_a_bare_ok_has_no_fields_and_no_lines :: proc(t: ^testing.T) {
 		text, is_error := call_tool(&s, "patch_clear", `{}`, standin.path)
 		standin_stop(&standin)
 		testing.expectf(t, !is_error, "%q: %s", reply, text)
-		testing.expect_value(t, text, `{"fields":"","lines":[]}`)
+		testing.expect_value(t, text, fmt.tprintf(`{{"fields":"","lines":%s}}`, c[1]))
 	}
 }
 

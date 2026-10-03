@@ -8,6 +8,7 @@ import "core:strings"
 import "core:sys/linux"
 import "core:sys/posix"
 import "core:thread"
+import "core:time"
 
 import "../../src/control"
 
@@ -20,12 +21,23 @@ import "../../src/control"
 // One poll thread remains the sole command-ring producer. Both directions are
 // nonblocking: readiness to read says nothing about a peer's willingness to read
 // our response. Bound pending output and disconnect a client that exceeds it.
+//
+// Nothing here waits for the audio thread. A guarded set_many is queued and the
+// connection that sent it is left owed an answer (its Wait_Ticket): it is read
+// no further, and the answer is framed into its output when the audio thread's
+// result for that batch comes by, or the outcome is reported unknown once
+// CHECKED_WAIT_LIMIT has passed. Every other connection is served all the while.
 
 CONTROL_READ_BUFFER :: 4096
 // Short because the poll tick is also how soon a Program Change from a
 // keyboard is loaded: the audio thread forwards it, and nothing wakes this
 // thread for it but the timeout. Ten milliseconds is about one audio period.
 CONTROL_POLL_TIMEOUT_MS :: 10
+// The tick while a connection waits for the audio thread, so its answer is not
+// sat on for a tenth of a period.
+CONTROL_WAIT_POLL_TIMEOUT_MS :: 1
+// How long a guarded batch may wait for the audio thread's answer.
+CHECKED_WAIT_LIMIT :: 250 * time.Millisecond
 MAX_CONNECTIONS :: 16
 CONTROL_OUTPUT_LIMIT :: 256 * 1024
 
@@ -47,6 +59,12 @@ Connection :: struct {
 	output: [dynamic]u8,
 	sent:   int,
 	used:   bool,
+	// A guarded batch of this connection is queued and its answer is owed
+	// (wait.serial is not 0). The request's version and id are kept, because
+	// its payload is gone by the time the answer is written.
+	wait:       Wait_Ticket,
+	wait_req:   control.Request,
+	wait_since: time.Tick,
 }
 
 // Claim the endpoint before opening audio. Keep the adjacent advisory lock for
@@ -193,23 +211,39 @@ control_server_run :: proc(data: rawptr) {
 				break
 			}
 		}
+		// Answer what the audio thread has answered, before polling, so a
+		// connection closed here is not polled and its slot not reused under a
+		// stale result.
+		control_resolve_waits(cs, &conns, &builder)
+
 		pollset[0] = {
 			fd     = cs.listen_fd,
 			events = {.IN},
 		}
 		nfds := 1
+		waiting := false
 		for ci in 0 ..< MAX_CONNECTIONS {
 			if conns[ci].used {
+				// A connection owed an answer is not polled for input: nothing it
+				// sends may be read, or answered, before that answer. Poll still
+				// reports it hung up.
+				events: posix.Poll_Event
+				if len(conns[ci].output) > 0 {
+					events = {.OUT}
+				} else if conns[ci].wait.serial == 0 {
+					events = {.IN}
+				}
+				waiting ||= conns[ci].wait.serial != 0
 				pollset[nfds] = {
 					fd     = conns[ci].fd,
-					events = len(conns[ci].output) > 0 ? posix.Poll_Event{.OUT} : posix.Poll_Event{.IN},
+					events = events,
 				}
 				conn_of[nfds] = ci
 				nfds += 1
 			}
 		}
 
-		ready := posix.poll(&pollset[0], posix.nfds_t(nfds), CONTROL_POLL_TIMEOUT_MS)
+		ready := posix.poll(&pollset[0], posix.nfds_t(nfds), waiting ? CONTROL_WAIT_POLL_TIMEOUT_MS : CONTROL_POLL_TIMEOUT_MS)
 		// Every tick, a client or not: a keyboard choosing a patch needs none.
 		program_select_drain(&cs.ctx)
 		if ready <= 0 {
@@ -253,21 +287,101 @@ control_server_run :: proc(data: rawptr) {
 			}
 			ci := conn_of[pi]
 			if !control_serve_ready(cs, &conns[ci], &builder, re) {
-				posix.close(conns[ci].fd)
-				control.frame_reader_destroy(&conns[ci].reader)
-				delete(conns[ci].output)
-				conns[ci] = {}
+				control_close(&conns[ci])
 			}
 		}
 	}
 
 	for ci in 0 ..< MAX_CONNECTIONS {
 		if conns[ci].used {
-			posix.close(conns[ci].fd)
-			control.frame_reader_destroy(&conns[ci].reader)
-			delete(conns[ci].output)
+			control_close(&conns[ci])
 		}
 	}
+}
+
+@(private = "file")
+control_close :: proc(conn: ^Connection) {
+	posix.close(conn.fd)
+	control.frame_reader_destroy(&conn.reader)
+	delete(conn.output)
+	conn^ = {}
+}
+
+// Answer the connections owed one. Every result the audio thread has posted is
+// taken, and goes to the connection whose ticket carries its serial; a result no
+// connection waits for (its sender gave up or hung up) is dropped, and since a
+// serial is never reused it cannot answer any other request. Then a connection
+// whose limit has passed is told the outcome is unknown. A result that is there
+// by now wins over the limit.
+@(private = "file")
+control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Connection, builder: ^strings.Builder) {
+	if cs.ctx.ring != nil {
+		for {
+			result, ok := param_ring_take_result(cs.ctx.ring)
+			if !ok { break }
+			for ci in 0 ..< MAX_CONNECTIONS {
+				conn := &conns[ci]
+				if conn.used && conn.wait.serial != 0 && conn.wait.serial == result.serial {
+					control_write_checked_reply(builder, conn.wait_req, conn.wait, result)
+					if !control_finish_wait(cs, conn, builder) { control_close(conn) }
+					break
+				}
+			}
+		}
+	}
+	for ci in 0 ..< MAX_CONNECTIONS {
+		conn := &conns[ci]
+		if conn.used && conn.wait.serial != 0 && time.tick_since(conn.wait_since) >= CHECKED_WAIT_LIMIT {
+			control_write_checked_unknown(builder, conn.wait_req)
+			if !control_finish_wait(cs, conn, builder) { control_close(conn) }
+		}
+	}
+}
+
+// The reply to a connection's guarded request is in `builder`: queue it ahead of
+// anything the connection sent after the request, which is already buffered and
+// is answered now, and which may itself start another wait.
+@(private = "file")
+control_finish_wait :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder) -> bool {
+	conn.wait = {}
+	return control_queue_reply(conn, builder) && control_serve_frames(cs, conn, builder) && control_flush(conn, {})
+}
+
+// Frame the reply in `builder` onto the connection's output. False when that
+// would take the output past its limit.
+@(private = "file")
+control_queue_reply :: proc(conn: ^Connection, builder: ^strings.Builder) -> bool {
+	frame := control.frame_encode(transmute([]u8)strings.to_string(builder^))
+	defer delete(frame)
+	if len(conn.output) + len(frame) > CONTROL_OUTPUT_LIMIT { return false }
+	append(&conn.output, ..frame)
+	return true
+}
+
+// Answer, in order, every request already buffered for the connection, up to one
+// that has to wait for the audio thread; the ones after it stay buffered until
+// that is answered.
+@(private = "file")
+control_serve_frames :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder) -> bool {
+	for conn.wait.serial == 0 {
+		payload, ok, err := control.frame_reader_next(&conn.reader)
+		if err { return false }
+		if !ok { break }
+		req, parsed := control.request_parse(payload)
+		if parsed {
+			conn.wait = control_handle(&cs.ctx, req, builder)
+			if conn.wait.serial != 0 {
+				conn.wait_req = control.Request{version = req.version, id = req.id}
+				conn.wait_since = time.tick_now()
+			}
+		} else {
+			control_write_err(builder, control.Request{version = control.PROTOCOL_VERSION},
+				.Invalid_Payload, "malformed request")
+		}
+		delete(payload)
+		if conn.wait.serial == 0 && !control_queue_reply(conn, builder) { return false }
+	}
+	return true
 }
 
 // Drain only the bytes already readable, with bounded work and output per pass.
@@ -276,7 +390,10 @@ control_server_run :: proc(data: rawptr) {
 @(private = "file")
 control_serve_ready :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder, re: posix.Poll_Event) -> bool {
 	if re & {.ERR, .NVAL} != {} { return false }
-	if .IN in re && len(conn.output) == 0 {
+	if conn.wait.serial != 0 {
+		// Owed an answer, so the socket was asked about nothing but a hang-up.
+		if .HUP in re { return false }
+	} else if .IN in re && len(conn.output) == 0 {
 		buf: [CONTROL_READ_BUFFER]u8
 		got := posix.read(conn.fd, raw_data(buf[:]), c.size_t(len(buf)))
 		if got == 0 { return false }
@@ -284,27 +401,14 @@ control_serve_ready :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^st
 			return posix.errno() == .EAGAIN || posix.errno() == .EINTR
 		}
 		control.frame_reader_push(&conn.reader, buf[:int(got)])
-		for {
-			payload, ok, err := control.frame_reader_next(&conn.reader)
-			if err { return false }
-			if !ok { break }
-			req, parsed := control.request_parse(payload)
-			if parsed {
-				control_handle(&cs.ctx, req, builder)
-			} else {
-				control_write_err(builder, control.Request{version = control.PROTOCOL_VERSION},
-					.Invalid_Payload, "malformed request")
-			}
-			delete(payload)
-			frame := control.frame_encode(transmute([]u8)strings.to_string(builder^))
-			if len(conn.output) + len(frame) > CONTROL_OUTPUT_LIMIT {
-				delete(frame)
-				return false
-			}
-			append(&conn.output, ..frame)
-			delete(frame)
-		}
+		if !control_serve_frames(cs, conn, builder) { return false }
 	}
+	return control_flush(conn, re)
+}
+
+// Send what is pending. The result is whether the connection stays open.
+@(private = "file")
+control_flush :: proc(conn: ^Connection, re: posix.Poll_Event) -> bool {
 	if len(conn.output) > 0 {
 		data := conn.output[conn.sent:]
 		// MSG_NOSIGNAL confines a reset/broken pipe to this connection, rather

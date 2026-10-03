@@ -12,7 +12,8 @@ import { CALLS } from "./support/surface.mjs";
 // receives is the daemon's reply, or its refusal, in the shape the tool lists.
 
 const REPLY = "ok count=2  volume=7 \nid=a value=1 \n\nname=Lead  Pad  \u00e9\n";
-const RECORDS = { fields: "count=2  volume=7 ", lines: ["id=a value=1 ", "", "name=Lead  Pad  \u00e9"] };
+// The newline that ends REPLY starts one more record, which is empty.
+const RECORDS = { fields: "count=2  volume=7 ", lines: ["id=a value=1 ", "", "name=Lead  Pad  \u00e9", ""] };
 
 // 2024-11-05 has no structured content; 2025-06-18 and after do.
 for (const version of ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]) {
@@ -31,6 +32,22 @@ for (const version of ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]) 
       assert.equal(result.content.length, 1, name);
       if (structured) assert.deepEqual(result.structuredContent, RECORDS, name);
       else assert.equal(result.structuredContent, undefined, name);
+    }
+  });
+
+  test(`an empty record is a line, the last one too (${version})`, {skip}, async t => {
+    let reply = "ok";
+    const daemon = await daemonFixture(t, () => reply);
+    const client = startClient(t, { runtime: daemon.runtime, cwd: tmpdir() });
+    await client.initialize(version);
+    for (const [wire, lines] of [
+      ["ok", []], ["ok ", []], ["ok\n", [""]], ["ok\n\n", ["", ""]], ["ok\nx\n", ["x", ""]],
+      ["ok\nx\n\n", ["x", "", ""]], ["ok\n\nx", ["", "x"]], ["ok a=1\nname=Trail\n", ["name=Trail", ""]],
+    ]) {
+      reply = wire;
+      const { result } = await client.call("patch_clear", {});
+      assert.equal(result.isError, undefined, JSON.stringify(wire));
+      assert.deepEqual(JSON.parse(result.content[0].text).lines, lines, JSON.stringify(wire));
     }
   });
 

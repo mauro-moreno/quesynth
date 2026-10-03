@@ -324,9 +324,14 @@ field_int :: proc(fields, key: string) -> (int, bool) {
 @(private)
 records :: proc(resp: control.Response) -> json.Object {
 	lines := make(json.Array, 0, 0, context.temp_allocator)
-	if resp.body != "" {
+	if resp.has_body {
 		body := resp.body
-		for line in strings.split_iterator(&body, "\n") { append(&lines, line) }
+		for {
+			nl := strings.index_byte(body, '\n')
+			if nl < 0 { append(&lines, body); break }
+			append(&lines, body[:nl])
+			body = body[nl + 1:]
+		}
 	}
 	return json.Object{"fields" = resp.fields, "lines" = lines}
 }
@@ -397,7 +402,8 @@ inspect :: proc(path: string, registry: bool) -> (json.Object, Failure) {
 	if err.code != "" { return nil, err }
 	value := json.Object{"revision" = json.Integer(revision), "state" = records(state), "patch" = records(patch)}
 	if registry {
-		parameters, err := request(path, "parameter.list")
+		parameters: control.Response
+		parameters, err = request(path, "parameter.list")
 		if err.code != "" { return nil, err }
 		value["parameters"] = records(parameters)
 	}

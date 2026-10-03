@@ -189,6 +189,13 @@ boundary, so the revision moves once. Duplicate ids apply in order, and the
 last one wins. The reply is `ok count=<n> revision=<r>`, where `r` is the
 revision the daemon had published when it queued the batch.
 
+Values in `parameter.set`, `parameter.set_many` and `patch.apply` are decimal
+integers: digits, with an optional single leading `-` (`-5`), and zero-padding
+is allowed. A `+` sign, a `-` alone, base prefixes such as `0x`, underscores,
+exponents, fractions and values outside the signed 64-bit range are refused as
+`invalid_payload value is not an integer`, before anything is queued. An integer
+outside a parameter's stored range is still `out_of_range`.
+
 The request may instead start with `expected_revision=<n>`, as its first token
 and with `n` a non-negative integer in decimal digits:
 
@@ -197,15 +204,19 @@ parameter.set_many [expected_revision=<n>] <id> <value> ...
 ```
 
 Then the audio thread applies the batch only if the revision it holds equals
-`n` when it reaches the batch. The daemon queues the batch, waits for the audio
-thread to apply or refuse it, and replies once the new state is published, so a
-`state.snapshot` sent after the reply sees it. On success the reply is
+`n` when it reaches the batch. The daemon queues the batch and answers that
+client once the audio thread has applied or refused it and published the new
+state, so a `state.snapshot` sent after the reply sees it. Until then the daemon
+reads nothing more from that client, so requests it sent behind the guarded one
+are answered after it, in order. Other clients are served as usual while it
+waits. On success the reply is
 `ok count=<n> revision=<r>` with `r` the revision after the change. If the
 revision differs, nothing is applied and the reply is
 `err revision_conflict current_revision=<r>`, with `r` the revision now. If the
 audio thread has not answered within 250 ms the reply is
 `err daemon_not_ready commit outcome unknown; inspect state before retrying`:
-the batch stays queued and may still be applied. A first token that starts with
+the batch stays queued and may still be applied, and an answer that comes after
+that is discarded. A first token that starts with
 `expected_revision=` and is not followed by a non-negative integer is refused
 with `invalid_payload expected_revision needs a nonnegative integer`. Only the
 digits 0 to 9 make one: a sign, a `0x` or `0b` prefix, an underscore, nothing at
@@ -874,6 +885,8 @@ For the 31 tools after the first two:
   too, as `parameters[<n>] has an unknown key: `. The limit of 128 is the
   daemon's. An `id` that starts with `expected_revision=` is refused by
   `parameter_set_many`, because the daemon would read it as the guard.
+  Within the first invalid pair in array order, the lexicographically smallest
+  unknown key is reported, including the empty string.
 
 The two original tools keep their own checks, described under
 [`apply_parameters`](#apply_parameters), and keep ignoring keys they do not
@@ -1007,12 +1020,12 @@ it, one string each, unchanged and in the daemon's order. Any other space, at
 either end of `fields` too, is kept. A reply with nothing after `ok` has an
 empty `fields`, and one without record lines has an empty `lines`.
 
-The daemon writes a newline before each record line and none after the last, so
-the server splits what follows the first line on newlines and each record is one
-string. A newline that ends the reply does not add an empty string at the end of
-`lines`. A patch name that ends in a newline shows it: the daemon's reply to
-`patch_load_file` then ends in `name=Trail` and a newline, and `lines` is
-`["name=Trail"]`.
+The daemon writes a newline before each record line. The server splits what
+follows the first newline on newlines, preserving every empty record, including
+the last. Thus `ok` has `lines: []`, `ok\n` has `lines: [""]`, and `ok\n\n` has
+`lines: ["",""]`. A patch name that ends in a newline shows it: the daemon's
+reply to `patch_load_file` then ends in `name=Trail` and a newline, and `lines`
+is `["name=Trail",""]`.
 
 The server does not rename, reorder or tidy anything. If the daemon folds the
 spaces of a name into underscores in a field, as `patch_save` does in `name=`,

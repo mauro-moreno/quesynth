@@ -667,3 +667,27 @@ test_the_older_tools_check_what_they_always_checked_and_say_the_same_things :: p
 	testing.expect_value(t, code, "invalid_arguments")
 	testing.expect_value(t, message, "arguments must be an object")
 }
+
+@(test)
+test_pair_unknown_keys_are_lexical_within_the_first_bad_pair :: proc(t: ^testing.T) {
+	standin: Standin
+	standin_start(&standin, OK_ALL[:])
+	s := ready()
+	for tool in ([]string{"parameter_set_many", "patch_apply"}) {
+		for _ in 0 ..< 64 {
+			for pair in ([]string{
+				`{"id":"a","value":0,"zeta":1,"alpha":2,"mid":3}`,
+				`{"mid":3,"alpha":2,"value":0,"zeta":1,"id":"a"}`,
+			}) {
+				args := fmt.tprintf(`{{"parameters":[{{"id":"a","value":0}},%s,{{"id":"b","value":1,"aardvark":0}}]}}`, pair)
+				result := call(&s, tool, args, standin.path)
+				testing.expect_value(t, result.code, "invalid_arguments")
+				testing.expect_value(t, result.message, "parameters[1] has an unknown key: alpha")
+			}
+			result := call(&s, tool, `{"parameters":[{"id":"a","value":0,"zeta":1,"":2,"alpha":3}]}`, standin.path)
+			testing.expect_value(t, result.message, "parameters[0] has an unknown key: ")
+		}
+	}
+	standin_stop(&standin)
+	testing.expect_value(t, standin_connections(&standin), 0)
+}

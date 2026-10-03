@@ -119,3 +119,28 @@ test("the navigator gets one button per built section, titled like the section",
   assert.equal(buttons.length, titles.length);
   assert.deepEqual(buttons.map(button => button.textContent), titles);
 });
+
+test("knob slider bounds match keyboard endpoints, and wheels expose their signed ranges", () => {
+  const window = bootPanel();
+  const knobs = window.document.querySelectorAll(".knob");
+  assert.ok(knobs.length > 0);
+  for (const knob of knobs) {
+    assert.equal(knob.getAttribute("aria-valuemin"), "0");
+    assert.ok(knob.hasAttribute("aria-valuemax"));
+    knob.dispatchEvent(new Event("keydown", {key: "End"}));
+    assert.equal(knob.getAttribute("aria-valuenow"), knob.getAttribute("aria-valuemax"));
+    knob.dispatchEvent(new Event("keydown", {key: "Home"}));
+    assert.equal(knob.getAttribute("aria-valuenow"), "0");
+  }
+  const wheels = window.document.querySelectorAll(".wheel-track");
+  assert.equal(wheels.length, 2);
+  for (const [index, id, min] of [[0, "pitch", -1], [1, "mod", 0]]) {
+    const wheel = wheels[index];
+    assert.equal(wheel.getAttribute("aria-valuemin"), String(min));
+    assert.equal(wheel.getAttribute("aria-valuemax"), "1");
+    window.SynthWheels.set(id, -2);
+    assert.equal(Number(wheel.getAttribute("aria-valuenow")), min);
+    window.SynthWheels.set(id, 2);
+    assert.equal(Number(wheel.getAttribute("aria-valuenow")), 1);
+  }
+});

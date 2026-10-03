@@ -672,9 +672,14 @@ call_line :: proc(tool: ^Tool, args: json.Object) -> (line: string, failure: Fai
 pair_operands :: proc(a: Arg, entry: json.Value, i: int) -> (operands: [2]string, problem: string) {
 	pair, is_object := entry.(json.Object)
 	if !is_object { return {}, fmt.tprintf("%s[%d] must be an object with id and value", a.name, i) }
+	unknown: string
+	has_unknown := false
 	for key in pair {
-		if key != "id" && key != "value" { return {}, fmt.tprintf("%s[%d] has an unknown key: %s", a.name, i, key) }
+		if key != "id" && key != "value" && (!has_unknown || key < unknown) {
+			unknown, has_unknown = key, true
+		}
 	}
+	if has_unknown { return {}, fmt.tprintf("%s[%d] has an unknown key: %s", a.name, i, unknown) }
 	id_value, has_id := pair["id"]
 	number, has_value := pair["value"]
 	if !has_id || !has_value { return {}, fmt.tprintf("%s[%d] needs id and value", a.name, i) }

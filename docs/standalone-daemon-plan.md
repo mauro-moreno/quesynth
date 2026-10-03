@@ -851,9 +851,14 @@ Slice 4 exists.
 6. **Config vs. patch namespace** (handoff §37): confirm `polyphony` (94),
    sample rate, buffer size live only in daemon config, never in `parameter.set`.
 
+## MCP front-end (implemented)
+
+`quesynth --mcp` serves MCP over stdio as a client of the same local QCP
+socket. It starts no daemon and owns no engine. The typed tools and resources
+expose the daemon's existing authority; see the [manual](quesynth-manual.md#mcp-server)
+for the supported surface and revision-guarded transactions.
+
 ## Deferred (handoff §42)
 
-MCP server, HTTP/WebSocket remote access beyond the local browser bridge,
-network/remote control, auth, DAW integration, audio streaming through the
-protocol. The plan guarantees only MCP *readiness* (§43 capability set, delivered
-by Slice 8) and a local browser front-end (Slice 9).
+HTTP/WebSocket remote access beyond the local browser bridge, network/remote
+control, auth, DAW integration, and audio streaming through the protocol.

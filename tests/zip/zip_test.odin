@@ -1,5 +1,7 @@
 package zip_tests
 
+import "base:runtime"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -66,4 +68,36 @@ test_zip_rejects_non_zip :: proc(t: ^testing.T) {
 	junk := []u8{'n', 'o', 't', ' ', 'a', ' ', 'z', 'i', 'p'}
 	_, ok := zip.zip_open(junk, context.temp_allocator)
 	testing.expect(t, !ok)
+}
+
+@(test)
+test_zip_close_uses_the_allocator_that_opened_it :: proc(t: ^testing.T) {
+	data, err := os.read_entire_file("tests/zip/fixtures/nested.zip", context.temp_allocator)
+	if !testing.expect(t, err == nil) { return }
+	owner, other: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&owner, runtime.heap_allocator())
+	mem.tracking_allocator_init(&other, runtime.heap_allocator())
+	defer mem.tracking_allocator_destroy(&owner)
+	defer mem.tracking_allocator_destroy(&other)
+	other.bad_free_callback = mem.tracking_allocator_bad_free_callback_add_to_array
+	alloc := mem.Allocator{mem.tracking_allocator_proc, &owner}
+	other_alloc := mem.Allocator{mem.tracking_allocator_proc, &other}
+	for explicit in ([]bool{false, true}) {
+		context.allocator = alloc
+		z: zip.Zip
+		ok: bool
+		if explicit { z, ok = zip.zip_open(data, alloc) } else { z, ok = zip.zip_open(data) }
+		if !testing.expect(t, ok) { continue }
+		entries := z.entries
+		context.allocator = other_alloc
+		zip.zip_close(&z)
+		testing.expect_value(t, len(owner.allocation_map), 0)
+		testing.expect_value(t, len(other.bad_free_array), 0)
+		testing.expect_value(t, zip.zip_count(&z), 0)
+		// Keep a failing regression from leaking its fixture allocation.
+		if len(owner.allocation_map) > 0 { delete(entries, alloc) }
+		zip.zip_close(&z)
+	}
+	zero: zip.Zip
+	zip.zip_close(&zero)
 }

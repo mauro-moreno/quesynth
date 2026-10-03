@@ -13,20 +13,40 @@ import "core:os"
 // The binary is a small set of modes, and the split between them is enforced by
 // construction, not by a flag test scattered around:
 //
-//   default      Run the synthesiser. In this slice that is the daemon in the
-//                foreground; a later slice makes the default attach a front-end
-//                (the TUI) to a daemon it spawns or finds already running.
+//   default      Run the synthesiser: attach the terminal UI to the daemon,
+//                starting one as a detached process first if none is listening.
+//                Quitting the UI leaves the daemon, and the sound, running.
+//                See run_tui in launch.odin.
 //
 //   --daemon     Run the headless audio daemon: open the real output and every
-//                MIDI input and play, with no interactive surface. This is the
-//                mode a Raspberry Pi or a systemd unit would run. See
-//                daemon.odin, which is the whole of the behaviour.
+//                MIDI input and play, with no interactive surface, and serve
+//                the control socket the front-ends talk to. This is the mode a
+//                Raspberry Pi or a systemd unit would run. See daemon.odin,
+//                which is the whole of the behaviour.
+//
+//   --browser    Show the shared HTML panel in a browser instead of the
+//                terminal UI. The daemon is found or started as for the
+//                default, and a Node adapter serves the page. See run_browser
+//                in launch.odin.
+//
+//   --mcp        Serve MCP on stdin and stdout, for an assistant to drive the
+//                daemon. It is only a client of the control socket: it holds no
+//                engine, makes no sound and starts no daemon, so it answers
+//                the protocol with the daemon down and reports the daemon
+//                unavailable where it needs one. See mcp/server.odin.
+//
+//   --stop       Ask a running daemon to shut down, through the same socket.
 //
 //   --selftest   Render to a file. Must run on a machine with no audio
 //                hardware, no MIDI hardware and nobody present, so it opens no
 //                device at all. This is the mode CI runs. run_selftest in
 //                selftest.odin never refers to anything in backend.odin, so
 //                there is no branch anywhere in it that could reach a device.
+//
+//   --help, -h   Print usage without connecting to a daemon or opening a device.
+//
+// Apart from --selftest, only the daemon makes sound. The TUI, browser and MCP
+// front-ends are clients of its control socket and can come and go independently.
 //
 // parse_args is kept pure and separate from main so the mode dispatch can be
 // unit-tested without opening a device.

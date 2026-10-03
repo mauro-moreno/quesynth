@@ -139,9 +139,7 @@ live_drain_control :: proc(s: ^Live) -> (applied: bool) {
 			s.txn_count = 0
 			// Publish before acknowledging so a following read sees the edit.
 			live_publish_snapshot(s)
-			s.ring.completed_revision = s.revision
-			s.ring.completed_applied = accepted
-			intrinsics.atomic_store_explicit(&s.ring.completed_serial, cmd.serial, .Release)
+			param_ring_post_result(&s.ring, Checked_Result{serial = cmd.serial, revision = s.revision, applied = accepted})
 		case .Commit_Patch:
 			live_replace_patch(s)
 			s.txn_count = 0

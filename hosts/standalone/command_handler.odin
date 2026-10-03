@@ -49,11 +49,25 @@ Control_Context :: struct {
 	program:  ^Program_Select,
 }
 
+// What a request that cannot be answered yet leaves with its caller. Only the
+// audio thread can say whether a guarded set_many applies, so after the batch is
+// queued the reply waits for the audio thread's result. The control thread never
+// blocks for it: the ticket names the result to look for, and the caller answers
+// when that comes, or says the outcome is unknown when it does not.
+Wait_Ticket :: struct {
+	serial: u64, // the serial of the queued Commit_Checked; 0 when nothing is pending
+	count:  int, // the pairs in the batch, which the ok reply states
+}
+
 // Handle one request, writing the response payload (unframed) into `out`. This
 // is the whole of the control thread's authority: a set validates then pushes
 // onto the ring; a get, list or status reads the snapshot and the atomic state.
-// It never touches the engine.
-control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+// It never touches the engine, and it never waits.
+//
+// Every request is answered in `out` before this returns, except a guarded
+// parameter.set_many that was validated and queued: it writes nothing and
+// returns the ticket for its answer (see control_write_checked_reply).
+control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) -> (wait: Wait_Ticket) {
 	if req.version != control.PROTOCOL_VERSION {
 		control_write_err(out, req, .Unsupported_Version, "unsupported protocol version")
 		return
@@ -77,7 +91,7 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 	case "parameter.set":
 		control_set(cc, req, out)
 	case "parameter.set_many":
-		control_set_many(cc, req, out)
+		return control_set_many(cc, req, out)
 	case "midi":
 		control_midi(cc, req, out)
 	case "midi.list":
@@ -129,6 +143,7 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 	case:
 		control_write_err(out, req, .Unknown_Command, "unknown command")
 	}
+	return
 }
 
 
@@ -289,7 +304,7 @@ control_set :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Bu
 		control_write_err(out, req, .Invalid_Payload, "set needs an id and a value")
 		return
 	}
-	value, vok := strconv.parse_int(req.operands[1])
+	value, vok := parse_parameter_value(req.operands[1])
 	if !vok {
 		control_write_err(out, req, .Invalid_Payload, "value is not an integer")
 		return
@@ -327,8 +342,8 @@ control_set :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Bu
 }
 
 @(private = "file")
-control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
-	control_pairs_transaction(cc, req, out, .Commit, "set_many needs id value pairs")
+control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) -> Wait_Ticket {
+	return control_pairs_transaction(cc, req, out, .Commit, "set_many needs id value pairs")
 }
 
 // patch.apply: a whole patch sent by value, which is how a front-end that holds
@@ -339,6 +354,32 @@ control_set_many :: proc(cc: ^Control_Context, req: control.Request, out: ^strin
 @(private = "file")
 control_patch_apply :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	control_pairs_transaction(cc, req, out, .Commit_Patch, "apply needs id value pairs")
+}
+
+// A parameter value is decimal digits with leading zeroes and an optional single
+// minus sign: no plus, base prefix or separator. Check before multiplying,
+// including the extra unit of magnitude min(int) has, rather than letting
+// strconv.parse_int accept those spellings and wrap past the largest int.
+@(private = "file")
+parse_parameter_value :: proc(raw: string) -> (int, bool) {
+	text := raw
+	negative := len(text) > 0 && text[0] == '-'
+	if negative { text = text[1:] }
+	if text == "" { return 0, false }
+	limit := uint(max(int))
+	if negative { limit += 1 }
+	value: uint
+	for c in transmute([]u8)text {
+		if c < '0' || c > '9' { return 0, false }
+		digit := uint(c - '0')
+		if value > (limit - digit) / 10 { return 0, false }
+		value = value * 10 + digit
+	}
+	if negative {
+		if value == uint(max(int)) + 1 { return min(int), true }
+		return -int(value), true
+	}
+	return int(value), true
 }
 
 // The revision a guard names. strconv.parse_int takes a sign, a base prefix and
@@ -364,7 +405,7 @@ control_pairs_transaction :: proc(
 	out: ^strings.Builder,
 	commit: Param_Command_Kind,
 	needs_pairs: string,
-) {
+) -> (wait: Wait_Ticket) {
 	all_tokens := strings.fields(req.rest)
 	defer delete(all_tokens)
 	tokens := all_tokens
@@ -392,7 +433,7 @@ control_pairs_transaction :: proc(
 	// rejects the whole transaction and a batch never lands half-applied.
 	staged: [TXN_STAGING_MAX]Param_Command
 	for i in 0 ..< count {
-		value, vok := strconv.parse_int(tokens[i * 2 + 1])
+		value, vok := parse_parameter_value(tokens[i * 2 + 1])
 		if !vok {
 			control_write_err(out, req, .Invalid_Payload, "value is not an integer")
 			return
@@ -415,8 +456,7 @@ control_pairs_transaction :: proc(
 	}
 
 	if expected >= 0 {
-		control_checked_transaction(cc, req, out, staged[:count], expected)
-		return
+		return control_checked_transaction(cc, req, out, staged[:count], expected)
 	}
 
 	if !control_enqueue(cc.ring, staged[:count], commit) {
@@ -430,49 +470,56 @@ control_pairs_transaction :: proc(
 	strings.write_int(out, count)
 	strings.write_string(out, " revision=")
 	strings.write_int(out, snap.revision)
+	return
 }
 
 // A set_many whose sender names the revision it saw. The batch goes on the ring
 // ended by Commit_Checked, and the audio thread -- the only one that knows the
 // revision in ring order, after every edit queued ahead of this one -- applies
-// it or discards it and says which. This thread waits a bounded time for that
-// answer, so a success is never reported for a batch that was refused, and a
-// refusal carries the revision that beat it. If the wait runs out the batch is
-// still queued and may yet apply, and the reply says the outcome is unknown.
+// it or discards it, publishes the state, and only then posts its result. Once
+// the batch is queued nothing is written to `out`: the ticket stands for the
+// reply, which the caller writes when the result arrives, so a success is never
+// reported for a batch that was refused and a refusal carries the revision that
+// beat it. Any refusal made before the batch is queued is answered here.
 @(private = "file")
-control_checked_transaction :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder, sets: []Param_Command, expected: int) {
+control_checked_transaction :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder, sets: []Param_Command, expected: int) -> Wait_Ticket {
 	ring := cc.ring
 	if ring == nil {
 		control_write_err(out, req, .Daemon_Not_Ready, "no audio")
-		return
+		return {}
 	}
 	if param_ring_free_space(ring) < len(sets) + 1 {
 		intrinsics.atomic_add_explicit(&ring.dropped, 1, .Relaxed)
 		control_write_err(out, req, .Daemon_Not_Ready, "control queue full")
-		return
+		return {}
 	}
 	ring.checked_serial += 1
 	serial := ring.checked_serial
 	for cmd in sets { param_ring_push(ring, cmd) }
 	param_ring_push(ring, Param_Command{kind = .Commit_Checked, expected_revision = expected, serial = serial})
-	start := time.tick_now()
-	for intrinsics.atomic_load_explicit(&ring.completed_serial, .Acquire) != serial {
-		if time.tick_since(start) >= 250 * time.Millisecond {
-			control_write_err(out, req, .Daemon_Not_Ready, "commit outcome unknown; inspect state before retrying")
-			return
-		}
-		time.sleep(time.Millisecond)
-	}
-	if !ring.completed_applied {
+	return Wait_Ticket{serial = serial, count = len(sets)}
+}
+
+// The reply to a guarded set_many once the audio thread has answered it. `req`
+// needs only the version and id of the request the ticket came from, which is
+// all a reply carries of it.
+control_write_checked_reply :: proc(out: ^strings.Builder, req: control.Request, ticket: Wait_Ticket, result: Checked_Result) {
+	if !result.applied {
 		control_write_err(out, req, .Revision_Conflict, "current_revision=")
-		strings.write_int(out, ring.completed_revision)
+		strings.write_int(out, result.revision)
 		return
 	}
 	control_write_ok(out, req)
 	strings.write_string(out, " count=")
-	strings.write_int(out, len(sets))
+	strings.write_int(out, ticket.count)
 	strings.write_string(out, " revision=")
-	strings.write_int(out, ring.completed_revision)
+	strings.write_int(out, result.revision)
+}
+
+// The reply to a guarded set_many whose result did not come in time. The batch
+// stays queued and may still apply, so this says nothing about whether it did.
+control_write_checked_unknown :: proc(out: ^strings.Builder, req: control.Request) {
+	control_write_err(out, req, .Daemon_Not_Ready, "commit outcome unknown; inspect state before retrying")
 }
 
 // Enqueue a whole transaction -- its Sets, then the commit that says what kind

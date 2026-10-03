@@ -238,6 +238,8 @@
     svg.setAttribute("tabindex", "0");
     svg.setAttribute("role", "slider");
     svg.setAttribute("aria-label", spec.name);
+    svg.setAttribute("aria-valuemin", "0");
+    svg.setAttribute("aria-valuemax", String(Math.max(0, param.n - 1)));
 
     // The metal: a vertical gradient, lit along the top edge.
     var defs = document.createElementNS(SVG, "defs");
@@ -2015,6 +2017,8 @@
       track.className = "wheel-track";
       track.setAttribute("role", "slider");
       track.setAttribute("aria-label", w.label + " wheel");
+      track.setAttribute("aria-valuemin", w.centre ? "-1" : "0");
+      track.setAttribute("aria-valuemax", "1");
 
       var thumb = document.createElement("div");
       thumb.className = "wheel-thumb";

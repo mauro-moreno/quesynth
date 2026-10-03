@@ -25,9 +25,9 @@ import "base:intrinsics"
 // one left in the effects, the smoothers or a reassigned controller is heard
 // under the new one. Commit_Checked ends a run of ordinary edits only if the
 // revision the audio thread has reached is the `expected_revision` it carries;
-// otherwise the run is discarded. Either way the audio thread answers through
-// the ring's completed_* fields, tagged with the commit's `serial`. Appended
-// rather than inserted so the older values keep their numbers.
+// otherwise the run is discarded. Either way the audio thread answers on the
+// ring's results queue, tagged with the commit's `serial`. Appended rather than
+// inserted so the older values keep their numbers.
 Param_Command_Kind :: enum i32 {
 	Set,
 	Commit,
@@ -51,21 +51,38 @@ PARAM_RING_CAPACITY :: 256
 PARAM_RING_MASK :: PARAM_RING_CAPACITY - 1
 #assert(PARAM_RING_CAPACITY & PARAM_RING_MASK == 0)
 
+// The audio thread's answer to one Commit_Checked: whether it applied the batch,
+// and the revision it held afterwards, which it has already published.
+Checked_Result :: struct {
+	serial:   u64,
+	revision: int,
+	applied:  bool,
+}
+
+// Room for the results of more checked commits than the ring can hold at once,
+// since each takes a Set and its commit at the least. The queue can fill only
+// if the control thread stops draining it.
+CHECKED_RESULT_CAPACITY :: 256
+CHECKED_RESULT_MASK :: CHECKED_RESULT_CAPACITY - 1
+#assert(CHECKED_RESULT_CAPACITY & CHECKED_RESULT_MASK == 0)
+#assert(CHECKED_RESULT_CAPACITY >= PARAM_RING_CAPACITY / 2)
+
 Param_Ring :: struct {
 	cells:   [PARAM_RING_CAPACITY]Param_Command,
 	head:    u32, // consumer-owned (audio thread)
 	tail:    u32, // producer-owned (control thread)
 	dropped: u32, // rejected enqueue attempts (one per refused transaction)
-	// The answer to the latest Commit_Checked, kept here rather than on a
-	// waiting caller's stack: a caller that gave up must not leave the audio
-	// callback holding a dangling pointer. The control thread numbers each
-	// checked commit (`checked_serial`); the audio thread writes the outcome,
-	// then publishes `completed_serial` last, and a waiter trusts the outcome
-	// only when that is the serial it is waiting for.
-	checked_serial:     u64, // producer-owned (control thread)
-	completed_serial:   u64, // consumer-owned (audio thread), atomic
-	completed_revision: int,
-	completed_applied:  bool,
+	// The answers to Commit_Checked, in the order the audio thread decided them:
+	// a second single-producer single-consumer queue, running the other way. They
+	// are kept here rather than on a waiting caller's stack, so a caller that
+	// gave up leaves the audio callback nothing dangling. The control thread
+	// numbers each checked commit (`checked_serial`, never 0) and matches the
+	// serial of a result to the request that is waiting for it; a result nobody
+	// waits for any more is discarded.
+	checked_serial: u64, // producer-owned (control thread)
+	results:        [CHECKED_RESULT_CAPACITY]Checked_Result,
+	results_head:   u32, // consumer-owned (control thread)
+	results_tail:   u32, // producer-owned (audio thread)
 }
 
 // Producer side, on the control thread. Returns false when the ring is full.
@@ -106,4 +123,30 @@ param_ring_pop :: proc "contextless" (r: ^Param_Ring) -> (cmd: Param_Command, ok
 
 param_ring_dropped :: proc "contextless" (r: ^Param_Ring) -> u32 {
 	return intrinsics.atomic_load_explicit(&r.dropped, .Relaxed)
+}
+
+// Post one result, on the audio thread. Wait-free: a full queue drops the result
+// rather than wait for room, and the request it answered then reports an unknown
+// outcome, which is what it reports for an answer that never comes.
+param_ring_post_result :: proc "contextless" (r: ^Param_Ring, result: Checked_Result) -> bool {
+	tail := intrinsics.atomic_load_explicit(&r.results_tail, .Relaxed)
+	head := intrinsics.atomic_load_explicit(&r.results_head, .Acquire)
+	if tail - head >= CHECKED_RESULT_CAPACITY {
+		return false
+	}
+	r.results[tail & CHECKED_RESULT_MASK] = result
+	intrinsics.atomic_store_explicit(&r.results_tail, tail + 1, .Release)
+	return true
+}
+
+// Take the oldest result, on the control thread. ok=false when there is none.
+param_ring_take_result :: proc "contextless" (r: ^Param_Ring) -> (result: Checked_Result, ok: bool) {
+	head := intrinsics.atomic_load_explicit(&r.results_head, .Relaxed)
+	tail := intrinsics.atomic_load_explicit(&r.results_tail, .Acquire)
+	if head == tail {
+		return {}, false
+	}
+	result = r.results[head & CHECKED_RESULT_MASK]
+	intrinsics.atomic_store_explicit(&r.results_head, head + 1, .Release)
+	return result, true
 }

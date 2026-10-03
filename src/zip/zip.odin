@@ -2,6 +2,7 @@ package zip
 
 import "core:bytes"
 import "core:compress/zlib"
+import "core:mem"
 
 // A minimal, read-only ZIP reader, enough to browse a bank archive and pull one
 // entry at a time without decompressing the rest. It reads the central directory
@@ -199,6 +200,7 @@ inflate_entry :: proc(
 Zip :: struct {
 	data:    []u8,
 	entries: []Entry,
+	allocator: mem.Allocator,
 }
 
 // Index an in-memory archive. `data` is borrowed, not copied; keep it alive for
@@ -212,13 +214,12 @@ zip_open :: proc(data: []u8, allocator := context.allocator) -> (z: Zip, ok: boo
 	if !parsed {
 		return {}, false
 	}
-	return Zip{data = data, entries = entries}, true
+	return Zip{data = data, entries = entries, allocator = allocator}, true
 }
 
 zip_close :: proc(z: ^Zip) {
-	delete(z.entries)
-	z.entries = nil
-	z.data = nil
+	if z.entries != nil { delete(z.entries, z.allocator) }
+	z^ = {}
 }
 
 zip_count :: proc(z: ^Zip) -> int {

@@ -162,6 +162,9 @@ Response :: struct {
 	error:   Error_Code,
 	fields:  string,
 	body:    string,
+	// A newline after the envelope denotes a body even when its only record
+	// is empty. body alone cannot distinguish that from an absent body.
+	has_body: bool,
 }
 
 response_parse :: proc(payload: []u8) -> (resp: Response, ok: bool) {
@@ -170,6 +173,7 @@ response_parse :: proc(payload: []u8) -> (resp: Response, ok: bool) {
 	if idx := strings.index_byte(text, '\n'); idx >= 0 {
 		envelope = text[:idx]
 		resp.body = text[idx + 1:]
+		resp.has_body = true
 	}
 
 	rest := envelope

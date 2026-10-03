@@ -131,6 +131,22 @@ test_response_parse_err_code :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_response_parse_distinguishes_no_records_from_one_empty_record :: proc(t: ^testing.T) {
+	for c in ([]struct{payload: string, body: string, has_body: bool}{
+		{"1 1 ok", "", false},
+		{"1 1 ok x=1", "", false},
+		{"1 1 ok\n", "", true},
+		{"1 1 ok\nx\n", "x\n", true},
+		{"1 1 ok\n\n", "\n", true},
+	}) {
+		resp, ok := control.response_parse(bytes(c.payload))
+		testing.expect(t, ok)
+		testing.expect_value(t, resp.has_body, c.has_body)
+		testing.expect_value(t, resp.body, c.body)
+	}
+}
+
+@(test)
 test_error_code_names_round_trip :: proc(t: ^testing.T) {
 	codes := []control.Error_Code {
 		.None,

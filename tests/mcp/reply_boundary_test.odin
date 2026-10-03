@@ -68,8 +68,8 @@ test_direct_replies_preserve_whitespace_and_unicode_while_legacy_keeps_its_shape
 	got := parse_object(text)
 	testing.expect_value(t, text_of(got["fields"]), " name=Caf\u00e9 e\u0301 \U0001f3b9\ufffd  ")
 	lines, _ := got["lines"].(json.Array)
-	if testing.expect_value(t, len(lines), 3) {
-		for want, i in ([]string{"second  ", "", " first "}) { testing.expect_value(t, text_of(lines[i]), want) }
+	if testing.expect_value(t, len(lines), 4) {
+		for want, i in ([]string{"second  ", "", " first ", ""}) { testing.expect_value(t, text_of(lines[i]), want) }
 	}
 	code, message := tool_error(&s, "parameter_set_many", `{"parameters":[{"id":"filter.cutoff","value":1}]}`, standin.path)
 	testing.expect_value(t, code, "brand_new_code")
