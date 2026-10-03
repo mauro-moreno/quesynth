@@ -130,16 +130,20 @@ run :: proc(path: string) -> int {
 			n := read_input_timeout(REFRESH_MS, buf[:])
 			if n < 0 { return 0 }
 			if n == 0 {
+				// An escape sequence held for a rest that has not come after all
+				// ends as if nothing had been waiting: an ESC is Esc.
+				nav_search_input(&nav, nil)
 				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
 			} else {
 				client_set_notice(&client, "")
-				if nav_search_input(&nav, buf[:n]) == .Quit { return 0 }
+				if nav_search_input(&nav, buf[:n], input_waiting()) == .Quit { return 0 }
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
 			continue
 		}
 		// A read takes 8 bytes at most. What a long paste carries behind a `/`
-		// past that comes in the next read, which the search takes whole.
+		// past that comes in the next read, which the search takes whole; an
+		// escape sequence the first read ended inside is finished there.
 		input: [8]u8
 		key, typed := read_key_timeout(REFRESH_MS, input[:])
 		if key != .Tick { client_set_notice(&client, "") }
@@ -192,7 +196,7 @@ run :: proc(path: string) -> int {
 			case .Bank:
 				nav.shown = false
 			case .Search:
-				if nav_search_start(&nav, typed) == .Quit { return 0 }
+				if nav_search_start(&nav, typed, input_waiting()) == .Quit { return 0 }
 			case .Enter:
 				if connected && nav.level == .Banks && nav_selected(&nav) {
 					tui_browse_bank(&client, &nav, nav_row_bank(nav.cursor), prov)

@@ -1538,3 +1538,213 @@ test_slash_burst_edits_moves_and_ends_the_search :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(nav.query), 0)
 	testing.expect_value(t, slash(t, &nav, "/pad\x03"), tui.Search_Outcome.Quit)
 }
+
+// ---- An escape sequence that a read cuts in two ----------------------------
+
+// The key read takes 8 bytes and a search read 256, so a read can end inside
+// an arrow's ESC [ B, or just after its ESC, with the rest already sent and
+// left for the next read. The arrow must do what it does read whole. The
+// helpers below read one write to the terminal as the run loop does: every read
+// but the last leaves more input waiting, as poll says after it.
+
+// The factory bank as the daemon lists it, a space in a name sent as `_`.
+@(private = "file")
+factory_names := []string {
+	"Strings", "Pad", "Solo_Lead", "Bass", "Pluck", "Bells", "Organ", "Brass",
+	"Arp", "Sweep", "Sync_Lead", "Ring_Bell", "Wobble", "Noise_Perc", "Phaser_Pad", "Ladder_Lead",
+}
+
+// An ordinary bank of these names, browsed from its first slot. Temp-allocated,
+// as fixture_nav is.
+@(private = "file")
+bank_nav :: proc(names: []string) -> tui.Navigator {
+	slots := make([]tui.Bank_Slot, len(names), context.temp_allocator)
+	for &s, i in slots {s = {slot = i, name = names[i], filled = true}}
+	return tui.Navigator{level = .Patches, browsing = tui.ORDINARY, slots = slots, label = "Quesynth_Factory", archive = {bank = -1}}
+}
+
+// One write typed into an open search, read at most 256 bytes at a time.
+@(private = "file")
+search_reads :: proc(nav: ^tui.Navigator, sent: string) -> tui.Search_Outcome {
+	left := sent
+	outcome := tui.Search_Outcome.Typing
+	for outcome == .Typing {
+		read := left[:min(len(left), 256)]
+		left = left[len(read):]
+		outcome = tui.nav_search_input(nav, transmute([]u8)read, len(left) > 0)
+		if len(left) == 0 {break}
+	}
+	return outcome
+}
+
+// One write that begins with `/`: the key read takes its first 8 bytes, and the
+// search that opens reads the rest.
+@(private = "file")
+burst :: proc(t: ^testing.T, nav: ^tui.Navigator, sent: string, loc := #caller_location) -> tui.Search_Outcome {
+	first := sent[:min(len(sent), 8)]
+	key, rest := tui.decode_key(transmute([]u8)first)
+	testing.expect_value(t, key, tui.Key.Search, loc = loc)
+	left := sent[len(first):]
+	outcome := tui.nav_search_start(nav, rest, len(left) > 0)
+	if outcome != .Typing || len(left) == 0 {return outcome}
+	return search_reads(nav, left)
+}
+
+// A read the search takes while the terminal has already sent more.
+@(private = "file")
+type_with_more :: proc(nav: ^tui.Navigator, text: string) -> tui.Search_Outcome {
+	return tui.nav_search_input(nav, transmute([]u8)text, true)
+}
+
+@(test)
+test_an_arrow_the_key_read_cuts_in_two_moves_as_if_read_whole :: proc(t: ^testing.T) {
+	abc := []string{"ab", "abcdef 1", "abcdef 2", "abc", "abcdef 3"}
+	Case :: struct {
+		sent:   string,
+		names:  []string,
+		query:  string,
+		shown:  []int,
+		cursor: int,
+	}
+	cases := []Case {
+		// 9 bytes: the key read ends after ESC [, and the B is the next read.
+		{"/_lead\x1b[B", factory_names, "_lead", []int{2, 10, 15}, 10},
+		{"/abcde\x1b[B", abc, "abcde", []int{1, 2, 4}, 2},
+		// 10 bytes: it ends after the ESC, and [B is the next read.
+		{"/ _lead\x1b[B", factory_names, " _lead", []int{2, 10, 15}, 10},
+		{"/  lead\x1b[B", factory_names, "  lead", []int{2, 10, 15}, 10},
+		{"/abcdef\x1b[B", abc, "abcdef", []int{1, 2, 4}, 2},
+		// Up whole in the key read, then Down cut in two.
+		{"/ab\x1b[A\x1b[B", abc, "ab", []int{0, 1, 2, 3, 4}, 1},
+	}
+	for c in cases {
+		nav := bank_nav(c.names)
+		defer delete(nav.query)
+		testing.expectf(t, burst(t, &nav, c.sent) == .Typing, "%q ended the search", c.sent)
+		testing.expectf(t, nav.searching, "%q closed the search", c.sent)
+		testing.expectf(t, string(nav.query[:]) == c.query, "%q left the query %q, want %q", c.sent, string(nav.query[:]), c.query)
+		expect_shown(t, &nav, ..c.shown)
+		testing.expectf(t, nav.cursor == c.cursor, "%q left the cursor on %d, want %d", c.sent, nav.cursor, c.cursor)
+	}
+
+	// As drawn: the three leads, the cursor on the second, and the query.
+	nav := bank_nav(factory_names)
+	defer delete(nav.query)
+	burst(t, &nav, "/_lead\x1b[B")
+	expect_rows(
+		t,
+		navigator_screen(&nav, from_slot(5)),
+		"   002  Solo_Lead",
+		">  010  Sync_Lead",
+		"   015  Ladder_Lead",
+		"2/3   type to search   up/down move   Enter keep   Esc cancel   ^U clear",
+		"/_lead_",
+	)
+}
+
+@(test)
+test_an_arrow_a_search_read_cuts_in_two_moves_as_if_read_whole :: proc(t: ^testing.T) {
+	// Ctrl-Down, ESC [ 1 ; 5 B, carries parameters, and moves as Down does.
+	for arrow in ([]string{"\x1b[B", "\x1b[1;5B"}) {
+		for cut in 1 ..< len(arrow) {
+			// A read of 256 bytes that Ctrl-U leaves at `_lead` ends on the first
+			// `cut` bytes of the arrow: typed into an open search, and behind a
+			// `/`, where the key read took 8 bytes before it.
+			typed := "\x15_lead"
+			junk := strings.repeat("x", 256 - len(typed) - cut, context.temp_allocator)
+			for lead_in in ([]string{"", "/1234567"}) {
+				sent := fmt.tprintf("%s%s%s%s", lead_in, junk, typed, arrow)
+				nav := bank_nav(factory_names)
+				defer delete(nav.query)
+				outcome: tui.Search_Outcome
+				if lead_in == "" {
+					nav.searching = true
+					outcome = search_reads(&nav, sent)
+				} else {
+					outcome = burst(t, &nav, sent)
+				}
+				testing.expectf(t, outcome == .Typing, "%q cut after %d, behind %q: the search ended", arrow, cut, lead_in)
+				testing.expectf(t, nav.searching, "%q cut after %d, behind %q: the search closed", arrow, cut, lead_in)
+				testing.expectf(t, string(nav.query[:]) == "_lead", "%q cut after %d, behind %q: the query is %q", arrow, cut, lead_in, string(nav.query[:]))
+				expect_shown(t, &nav, 2, 10, 15)
+				testing.expectf(t, nav.cursor == 10, "%q cut after %d, behind %q: the cursor is on %d", arrow, cut, lead_in, nav.cursor)
+			}
+		}
+	}
+}
+
+// An ESC with nothing behind it is the Esc key on its own: the search is cleared
+// and ended at once, whichever read it comes at the end of.
+@(test)
+test_an_esc_with_nothing_behind_it_ends_the_search_at_once :: proc(t: ^testing.T) {
+	// `/` and Esc in one write, and an Esc that fills the key read's 8 bytes.
+	for sent in ([]string{"/\x1b", "/abcdef\x1b"}) {
+		nav := bank_nav(factory_names)
+		defer delete(nav.query)
+		testing.expectf(t, burst(t, &nav, sent) == .Done, "%q left the search open", sent)
+		testing.expectf(t, !nav.searching, "%q left the search open", sent)
+		testing.expectf(t, len(nav.query) == 0, "%q kept %q", sent, string(nav.query[:]))
+	}
+
+	nav := bank_nav(factory_names)
+	defer delete(nav.query)
+	// Esc pressed while typing comes in a write of its own; the cursor stays.
+	burst(t, &nav, "/_lead\x1b[B")
+	testing.expect_value(t, search_reads(&nav, "\x1b"), tui.Search_Outcome.Done)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+	testing.expect_value(t, nav.cursor, 10)
+	// Or as the last of a search read's 256 bytes.
+	nav.searching = true
+	testing.expect_value(t, search_reads(&nav, fmt.tprintf("%s\x1b", strings.repeat("x", 255, context.temp_allocator))), tui.Search_Outcome.Done)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+
+	// A sequence cut short with nothing behind it is dropped, as it always was.
+	testing.expect_value(t, burst(t, &nav, "/lead\x1b["), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "lead")
+	tui.nav_search_clear(&nav)
+
+	// More was waiting behind an ESC, so it is held, but the read that was to
+	// bring the rest timed out: at that tick it is Esc after all.
+	nav.searching = true
+	testing.expect_value(t, type_with_more(&nav, "lead\x1b"), tui.Search_Outcome.Typing)
+	testing.expect(t, nav.searching)
+	testing.expect_value(t, string(nav.query[:]), "lead")
+	testing.expect_value(t, tui.nav_search_input(&nav, nil), tui.Search_Outcome.Done)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+}
+
+// What a read leaves of an escape sequence is the search's: whatever clears
+// the search clears it, and the next search starts without it.
+@(test)
+test_an_escape_sequence_cut_in_two_goes_with_its_search :: proc(t: ^testing.T) {
+	nav := bank_nav(factory_names)
+	defer delete(nav.query)
+	// The key read of `/ _lead` and Down ends on the ESC, and more is waiting.
+	key, rest := tui.decode_key(transmute([]u8)string("/ _lead\x1b"))
+	testing.expect_value(t, key, tui.Key.Search)
+	testing.expect_value(t, tui.nav_search_start(&nav, rest, true), tui.Search_Outcome.Typing)
+	testing.expect(t, nav.searching)
+	testing.expect_value(t, string(nav.query[:]), " _lead")
+	tui.nav_search_clear(&nav)
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+	// The ESC went with it: [B in a later search is text, and moves nothing.
+	testing.expect_value(t, slash(t, &nav, "/[B"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "[B")
+	testing.expect_value(t, nav.cursor, 2)
+
+	// The same for ESC [, and a search cleared by going into a bank.
+	testing.expect_value(t, type_with_more(&nav, "\x15lead\x1b["), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "lead")
+	testing.expect_value(t, nav.cursor, 2)
+	tui.nav_descend(&nav, tui.ORDINARY, from_slot(5))
+	testing.expect(t, !nav.searching)
+	testing.expect_value(t, len(nav.query), 0)
+	testing.expect_value(t, slash(t, &nav, "/B"), tui.Search_Outcome.Typing)
+	testing.expect_value(t, string(nav.query[:]), "B")
+	expect_shown(t, &nav, 3, 5, 7, 11, 12)
+	testing.expect_value(t, nav.cursor, 5)
+}

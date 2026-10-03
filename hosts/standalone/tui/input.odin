@@ -40,7 +40,8 @@ read_key :: proc(buf: []u8) -> (key: Key, rest: []u8) {
 // reads as Quit so the loop always terminates. A burst decodes to its first key
 // only, except behind `/`: a paste, or text typed faster than the loop turns,
 // comes in the read that carries the `/`, and what follows it is the start of
-// the search that `/` opens, so it comes back as `rest`.
+// the search that `/` opens, so it comes back as `rest`. That can end inside an
+// escape sequence, which the search finishes (nav_search_input).
 decode_key :: proc(input: []u8) -> (key: Key, rest: []u8) {
 	if len(input) == 0 {
 		return .Quit, nil
@@ -139,6 +140,15 @@ read_key_timeout :: proc(timeout_ms: int, buf: []u8) -> (key: Key, rest: []u8) {
 		return .Tick, nil
 	}
 	return read_key(buf)
+}
+
+// Whether the terminal has sent more than the last read took. Asked right after
+// a read, so that an escape sequence the read ended inside is finished by the
+// next one. A read that filled its buffer is no sign of more by itself: an Esc
+// that was its last byte, with nothing behind it, would wait for the next tick.
+input_waiting :: proc() -> bool {
+	fds := [1]posix.pollfd{{fd = posix.STDIN_FILENO, events = {.IN}}}
+	return posix.poll(&fds[0], 1, 0) > 0 && .IN in fds[0].revents
 }
 
 // Read what the terminal has sent, up to len(buf) bytes, within timeout_ms:

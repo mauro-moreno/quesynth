@@ -59,6 +59,17 @@ Navigator :: struct {
 	// list, so what Enter and S act on is that row's own slot, bank or patch.
 	query:            [dynamic]u8,
 	searching:        bool,
+	// How far into an escape sequence the search's last read ended, while the
+	// terminal had already sent the rest; the next read goes on from there.
+	escape:           Search_Escape,
+}
+
+// An arrow is ESC [ A or ESC [ B, with any parameters between the [ and the
+// final byte, as in Ctrl-Down's ESC [ 1 ; 5 B.
+Search_Escape :: enum {
+	None,
+	Esc,
+	Csi,
 }
 
 nav_free :: proc(nav: ^Navigator) {
@@ -168,6 +179,7 @@ nav_selected :: proc(nav: ^Navigator) -> bool {
 nav_search_clear :: proc(nav: ^Navigator) {
 	clear(&nav.query)
 	nav.searching = false
+	nav.escape = .None
 }
 
 Search_Outcome :: enum {
@@ -179,10 +191,25 @@ Search_Outcome :: enum {
 // What the terminal sent while the query is being typed, a whole read at a
 // time so a paste arrives whole. Nothing typed here is a command: `q` or `s`
 // is part of a name.
-nav_search_input :: proc(nav: ^Navigator, input: []u8) -> Search_Outcome {
-	for i := 0; i < len(input); i += 1 {
-		ch := input[i]
+//
+// A read ends where it ends, which can be inside an arrow's escape sequence:
+// the key read takes 8 bytes and a search read 256. more_waiting says the
+// terminal had already sent more when the read returned, so a sequence the read
+// ended in is carried into the next one and does what it does read whole.
+// Otherwise an ESC at the end is the Esc key, pressed on its own, and a
+// sequence cut short is dropped. No input, when the read that was to bring the
+// rest timed out after all, ends a carried sequence the same way.
+nav_search_input :: proc(nav: ^Navigator, input: []u8, more_waiting := false) -> Search_Outcome {
+	for ch in input {
 		switch {
+		case nav.escape == .Esc:
+			// Any byte but `[` after an ESC is an Alt key, ignored with it.
+			nav.escape = ch == '[' ? .Csi : .None
+		case nav.escape == .Csi:
+			if ch < 0x40 || ch > 0x7e {continue}
+			nav.escape = .None
+			if ch == 'A' {nav_move(nav, -1)}
+			if ch == 'B' {nav_move(nav, 1)}
 		case ch == 0x03:
 			return .Quit
 		case ch == 0x0d || ch == 0x0a:
@@ -190,19 +217,8 @@ nav_search_input :: proc(nav: ^Navigator, input: []u8) -> Search_Outcome {
 			if !nav_filtering(nav) {clear(&nav.query)}
 			nav_move(nav, 0)
 			return .Done
-		case ch == 0x1b && i + 1 < len(input):
-			if input[i + 1] != '[' {
-				i += 1
-				continue
-			}
-			i += 2
-			for i < len(input) && (input[i] < 0x40 || input[i] > 0x7e) {i += 1}
-			if i < len(input) && input[i] == 'A' {nav_move(nav, -1)}
-			if i < len(input) && input[i] == 'B' {nav_move(nav, 1)}
 		case ch == 0x1b:
-			nav_search_clear(nav)
-			nav_move(nav, 0)
-			return .Done
+			nav.escape = .Esc
 		case ch == 0x15:
 			clear(&nav.query)
 			nav_move(nav, 0)
@@ -219,14 +235,21 @@ nav_search_input :: proc(nav: ^Navigator, input: []u8) -> Search_Outcome {
 			nav_move(nav, 0)
 		}
 	}
+	if more_waiting {return .Typing}
+	if nav.escape == .Esc {
+		nav_search_clear(nav)
+		nav_move(nav, 0)
+		return .Done
+	}
+	nav.escape = .None
 	return .Typing
 }
 
 // `/`: the search opens, and takes what the same read carried behind the
 // slash as if it had come in a read of its own.
-nav_search_start :: proc(nav: ^Navigator, typed: []u8) -> Search_Outcome {
+nav_search_start :: proc(nav: ^Navigator, typed: []u8, more_waiting := false) -> Search_Outcome {
 	nav.searching = true
-	return nav_search_input(nav, typed)
+	return nav_search_input(nav, typed, more_waiting)
 }
 
 // Show the navigator. The first time it opens on the list of banks, on the
