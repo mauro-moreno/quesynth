@@ -660,9 +660,10 @@ holds the ordinary bank and the archive's banks, in two levels:
   bank's patches. `>` is the cursor; `*` marks the patch that is playing, and
   only in the bank the sound came from at its index, so ordinary slot 5 is
   never archive patch 5 and the cursor never claims to be playing. Enter
-  loads the patch under the cursor — `patch.load` for a filled slot,
-  `archive.load <i> <bank>` naming the bank listed — and returns to the synth
-  screen.
+  loads the patch under the cursor — `patch.load <slot>` for a filled slot,
+  `patch.load <slot> init` for an empty one, which loads the Init patch and
+  writes nothing to the bank, `archive.load <i> <bank>` naming the bank
+  listed — and returns to the synth screen.
 
 Esc goes up to the banks, on the bank just left, and from there hides the
 navigator, as `B` does from either level; `B` again reopens where it was left.

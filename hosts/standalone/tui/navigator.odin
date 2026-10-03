@@ -70,6 +70,8 @@ Search_Escape :: enum {
 	None,
 	Esc,
 	Csi,
+	// A CSI with parameters is consumed but ignored outside search.
+	Csi_Param,
 }
 
 nav_free :: proc(nav: ^Navigator) {
@@ -151,7 +153,10 @@ nav_row_name :: proc(nav: ^Navigator, row: int) -> string {
 }
 
 // As in the browser's bank search, the query is trimmed and matched in any
-// case, so a query of only spaces shows every row.
+// case, so a query of only spaces shows every row. The daemon sends the
+// ordinary bank's names and label with each space as `_` (bank.list), so there
+// a space typed and an underscore are the same; an archive's names come as
+// they are.
 nav_filtering :: proc(nav: ^Navigator) -> bool {
 	return strings.trim_space(string(nav.query[:])) != ""
 }
@@ -160,7 +165,17 @@ nav_row_matches :: proc(nav: ^Navigator, row: int) -> bool {
 	needle := strings.trim_space(string(nav.query[:]))
 	if needle == "" {return true}
 	name := strings.to_lower(nav_row_name(nav, row), context.temp_allocator)
-	return strings.contains(name, strings.to_lower(needle, context.temp_allocator))
+	needle = strings.to_lower(needle, context.temp_allocator)
+	if nav_row_ordinary(nav, row) {
+		name, _ = strings.replace_all(name, "_", " ", context.temp_allocator)
+		needle, _ = strings.replace_all(needle, "_", " ", context.temp_allocator)
+	}
+	return strings.contains(name, needle)
+}
+
+@(private)
+nav_row_ordinary :: proc(nav: ^Navigator, row: int) -> bool {
+	return nav.level == .Banks ? row == 0 : nav.browsing == ORDINARY
 }
 
 // Temp-allocated.
@@ -193,20 +208,26 @@ Search_Outcome :: enum {
 // is part of a name.
 //
 // A read ends where it ends, which can be inside an arrow's escape sequence:
-// the key read takes 8 bytes and a search read 256. more_waiting says the
-// terminal had already sent more when the read returned, so a sequence the read
-// ended in is carried into the next one and does what it does read whole.
-// Otherwise an ESC at the end is the Esc key, pressed on its own, and a
-// sequence cut short is dropped. No input, when the read that was to bring the
-// rest timed out after all, ends a carried sequence the same way.
+// the key read takes 8 bytes and a search read 256, and the rest of a sequence
+// can come in a later write. A sequence the read ended in is carried into the
+// next one and does what it does read whole. An ESC at the end is carried only
+// while more_waiting says the terminal had already sent more; otherwise it is
+// the Esc key, pressed on its own. No input, when no read came before the
+// refresh tick, ends a carried sequence: an ESC is Esc, an ESC [ is dropped.
 nav_search_input :: proc(nav: ^Navigator, input: []u8, more_waiting := false) -> Search_Outcome {
-	for ch in input {
+	for ch, i in input {
 		switch {
+		case nav.escape == .Esc && ch == 0x1b:
+			// The ESC held was the Esc key, and this one starts what comes next.
+			nav_search_clear(nav)
+			nav_move(nav, 0)
+			nav.escape = .Esc
+			return nav_search_after(nav, input[i + 1:], more_waiting)
 		case nav.escape == .Esc:
 			// Any byte but `[` after an ESC is an Alt key, ignored with it.
 			nav.escape = ch == '[' ? .Csi : .None
-		case nav.escape == .Csi:
-			if ch < 0x40 || ch > 0x7e {continue}
+		case nav.escape == .Csi || nav.escape == .Csi_Param:
+			if ch < 0x40 || ch > 0x7e {nav.escape = .Csi_Param; continue}
 			nav.escape = .None
 			if ch == 'A' {nav_move(nav, -1)}
 			if ch == 'B' {nav_move(nav, 1)}
@@ -216,7 +237,7 @@ nav_search_input :: proc(nav: ^Navigator, input: []u8, more_waiting := false) ->
 			nav.searching = false
 			if !nav_filtering(nav) {clear(&nav.query)}
 			nav_move(nav, 0)
-			return .Done
+			return nav_search_after(nav, input[i + 1:], more_waiting)
 		case ch == 0x1b:
 			nav.escape = .Esc
 		case ch == 0x15:
@@ -241,8 +262,25 @@ nav_search_input :: proc(nav: ^Navigator, input: []u8, more_waiting := false) ->
 		nav_move(nav, 0)
 		return .Done
 	}
-	nav.escape = .None
+	if len(input) == 0 || (nav.escape != .Csi && nav.escape != .Csi_Param) {nav.escape = .None}
 	return .Typing
+}
+
+// The rest of the read that ended the search. Its arrows move as they would
+// have in a read of their own, and its other keys are dropped, as the rest of
+// any key read is. An escape sequence it ends inside of is left in nav.escape
+// for the key read that follows (decode_key's `held`), by the same rule as
+// there, so the B of a Down cut in two is not the Bank key.
+@(private)
+nav_search_after :: proc(nav: ^Navigator, rest: []u8, more_waiting: bool) -> Search_Outcome {
+	for ch in rest {
+		final, ended := escape_step(&nav.escape, ch)
+		if !ended {continue}
+		if final == 'A' {nav_move(nav, -1)}
+		if final == 'B' {nav_move(nav, 1)}
+	}
+	if !more_waiting && nav.escape != .Csi && nav.escape != .Csi_Param {nav.escape = .None}
+	return .Done
 }
 
 // `/`: the search opens, and takes what the same read carried behind the

@@ -108,6 +108,9 @@ run :: proc(path: string) -> int {
 		tui_read_provenance(&client, &prov)
 		tui_read_midi(&client, &current_midi)
 	}
+	// What a key read, or a search that has ended, left of an escape sequence
+	// for the next key read to finish (decode_key).
+	held: Search_Escape
 	for {
 		// Reset the per-frame temp allocations (the tab strip and the formatted
 		// lines) so the render loop does not grow memory without bound.
@@ -136,7 +139,9 @@ run :: proc(path: string) -> int {
 				if connected && tui_read_provenance(&client, &prov) { tui_sync_navigator(&client, &nav, prov) }
 			} else {
 				client_set_notice(&client, "")
-				if nav_search_input(&nav, buf[:n], input_waiting()) == .Quit { return 0 }
+				outcome := nav_search_input(&nav, buf[:n], input_waiting())
+				if outcome == .Quit { return 0 }
+				if outcome == .Done { held, nav.escape = nav.escape, .None }
 			}
 			if client.fd < 0 { connected = false; metrics = {} }
 			continue
@@ -145,7 +150,7 @@ run :: proc(path: string) -> int {
 		// past that comes in the next read, which the search takes whole; an
 		// escape sequence the first read ended inside is finished there.
 		input: [8]u8
-		key, typed := read_key_timeout(REFRESH_MS, input[:])
+		key, typed := read_key_timeout(REFRESH_MS, input[:], &held)
 		if key != .Tick { client_set_notice(&client, "") }
 
 		// The settings screen sits over everything; handle it first.
@@ -196,7 +201,9 @@ run :: proc(path: string) -> int {
 			case .Bank:
 				nav.shown = false
 			case .Search:
-				if nav_search_start(&nav, typed, input_waiting()) == .Quit { return 0 }
+				outcome := nav_search_start(&nav, typed, input_waiting())
+				if outcome == .Quit { return 0 }
+				if outcome == .Done { held, nav.escape = nav.escape, .None }
 			case .Enter:
 				if connected && nav.level == .Banks && nav_selected(&nav) {
 					tui_browse_bank(&client, &nav, nav_row_bank(nav.cursor), prov)
@@ -566,9 +573,9 @@ tui_browse_bank :: proc(client: ^Client, nav: ^Navigator, bank: int, prov: Prove
 tui_load_cursor :: proc(client: ^Client, nav: ^Navigator) -> bool {
 	if nav.level != .Patches || !nav_selected(nav) { return false }
 	if nav.browsing == ORDINARY {
-		// Only a filled slot; an empty one is a place to save, not load.
+		// An empty slot starts a new sound, the Init patch it holds.
 		s := nav.slots[nav.cursor]
-		return s.filled && client_patch_load(client, s.slot)
+		return client_patch_load(client, s.slot, !s.filled)
 	}
 	return client_archive_load(client, nav.cursor, nav.browsing)
 }

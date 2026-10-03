@@ -597,3 +597,73 @@ test_a_replacement_commits_once_and_is_never_staged :: proc(t: ^testing.T) {
 	testing.expect(t, silent(r.live.eng.delay_left) && silent(r.live.eng.chorus_left), "an unchanged patch kept its tails")
 	testing.expect_value(t, render(r), 0)
 }
+
+// patch.load <slot> init: an empty slot starts a new sound from the defaults,
+// the Init patch an empty slot is (json.odin), as one replacement named as
+// that slot -- what the TUI asks for at an empty slot. Nothing is written to
+// the bank. Without `init`, an empty slot is refused as it always was.
+@(test)
+test_an_empty_slot_loads_as_init_only_when_asked :: proc(t: ^testing.T) {
+	r := rig_make(first_patch())
+	defer rig_free(r)
+	if !leave_ringing(t, r) {return}
+	if !testing.expect(t, !r.bank.filled[SPARE_SLOT]) {return}
+	before := new_clone(r.bank)
+	defer free(before)
+	revision := standalone.snapshot_read(&r.live.snapshot).revision
+	current := ask_live(&r.cc, "1 1 patch.current")
+
+	testing.expect_value(t, ask_live(&r.cc, fmt.tprintf("1 2 patch.load %d", SPARE_SLOT)), "1 2 err unknown_parameter slot is empty")
+	testing.expect_value(t, len(ring_contents(&r.live.ring)), 0)
+	testing.expect_value(t, ask_live(&r.cc, "1 1 patch.current"), current)
+
+	reply := ask_live(&r.cc, fmt.tprintf("1 3 patch.load %d init", SPARE_SLOT))
+	testing.expect_value(t, reply, fmt.tprintf("1 3 ok slot=%d name=Init count=%d revision=%d", SPARE_SLOT, patch.PARAMETER_COUNT, revision))
+	expect_replacement(t, ring_contents(&r.live.ring), patch.PARAMETER_COUNT, .Slot)
+	apply(r)
+	snap := standalone.snapshot_read(&r.live.snapshot)
+	testing.expect_value(t, snap.revision, revision + 1)
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		if snap.values[i] != i32(patch.PARAMETERS[i].default) {
+			testing.expectf(t, false, "parameter %d reads %d, its default is %d", i, snap.values[i], patch.PARAMETERS[i].default)
+			break
+		}
+	}
+	testing.expect(t, silent(r.live.eng.delay_left) && silent(r.live.eng.chorus_left), "Init kept the previous patch's tails")
+	testing.expect_value(t, render(r), 0)
+	playing := ask_live(&r.cc, "1 4 patch.current")
+	testing.expectf(t, strings.has_prefix(playing, fmt.tprintf("1 4 ok slot=%d ", SPARE_SLOT)), "%q", playing)
+	testing.expectf(t, strings.contains(playing, " source=bank "), "%q", playing)
+	testing.expectf(t, strings.has_suffix(playing, "\nbank=Factory\nname=Init"), "%q", playing)
+	testing.expect(t, before^ == r.bank, "loading Init changed the bank")
+
+	// A filled slot asked for as Init loads what it holds.
+	k := -1
+	for i in 0 ..< patch.FACTORY_SLOTS {
+		if r.bank.filled[i] {k = i; break}
+	}
+	if !testing.expect(t, k >= 0) {return}
+	testing.expect(t, strings.has_prefix(ask_live(&r.cc, fmt.tprintf("1 5 patch.load %d init", k)), fmt.tprintf("1 5 ok slot=%d ", k)))
+	cmds := ring_contents(&r.live.ring)
+	expect_replacement(t, cmds, patch.PARAMETER_COUNT, .Slot)
+	for cmd in cmds[:len(cmds) - 1] {
+		testing.expect_value(t, cmd.stored, r.bank.values[k][cmd.index])
+	}
+	apply(r)
+	current = ask_live(&r.cc, "1 1 patch.current")
+
+	// Refused, it changes nothing: not the sound, not what is playing, not
+	// the bank.
+	for _ in 0 ..< standalone.PARAM_RING_CAPACITY - 1 {
+		standalone.param_ring_push(&r.live.ring, standalone.Param_Command{kind = .Commit})
+	}
+	testing.expect_value(t, ask_live(&r.cc, "1 6 patch.load 121 init"), "1 6 err daemon_not_ready control queue full")
+	testing.expect_value(t, len(ring_contents(&r.live.ring)), standalone.PARAM_RING_CAPACITY - 1)
+	for {
+		if _, ok := standalone.param_ring_pop(&r.live.ring); !ok {break}
+	}
+	testing.expect_value(t, ask_live(&r.cc, "1 7 patch.load 999 init"), "1 7 err invalid_payload slot out of range")
+	testing.expect_value(t, len(ring_contents(&r.live.ring)), 0)
+	testing.expect_value(t, ask_live(&r.cc, "1 1 patch.current"), current)
+	testing.expect(t, before^ == r.bank, "a refused Init changed the bank")
+}

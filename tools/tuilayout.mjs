@@ -33,7 +33,17 @@ export function readLayout() {
   }));
 }
 
-export function generate(layout = readLayout()) {
+// The label the panel prints under each control, by parameter index, in panel
+// order. The registry's labels are the API's and need not be the panel's.
+export function readLabels() {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(fs.readFileSync(LAYOUT_SOURCE, "utf8"), context, {filename: LAYOUT_SOURCE});
+  return Array.from(context.window.SYNTH1_LAYOUT).flatMap(panel =>
+    Array.from(panel.groups || [{controls: panel.controls || []}]).flatMap(group =>
+      Array.from(group.controls, control => ({param: control.p, label: control.label}))));
+}
+
+export function generate(layout = readLayout(), labels = readLabels()) {
   const out = [
     "package tui",
     "",
@@ -50,6 +60,11 @@ export function generate(layout = readLayout()) {
     "\tgroups: []Layout_Group,",
     "}",
     "",
+    "Panel_Label :: struct {",
+    "\tparam: int,",
+    "\tlabel: string,",
+    "}",
+    "",
     "PANEL_LAYOUT := []Layout_Section {",
   ];
   for (const section of layout) {
@@ -58,6 +73,10 @@ export function generate(layout = readLayout()) {
       out.push(`\t\t{${JSON.stringify(group.label)}, {${group.params.join(", ")}}},`);
     }
     out.push("\t}},");
+  }
+  out.push("}", "", "PANEL_LABELS := []Panel_Label {");
+  for (const {param, label} of labels) {
+    out.push(`\t{${param}, ${JSON.stringify(label)}},`);
   }
   out.push("}", "");
   return out.join("\n");

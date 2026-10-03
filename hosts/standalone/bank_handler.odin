@@ -47,7 +47,9 @@ control_bank_list :: proc(cc: ^Control_Context, req: control.Request, out: ^stri
 	}
 }
 
-// patch.load <slot>: apply the slot's values as one transaction.
+// patch.load <slot> [init]: apply the slot's values as one transaction. With
+// `init` an empty slot loads as the Init patch it is listed as, the defaults,
+// rather than being refused: how a front-end starts a new sound in that slot.
 @(private)
 control_patch_load :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	if cc.bank == nil {
@@ -63,7 +65,8 @@ control_patch_load :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 		control_write_err(out, req, .Invalid_Payload, "slot out of range")
 		return
 	}
-	applied, result := bank_load_slot(cc, slot)
+	init := req.operand_count >= 2 && req.operands[1] == "init"
+	applied, result := bank_load_slot(cc, slot, init)
 	switch result {
 	case .No_Bank:
 		control_write_err(out, req, .Daemon_Not_Ready, "no bank")
@@ -102,14 +105,19 @@ Bank_Load_Result :: enum {
 
 // Load a bank slot as one replacement and name it as the playing patch. Both
 // patch.load and a native Program Change come here, so a slot cannot load one
-// way from a client and another from a keyboard. Anything but Ok has queued
-// nothing and left the identity alone.
+// way from a client and another from a keyboard. An empty slot is refused
+// unless `empty_as_init` asks for the Init patch, which writes nothing to the
+// bank. Anything but Ok has queued nothing and left the identity alone.
 @(private)
-bank_load_slot :: proc(cc: ^Control_Context, slot: int) -> (applied: int, result: Bank_Load_Result) {
+bank_load_slot :: proc(cc: ^Control_Context, slot: int, empty_as_init := false) -> (applied: int, result: Bank_Load_Result) {
 	if cc.bank == nil {return 0, .No_Bank}
 	if slot < 0 || slot >= patch.FACTORY_SLOTS {return 0, .Out_Of_Range}
 	values, ok := patch.slots_patch(cc.bank, slot)
-	if !ok {return 0, .Empty}
+	if !ok && !empty_as_init {return 0, .Empty}
+	if !ok {
+		init := patch.init_patch()
+		for i in 0 ..< patch.PARAMETER_COUNT {values[i] = i32(init.values[i])}
+	}
 	present: [patch.PARAMETER_COUNT]bool
 	for i in 0 ..< patch.PARAMETER_COUNT {present[i] = true}
 

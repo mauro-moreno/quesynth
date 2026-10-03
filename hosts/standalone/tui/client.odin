@@ -260,8 +260,10 @@ client_bank_free :: proc(slots: []Bank_Slot) {
 	delete(slots)
 }
 
-client_patch_load :: proc(cl: ^Client, slot: int) -> bool {
-	return client_ok(cl, fmt.tprintf("%d %d patch.load %d", control.PROTOCOL_VERSION, cl.next_id, slot))
+// patch.load, or with `init` patch.load <slot> init, which loads an empty slot
+// as the Init patch rather than refusing it.
+client_patch_load :: proc(cl: ^Client, slot: int, init := false) -> bool {
+	return client_ok(cl, fmt.tprintf("%d %d patch.load %d%s", control.PROTOCOL_VERSION, cl.next_id, slot, init ? " init" : ""))
 }
 
 // Load a patch file. Returns the patch's own name (from inside the file, cloned;

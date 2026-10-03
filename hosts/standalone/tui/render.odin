@@ -97,7 +97,7 @@ present :: proc(title: string, body: []string, footer: []string, theme: Theme) {
 			line = paint(theme, theme.dim, strings.repeat("─", inner, context.temp_allocator))
 		} else {
 			fi := i - top_n - sep
-			if fi >= 0 && fi < foot_n {line = footer[fi]}
+			if fi >= 0 && fi < foot_n {line = ellipsize_visible(footer[fi], inner)}
 		}
 		strings.write_string(&b, box_line(line, inner, theme))
 	}
@@ -113,7 +113,8 @@ render_notice :: proc(message: string, theme: Theme) {
 	if message == "" { return }
 	rows, cols := terminal_size()
 	line := paint(theme, theme.warning, fmt.tprintf("Error: %s", message))
-	terminal_write(fmt.tprintf("\x1b[%d;1H%s", max(rows, 6)-1, box_line(line, max(cols, 24)-4, theme)))
+	inner := max(cols, 24) - 4
+	terminal_write(fmt.tprintf("\x1b[%d;1H%s", max(rows, 6)-1, box_line(ellipsize_visible(line, inner), inner, theme)))
 }
 
 // The visible width of a string in terminal cells: runes counted, ANSI colour
@@ -163,6 +164,16 @@ truncate_visible :: proc(s: string, max: int) -> string {
 	}
 	strings.write_string(&b, "\x1b[0m")
 	return strings.to_string(b)
+}
+
+// As truncate_visible, but a line that does not fit ends in an ellipsis in its
+// last cell, so a footer cut at a narrow terminal reads as cut.
+@(private)
+ellipsize_visible :: proc(s: string, max: int) -> string {
+	if visible_width(s) <= max {return s}
+	if max <= 0 {return ""}
+	cut := truncate_visible(s, max - 1)
+	return fmt.tprintf("%s…\x1b[0m", cut[:len(cut) - len("\x1b[0m")])
 }
 
 @(private)
@@ -242,7 +253,7 @@ render :: proc(
 			chosen := k == selected
 			if chosen {selected_line = len(lines)}
 			marker := paint(theme, theme.selected, chosen ? ">" : " ")
-			label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", r.desc.label))
+			label := paint(theme, chosen ? theme.selected : theme.label, fmt.tprintf("%-16s", row_label(r.desc)))
 			padded := fmt.tprintf("%s%s", vals[k], strings.repeat(" ", vw - visible_width(vals[k]), context.temp_allocator))
 			value := paint(theme, theme.value, padded)
 			bar := make_bar(theme, registry.registry_normalize(r.desc, r.value), BAR_WIDTH)
@@ -286,6 +297,16 @@ render :: proc(
 	start, end := list_window(selected_line, len(lines), max(room, 1))
 	append(&body, ..lines[start:end])
 	present("Quesynth", body[:], footer[:], theme)
+}
+
+// The label the browser panel prints under the row's control, which can say
+// what the registry's label, the API's, says otherwise.
+@(private)
+row_label :: proc(desc: registry.Parameter_Descriptor) -> string {
+	for l in PANEL_LABELS {
+		if l.param == desc.index {return l.label}
+	}
+	return desc.label
 }
 
 // The bank navigator (navigator.odin): the list of banks, or one bank's

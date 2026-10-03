@@ -28,39 +28,68 @@ Key :: enum {
 
 // Read one key into buf, and with it what the read held behind a `/`. buf is
 // the caller's, so that `rest` is still there when this returns; its length is
-// how much one read takes.
-read_key :: proc(buf: []u8) -> (key: Key, rest: []u8) {
+// how much one read takes. `held` is what the last read left of an escape
+// sequence (decode_key).
+read_key :: proc(buf: []u8, held: ^Search_Escape = nil) -> (key: Key, rest: []u8) {
 	n := posix.read(posix.STDIN_FILENO, raw_data(buf), c.size_t(len(buf)))
-	return decode_key(buf[:max(int(n), 0)])
+	got := buf[:max(int(n), 0)]
+	return decode_key(got, held, held != nil && len(got) > 0 && input_waiting())
 }
 
 // The key a read began with. Arrow keys arrive as a three-byte escape burst
-// (ESC [ A..D); a single read returns the whole burst, so decoding does not
-// need to reassemble it across reads. No bytes at all is a closed stdin, which
-// reads as Quit so the loop always terminates. A burst decodes to its first key
-// only, except behind `/`: a paste, or text typed faster than the loop turns,
-// comes in the read that carries the `/`, and what follows it is the start of
-// the search that `/` opens, so it comes back as `rest`. That can end inside an
-// escape sequence, which the search finishes (nav_search_input).
-decode_key :: proc(input: []u8) -> (key: Key, rest: []u8) {
+// (ESC [ A..D, or with parameters before the final byte, as Ctrl-Down's
+// ESC [ 1 ; 5 B). No bytes at all is a closed stdin, which reads as Quit so the
+// loop always terminates. A burst decodes to its first key only, except behind
+// `/`: a paste, or text typed faster than the loop turns, comes in the read
+// that carries the `/`, and what follows it is the start of the search that
+// `/` opens, so it comes back as `rest`. That can end inside an escape
+// sequence, which the search finishes (nav_search_input).
+//
+// A read can also end inside an escape sequence outside a search, or one that
+// a search ended inside of can be left over: `held` carries it from one read
+// to the next, so its final byte -- the B of Down -- is never read as a key of
+// its own. An ESC [ is never a key by itself, so it is held whether or not the
+// rest has come yet, until the next read or the refresh tick before it
+// (key_timed_out). A lone ESC is held only while more_waiting says the
+// terminal has sent more; otherwise it is the Esc key, as before.
+decode_key :: proc(input: []u8, held: ^Search_Escape = nil, more_waiting := false) -> (key: Key, rest: []u8) {
+	state := Search_Escape.None
+	if held != nil {
+		state = held^
+		held^ = .None
+	}
 	if len(input) == 0 {
 		return .Quit, nil
 	}
-	if input[0] == 0x1b {
-		if len(input) >= 3 && input[1] == '[' {
-			switch input[2] {
-			case 'A':
-				return .Up, nil
-			case 'B':
-				return .Down, nil
-			case 'C':
-				return .Right, nil
-			case 'D':
-				return .Left, nil
-			}
+	at := 0
+	if state == .None && input[0] != 0x1b {
+		key, rest = decode_byte(input)
+		if key == .Search {return}
+		at = 1
+	} else {
+		key = .Other
+		if state == .None {
+			state = .Esc
+			at = 1
 		}
-		return len(input) == 1 ? .Escape : .Other, nil
+		ended := false
+		for !ended && at < len(input) {
+			final: u8
+			final, ended = escape_step(&state, input[at])
+			at += 1
+			if ended {key = escape_key(final)}
+		}
+		if !ended && state == .Esc && !(held != nil && more_waiting) {
+			key = .Escape
+		}
 	}
+	for ch in input[at:] {escape_step(&state, ch)}
+	if held != nil && (more_waiting || state == .Csi || state == .Csi_Param) {held^ = state}
+	return key, nil
+}
+
+@(private)
+decode_byte :: proc(input: []u8) -> (key: Key, rest: []u8) {
 	switch input[0] {
 	case 'q', 'Q', 0x03: // q or Ctrl-C
 		return .Quit, nil
@@ -88,6 +117,52 @@ decode_key :: proc(input: []u8) -> (key: Key, rest: []u8) {
 		return .Search, input[1:]
 	}
 	return .Other, nil
+}
+
+// One byte of an escape sequence in progress. `ended` once the sequence is
+// over: `final` is then a plain CSI's final byte; ESC when a second ESC shows
+// the first was the Esc key on its own, the second starting another sequence;
+// or 0 for an Alt key or a CSI with parameters, both ignored outside search.
+escape_step :: proc(state: ^Search_Escape, ch: u8) -> (final: u8, ended: bool) {
+	switch state^ {
+	case .None:
+		if ch == 0x1b {state^ = .Esc}
+	case .Esc:
+		switch ch {
+		case '[':
+			state^ = .Csi
+		case 0x1b:
+			return 0x1b, true
+		case:
+			state^ = .None
+			return 0, true
+		}
+	case .Csi, .Csi_Param:
+		if ch >= 0x40 && ch <= 0x7e {
+			plain := state^ == .Csi
+			state^ = .None
+			return plain ? ch : 0, true
+		}
+		state^ = .Csi_Param
+	}
+	return 0, false
+}
+
+@(private)
+escape_key :: proc(final: u8) -> Key {
+	switch final {
+	case 'A':
+		return .Up
+	case 'B':
+		return .Down
+	case 'C':
+		return .Right
+	case 'D':
+		return .Left
+	case 0x1b:
+		return .Escape
+	}
+	return .Other
 }
 
 // Read a line of text from a prompt drawn at `row`, in raw mode. Returns the
@@ -129,17 +204,25 @@ prompt_line :: proc(row: int, label: string, theme: Theme) -> (string, bool) {
 // Read a key, or return Tick when none arrives within timeout_ms. That lets the
 // UI refresh its metrics on a timer without a keypress, while still answering a
 // key the instant it is pressed.
-read_key_timeout :: proc(timeout_ms: int, buf: []u8) -> (key: Key, rest: []u8) {
+read_key_timeout :: proc(timeout_ms: int, buf: []u8, held: ^Search_Escape = nil) -> (key: Key, rest: []u8) {
 	fds := [1]posix.pollfd{{fd = posix.STDIN_FILENO, events = {.IN}}}
 	n := posix.poll(&fds[0], 1, c.int(timeout_ms))
 	if n <= 0 {
-		return .Tick, nil
+		return held != nil ? key_timed_out(held) : .Tick, nil
 	}
 	if fds[0].revents & {.HUP, .ERR, .NVAL} != {} { return .Quit, nil }
 	if .IN not_in fds[0].revents {
-		return .Tick, nil
+		return held != nil ? key_timed_out(held) : .Tick, nil
 	}
-	return read_key(buf)
+	return read_key(buf, held)
+}
+
+// No read came to finish what `held` keeps: an ESC was the Esc key after all,
+// and a sequence cut short is dropped.
+key_timed_out :: proc(held: ^Search_Escape) -> Key {
+	was := held^
+	held^ = .None
+	return was == .Esc ? .Escape : .Tick
 }
 
 // Whether the terminal has sent more than the last read took. Asked right after

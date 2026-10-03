@@ -302,7 +302,7 @@ is not marked as slot 5 of the ordinary bank.
 | Key | Action |
 |---|---|
 | Up, Down | Move the cursor |
-| Enter | At the banks, open the bank. At the patches, load the patch |
+| Enter | At the banks, open the bank. At the patches, load the patch. On an empty `Init` slot, start a new sound |
 | / | Search the names in the list |
 | Esc | Clear the search. Without one, go back from patches to banks, and from banks hide the navigator |
 | B | Hide the navigator |
@@ -316,10 +316,17 @@ It works only in the ordinary bank, since an archive is read-only. Prompts take
 printable ASCII. Escape cancels, so a path with other characters cannot be
 typed there; open it with the browser.
 
+Enter on an empty slot starts a new sound: every parameter at its default, the
+Init patch an empty slot stands for. The daemon names it as that slot, the way
+a loaded patch is named, and the slot stays empty until S saves into it. Other
+clients can do the same with `patch.load <slot> init`; without `init` an empty
+slot is refused, as it is for `patch_load` and a Program Change.
+
 `/` searches the list on screen: bank names at the banks, slot or patch names
 in a bank. Empty slots are named `Init`, so `/init` finds the free slots. As you
 type, the list keeps only the rows whose name contains the text, ignoring case
-and leading or trailing spaces. Each row keeps its own number, and the footer
+and leading or trailing spaces. The ordinary bank's names show a space as `_`,
+and a space typed matches it. Each row keeps its own number, and the footer
 line under the keys shows what you typed. While typing:
 
 | Key | Action |

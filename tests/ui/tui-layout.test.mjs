@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import {LAYOUT_TABLE, generate, readLayout} from "../../tools/tuilayout.mjs";
+import vm from "node:vm";
+import {LAYOUT_SOURCE, LAYOUT_TABLE, generate, readLayout} from "../../tools/tuilayout.mjs";
 
 // The TUI's tabs and headings come from hosts/standalone/tui/layout.odin,
 // which tools/tuilayout.mjs writes from ui/layout.js. These hold the checked-in
@@ -39,4 +40,23 @@ test("the table has every panel section, group and control, in the panel's order
   assert.deepEqual(readTable(table), panel);
   const controls = panel.flatMap(section => section.groups.flatMap(group => group.params));
   assert.equal(new Set(controls).size, controls.length, "a control is placed twice");
+});
+
+// The rows' labels: one line per control after `PANEL_LABELS`, held to the
+// label each control of the page prints, read from the page's own layout.
+test("the table names every control as the panel prints it", () => {
+  const lines = table.slice(table.indexOf("PANEL_LABELS")).split("\n");
+  const labels = new Map();
+  for (const line of lines) {
+    const entry = /^\t\{(\d+), ("(?:[^"\\]|\\.)*")\},$/.exec(line);
+    if (entry) labels.set(Number(entry[1]), JSON.parse(entry[2]));
+  }
+  const context = vm.createContext({window: {}});
+  vm.runInContext(fs.readFileSync(LAYOUT_SOURCE, "utf8"), context);
+  const controls = Array.from(context.window.SYNTH1_LAYOUT).flatMap(panel =>
+    Array.from(panel.groups || [{controls: panel.controls}]).flatMap(group => Array.from(group.controls)));
+  assert.equal(labels.size, controls.length);
+  for (const control of controls) assert.equal(labels.get(control.p), control.label, `parameter ${control.p}`);
+  assert.equal(labels.get(0), "Waveform");
+  assert.equal(labels.get(29), "Gain");
 });
