@@ -1,5 +1,6 @@
 package standalone
 
+import "base:intrinsics"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -183,9 +184,15 @@ control_patch_load_file :: proc(cc: ^Control_Context, req: control.Request, out:
 	strings.write_string(out, parsed.name)
 }
 
-// patch.save <slot> [name]: capture the live snapshot into a bank slot.
+// patch.save <slot> [name]: capture the live sound into a bank slot. That
+// includes every edit queued before the save, from any client: a set is
+// answered once it is queued, so a client that sets a value and saves at once
+// would otherwise store the sound from before its own set. Until the snapshot
+// shows those edits the save waits for the audio thread to apply them (see
+// control_save_ready). It queues nothing itself, so it moves no revision and a
+// full ring cannot refuse it.
 @(private)
-control_patch_save :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
+control_patch_save :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) -> (wait: Wait_Ticket) {
 	if cc.bank == nil {
 		control_write_err(out, req, .Daemon_Not_Ready, "no bank")
 		return
@@ -200,12 +207,38 @@ control_patch_save :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 		return
 	}
 	name := control_rest_after_first(req.rest)
+	save := Wait_Ticket{save = true, slot = slot, name_len = min(len(name), patch.SLOT_NAME_MAX)}
+	copy(save.name[:], name)
+	// No ring, no edit can be queued: a bare handler saves the snapshot.
+	if cc.ring == nil {
+		control_save_into_slot(cc, req, save, snapshot_read(cc.snapshot), out)
+		return
+	}
+	save.position = intrinsics.atomic_load_explicit(&cc.ring.tail, .Relaxed)
+	if !control_save_ready(cc, req, save, out) {wait = save}
+	return
+}
 
-	snap := snapshot_read(cc.snapshot)
+// Store a save once the snapshot shows every edit queued before it, and write
+// its reply. False, writing nothing, while it does not yet; the server asks
+// again on its next tick, until the save has waited too long.
+@(private)
+control_save_ready :: proc(cc: ^Control_Context, req: control.Request, save: Wait_Ticket, out: ^strings.Builder) -> bool {
+	snap, ready := param_ring_published(cc.ring, cc.snapshot, save.position)
+	if !ready {return false}
+	control_save_into_slot(cc, req, save, snap, out)
+	return true
+}
+
+@(private = "file")
+control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save: Wait_Ticket, snap: Snapshot_Data, out: ^strings.Builder) {
+	save := save
+	slot := save.slot
 	for i in 0 ..< patch.PARAMETER_COUNT {
 		cc.bank.values[slot][i] = snap.values[i]
 	}
 	cc.bank.filled[slot] = true
+	name := string(save.name[:save.name_len])
 	final := name != "" ? name : patch.slots_name(cc.bank, slot)
 	put_slot_name(cc.bank, slot, final)
 	identity_set(cc.identity, .Bank, slot, patch.slots_label(cc.bank), patch.slots_name(cc.bank, slot))

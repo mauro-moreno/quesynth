@@ -155,9 +155,10 @@ Alsa_Midi_Found :: struct {
 // one all walk this, so an id `list` reports is exactly the port `open_device`
 // finds again.
 //
-// Nothing here uses the temporary allocator: the control thread runs this on
-// every midi.list and midi.select, and nothing frees that thread's temporary
-// allocations.
+// Nothing here uses the temporary allocator: the daemon's main thread runs this
+// when it opens every input at start, and nothing frees that thread's
+// temporary allocations. The control thread runs it on every midi.list and
+// midi.select too.
 alsa_midi_enumerate :: proc(m: ^Alsa_Midi) -> [dynamic]Alsa_Midi_Found {
 	found: [dynamic]Alsa_Midi_Found
 

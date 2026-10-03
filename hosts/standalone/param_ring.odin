@@ -72,6 +72,12 @@ Param_Ring :: struct {
 	head:    u32, // consumer-owned (audio thread)
 	tail:    u32, // producer-owned (control thread)
 	dropped: u32, // rejected enqueue attempts (one per refused transaction)
+	// Odd while the audio thread is taking commands off the ring and
+	// publishing what they did, even otherwise; it only grows. A popped
+	// command is not in the snapshot until that publish, so `head` alone
+	// cannot tell the control thread that the snapshot shows an edit. See
+	// param_ring_published.
+	drains:  u32, // consumer-owned (audio thread)
 	// The answers to Commit_Checked, in the order the audio thread decided them:
 	// a second single-producer single-consumer queue, running the other way. They
 	// are kept here rather than on a waiting caller's stack, so a caller that
@@ -123,6 +129,46 @@ param_ring_pop :: proc "contextless" (r: ^Param_Ring) -> (cmd: Param_Command, ok
 
 param_ring_dropped :: proc "contextless" (r: ^Param_Ring) -> u32 {
 	return intrinsics.atomic_load_explicit(&r.dropped, .Relaxed)
+}
+
+// Bracket, on the audio thread, a block's pops and the publish of what they
+// applied. Odd before the first pop: each pop's release store of `head`
+// carries the odd count to a reader that sees that head.
+param_ring_drain_begin :: proc "contextless" (r: ^Param_Ring) {
+	n := intrinsics.atomic_load_explicit(&r.drains, .Relaxed)
+	intrinsics.atomic_store_explicit(&r.drains, n + 1, .Relaxed)
+}
+
+// Even again once the snapshot is published, and released after it, so a
+// reader that sees the even count sees that publish.
+param_ring_drain_end :: proc "contextless" (r: ^Param_Ring) {
+	n := intrinsics.atomic_load_explicit(&r.drains, .Relaxed)
+	intrinsics.atomic_store_explicit(&r.drains, n + 1, .Release)
+}
+
+// The snapshot, if it already shows what every command pushed before
+// `position` did: a tail the control thread read after pushing them. It does
+// once the audio thread has popped them all and finished the drain that
+// popped them, which published what they applied. That is known when the
+// drain count is even and does not move while `head` and the snapshot are
+// read: a drain that began in between would have made it odd before any pop
+// this could see. Otherwise false, during a drain too, and the caller asks
+// again later. On the control thread; it never waits for the audio thread.
+param_ring_published :: proc "contextless" (r: ^Param_Ring, s: ^Snapshot, position: u32) -> (data: Snapshot_Data, ok: bool) {
+	before := intrinsics.atomic_load_explicit(&r.drains, .Acquire)
+	if before & 1 != 0 {
+		return
+	}
+	tail := intrinsics.atomic_load_explicit(&r.tail, .Relaxed)
+	head := intrinsics.atomic_load_explicit(&r.head, .Acquire)
+	// Distances back from the tail, since the indices wrap: position has
+	// been popped when no more is left after head than after it.
+	if tail - head > tail - position {
+		return
+	}
+	data = snapshot_read(s)
+	intrinsics.atomic_thread_fence(.Acquire)
+	return data, intrinsics.atomic_load_explicit(&r.drains, .Relaxed) == before
 }
 
 // Post one result, on the audio thread. Wait-free: a full queue drops the result

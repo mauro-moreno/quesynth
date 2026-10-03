@@ -2,6 +2,7 @@
 package standalone
 
 import "base:intrinsics"
+import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:strings"
@@ -26,8 +27,13 @@ import "../../src/control"
 // connection that sent it is left owed an answer (its Wait_Ticket): it is read
 // no further, and the answer is framed into its output when the audio thread's
 // result for that batch comes by, or the outcome is reported unknown once
-// CHECKED_WAIT_LIMIT has passed or the server stops. Every other connection is
-// served all the while.
+// CHECKED_WAIT_LIMIT has passed or the server stops. A patch.save whose edits
+// the audio thread has not yet applied waits the same way, for the snapshot to
+// show them, and saves nothing if that has not happened by then. Every other
+// connection is served all the while.
+//
+// This thread runs as long as the daemon, so nothing frees its temporary
+// allocator for it: each request gets its own, given back once it is answered.
 
 CONTROL_READ_BUFFER :: 4096
 // Short because the poll tick is also how soon a Program Change from a
@@ -37,7 +43,8 @@ CONTROL_POLL_TIMEOUT_MS :: 10
 // The tick while a connection waits for the audio thread, so its answer is not
 // sat on for a tenth of a period.
 CONTROL_WAIT_POLL_TIMEOUT_MS :: 1
-// How long a guarded batch may wait for the audio thread's answer.
+// How long a guarded batch, or a save waiting for the edits ahead of it, may
+// wait for the audio thread.
 CHECKED_WAIT_LIMIT :: 250 * time.Millisecond
 // How long a stopping server gives its last replies to reach clients that are
 // slow to read them. Short, so a client that reads nothing cannot hold up the
@@ -232,13 +239,14 @@ control_server_run :: proc(data: rawptr) {
 				// A connection owed an answer is not polled for input: nothing it
 				// sends may be read, or answered, before that answer. Poll still
 				// reports it hung up.
+				owed := control_wait_owed(conns[ci].wait)
 				events: posix.Poll_Event
 				if len(conns[ci].output) > 0 {
 					events = {.OUT}
-				} else if conns[ci].wait.serial == 0 {
+				} else if !owed {
 					events = {.IN}
 				}
-				waiting ||= conns[ci].wait.serial != 0
+				waiting ||= owed
 				pollset[nfds] = {
 					fd     = conns[ci].fd,
 					events = events,
@@ -323,10 +331,11 @@ control_close :: proc(conn: ^Connection) {
 // Answer the connections owed one. Every result the audio thread has posted is
 // taken, and goes to the connection whose ticket carries its serial; a result no
 // connection waits for (its sender gave up or hung up) is dropped, and since a
-// serial is never reused it cannot answer any other request. Then a connection
-// whose limit has passed is told the outcome is unknown, as is every connection
-// still waiting when the server is `stopping`. A result that is there by now
-// wins over the limit.
+// serial is never reused it cannot answer any other request. A save is stored
+// and answered once the snapshot shows what it waited for. Then a connection
+// whose limit has passed is told it was not answered in time, as is every
+// connection still waiting when the server is `stopping`. A result that is
+// there by now wins over the limit.
 @(private = "file")
 control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Connection, builder: ^strings.Builder, stopping := false) {
 	if cs.ctx.ring != nil {
@@ -345,8 +354,18 @@ control_resolve_waits :: proc(cs: ^Control_Server, conns: ^[MAX_CONNECTIONS]Conn
 	}
 	for ci in 0 ..< MAX_CONNECTIONS {
 		conn := &conns[ci]
-		if conn.used && conn.wait.serial != 0 && (stopping || time.tick_since(conn.wait_since) >= CHECKED_WAIT_LIMIT) {
-			control_write_checked_unknown(builder, conn.wait_req)
+		if conn.used && conn.wait.save && control_save_ready(&cs.ctx, conn.wait_req, conn.wait, builder) {
+			if !control_finish_wait(cs, conn, builder, stopping) { control_close(conn) }
+		}
+	}
+	for ci in 0 ..< MAX_CONNECTIONS {
+		conn := &conns[ci]
+		if conn.used && control_wait_owed(conn.wait) && (stopping || time.tick_since(conn.wait_since) >= CHECKED_WAIT_LIMIT) {
+			if conn.wait.save {
+				control_write_save_refused(builder, conn.wait_req)
+			} else {
+				control_write_checked_unknown(builder, conn.wait_req)
+			}
 			if !control_finish_wait(cs, conn, builder, stopping) { control_close(conn) }
 		}
 	}
@@ -381,25 +400,36 @@ control_queue_reply :: proc(conn: ^Connection, builder: ^strings.Builder) -> boo
 // that is answered.
 @(private = "file")
 control_serve_frames :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder) -> bool {
-	for conn.wait.serial == 0 {
+	for !control_wait_owed(conn.wait) {
 		payload, ok, err := control.frame_reader_next(&conn.reader)
 		if err { return false }
 		if !ok { break }
-		req, parsed := control.request_parse(payload)
-		if parsed {
-			conn.wait = control_handle(&cs.ctx, req, builder)
-			if conn.wait.serial != 0 {
-				conn.wait_req = control.Request{version = req.version, id = req.id}
-				conn.wait_since = time.tick_now()
-			}
-		} else {
-			control_write_err(builder, control.Request{version = control.PROTOCOL_VERSION},
-				.Invalid_Payload, "malformed request")
-		}
-		delete(payload)
-		if conn.wait.serial == 0 && !control_queue_reply(conn, builder) { return false }
+		if !control_serve_frame(cs, conn, builder, payload) { return false }
 	}
 	return true
+}
+
+// One request, and its reply queued unless it has to wait. What it takes from
+// the temporary allocator goes back when it is done: nothing a reply, the bank,
+// the archive or the identity keeps is allocated there, and without this every
+// bank.write, file load and archive listing would add to it for good.
+@(private = "file")
+control_serve_frame :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder, payload: []u8) -> bool {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	defer delete(payload)
+	req, parsed := control.request_parse(payload)
+	if parsed {
+		conn.wait = control_handle(&cs.ctx, req, builder)
+		if control_wait_owed(conn.wait) {
+			conn.wait_req = control.Request{version = req.version, id = req.id}
+			conn.wait_since = time.tick_now()
+			return true
+		}
+	} else {
+		control_write_err(builder, control.Request{version = control.PROTOCOL_VERSION},
+			.Invalid_Payload, "malformed request")
+	}
+	return control_queue_reply(conn, builder)
 }
 
 // Drain only the bytes already readable, with bounded work and output per pass.
@@ -408,7 +438,7 @@ control_serve_frames :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^s
 @(private = "file")
 control_serve_ready :: proc(cs: ^Control_Server, conn: ^Connection, builder: ^strings.Builder, re: posix.Poll_Event) -> bool {
 	if re & {.ERR, .NVAL} != {} { return false }
-	if conn.wait.serial != 0 {
+	if control_wait_owed(conn.wait) {
 		// Owed an answer, so the socket was asked about nothing but a hang-up.
 		if .HUP in re { return false }
 	} else if .IN in re && len(conn.output) == 0 {

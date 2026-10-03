@@ -226,6 +226,18 @@ digits 0 to 9 make one: a sign, a `0x` or `0b` prefix, an underscore, nothing at
 all and a number above 9223372036854775807 are refused the same way, and
 leading zeros are allowed. `patch.apply` takes no `expected_revision`.
 
+`patch.save <slot> [name]` stores every change the daemon had queued when the
+save arrived, from any client. A `parameter.set` is answered before the audio
+thread applies it, so a client that sets a value and saves straight away still
+saves the new value. While such changes are not applied yet, the daemon
+answers the save once the audio thread has applied them, and reads nothing
+more from that client until then, as for a guarded batch. Other clients are
+served as usual. The save queues nothing itself, so it does not move the
+revision and a full queue does not refuse it. If the changes are not applied
+within 250 ms, or the daemon is stopped first, the reply is
+`err daemon_not_ready earlier edits not applied; nothing saved`. No slot, name
+or `bank_rev` changed, and the save can be sent again.
+
 The daemon serves at most 16 connections at once. It drops a client whose
 unread output passes 256 KiB. You rarely need to speak the protocol by hand,
 because the TUI, the browser adapter and the [MCP server](#mcp-server) do.
@@ -824,9 +836,13 @@ as it was; `patch_clear` forgets it. `patch_load_file` makes the daemon read a
 file or else after the file, and returns that name as a `name=` record line.
 
 `patch_save` stores the sound as it is now in a slot, overwriting it, and names
-the playing patch after the slot. The slot lives in the daemon's memory until
-`bank_keep` or `bank_write` writes the bank out. Without a `name`, or with an
-empty one, the slot keeps its current name, which is `Init` for an empty slot.
+the playing patch after the slot. Every change sent before it counts, from any
+client, even one the audio thread has not applied yet: the daemon answers once
+it has. If that takes more than 250 ms, the call fails with `daemon_not_ready`
+and `earlier edits not applied; nothing saved`, and nothing is stored. The slot
+lives in the daemon's memory until `bank_keep` or `bank_write` writes the bank
+out. Without a `name`, or with an empty one, the slot keeps its current name,
+which is `Init` for an empty slot.
 The daemon keeps at most 48 bytes of a name. If that cut falls inside a
 multi-byte character, the name the daemon stores is not valid UTF-8, and JSON
 cannot carry it. The save succeeds, but `patch_current`, `inspect_synth` and the
@@ -1142,6 +1158,8 @@ moment, so it is the revision before the change, and a read made straight after
 can still show the old values until the audio thread's next block. A guarded
 `parameter_set_many` is different. The daemon answers after the audio thread has
 decided, and the `revision` in a success is the one after the change.
+`patch_save` waits too, for the changes queued before it, so a save straight
+after any of these stores what they did.
 
 The two original tools return the results described under
 [`inspect_synth`](#inspect_synth) and [`apply_parameters`](#apply_parameters).

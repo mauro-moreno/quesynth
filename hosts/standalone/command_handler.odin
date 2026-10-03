@@ -51,12 +51,29 @@ Control_Context :: struct {
 
 // What a request that cannot be answered yet leaves with its caller. Only the
 // audio thread can say whether a guarded set_many applies, so after the batch is
-// queued the reply waits for the audio thread's result. The control thread never
-// blocks for it: the ticket names the result to look for, and the caller answers
-// when that comes, or says the outcome is unknown when it does not.
+// queued the reply waits for the audio thread's result. A patch.save waits too,
+// while edits queued ahead of it are not yet in the snapshot: it must store
+// them, not the sound from before them. The control thread never blocks for
+// either: the ticket names what to look for, and the caller answers when that
+// comes, or says it did not come in time.
 Wait_Ticket :: struct {
 	serial: u64, // the serial of the queued Commit_Checked; 0 when nothing is pending
 	count:  int, // the pairs in the batch, which the ok reply states
+	// A waiting patch.save: the ring tail when it arrived, which the snapshot
+	// must show everything before, and its slot and name. The name is held
+	// here, cut to what a slot keeps, because the request it came in is freed
+	// once it has been handled.
+	save:     bool,
+	position: u32,
+	slot:     int,
+	name:     [patch.SLOT_NAME_MAX]u8,
+	name_len: int,
+}
+
+// Whether the ticket is a request still owed an answer.
+@(private)
+control_wait_owed :: proc(wait: Wait_Ticket) -> bool {
+	return wait.serial != 0 || wait.save
 }
 
 // Handle one request, writing the response payload (unframed) into `out`. This
@@ -65,8 +82,9 @@ Wait_Ticket :: struct {
 // It never touches the engine, and it never waits.
 //
 // Every request is answered in `out` before this returns, except a guarded
-// parameter.set_many that was validated and queued: it writes nothing and
-// returns the ticket for its answer (see control_write_checked_reply).
+// parameter.set_many that was validated and queued, and a patch.save that has
+// to wait for the edits ahead of it: those write nothing and return the ticket
+// for their answer (see control_write_checked_reply and control_save_ready).
 control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) -> (wait: Wait_Ticket) {
 	if req.version != control.PROTOCOL_VERSION {
 		control_write_err(out, req, .Unsupported_Version, "unsupported protocol version")
@@ -111,7 +129,7 @@ control_handle :: proc(cc: ^Control_Context, req: control.Request, out: ^strings
 	case "patch.load_file":
 		control_patch_load_file(cc, req, out)
 	case "patch.save":
-		control_patch_save(cc, req, out)
+		return control_patch_save(cc, req, out)
 	case "bank.write":
 		control_bank_write(cc, req, out)
 	case "bank.load_file":
@@ -520,6 +538,15 @@ control_write_checked_reply :: proc(out: ^strings.Builder, req: control.Request,
 // stays queued and may still apply, so this says nothing about whether it did.
 control_write_checked_unknown :: proc(out: ^strings.Builder, req: control.Request) {
 	control_write_err(out, req, .Daemon_Not_Ready, "commit outcome unknown; inspect state before retrying")
+}
+
+// The reply to a waiting patch.save whose edits did not reach the snapshot in
+// time, or that still waited when the server stopped. Unlike a guarded batch's
+// outcome this one is known: nothing was stored, and the save can be sent
+// again.
+@(private)
+control_write_save_refused :: proc(out: ^strings.Builder, req: control.Request) {
+	control_write_err(out, req, .Daemon_Not_Ready, "earlier edits not applied; nothing saved")
 }
 
 // Enqueue a whole transaction -- its Sets, then the commit that says what kind

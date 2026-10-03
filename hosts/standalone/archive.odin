@@ -660,9 +660,9 @@ archive_load_patch :: proc(
 // the patch would load but the ring has no room for a whole load: it waits, as
 // a slot's load does. Anything else that does not load changes nothing.
 //
-// It can run on every drain tick for as long as the daemon does, and the
-// control thread never frees its temp allocator, so what it reads there goes
-// when it returns.
+// It can run on every drain tick for as long as the daemon does, outside any
+// request, whose temporary allocations the control thread gives back once it
+// is answered; so what this reads there goes when it returns.
 @(private)
 archive_program_load :: proc(cc: ^Control_Context, bank, i: int) -> bool {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()

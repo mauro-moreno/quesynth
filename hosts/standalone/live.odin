@@ -208,11 +208,15 @@ live_render :: proc "c" (user: rawptr, out: [^]f32, frames: int, channels: int) 
 
 	// Drain control edits at the same block-accurate timing. A transaction's Set
 	// commands are staged and applied together on its commit, so the block below
-	// never renders a partial batch.
+	// never renders a partial batch. The drain and the publish are bracketed
+	// because an edit popped here reaches the snapshot only at the publish, and
+	// a patch.save waiting for it must not take the snapshot from before.
+	param_ring_drain_begin(&s.ring)
 	applied := live_drain_control(s)
 	// Republish only when something changed, so an idle daemon does no snapshot
 	// work per block. A reader between now and the next edit sees this state.
 	if applied { live_publish_snapshot(s) }
+	param_ring_drain_end(&s.ring)
 
 	// One relaxed atomic per block so daemon.info can report the live voice
 	// count without the control thread ever reaching into the engine.

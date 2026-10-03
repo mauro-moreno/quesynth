@@ -316,6 +316,22 @@ front-end. These four make two front-ends peers of one daemon:
 
 `bank.load_file` and `patch.save` also end their `ok` line with `bank_rev=`.
 
+`patch.save <slot> [name]` stores the snapshot that shows every edit queued
+on the ring before the save arrived, from any connection. A set is answered
+once it is queued, so the snapshot of that moment can still be the sound from
+before it. The save pushes nothing: it records the ring's tail, and while the
+snapshot does not yet show everything before that tail it waits like a guarded
+`set_many` — its connection is read no further, other connections are served,
+and the control thread never blocks. `live_render` brackets its drain and its
+publish with a counter in the ring that is odd in between, so the control
+thread knows the snapshot covers the tail once `head` has passed it and the
+counter was even and unchanged across reading `head` and the snapshot. The
+revision does not move, a full ring does not refuse the save, and the reply is
+unchanged. If that has not happened within the 250 ms of a guarded batch, or
+the server stops first, the reply is `err daemon_not_ready earlier edits not
+applied; nothing saved` and the bank, the identity and `bank_rev` are left as
+they were.
+
 The daemon, not each client, owns which patch is playing and where it came
 from — its provenance, which is not what any client is browsing. It lives
 beside the bank and is touched only by the control thread:
