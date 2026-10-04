@@ -2,6 +2,7 @@
 package standalone
 
 import "base:intrinsics"
+import "core:strings"
 import "core:sys/posix"
 import "core:time"
 
@@ -59,4 +60,14 @@ request_shutdown :: proc() {
 
 sleep_ms :: proc(milliseconds: int) {
 	time.sleep(time.Duration(milliseconds) * time.Millisecond)
+}
+
+// Whether two paths name one file by device and inode, which also recognizes a
+// hard link: os.same_file compares only full paths on Linux.
+platform_same_inode :: proc(a, b: string) -> bool {
+	sa, sb: posix.stat_t
+	ca := strings.clone_to_cstring(a, context.temp_allocator)
+	cb := strings.clone_to_cstring(b, context.temp_allocator)
+	if posix.stat(ca, &sa) != .OK || posix.stat(cb, &sb) != .OK {return false}
+	return sa.st_ino != 0 && sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev
 }

@@ -63,3 +63,9 @@ request_shutdown :: proc() {
 sleep_ms :: proc(milliseconds: int) {
 	win.Sleep(win.DWORD(milliseconds))
 }
+
+// No control server runs here, so no bank.write needs hard links recognized:
+// os.same_file alone decides.
+platform_same_inode :: proc(a, b: string) -> bool {
+	return false
+}

@@ -37,7 +37,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       # The suites run before the build, not after. A release that ships a
       # plugin whose DSP tests fail is worse than a release that does not
@@ -141,7 +141,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       # Before the build, for the reason the VST3 job gives.
       - name: Test
@@ -236,7 +236,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       # The suites the standalone actually links: the engine and the patch layer.
       # It has no plugin wrapper and no panel, so the format-specific suites are
@@ -313,7 +313,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       - name: Test
         run: |
@@ -380,7 +380,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       - name: Test
         run: |
@@ -467,7 +467,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       - name: Test
         run: |
@@ -558,7 +558,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-09
+          release: dev-2026-08
 
       - name: Test
         run: |
