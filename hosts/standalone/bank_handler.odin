@@ -346,6 +346,14 @@ control_bank_write :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 		control_write_err(out, req, .Internal_Error, "cannot write file")
 		return
 	}
+	if cc.bank_keep_guarded && cc.bank_keep != "" {
+		written, werr := os.stat(path, context.temp_allocator)
+		kept, kerr := os.stat(cc.bank_keep, context.temp_allocator)
+		if werr == nil && kerr == nil && (os.same_file(written, kept) ||
+		    written.inode != 0 && written.inode == kept.inode && written.device == kept.device) {
+			cc.bank_keep_guarded = false
+		}
+	}
 	control_write_ok(out, req)
 	strings.write_string(out, " bytes=")
 	strings.write_int(out, len(json))
