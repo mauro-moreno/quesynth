@@ -45,7 +45,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-09
 
       # -o:speed matters more here than anywhere: this one runs in a browser, on
       # whatever machine happens to open the page, inside an AudioWorklet with a

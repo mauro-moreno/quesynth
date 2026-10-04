@@ -37,7 +37,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-09
 
       # Odin will not create the directory it is told to write into, and a
       # fresh checkout has no build/ because it is ignored. The failure is
@@ -146,7 +146,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-09
 
       # Odin will not create the directory it writes into; the Windows job above
       # carries the same line for the same reason.
@@ -219,7 +219,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-09
 
       - name: Somewhere to build into
         run: mkdir -p build
