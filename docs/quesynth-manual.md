@@ -79,6 +79,11 @@ each and exits 0. `--bank` may appear once. A second positional argument, a
 second `--bank`, an operand after `--stop` or `--mcp`, or an unknown option
 prints an error and the usage to stderr and exits 2.
 
+`--bank` names the bank file a daemon starts from and keeps its bank in: every
+save writes it, and the first save creates it if it does not exist yet. It is
+used instead of `bank.json`, which that daemon does not write (see
+[What survives a restart](#what-survives-a-restart)).
+
 ## The daemon
 
 ### Starting and attaching
@@ -239,14 +244,16 @@ within 250 ms, or the daemon is stopped first, the reply is
 or `bank_rev` changed, and the save can be sent again.
 
 The daemon also keeps what it saved. Once the slot is stored it writes the
-whole bank to `bank.json` in the config directory, the file `bank.keep` writes,
-and answers only after that, so the patch is there after a restart whichever
-client saved it, with no `bank.keep` needed. If the file cannot be written the
-reply is `err internal_error cannot keep bank`, and the slot, the playing
-patch and `bank_rev` are as they were before the save. With no config directory
-(neither `XDG_CONFIG_HOME` nor `HOME` set) nothing is written and the save
-stays in memory, as it always did. The reply of a save that succeeds is the
-same either way.
+whole bank to the file it keeps its bank in, the file `bank.keep` writes, and
+answers only after that, so the patch is there after a restart whichever
+client saved it, with no `bank.keep` needed. That file is the one given with
+`--bank` when the daemon was started with one, and `bank.json` in the config
+directory otherwise. If the file cannot be written the reply is
+`err internal_error cannot keep bank`, and the slot, the playing patch and
+`bank_rev` are as they were before the save. With no `--bank` and no config
+directory (neither `XDG_CONFIG_HOME` nor `HOME` set) nothing is written and the
+save stays in memory, as it always did. The reply of a save that succeeds is
+the same either way.
 
 The daemon serves at most 16 connections at once. It drops a client whose
 unread output passes 256 KiB. You rarely need to speak the protocol by hand,
@@ -255,17 +262,25 @@ because the TUI, the browser adapter and the [MCP server](#mcp-server) do.
 ### What survives a restart
 
 Kept on disk: the archive path, and the ordinary bank. Every successful
-`patch.save` writes the whole bank to `bank.json` in the config directory (see
-[Configuration and persistence](#configuration-and-persistence)), so a saved
-patch is there after a restart whichever front-end saved it. The file holds the
-bank as it is at that moment, so it also keeps a bank you loaded with
+`patch.save` writes the whole bank to the file the daemon keeps its bank in:
+the file given with `--bank` if the daemon was started with one, otherwise
+`bank.json` in the config directory (see
+[Configuration and persistence](#configuration-and-persistence)). The next
+start with the same `--bank`, or with none, loads that file, so a saved patch
+is there after a restart whichever front-end saved it. The file holds the bank
+as it is at that moment, so it also keeps a bank you loaded with
 `bank.load_file` first. Loading a bank file alone is not kept until a save or
-`bank.keep`. A start that gives `--bank` loads that file and not `bank.json`,
-so a patch saved since then is in `bank.json` and not in the file you name;
-write the bank to that file as well (`bank.write`, or the file S offers in the
-TUI) if it has to be there. The TUI's `User bank` file does not replace
-`bank.json`: a TUI loads it only into a daemon still on the factory bank (see
-[Configuration and persistence](#configuration-and-persistence)).
+`bank.keep`.
+
+A daemon started with `--bank` never writes `bank.json`, so a start without
+`--bank` does not have the patches saved under it. If the `--bank` file does
+not exist, the first save creates it. A `--bank` file that the daemon could not
+load at start, such as a text file that is not a bank or a directory, is never
+replaced unless it is empty or the daemon has written it since: a save then
+fails with `cannot keep bank`, the file stays as it was, and the daemon said so
+on stderr when it started. The TUI's `User bank` file does not replace the bank
+a start loaded: a TUI loads it only into a daemon still on the factory bank
+(see [Configuration and persistence](#configuration-and-persistence)).
 
 Not kept: parameter values, the current patch, the patch identity, the MIDI
 selection (it starts at all inputs), and the master volume (it starts at full
@@ -414,15 +429,16 @@ list. Opening a bank, going back to the banks, opening an archive, or the
 archive's open bank changing clears it. Hiding the navigator keeps it, so B
 comes back to the same rows.
 
-A saved slot is kept for you. The daemon writes the whole bank to `bank.json`
-in the config directory as soon as the save succeeds, and loads that file at its
-next start. If it cannot write the file, the daemon refuses the save and the
-slot is as it was; the footer then reads `Error: cannot keep bank`. Any other
-refusal of the save is shown there the same way. The file S offers to write is
-an extra copy, for a bank you load yourself, give with `--bank` or set as the
-`User bank`: a start with `--bank` loads that file instead of `bank.json`. A
-`User bank` does not replace a `bank.json` the daemon loaded, since a TUI loads
-it only into a daemon still on the factory bank.
+A saved slot is kept for you. As soon as the save succeeds the daemon writes
+the whole bank to the file it keeps its bank in, the `--bank` file it was
+started with or `bank.json` in the config directory, and the next start with
+the same `--bank`, or with none, loads it. If it cannot write the file, the
+daemon refuses the save and the slot is as it was; the footer then reads
+`Error: cannot keep bank`. Any other refusal of the save is shown there the
+same way. The file S offers to write is an extra copy, for a bank you load
+yourself or set as the `User bank`. A `User bank` does not replace a bank file
+the daemon loaded at start, since a TUI loads it only into a daemon still on
+the factory bank.
 
 ### MIDI input screen
 
@@ -504,9 +520,10 @@ bank, archive or MIDI input.
   the daemon holds.
 
 A patch written into a slot in the page reaches the daemon as `patch.save`,
-which writes the bank to `bank.json` in the config directory, and the daemon
-loads that file at its next start. When the page keeps a whole bank (the Keep
-button), the adapter also sends `bank.keep`.
+which writes the bank to the file the daemon keeps it in (the `--bank` file it
+was started with, or `bank.json` in the config directory), and the daemon loads
+that file at its next start. When the page keeps a whole bank (the Keep
+button), the adapter also sends `bank.keep`, which writes the same file.
 
 The message-level contract between the page and the daemon is in
 [hosts/standalone/browser/README.md](../hosts/standalone/browser/README.md).
@@ -525,8 +542,13 @@ a user bank when there is one:
 
 If that file cannot be read or parsed, the daemon prints
 `bank   could not load <path>; using the factory bank` and keeps the factory
-bank. Loading a bank file later (`L`, or the daemon's `bank.load_file`)
-replaces the browsable bank only. It does not change the sound.
+bank. When it is a `--bank` file that is not empty, it also prints
+`bank   patch.save and bank.keep will not overwrite <path>; move it away or start with another --bank`,
+and saves are refused until that file is gone or empty (see
+[What survives a restart](#what-survives-a-restart)). Loading a bank file later
+(`L`, or the daemon's `bank.load_file`) replaces the browsable bank only. It
+does not change the sound, and it does not change which file the daemon keeps
+its bank in.
 
 An archive is a ZIP file of bank ZIPs, each holding `.sy1` patches. The daemon
 indexes the outer ZIP and reads one inner bank and one patch at a time, so a
@@ -658,13 +680,14 @@ daemon.
 ## Configuration and persistence
 
 Files live under `$XDG_CONFIG_HOME/quesynth/`, or `~/.config/quesynth/` when
-that variable is unset. With neither `XDG_CONFIG_HOME` nor `HOME` set, nothing
-is saved.
+that variable is unset. With neither `XDG_CONFIG_HOME` nor `HOME` set, none of
+these files is read or written. A daemon started with `--bank` keeps its bank
+in the `--bank` file either way.
 
 | File | Written by | Contents |
 |---|---|---|
 | `archive.path` | the daemon | The archive's path on one line. Written when `archive.open` gets an explicit path. Deleted by `archive.close`. Read at daemon start. |
-| `bank.json` | the daemon, on every successful `patch.save` and on `bank.keep` | The ordinary bank. Read at daemon start unless `--bank` is given. |
+| `bank.json` | the daemon, on every successful `patch.save` and on `bank.keep`, when it was started without `--bank` | The ordinary bank. Read at daemon start unless `--bank` is given. A daemon started with `--bank` keeps its bank in that file instead and never writes `bank.json`. |
 | `config.conf` | the TUI | `bank = <path>`. May also hold a legacy `archive = <path>` line. |
 | `theme.conf` | the TUI, once | Colours. Created with the default palette if absent. |
 
@@ -687,12 +710,12 @@ daemon only if the daemon is still on the factory bank (`bank_rev` is still 0):
 it loaded no bank file at start, neither `--bank` nor `bank.json`, and nothing
 has been saved into the bank or a bank file loaded since, from any front-end.
 The file then replaces the factory bank. Otherwise a TUI starting or attaching
-leaves the bank as it is, so a patch saved into it and kept in `bank.json` is
-still there after the daemon restarts. A relative `bank` value is made absolute
-against the TUI's directory when it is sent. `config.conf` itself is not
-rewritten. An `archive =` line from before the daemon kept the path itself is
-offered to a daemon that remembers no archive, and removed from `config.conf`
-once the daemon takes it.
+leaves the bank as it is, so a patch saved into it and kept in the daemon's bank
+file (`bank.json`, or the `--bank` file) is still there after the daemon
+restarts. A relative `bank` value is made absolute against the TUI's directory
+when it is sent. `config.conf` itself is not rewritten. An `archive =` line
+from before the daemon kept the path itself is offered to a daemon that
+remembers no archive, and removed from `config.conf` once the daemon takes it.
 
 ## MCP server
 
@@ -828,9 +851,10 @@ has spaces.
 
 `daemon_shutdown` does what `quesynth --stop` does. The daemon answers first,
 then stops the sound and exits. It saves nothing more. A patch saved with
-`patch_save` is already in `bank.json`, but a bank you loaded with
-`bank_load_file` and did not keep is lost. Every tool then returns
-`daemon_unavailable` until a daemon is started again.
+`patch_save` is already in the daemon's bank file (`bank.json`, or the bank
+file named on its command line), but a bank you loaded with `bank_load_file`
+and did not keep is lost. Every tool then returns `daemon_unavailable` until a
+daemon is started again.
 
 #### Parameter and state tools
 
@@ -890,13 +914,16 @@ the playing patch after the slot. Every change sent before it counts, from any
 client, even one the audio thread has not applied yet: the daemon answers once
 it has. If that takes more than 250 ms, the call fails with `daemon_not_ready`
 and `earlier edits not applied; nothing saved`, and nothing is stored. The
-daemon then writes the whole bank to `bank.json` in its configuration directory,
-which it loads at its next start, so the slot survives a restart without
-`bank_keep`. If it cannot write the file, the call fails with `internal_error`
-and `cannot keep bank`, and nothing is stored. With no configuration directory
-the slot stays in memory. A daemon started with a bank file on its command
-line loads that file instead of `bank.json`. Without a `name`, or with an empty
-one, the slot keeps its current name, which is `Init` for an empty slot.
+daemon then writes the whole bank to the file it keeps its bank in, which it
+loads at its next start, so the slot survives a restart without `bank_keep`.
+That file is the bank file named on the daemon's command line, or else
+`bank.json` in its configuration directory; a daemon started with a bank file
+never writes `bank.json`. If it cannot write the file, the call fails with
+`internal_error` and `cannot keep bank`, and nothing is stored. It also fails so
+when the bank file from the command line is not empty and is not a bank the
+daemon loaded or wrote, which it never replaces. With neither that file nor a
+configuration directory the slot stays in memory. Without a `name`, or with an
+empty one, the slot keeps its current name, which is `Init` for an empty slot.
 The daemon keeps at most 48 bytes of a name. If that cut falls inside a
 multi-byte character, the name the daemon stores is not valid UTF-8, and JSON
 cannot carry it. The save succeeds, but `patch_current`, `inspect_synth` and the
@@ -921,10 +948,10 @@ line for each of the 128 slots, empty ones included. `bank_write` makes the
 daemon write the whole bank as JSON to the path you give, and it replaces a file
 that is already there. `bank_load_file` replaces the browsable bank with a JSON
 bank the daemon reads. The sound does not change, and the bank is not saved.
-`bank_keep` takes no path. It writes `bank.json` in the daemon's configuration
-directory, which the daemon loads at its next start. `patch_save` already does
-this after every save, so `bank_keep` is for a bank you replaced with
-`bank_load_file` and did not save a patch into.
+`bank_keep` takes no path. It writes the same file `patch_save` writes, the
+bank file from the daemon's command line or `bank.json`, and reports it in
+`path`. `patch_save` already does this after every save, so `bank_keep` is for
+a bank you replaced with `bank_load_file` and did not save a patch into.
 
 #### Archive tools
 
@@ -1701,10 +1728,12 @@ Stop the daemon. It answers, then exits. The next call finds nobody listening:
 - The daemon reads and writes the paths you give, with your permissions.
   `patch_load_file`, `bank_load_file`, `archive_open` and `archive_adopt` read a
   file. `bank_write` writes the bank to any path the daemon can write, and
-  replaces a file that is already there. `bank_keep`, `archive_open`,
-  `archive_adopt` and `archive_close` write or delete the daemon's own files in
-  its configuration directory. Relative paths resolve against the daemon's
-  working directory, which your client may not share, so give absolute paths.
+  replaces a file that is already there. `patch_save` and `bank_keep` write the
+  daemon's bank file: `bank.json` in its configuration directory, or the bank
+  file named on its command line. `archive_open`, `archive_adopt` and
+  `archive_close` write or delete the daemon's own files in its configuration
+  directory. Relative paths resolve against the daemon's working directory,
+  which your client may not share, so give absolute paths.
 - The annotations tell a client which tools are destructive. A client can use
   them to ask you first. A client that does not ask can still call every tool.
 - Parameter edits, patch and archive loads and `midi_send` change what you hear
@@ -1831,7 +1860,8 @@ does not know newer commands. Run `./build/quesynth --stop` and start again.
 - Notes can hang. There is no all-notes-off. Send a note off, or run
   `./build/quesynth --stop`.
 - The daemon reads the files you name (patches, banks, archives) with your
-  permissions, and writes only `archive.path`, `bank.json` and, through the TUI,
-  `config.conf`, `theme.conf`, and the bank file you choose to write.
+  permissions, and writes only `archive.path`, `bank.json` or the `--bank` file
+  you start it with, and, through the TUI, `config.conf`, `theme.conf`, and the
+  bank file you choose to write.
 - Quesynth is experimental software. Do not rely on it unattended in a session
   you cannot repeat.

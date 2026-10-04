@@ -277,19 +277,41 @@ control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save:
 	control_write_bank_rev(cc, out)
 }
 
-// Write the bank where the next start loads it from, the file bank.keep
-// writes: the daemon's own copy of what was saved, so no client has to ask for
-// that. False when it cannot be written; true when there is nowhere to keep it
-// (no bank_keep, as in a bare handler or with no config directory), which keeps
-// nothing, as a save always did. This also runs from the server's tick, for a
-// save that waited, which is outside the request guard that gives each
-// request's temporary memory back, so it gives back its own.
+// Write the bank to bank_keep, the file the next start with the same --bank
+// (or with none) loads and the one bank.keep writes: the daemon's own copy of
+// what was saved, so no client has to ask for that. False when it cannot be
+// written; true when there is nowhere to keep it (no bank_keep, as in a bare
+// handler or with no --bank and no config directory), which keeps nothing, as
+// a save always did. This also runs from the server's tick, for a save that
+// waited, which is outside the request guard that gives each request's
+// temporary memory back, so it gives back its own.
 @(private = "file")
 bank_keep_write :: proc(cc: ^Control_Context) -> bool {
 	if cc.bank_keep == "" {return true}
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	json := patch.slots_write_json(cc.bank, context.temp_allocator)
-	return write_file_atomic(cc.bank_keep, json)
+	return bank_keep_put(cc, cc.bank_keep, json)
+}
+
+// Write the kept bank file at `path`, unless it is a --bank file this daemon
+// neither loaded nor has written (cc.bank_keep_guarded) and something is in
+// it: that may be somebody else's file, not a bank, and is never replaced.
+// Once written it is the daemon's own.
+@(private = "file")
+bank_keep_put :: proc(cc: ^Control_Context, path, json: string) -> bool {
+	if cc.bank_keep_guarded && !bank_file_replaceable(path) {return false}
+	if !write_file_atomic(path, json) {return false}
+	cc.bank_keep_guarded = false
+	return true
+}
+
+// Whether a write to `path` loses nothing: there is no file there, or an
+// empty one.
+@(private)
+bank_file_replaceable :: proc(path: string) -> bool {
+	if !os.exists(path) {return true}
+	info, err := os.stat(path, context.temp_allocator)
+	return err == nil && info.type == .Regular && info.size == 0
 }
 
 // bank.write <path>: serialize the whole bank to a JSON file.
@@ -314,23 +336,30 @@ control_bank_write :: proc(cc: ^Control_Context, req: control.Request, out: ^str
 	strings.write_int(out, len(json))
 }
 
-// bank.keep: write the bank to the config path the daemon loads at startup, so
-// what a front-end keeps survives a restart without any client having to know
-// where that is. Written beside it and renamed over it, synced first, so a
-// crash or a power cut leaves the previous bank whole rather than half of this.
+// bank.keep: write the bank to the file the daemon keeps it in, the one every
+// patch.save writes, so what a front-end keeps survives a restart without any
+// client having to know where that is. With none set (a bare handler, or a
+// daemon with no --bank and no config directory) that is bank.json in the
+// config directory as the environment names it now. Written beside it and
+// renamed over it, synced first, so a crash or a power cut leaves the
+// previous bank whole rather than half of this.
 @(private)
 control_bank_keep :: proc(cc: ^Control_Context, req: control.Request, out: ^strings.Builder) {
 	if cc.bank == nil {
 		control_write_err(out, req, .Daemon_Not_Ready, "no bank")
 		return
 	}
-	path, ok := config_bank_path(context.temp_allocator)
-	if !ok {
-		control_write_err(out, req, .Internal_Error, "no config directory")
-		return
+	path := cc.bank_keep
+	if path == "" {
+		cfg, ok := config_bank_path(context.temp_allocator)
+		if !ok {
+			control_write_err(out, req, .Internal_Error, "no config directory")
+			return
+		}
+		path = cfg
 	}
 	json := patch.slots_write_json(cc.bank, context.temp_allocator)
-	if !write_file_atomic(path, json) {
+	if !bank_keep_put(cc, path, json) {
 		control_write_err(out, req, .Internal_Error, "cannot write file")
 		return
 	}

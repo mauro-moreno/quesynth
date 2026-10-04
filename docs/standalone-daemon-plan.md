@@ -306,9 +306,10 @@ front-end. These four make two front-ends peers of one daemon:
   reads only the first three reads them as it always did.
 - `patch.clear` → `ok`: forget the identity; the values are untouched.
 - `bank.keep` → `ok bytes=<n> path=<path>`: write the bank, atomically, to the
-  config path the daemon loads at startup (`$XDG_CONFIG_HOME/quesynth/bank.json`,
-  else `~/.config/quesynth/bank.json`). A successful `patch.save` writes the
-  same file by itself, so a client need not follow it with `bank.keep`.
+  file the daemon keeps it in: the `--bank` file it started with, else the
+  config path it loads at startup (`$XDG_CONFIG_HOME/quesynth/bank.json`, else
+  `~/.config/quesynth/bank.json`). A successful `patch.save` writes the same
+  file by itself, so a client need not follow it with `bank.keep`.
 - `volume <0..1000>` → `ok volume=<milli>`: master gain in thousandths. Not a
   patch parameter — no `revision`, not in `state.snapshot` — and reported by
   `daemon.info` as `volume=`, just before `backend=`. The control thread stores
@@ -333,23 +334,37 @@ the server stops first, the reply is `err daemon_not_ready earlier edits not
 applied; nothing saved` and the bank, the identity and `bank_rev` are left as
 they were.
 
-A save that succeeds is also kept. `Control_Context.bank_keep` is the path
-`bank.keep` writes (`$XDG_CONFIG_HOME/quesynth/bank.json`, else
-`~/.config/quesynth/bank.json`), and only `run_daemon` sets it, as it does the
-archive's `keep_path`, so a test that drives a handler or a server never
-writes the user's config. The slot is staged in the bank, the whole bank is
-written atomically (`write_file_atomic`, as `bank.keep` does) and only then is
-the identity set, `bank_rev` bumped and the `ok` line written. If the write
-fails the slot is put back as it was and the reply is `err internal_error
-cannot keep bank`; nothing else has moved. With no path (no `HOME` and no
-`XDG_CONFIG_HOME`, or a bare handler) nothing is written and a save is
-memory-only, as before. The `ok` line is the same in every case. A save that
-waited is answered from the server's tick, outside the request that began it,
-so the write takes its own temporary-allocator guard. `--bank` is unchanged: a
-start that names one loads it and not `bank.json`, and nothing is written into
-the `--bank` file. `bank.load_file` and every other command keep nothing; a
-later save writes the bank as it is then. `bank.keep` still works and is
-redundant after a save.
+A save that succeeds is also kept. `Control_Context.bank_keep` is the file the
+daemon keeps its bank in, which `bank.keep` writes too: the `--bank` file,
+made absolute against the working directory at start, or else
+`$XDG_CONFIG_HOME/quesynth/bank.json` (else `~/.config/quesynth/bank.json`).
+`daemon_start_bank` chooses it once, beside the bank it loads, and returns it
+with the start identity; `run_daemon` reads the config path and hands it in, so
+a test that starts a bank the same way names a scratch `bank.json` and never
+touches the user's config, and a test that drives a handler or a server
+without that start keeps nothing. No command changes the file. The slot is
+staged in the bank, the whole bank is written atomically (`write_file_atomic`,
+as `bank.keep` does) and only then is the identity set, `bank_rev` bumped and
+the `ok` line written. If the write fails the slot is put back as it was and
+the reply is `err internal_error cannot keep bank`; nothing else has moved.
+With no file (no `--bank`, no `HOME` and no `XDG_CONFIG_HOME`, or a bare
+handler) nothing is written and a save is memory-only, as before. The `ok`
+line is the same in every case. A save that waited is answered from the
+server's tick, outside the request that began it, so the write takes its own
+temporary-allocator guard. `bank.load_file` and every other command keep
+nothing; a later save writes the bank as it is then. `bank.keep` still works
+and is redundant after a save.
+
+A daemon started with `--bank F` never writes `bank.json`: it used to, so a
+save was missing from F at the next `--bank F` start and `bank.json` lost what
+it held. F is a file the user named and may not be a bank at all, so
+`Control_Context.bank_keep_guarded` is set when the start did not load it:
+then F is replaced only while it is absent or empty
+(`bank_file_replaceable`), until the daemon's first write to it clears the
+flag. A non-empty F that did not load is never replaced: `patch.save` answers
+`cannot keep bank` with everything put back, `bank.keep` answers
+`cannot write file`, and the start says so on stderr. Without `--bank`,
+`bank.json` is replaced as before, whatever it holds.
 
 The daemon, not each client, owns which patch is playing and where it came
 from — its provenance, which is not what any client is browsing. It lives
@@ -390,7 +405,7 @@ the `bank.json` that saves keep — and at 0 when the daemon kept the factory
 bank (`daemon_start_bank`, which `run_daemon` calls; a handler or server in a
 test starts wherever its test puts it). So 0 means a bank nobody chose, and
 that is the only bank the TUI loads its own User bank into: never over one a
-save kept or `--bank` named.
+save kept, in `bank.json` or in the `--bank` file, or one `--bank` named.
 
 **The archive, shared.** The archive — a zip of bank zips, indexed lazily:
 the outer central directory and one inner bank at a time — is daemon state

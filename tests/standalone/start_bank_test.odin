@@ -22,9 +22,10 @@ import tui "../../hosts/standalone/tui"
 // bank.json at the next save.
 //
 // The start is daemon_start_bank, what run_daemon calls. Each server here is
-// wired with the identity it returns, as run_daemon wires it minus the device,
-// and the TUI side is the TUI's own client library. The banks are written by
-// hand, and what is expected of them comes from what the test wrote.
+// wired with the identity and the kept bank file it returns, as run_daemon
+// wires them minus the device, and the TUI side is the TUI's own client
+// library. The banks are written by hand, and what is expected of them comes
+// from what the test wrote.
 
 @(private = "file")
 start_dir_count: u32
@@ -59,27 +60,31 @@ Started :: struct {
 	snap:     standalone.Snapshot,
 	state:    standalone.Daemon_State,
 	identity: standalone.Patch_Identity,
+	keep:     string,
 	cs:       standalone.Control_Server,
 }
 
-// A daemon's control side after a start that is given `bank_path` -- the
-// --bank operand, or the bank.json a start finds in the config directory --
-// keeping its saves at `keep` ("" keeps nothing).
+// A daemon's control side after a start given `bank_path`, the --bank operand
+// ("" for none), with its bank.json at `config_bank` ("" for no config
+// directory).
 @(private = "file")
-started_serve :: proc(dir, tag, bank_path, keep: string) -> (^Started, bool) {
+started_serve :: proc(dir, tag, bank_path, config_bank: string) -> (^Started, bool) {
 	s := new(Started)
-	s.identity = standalone.daemon_start_bank(&s.bank, bank_path)
+	guarded: bool
+	s.identity, s.keep, guarded = standalone.daemon_start_bank(&s.bank, bank_path, config_bank)
 	s.state = .Running
 	s.cs.path = fmt.tprintf("%s/%s.sock", dir, tag)
 	s.cs.ctx = standalone.Control_Context {
-		ring      = &s.ring,
-		snapshot  = &s.snap,
-		state     = &s.state,
-		bank      = &s.bank,
-		identity  = &s.identity,
-		bank_keep = keep,
+		ring              = &s.ring,
+		snapshot          = &s.snap,
+		state             = &s.state,
+		bank              = &s.bank,
+		identity          = &s.identity,
+		bank_keep         = s.keep,
+		bank_keep_guarded = guarded,
 	}
 	if !standalone.control_server_start(&s.cs) {
+		delete(s.keep)
 		free(s)
 		return nil, false
 	}
@@ -89,6 +94,7 @@ started_serve :: proc(dir, tag, bank_path, keep: string) -> (^Started, bool) {
 @(private = "file")
 started_stop :: proc(s: ^Started) {
 	standalone.control_server_stop(&s.cs)
+	delete(s.keep)
 	free(s)
 }
 
@@ -173,7 +179,7 @@ test_a_saved_patch_is_still_in_the_bank_after_a_restart_with_a_user_bank :: proc
 
 	// The first start finds no bank.json yet. A TUI attaches and loads its
 	// User bank; a patch is saved into it, which the daemon keeps.
-	first, fok := started_serve(dir, "first", keep, keep)
+	first, fok := started_serve(dir, "first", "", keep)
 	if !testing.expect(t, fok) {return}
 	loaded, connected := tui_attach(first, user)
 	testing.expect(t, connected && loaded, "a TUI loads its User bank into a fresh daemon")
@@ -181,7 +187,7 @@ test_a_saved_patch_is_still_in_the_bank_after_a_restart_with_a_user_bank :: proc
 	started_stop(first)
 
 	// The restart loads that bank.json, and a TUI attaches again.
-	second, sok := started_serve(dir, "second", keep, keep)
+	second, sok := started_serve(dir, "second", "", keep)
 	if !testing.expect(t, sok) {return}
 	defer started_stop(second)
 	testing.expect(t, strings.has_prefix(started_ask(second, "1 1 patch.current"), "1 1 ok slot=-1 bank_rev=1 "))

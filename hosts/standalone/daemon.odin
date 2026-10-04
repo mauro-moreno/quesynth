@@ -223,13 +223,16 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// MIDI input selection and the forwarded Program Changes, never the engine.
 	bank := new(patch.Slots)
 	defer free(bank)
-	start := daemon_start_bank(bank, bank_path)
-	// Where a patch.save writes the bank, the file the next start loads when
-	// no --bank names another, so a saved patch outlives the daemon whichever
-	// client saved it. "" with no config directory: a save then stays in
-	// memory, as bank.keep reports it cannot write. Set only here, so a test
-	// that drives the handlers never writes the user's config.
-	bank_keep, _ := config_bank_path()
+	// bank.json, which a start loads when no --bank names another file. ""
+	// with no config directory. Read only here, so a test that starts a bank
+	// the way this does never reads or writes the user's config.
+	config_bank, _ := config_bank_path()
+	defer delete(config_bank)
+	// bank_keep is where a patch.save writes the bank: the --bank file if one
+	// was given, else bank.json, so a saved patch outlives the daemon
+	// whichever client saved it. "" with neither: a save then stays in
+	// memory, as bank.keep reports it cannot write.
+	start, bank_keep, keep_guarded := daemon_start_bank(bank, bank_path, config_bank)
 	defer delete(bank_keep)
 
 	// A lazily-indexed patch archive the clients can open and browse. It holds
@@ -256,17 +259,18 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	program := new_clone(Program_Select{queue = &d.live.select_queue})
 	defer free(program)
 	cs.ctx = Control_Context {
-		ring      = &d.live.ring,
-		snapshot  = &d.live.snapshot,
-		state     = &d.state,
-		metrics   = &metrics,
-		midi      = &d.live.queue,
-		bank      = bank,
-		bank_keep = bank_keep,
-		archive   = arch,
-		identity  = identity,
-		volume    = &d.live.volume,
-		program   = program,
+		ring              = &d.live.ring,
+		snapshot          = &d.live.snapshot,
+		state             = &d.state,
+		metrics           = &metrics,
+		midi              = &d.live.queue,
+		bank              = bank,
+		bank_keep         = bank_keep,
+		bank_keep_guarded = keep_guarded,
+		archive           = arch,
+		identity          = identity,
+		volume            = &d.live.volume,
+		program           = program,
 	}
 	if midi_ok {
 		cs.ctx.midi_select = &midi_selection
