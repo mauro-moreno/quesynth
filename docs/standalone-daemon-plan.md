@@ -352,8 +352,13 @@ handler) nothing is written and a save is memory-only, as before. The `ok`
 line is the same in every case. A save that waited is answered from the
 server's tick, outside the request that began it, so the write takes its own
 temporary-allocator guard. `bank.load_file` and every other command keep
-nothing; a later save writes the bank as it is then. `bank.keep` still works
-and is redundant after a save.
+nothing. After `bank.load_file` the bank in memory is another file's
+(`Control_Context.bank_detached`), so a save reads the kept file (or the
+factory bank when it does not load), puts its one slot there and writes that,
+rather than replacing every other kept slot with the loaded file's. Loading
+the kept file itself, or loading over the untouched factory bank (`bank_rev`
+0, as the TUI's User bank does), does not detach; `bank.keep` adopts the
+loaded bank and clears the flag, so later saves write it whole.
 
 A daemon started with `--bank F` never writes `bank.json`: it used to, so a
 save was missing from F at the next `--bank F` start and `bank.json` lost what

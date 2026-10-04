@@ -258,7 +258,7 @@ control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save:
 	name := string(save.name[:save.name_len])
 	final := name != "" ? name : patch.slots_name(cc.bank, slot)
 	put_slot_name(cc.bank, slot, final)
-	if !bank_keep_write(cc) {
+	if !bank_keep_write(cc, slot) {
 		cc.bank.values[slot] = was.values
 		cc.bank.names[slot] = was.name
 		cc.bank.name_len[slot] = was.name_len
@@ -285,12 +285,27 @@ control_save_into_slot :: proc(cc: ^Control_Context, req: control.Request, save:
 // a save always did. This also runs from the server's tick, for a save that
 // waited, which is outside the request guard that gives each request's
 // temporary memory back, so it gives back its own.
+//
+// After bank.load_file (cc.bank_detached) the bank in memory is another
+// file's, so only the saved `slot` goes into the kept bank: the one the next
+// start would load, that file or else the factory bank. Writing the whole bank
+// would replace every other slot kept there with the loaded file's.
 @(private = "file")
-bank_keep_write :: proc(cc: ^Control_Context) -> bool {
+bank_keep_write :: proc(cc: ^Control_Context, slot: int) -> bool {
 	if cc.bank_keep == "" {return true}
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-	json := patch.slots_write_json(cc.bank, context.temp_allocator)
-	return bank_keep_put(cc, cc.bank_keep, json)
+	if !cc.bank_detached {
+		return bank_keep_put(cc, cc.bank_keep, patch.slots_write_json(cc.bank, context.temp_allocator))
+	}
+	kept := new(patch.Slots, context.temp_allocator)
+	if !load_bank_file(kept, cc.bank_keep) {
+		patch.slots_load_factory(kept)
+	}
+	kept.values[slot] = cc.bank.values[slot]
+	kept.filled[slot] = cc.bank.filled[slot]
+	kept.names[slot] = cc.bank.names[slot]
+	kept.name_len[slot] = cc.bank.name_len[slot]
+	return bank_keep_put(cc, cc.bank_keep, patch.slots_write_json(kept, context.temp_allocator))
 }
 
 // Write the kept bank file at `path`, unless it is a --bank file this daemon
@@ -363,6 +378,8 @@ control_bank_keep :: proc(cc: ^Control_Context, req: control.Request, out: ^stri
 		control_write_err(out, req, .Internal_Error, "cannot write file")
 		return
 	}
+	// The bank in memory is the kept one now, so saves write it whole again.
+	cc.bank_detached = false
 	// A relative XDG_CONFIG_HOME resolves against the daemon's working
 	// directory, which a client need not share: report where the file went.
 	if !os.is_absolute_path(path) {
@@ -413,6 +430,14 @@ control_bank_load_file :: proc(cc: ^Control_Context, req: control.Request, out: 
 		control_write_err(out, req, .Invalid_Payload, "cannot read or parse bank")
 		return
 	}
+	// Browsing another file's bank must not make it the kept one: a later save
+	// keeps its slot alone (bank_keep_write). Loading the kept file itself
+	// leaves memory and disk the same. A load over the factory bank nobody
+	// chose (bank_rev 0: nothing loaded or saved yet) loses nothing kept, so
+	// it is adopted: that is how the TUI starts a fresh daemon on its User
+	// bank (tui_load_user_bank), and its saves keep that bank whole.
+	untouched := cc.identity != nil && cc.identity.bank_rev == 0
+	cc.bank_detached = path != cc.bank_keep && !untouched
 	count := 0
 	for i in 0 ..< patch.FACTORY_SLOTS {
 		if cc.bank.filled[i] {count += 1}

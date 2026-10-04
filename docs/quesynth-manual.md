@@ -244,7 +244,7 @@ within 250 ms, or the daemon is stopped first, the reply is
 or `bank_rev` changed, and the save can be sent again.
 
 The daemon also keeps what it saved. Once the slot is stored it writes the
-whole bank to the file it keeps its bank in, the file `bank.keep` writes, and
+bank to the file it keeps its bank in, the file `bank.keep` writes, and
 answers only after that, so the patch is there after a restart whichever
 client saved it, with no `bank.keep` needed. That file is the one given with
 `--bank` when the daemon was started with one, and `bank.json` in the config
@@ -262,15 +262,18 @@ because the TUI, the browser adapter and the [MCP server](#mcp-server) do.
 ### What survives a restart
 
 Kept on disk: the archive path, and the ordinary bank. Every successful
-`patch.save` writes the whole bank to the file the daemon keeps its bank in:
+`patch.save` writes the bank to the file the daemon keeps its bank in:
 the file given with `--bank` if the daemon was started with one, otherwise
 `bank.json` in the config directory (see
 [Configuration and persistence](#configuration-and-persistence)). The next
 start with the same `--bank`, or with none, loads that file, so a saved patch
-is there after a restart whichever front-end saved it. The file holds the bank
-as it is at that moment, so it also keeps a bank you loaded with
-`bank.load_file` first. Loading a bank file alone is not kept until a save or
-`bank.keep`.
+is there after a restart whichever front-end saved it. Loading another bank
+file with `bank.load_file` (`L` in the TUI) is for browsing it and does not
+replace the kept bank: a save after it puts that one slot into the kept file
+and leaves its other slots as they were. `bank.keep` makes the loaded bank the
+kept one, and saves after that write it whole. A bank loaded over the factory
+bank before anything was loaded or saved, as the TUI does with its User bank,
+loses nothing kept, so it is the kept bank from then on.
 
 A daemon started with `--bank` never writes `bank.json`, so a start without
 `--bank` does not have the patches saved under it. If the `--bank` file does
@@ -430,7 +433,7 @@ archive's open bank changing clears it. Hiding the navigator keeps it, so B
 comes back to the same rows.
 
 A saved slot is kept for you. As soon as the save succeeds the daemon writes
-the whole bank to the file it keeps its bank in, the `--bank` file it was
+the bank to the file it keeps its bank in, the `--bank` file it was
 started with or `bank.json` in the config directory, and the next start with
 the same `--bank`, or with none, loads it. If it cannot write the file, the
 daemon refuses the save and the slot is as it was; the footer then reads
@@ -914,8 +917,10 @@ the playing patch after the slot. Every change sent before it counts, from any
 client, even one the audio thread has not applied yet: the daemon answers once
 it has. If that takes more than 250 ms, the call fails with `daemon_not_ready`
 and `earlier edits not applied; nothing saved`, and nothing is stored. The
-daemon then writes the whole bank to the file it keeps its bank in, which it
+daemon then writes the bank to the file it keeps its bank in, which it
 loads at its next start, so the slot survives a restart without `bank_keep`.
+After another bank file was loaded only that slot is written there, so the
+kept bank's other slots stay.
 That file is the bank file named on the daemon's command line, or else
 `bank.json` in its configuration directory; a daemon started with a bank file
 never writes `bank.json`. If it cannot write the file, the call fails with

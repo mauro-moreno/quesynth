@@ -165,6 +165,123 @@ test_every_save_is_kept_and_overwrites_its_slot :: proc(t: ^testing.T) {
 	keep_expect_slot(t, kept, 127, "Last  One")
 }
 
+// Loading another bank file to browse it does not make it the kept bank: a save
+// after it keeps that one slot in the kept file, and every other slot there
+// stays. Only bank.keep adopts the loaded bank, and saves after that write it
+// whole again.
+@(test)
+test_a_save_after_loading_another_bank_keeps_only_its_slot :: proc(t: ^testing.T) {
+	dir := keep_dir_make()
+	defer keep_dir_free(dir)
+	keep := fmt.tprintf("%s/mine.json", dir)
+	h := keep_handler_make(keep)
+	defer free(h)
+	factory := h.bank
+
+	testing.expect_value(t, keep_ask(&h.cc, "1 1 patch.save 120 Mine"), "1 1 ok slot=120 name=Mine bank_rev=1")
+
+	other := new(patch.Slots)
+	defer free(other)
+	other^ = factory
+	copy(other.label[:], "Other")
+	other.label_len = len("Other")
+	copy(other.names[3][:], "Other Three")
+	other.name_len[3] = len("Other Three")
+	for i in 0 ..< patch.PARAMETER_COUNT {other.values[3][i] = 1}
+	other_path := fmt.tprintf("%s/other.json", dir)
+	testing.expect(t, os.write_entire_file_from_string(other_path, patch.slots_write_json(other, context.temp_allocator)) == nil)
+
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, fmt.tprintf("1 2 bank.load_file %s", other_path)), "1 2 ok label=Other"))
+	testing.expect_value(t, keep_ask(&h.cc, "1 3 patch.save 7 New"), "1 3 ok slot=7 name=New bank_rev=3")
+	// The browsable bank holds the save too.
+	testing.expect_value(t, patch.slots_name(&h.bank, 7), "New")
+
+	kept, ok := keep_read(keep)
+	if !testing.expect(t, ok) {return}
+	keep_expect_slot(t, kept, 120, "Mine")
+	keep_expect_slot(t, kept, 7, "New")
+	testing.expect_value(t, patch.slots_label(kept), "Factory")
+	testing.expect_value(t, patch.slots_name(kept, 3), patch.slots_name(&factory, 3))
+	testing.expect_value(t, kept.values[3], factory.values[3])
+	free(kept)
+
+	// The loaded file itself is left as it was.
+	loaded, lok := keep_read(other_path)
+	if !testing.expect(t, lok) {return}
+	testing.expect_value(t, patch.slots_name(loaded, 7), patch.slots_name(&factory, 7))
+	free(loaded)
+
+	// bank.keep adopts the loaded bank, saves included; later saves write it whole.
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, "1 4 bank.keep"), "1 4 ok"))
+	testing.expect_value(t, keep_ask(&h.cc, "1 5 patch.save 9 Later"), "1 5 ok slot=9 name=Later bank_rev=4")
+	kept, ok = keep_read(keep)
+	if !testing.expect(t, ok) {return}
+	defer free(kept)
+	testing.expect_value(t, patch.slots_label(kept), "Other")
+	testing.expect_value(t, patch.slots_name(kept, 3), "Other Three")
+	keep_expect_slot(t, kept, 7, "New")
+	keep_expect_slot(t, kept, 9, "Later")
+	testing.expectf(t, !kept.filled[120] || patch.slots_name(kept, 120) != "Mine", "bank.keep should have replaced the kept bank with the loaded one")
+}
+
+// The bank file the save goes into, and the "Other Three" bank that is loaded.
+@(private = "file")
+keep_other_bank :: proc(t: ^testing.T, dir: string, factory: ^patch.Slots) -> string {
+	other := new(patch.Slots)
+	defer free(other)
+	other^ = factory^
+	copy(other.names[3][:], "Other Three")
+	other.name_len[3] = len("Other Three")
+	path := fmt.tprintf("%s/other.json", dir)
+	testing.expect(t, os.write_entire_file_from_string(path, patch.slots_write_json(other, context.temp_allocator)) == nil)
+	return path
+}
+
+// With the kept file gone, a save after loading another bank starts from the
+// factory bank, which is what the next start would load.
+@(test)
+test_a_save_after_loading_another_bank_into_no_kept_file_starts_from_factory :: proc(t: ^testing.T) {
+	dir := keep_dir_make()
+	defer keep_dir_free(dir)
+	keep := fmt.tprintf("%s/new/bank.json", dir)
+	h := keep_handler_make(keep)
+	defer free(h)
+	factory := h.bank
+	other_path := keep_other_bank(t, dir, &factory)
+
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, "1 1 patch.save 120 Mine"), "1 1 ok"))
+	testing.expect(t, os.remove(keep) == nil)
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, fmt.tprintf("1 2 bank.load_file %s", other_path)), "1 2 ok"))
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, "1 3 patch.save 7 New"), "1 3 ok slot=7 name=New"))
+	kept, ok := keep_read(keep)
+	if !testing.expect(t, ok) {return}
+	defer free(kept)
+	keep_expect_slot(t, kept, 7, "New")
+	testing.expect_value(t, patch.slots_name(kept, 3), patch.slots_name(&factory, 3))
+	testing.expect_value(t, patch.slots_name(kept, 120), patch.slots_name(&factory, 120))
+}
+
+// A bank loaded over the factory bank nobody chose (bank_rev 0) is adopted,
+// as the TUI's User bank is: nothing kept is lost, and saves keep it whole.
+@(test)
+test_a_bank_loaded_over_the_untouched_factory_bank_is_kept_whole :: proc(t: ^testing.T) {
+	dir := keep_dir_make()
+	defer keep_dir_free(dir)
+	keep := fmt.tprintf("%s/bank.json", dir)
+	h := keep_handler_make(keep)
+	defer free(h)
+	factory := h.bank
+	other_path := keep_other_bank(t, dir, &factory)
+
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, fmt.tprintf("1 1 bank.load_file %s", other_path)), "1 1 ok"))
+	testing.expect(t, strings.has_prefix(keep_ask(&h.cc, "1 2 patch.save 7 New"), "1 2 ok slot=7 name=New"))
+	kept, ok := keep_read(keep)
+	if !testing.expect(t, ok) {return}
+	defer free(kept)
+	keep_expect_slot(t, kept, 7, "New")
+	testing.expect_value(t, patch.slots_name(kept, 3), "Other Three")
+}
+
 // What a client reads back must not depend on whether the daemon keeps.
 @(test)
 test_a_kept_save_answers_the_same_bytes_as_one_that_is_not :: proc(t: ^testing.T) {

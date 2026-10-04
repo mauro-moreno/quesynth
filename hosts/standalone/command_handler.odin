@@ -38,6 +38,13 @@ Control_Context :: struct {
 	// yet, so it may be somebody else's: it is replaced only while it is
 	// absent or empty. The first write clears it.
 	bank_keep_guarded: bool,
+	// The browsable bank is not the one kept in bank_keep: bank.load_file
+	// replaced it with another file's. A save then puts its one slot into the
+	// kept bank as it is on disk, rather than writing this bank over it, so
+	// browsing another bank never costs the kept one its other slots.
+	// bank.keep adopts this bank as the kept one and clears it, and a load
+	// over the untouched factory bank never sets it.
+	bank_detached: bool,
 	// A patch archive opened for browsing, indexed lazily. nil when unsupported.
 	archive:  ^Archive,
 	// Which patch the sound came from, beside the bank that names it and, like
