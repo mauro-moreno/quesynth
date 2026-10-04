@@ -385,11 +385,18 @@ provenance_free :: proc(p: ^Provenance) {
 	p^ = {slot = -1, archive_bank = -1, archive_patch = -1}
 }
 
+// patch.save. A refusal -- the daemon cannot keep the bank, or the edits sent
+// before the save did not reach the sound in time -- is the footer's to show,
+// as an archive refusal is, or S would look as if it had done nothing.
 client_patch_save :: proc(cl: ^Client, slot: int, name: string) -> bool {
 	line := name == "" \
 		? fmt.tprintf("%d %d patch.save %d", control.PROTOCOL_VERSION, cl.next_id, slot) \
 		: fmt.tprintf("%d %d patch.save %d %s", control.PROTOCOL_VERSION, cl.next_id, slot, name)
-	return client_ok(cl, line)
+	cl.next_id += 1
+	payload, sent := client_roundtrip(cl, line)
+	defer delete(payload)
+	_, accepted := client_noted_response(cl, payload, sent, "save")
+	return accepted
 }
 
 client_bank_write :: proc(cl: ^Client, path: string) -> bool {
@@ -443,7 +450,7 @@ client_archive_open :: proc(cl: ^Client, path: string) -> (banks: int, ok: bool)
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	defer delete(payload)
-	resp, accepted := client_archive_response(cl, payload, sent)
+	resp, accepted := client_noted_response(cl, payload, sent, "archive")
 	if !accepted { return 0, false }
 	return client_field_int(resp.fields, "banks"), true
 }
@@ -457,7 +464,7 @@ client_archive_adopt :: proc(cl: ^Client, path: string) -> bool {
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	defer delete(payload)
-	resp, accepted := client_archive_response(cl, payload, sent)
+	resp, accepted := client_noted_response(cl, payload, sent, "archive")
 	return accepted && client_field_int(resp.fields, "adopted") == 1
 }
 
@@ -487,21 +494,22 @@ client_archive_close :: proc(cl: ^Client) -> bool {
 	cl.next_id += 1
 	payload, sent := client_roundtrip(cl, line)
 	defer delete(payload)
-	_, accepted := client_archive_response(cl, payload, sent)
+	_, accepted := client_noted_response(cl, payload, sent, "archive")
 	return accepted
 }
 
 // Keep the refusal until it has been shown, not just until the next periodic
-// state read. A protocol refusal leaves the connection usable.
+// state read. A protocol refusal leaves the connection usable. `what` names
+// the request in the notices of its own: "archive" or "save".
 @(private = "file")
-client_archive_response :: proc(cl: ^Client, payload: []u8, sent: bool) -> (control.Response, bool) {
+client_noted_response :: proc(cl: ^Client, payload: []u8, sent: bool, what: string) -> (control.Response, bool) {
 	if !sent {
-		client_set_notice(cl, "archive request failed: daemon disconnected")
+		client_set_notice(cl, fmt.tprintf("%s request failed: daemon disconnected", what))
 		return {}, false
 	}
 	resp, parsed := control.response_parse(payload)
 	if !parsed {
-		client_set_notice(cl, "invalid archive response")
+		client_set_notice(cl, fmt.tprintf("invalid %s response", what))
 		return {}, false
 	}
 	client_set_notice(cl, resp.status == .Ok ? "" : resp.fields)

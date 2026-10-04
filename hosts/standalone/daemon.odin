@@ -223,12 +223,7 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 	// MIDI input selection and the forwarded Program Changes, never the engine.
 	bank := new(patch.Slots)
 	defer free(bank)
-	patch.factory_prepare()
-	patch.slots_load_factory(bank)
-	// A user bank replaces the factory one: the --bank flag if given, otherwise a
-	// bank saved to the config directory on a previous run. Failure is not fatal --
-	// the factory bank stays loaded to fall back to.
-	apply_user_bank(bank, bank_path)
+	start := daemon_start_bank(bank, bank_path)
 	// Where a patch.save writes the bank, the file the next start loads when
 	// no --bank names another, so a saved patch outlives the daemon whichever
 	// client saved it. "" with no config directory: a save then stays in
@@ -253,9 +248,9 @@ run_daemon :: proc(patch_path: string, bank_path: string = "") -> int {
 			fmt.eprintfln("archive could not reopen %s; it stays remembered", arch.path)
 		}
 	}
-	// Which patch is playing, kept beside the bank it names. Nothing yet: a patch
-	// given on the command line was not loaded from a slot of this bank.
-	identity := new_clone(Patch_Identity{slot = -1})
+	// Which patch is playing, kept beside the bank it names, as the bank's
+	// start left it (daemon_start_bank).
+	identity := new_clone(start)
 	defer free(identity)
 	// Every channel's running Bank Select, fed by the audio thread's forwards.
 	program := new_clone(Program_Select{queue = &d.live.select_queue})

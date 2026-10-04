@@ -385,6 +385,13 @@ listings, `patch.apply`, `parameter.*` — and any failed command leaves the
 identity alone: browsing does not load, and a knob tweak edits the sound, it
 does not rename the patch.
 
+`bank_rev` starts at 1 when the start loaded a bank file — the `--bank` one, or
+the `bank.json` that saves keep — and at 0 when the daemon kept the factory
+bank (`daemon_start_bank`, which `run_daemon` calls; a handler or server in a
+test starts wherever its test puts it). So 0 means a bank nobody chose, and
+that is the only bank the TUI loads its own User bank into: never over one a
+save kept or `--bank` named.
+
 **The archive, shared.** The archive — a zip of bank zips, indexed lazily:
 the outer central directory and one inner bank at a time — is daemon state
 like the bank. The archive open, the one bank of it open and the path to

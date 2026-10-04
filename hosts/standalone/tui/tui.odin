@@ -101,7 +101,7 @@ run :: proc(path: string) -> int {
 	config_sel := 0
 	if connected {
 		// The remembered User bank, so it is browsable from the first B --
-		// unless a client has changed the daemon's bank since it started.
+		// unless the daemon's bank is one somebody chose (tui_load_user_bank).
 		tui_load_user_bank(&client, config.bank_path)
 		tui_migrate_archive(&client, &config)
 		tui_read_provenance(&client, &prov)
@@ -417,7 +417,8 @@ run :: proc(path: string) -> int {
 }
 
 // Save the live sound into a bank slot under a typed name, then optionally write
-// the whole bank to a file. Both steps are cancellable with Escape.
+// the whole bank to a file. Both steps are cancellable with Escape. A save the
+// daemon refuses ends here, with its reason in the footer (client_patch_save).
 @(private)
 tui_save :: proc(client: ^Client, slot: int, theme: Theme) {
 	terminal_clear()
@@ -620,12 +621,13 @@ tui_hand_over_archive :: proc(client: ^Client, legacy: string) -> bool {
 }
 
 // The User bank from config.conf, loaded as the TUI attaches -- but only into a
-// daemon whose bank nothing has changed since it started (bank_rev 0), the bank
-// it began with from --bank, bank.json or the factory. Once a client has saved
-// into it or loaded a bank, that bank is the one to keep: loading the file over
-// it at every TUI start threw away every save not written to that very file,
-// another TUI's or a browser's too. Onto a fresh daemon the named file still
-// wins, as --bank does. True when it was loaded.
+// daemon still on the factory bank, which nobody chose (bank_rev 0). A daemon
+// that started from a bank file, the --bank one or the bank.json its saves
+// kept, starts at 1, and a save or a bank loaded since moves it on: that bank
+// is the one to keep. Loading the file over it at every TUI start threw away
+// every save not written to that very file, another TUI's or a browser's too,
+// and after a restart the saves the daemon had just reloaded. True when it was
+// loaded.
 tui_load_user_bank :: proc(client: ^Client, bank_path: string) -> bool {
 	if bank_path == "" { return false }
 	p, ok := client_provenance(client, context.temp_allocator)

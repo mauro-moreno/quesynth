@@ -52,18 +52,19 @@ load_bank_file :: proc(bank: ^patch.Slots, path: string) -> bool {
 
 // Load a user bank over the factory one at startup: the --bank path if given,
 // otherwise a bank left in the config directory by a previous run. Neither is an
-// error if absent or unreadable -- the factory bank is already loaded.
-apply_user_bank :: proc(bank: ^patch.Slots, bank_path: string) {
+// error if absent or unreadable -- the factory bank is already loaded. True
+// when a bank file was loaded.
+apply_user_bank :: proc(bank: ^patch.Slots, bank_path: string) -> bool {
 	source := bank_path
 	owned := false
 	if source == "" {
 		cfg, ok := config_bank_path(context.allocator)
 		if !ok {
-			return
+			return false
 		}
 		if !os.exists(cfg) {
 			delete(cfg)
-			return
+			return false
 		}
 		source = cfg
 		owned = true
@@ -73,7 +74,25 @@ apply_user_bank :: proc(bank: ^patch.Slots, bank_path: string) {
 	}
 	if load_bank_file(bank, source) {
 		fmt.printfln("bank   %s", source)
-	} else {
-		fmt.eprintfln("bank   could not load %s; using the factory bank", source)
+		return true
 	}
+	fmt.eprintfln("bank   could not load %s; using the factory bank", source)
+	return false
+}
+
+// The bank a daemon starts with, and the identity that goes beside it. The
+// factory bank, unless a user bank replaces it: the --bank file if given,
+// otherwise a bank.json a previous run kept. Failure is not fatal -- the
+// factory bank stays loaded to fall back to.
+//
+// Loading a bank file is the first change to the bank, so bank_rev starts at 1
+// then and at 0 only on the factory bank, which nobody chose. A front-end with
+// a bank of its own goes by that: the TUI loads its User bank only into a bank
+// at 0, so it never loads it over one a save kept or one --bank named. No
+// patch is named yet: one given on the command line was not loaded from a slot.
+daemon_start_bank :: proc(bank: ^patch.Slots, bank_path: string) -> Patch_Identity {
+	patch.factory_prepare()
+	patch.slots_load_factory(bank)
+	loaded := apply_user_bank(bank, bank_path)
+	return Patch_Identity{slot = -1, bank_rev = loaded ? 1 : 0}
 }

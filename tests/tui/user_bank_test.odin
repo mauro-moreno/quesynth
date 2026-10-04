@@ -14,9 +14,9 @@ import standalone "../../hosts/standalone"
 import tui "../../hosts/standalone/tui"
 
 // The User bank in config.conf is loaded as a TUI attaches only while the
-// daemon's bank is still the one it started with (bank_rev 0). Loading it on
-// every attach replaced the live bank, and with it every save into it that was
-// not written to that very file -- from this TUI before a relaunch, another
+// daemon is still on the factory bank it started with (bank_rev 0). Loading it
+// on every attach replaced the live bank, and with it every save into it that
+// was not written to that very file -- from this TUI before a relaunch, another
 // TUI or a browser. Read here off the wire, as the daemon would see it, and on
 // a real control server, as a user would: the save is still in the bank.
 
@@ -82,9 +82,9 @@ test_the_user_bank_loads_only_into_a_bank_nobody_has_changed :: proc(t: ^testing
 		loads:   bool,
 	}
 	cases := []Case {
-		// Just started: the bank is what --bank, bank.json or the factory gave it.
+		// Just started on the factory bank: no --bank and no bank.json loaded.
 		{"1 1 ok slot=-1 bank_rev=0 revision=0 source=none archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=\nname=", true},
-		// A save, or a bank loaded, since: that bank stays.
+		// A save, or a bank loaded since, or at start: that bank stays.
 		{"1 1 ok slot=120 bank_rev=1 revision=4 source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=Factory\nname=Kept", false},
 		{"1 1 ok slot=-1 bank_rev=7 revision=9 source=file archive_rev=2 archive_bank=-1 archive_patch=-1\nbank=file\nname=Lead", false},
 		// A daemon that will not say: its bank is not risked either.

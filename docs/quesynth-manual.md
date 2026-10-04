@@ -263,8 +263,9 @@ bank as it is at that moment, so it also keeps a bank you loaded with
 `bank.keep`. A start that gives `--bank` loads that file and not `bank.json`,
 so a patch saved since then is in `bank.json` and not in the file you name;
 write the bank to that file as well (`bank.write`, or the file S offers in the
-TUI) if it has to be there. The same holds for the TUI's `User bank` file,
-which a TUI loads into a daemon that has just started.
+TUI) if it has to be there. The TUI's `User bank` file does not replace
+`bank.json`: a TUI loads it only into a daemon still on the factory bank (see
+[Configuration and persistence](#configuration-and-persistence)).
 
 Not kept: parameter values, the current patch, the patch identity, the MIDI
 selection (it starts at all inputs), and the master volume (it starts at full
@@ -416,10 +417,12 @@ comes back to the same rows.
 A saved slot is kept for you. The daemon writes the whole bank to `bank.json`
 in the config directory as soon as the save succeeds, and loads that file at its
 next start. If it cannot write the file, the daemon refuses the save and the
-slot is as it was. The file S offers to write is an extra copy, for a bank you
-load yourself, give with `--bank` or set as the `User bank`: a start with
-`--bank` loads that file instead of `bank.json`, and so does a TUI with a
-`User bank` that attaches to a daemon just started.
+slot is as it was; the footer then reads `Error: cannot keep bank`. Any other
+refusal of the save is shown there the same way. The file S offers to write is
+an extra copy, for a bank you load yourself, give with `--bank` or set as the
+`User bank`: a start with `--bank` loads that file instead of `bank.json`. A
+`User bank` does not replace a `bank.json` the daemon loaded, since a TUI loads
+it only into a daemon still on the factory bank.
 
 ### MIDI input screen
 
@@ -544,10 +547,11 @@ Opening, browsing and loading are separate:
 particular bank, since a peer may have opened another one since you listed it.
 
 Two counters tell a polling client when to read again. `bank_rev` moves when
-the ordinary bank's contents or label change. `archive_rev` moves when the
-archive or its open bank changes, including a change from another client. Both
-appear in `patch.current`. Asking for the bank that is already open does not
-move `archive_rev`.
+the ordinary bank's contents or label change. It starts at 1 when the daemon
+loaded a bank file at start, and at 0 when it kept the factory bank.
+`archive_rev` moves when the archive or its open bank changes, including a
+change from another client. Both appear in `patch.current`. Asking for the
+bank that is already open does not move `archive_rev`.
 
 An archive is closed with `archive.close` (the settings screen does it when you
 give a blank path). That also deletes the remembered path.
@@ -679,14 +683,16 @@ write goes to a temporary file in the same directory and is renamed over the
 target, so a crash leaves the old file whole.
 
 When a TUI starts, it loads the `bank` file named in `config.conf` into the
-daemon only if no client has changed the daemon's bank since the daemon started
-(`bank_rev` is still 0). The file then replaces the bank the daemon started
-with, as `--bank` does. Once anything has been saved into the bank or a bank
-file loaded, from any front-end, a TUI starting or attaching leaves the bank as
-it is. A relative `bank` value is made absolute against the TUI's directory when
-it is sent. `config.conf` itself is not rewritten. An `archive =` line
-from before the daemon kept the path itself is offered to a daemon that remembers
-no archive, and removed from `config.conf` once the daemon takes it.
+daemon only if the daemon is still on the factory bank (`bank_rev` is still 0):
+it loaded no bank file at start, neither `--bank` nor `bank.json`, and nothing
+has been saved into the bank or a bank file loaded since, from any front-end.
+The file then replaces the factory bank. Otherwise a TUI starting or attaching
+leaves the bank as it is, so a patch saved into it and kept in `bank.json` is
+still there after the daemon restarts. A relative `bank` value is made absolute
+against the TUI's directory when it is sent. `config.conf` itself is not
+rewritten. An `archive =` line from before the daemon kept the path itself is
+offered to a daemon that remembers no archive, and removed from `config.conf`
+once the daemon takes it.
 
 ## MCP server
 
@@ -1404,9 +1410,9 @@ Ask to inspect the synth:
 
 #### With a daemon
 
-A daemon that had just started. The registry and the snapshot are cut to their
-first two entries here; the daemon's own reply lists all 92 parameters
-(`count=92`).
+A daemon that had just started on the factory bank, with no bank file to load,
+so `bank_rev` is 0. The registry and the snapshot are cut to their first two
+entries here; the daemon's own reply lists all 92 parameters (`count=92`).
 
 Initialize, then send the `notifications/initialized` notification:
 
