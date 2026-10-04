@@ -444,6 +444,10 @@ control_bank_load_file :: proc(cc: ^Control_Context, req: control.Request, out: 
 	// it is adopted: that is how the TUI starts a fresh daemon on its User
 	// bank (tui_load_user_bank), and its saves keep that bank whole.
 	untouched := cc.identity != nil && cc.identity.bank_rev == 0
+	if untouched && cc.bank_keep != "" {
+		kept := new(patch.Slots, context.temp_allocator)
+		untouched = !load_bank_file(kept, cc.bank_keep)
+	}
 	cc.bank_detached = path != cc.bank_keep && !untouched
 	count := 0
 	for i in 0 ..< patch.FACTORY_SLOTS {

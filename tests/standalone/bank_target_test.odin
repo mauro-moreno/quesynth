@@ -408,43 +408,76 @@ target_send_all :: proc(fd: posix.FD, lines: ..string) {
 
 @(test)
 test_a_save_that_waited_under_bank_is_kept_in_that_file :: proc(t: ^testing.T) {
-	dir := target_dir_make()
-	defer target_dir_free(dir)
-	named := fmt.tprintf("%s/named.json", dir)
-	if !testing.expect(t, target_bank_file(named, "Named Bank", "Earlier")) {return}
-	named_before := target_bytes(named)
-	config_bank, cok := target_config_bank(dir)
-	if !testing.expect(t, cok) {return}
-	json_before := target_bytes(config_bank)
-	d, ok := target_start(dir, "d", named, config_bank)
-	if !testing.expect(t, ok) {return}
-	defer target_stop(d)
+	for mode in ([]string{"attached", "detached", "detached-failure"}) {
+		dir := target_dir_make()
+		defer target_dir_free(dir)
+		named := fmt.tprintf("%s/named.json", dir)
+		other := fmt.tprintf("%s/other.json", dir)
+		if !testing.expect(t, target_bank_file(named, "Named Bank", "Earlier")) {return}
+		if !testing.expect(t, target_sparse_bank_file(other, "Other Bank", 40, "Other", 41)) {return}
+		named_before, other_before := target_bytes(named), target_bytes(other)
+		config_bank, cok := target_config_bank(dir)
+		if !testing.expect(t, cok) {return}
+		json_before := target_bytes(config_bank)
+		d, ok := target_start(dir, "d", named, config_bank)
+		if !testing.expect(t, ok) {return}
+		defer target_stop(d)
+		bank_rev := 2
+		if mode != "attached" {
+			testing.expect_value(t, target_ask(d, fmt.tprintf("1 0 bank.load_file %s", other)), "1 0 ok label=Other_Bank count=1 bank_rev=2")
+			bank_rev = 3
+		}
+		before := new_clone(d.bank)
+		defer free(before)
+		identity := d.identity
+		blocker := fmt.tprintf("%s.tmp", named)
+		if mode == "detached-failure" {
+			if !testing.expect(t, os.make_directory_all(blocker) == nil) {return}
+			testing.expect_value(t, target_ask(d, "1 0 bank.keep"), "1 0 err internal_error cannot write file")
+			testing.expect_value(t, target_ask(d, "1 0 patch.save 40 Refused"), "1 0 err internal_error cannot keep bank")
+			testing.expect(t, d.bank == before^ && d.identity == identity)
+		}
 
-	target_send_all(d.client, "1 1 parameter.set filter.cutoff 77", "1 2 patch.save 120 Waited Lead")
-	queued := false
-	for _ in 0 ..< 1000 {
-		if standalone.PARAM_RING_CAPACITY - standalone.param_ring_free_space(&d.live.ring) >= 2 {queued = true;break}
-		time.sleep(time.Millisecond)
-	}
-	if !testing.expect(t, queued) {return}
-	testing.expect_value(t, reliability_reply(d.client), "1 1 ok value=77 revision=0")
-	time.sleep(30 * time.Millisecond)
-	// Waiting for the edit ahead of it: nothing is stored or written yet.
-	testing.expect_value(t, target_bytes(named), named_before)
+		target_send_all(d.client, "1 1 parameter.set filter.cutoff 77", "1 2 patch.save 120 Waited Lead")
+		queued := false
+		for _ in 0 ..< 1000 {
+			if standalone.PARAM_RING_CAPACITY - standalone.param_ring_free_space(&d.live.ring) >= 2 {queued = true;break}
+			time.sleep(time.Millisecond)
+		}
+		if !testing.expect(t, queued) {return}
+		testing.expect_value(t, reliability_reply(d.client), "1 1 ok value=77 revision=0")
+		time.sleep(30 * time.Millisecond)
+		testing.expect_value(t, target_bytes(named), named_before)
+		fds := [1]posix.pollfd{{fd = d.client, events = {.IN}}}
+		testing.expect_value(t, posix.poll(&fds[0], 1, 0), 0)
 
-	standalone.live_render(&d.live, raw_data(d.out[:]), TARGET_BLOCK, 2)
-	testing.expect_value(t, reliability_reply(d.client), "1 2 ok slot=120 name=Waited_Lead bank_rev=2")
-	cutoff, found := registry.registry_describe("filter.cutoff")
-	if !testing.expect(t, found) {return}
-	kept, read := target_read(named)
-	if testing.expect(t, read, "the save that waited is not in the --bank file") {
-		testing.expect_value(t, patch.slots_name(kept, 0), "Earlier")
-		testing.expect(t, kept.filled[120])
-		testing.expect_value(t, patch.slots_name(kept, 120), "Waited Lead")
-		testing.expect_value(t, kept.values[120][cutoff.index], 77)
-		free(kept)
+		standalone.live_render(&d.live, raw_data(d.out[:]), TARGET_BLOCK, 2)
+		if mode == "detached-failure" {
+			testing.expect_value(t, reliability_reply(d.client), "1 2 err internal_error cannot keep bank")
+			testing.expect(t, d.bank == before^ && d.identity == identity)
+			testing.expect_value(t, target_bytes(named), named_before)
+			if !testing.expect(t, os.remove(blocker) == nil) {return}
+			testing.expect_value(t, target_ask(d, "1 3 patch.save 120 Waited Lead"), "1 3 ok slot=120 name=Waited_Lead bank_rev=3")
+		} else {
+			testing.expect_value(t, reliability_reply(d.client), fmt.tprintf("1 2 ok slot=120 name=Waited_Lead bank_rev=%d", bank_rev))
+		}
+		cutoff, found := registry.registry_describe("filter.cutoff")
+		if !testing.expect(t, found) {return}
+		sound := standalone.snapshot_read(&d.live.snapshot)
+		testing.expect_value(t, sound.values[cutoff.index], 77)
+		testing.expect_value(t, sound.revision, 1)
+		kept, read := target_read(named)
+		if testing.expect(t, read, "the save that waited is not in the --bank file") {
+			testing.expect_value(t, patch.slots_label(kept), "Named Bank")
+			testing.expect_value(t, patch.slots_name(kept, 0), "Earlier")
+			testing.expect(t, kept.filled[120] && !kept.filled[40])
+			testing.expect_value(t, patch.slots_name(kept, 120), "Waited Lead")
+			testing.expect_value(t, kept.values[120], sound.values)
+			free(kept)
+		}
+		testing.expect_value(t, target_bytes(other), other_before)
+		testing.expect_value(t, target_bytes(config_bank), json_before)
 	}
-	testing.expect_value(t, target_bytes(config_bank), json_before)
 }
 
 @(test)
@@ -645,5 +678,115 @@ test_other_exports_failed_exports_and_loading_do_not_own_the_selected_file :: pr
 		testing.expect_value(t, target_ask(d, "1 12 bank.keep"), "1 12 err internal_error cannot write file")
 		testing.expect_value(t, target_bytes(named), other_before)
 		testing.expect_value(t, target_bytes(config_bank), json_before)
+	}
+}
+
+@(private = "file")
+target_sparse_bank_file :: proc(path, label: string, slot: int, name: string, cutoff: int) -> bool {
+	return os.write_entire_file_from_string(path, fmt.tprintf(
+		`{{"format":"quesynth.bank","version":1,"name":"%s","patches":[%s{{"name":"%s","parameters":{{"*filter freq":%d}}}]}}`,
+		label, strings.repeat("null,", slot, context.temp_allocator), name, cutoff,
+	)) == nil
+}
+
+@(test)
+test_detached_saves_preserve_the_selected_bank_across_restart :: proc(t: ^testing.T) {
+	dir := target_dir_make()
+	defer target_dir_free(dir)
+	named := fmt.tprintf("%s/selected.json", dir)
+	other := fmt.tprintf("%s/other.json", dir)
+	config_bank := fmt.tprintf("%s/bank.json", dir)
+	if !testing.expect(t, target_sparse_bank_file(named, "Selected Bank", 30, "Seed", 31)) {return}
+	if !testing.expect(t, target_sparse_bank_file(other, "Other Bank", 40, "Other", 41)) {return}
+	if !testing.expect(t, target_sparse_bank_file(config_bank, "Json Bank", 121, "JsonOnly", 23)) {return}
+	json_before, other_before := target_bytes(config_bank), target_bytes(other)
+	cutoff, found := registry.registry_describe("filter.cutoff")
+	if !testing.expect(t, found) {return}
+	first, fok := target_start(dir, "first", named, config_bank)
+	if !testing.expect(t, fok) {return}
+	seed := first.bank.values[30]
+	testing.expect_value(t, seed[cutoff.index], 31)
+	testing.expect_value(t, target_ask(first, fmt.tprintf("1 1 bank.load_file %s", other)), "1 1 ok label=Other_Bank count=1 bank_rev=2")
+	saved: [2][patch.PARAMETER_COUNT]i32
+	for value, i in ([]int{77, 88}) {
+		slot := 7 + i
+		name := i == 0 ? "DetachedSave" : "DetachedAgain"
+		testing.expect_value(t, target_ask(first, fmt.tprintf("1 2 parameter.set filter.cutoff %d", value)), fmt.tprintf("1 2 ok value=%d revision=%d", value, i))
+		standalone.live_render(&first.live, raw_data(first.out[:]), TARGET_BLOCK, 2)
+		sound := standalone.snapshot_read(&first.live.snapshot)
+		saved[i] = sound.values
+		testing.expect_value(t, target_ask(first, fmt.tprintf("1 3 patch.save %d %s", slot, name)), fmt.tprintf("1 3 ok slot=%d name=%s bank_rev=%d", slot, name, 3 + i))
+		testing.expect(t, standalone.snapshot_read(&first.live.snapshot) == sound, "saving changed audio or revision")
+		testing.expect_value(t, target_ask(first, "1 4 patch.current"), fmt.tprintf("1 4 ok slot=%d bank_rev=%d revision=%d source=bank archive_rev=0 archive_bank=-1 archive_patch=-1\nbank=Other Bank\nname=%s", slot, 3 + i, i + 1, name))
+	}
+	list := target_ask(first, "1 5 bank.list")
+	testing.expect(t, strings.has_prefix(list, "1 5 ok label=Other_Bank count=3 slots=128\n"))
+	testing.expect_value(t, target_slot_line(list, 30), "slot=30 filled=0 name=Init")
+	testing.expect_value(t, target_slot_line(list, 40), "slot=40 filled=1 name=Other")
+	target_stop(first)
+
+	second, sok := target_start(dir, "second", named, config_bank)
+	if !testing.expect(t, sok) {return}
+	testing.expect_value(t, target_ask(second, "1 1 patch.current"), target_nothing_current(1, 1))
+	list = target_ask(second, "1 2 bank.list")
+	testing.expect(t, strings.has_prefix(list, "1 2 ok label=Selected_Bank count=3 slots=128\n"))
+	testing.expect_value(t, target_slot_line(list, 30), "slot=30 filled=1 name=Seed")
+	testing.expect_value(t, second.bank.values[30], seed)
+	testing.expect_value(t, target_slot_line(list, 40), "slot=40 filled=0 name=Init")
+	for name, i in ([]string{"DetachedSave", "DetachedAgain"}) {
+		testing.expect_value(t, target_slot_line(list, 7 + i), fmt.tprintf("slot=%d filled=1 name=%s", 7 + i, name))
+		testing.expect_value(t, second.bank.values[7 + i], saved[i])
+		testing.expect(t, strings.has_prefix(target_ask(second, fmt.tprintf("1 3 patch.load %d", 7 + i)), fmt.tprintf("1 3 ok slot=%d name=%s ", 7 + i, name)))
+		standalone.live_render(&second.live, raw_data(second.out[:]), TARGET_BLOCK, 2)
+		testing.expect_value(t, standalone.snapshot_read(&second.live.snapshot).values, saved[i])
+	}
+	target_stop(second)
+	testing.expect_value(t, target_bytes(other), other_before)
+	testing.expect_value(t, target_bytes(config_bank), json_before)
+
+	plain, pok := target_start(dir, "plain", "", config_bank)
+	if !testing.expect(t, pok) {return}
+	defer target_stop(plain)
+	list = target_ask(plain, "1 1 bank.list")
+	testing.expect(t, strings.has_prefix(list, "1 1 ok label=Json_Bank count=1 slots=128\n"))
+	testing.expect_value(t, target_slot_line(list, 121), "slot=121 filled=1 name=JsonOnly")
+	testing.expect_value(t, plain.bank.values[121][cutoff.index], 23)
+	testing.expect_value(t, target_bytes(config_bank), json_before)
+}
+
+@(test)
+test_an_initial_export_or_keep_is_not_an_untouched_factory_bank :: proc(t: ^testing.T) {
+	dir := target_dir_make()
+	defer target_dir_free(dir)
+	other := fmt.tprintf("%s/other.json", dir)
+	if !testing.expect(t, target_sparse_bank_file(other, "Other Bank", 40, "Other", 41)) {return}
+	other_before := target_bytes(other)
+	for mode in ([]string{"export", "keep", "no-flag"}) {
+		named := fmt.tprintf("%s/%s.json", dir, mode)
+		first, fok := target_start(dir, "first", mode == "no-flag" ? "" : named, named)
+		if !testing.expect(t, fok) {return}
+		factory := new_clone(first.bank)
+		identity := first.identity
+		sound := standalone.snapshot_read(&first.live.snapshot)
+		line := mode == "export" ? fmt.tprintf("1 1 bank.write %s", named) : "1 1 bank.keep"
+		testing.expect(t, strings.has_prefix(target_ask(first, line), "1 1 ok bytes="))
+		testing.expect(t, first.identity == identity && standalone.snapshot_read(&first.live.snapshot) == sound)
+		testing.expect_value(t, target_ask(first, "1 2 patch.current"), target_nothing_current(2, 0))
+		testing.expect_value(t, target_ask(first, fmt.tprintf("1 3 bank.load_file %s", other)), "1 3 ok label=Other_Bank count=1 bank_rev=1")
+		testing.expect_value(t, target_ask(first, "1 4 patch.save 7 DetachedSave"), "1 4 ok slot=7 name=DetachedSave bank_rev=2")
+		target_stop(first)
+		second, sok := target_start(dir, "second", mode == "no-flag" ? "" : named, named)
+		if !testing.expect(t, sok) {free(factory);return}
+		testing.expect_value(t, patch.slots_label(&second.bank), "Factory")
+		for slot in 0 ..< patch.FACTORY_SLOTS {
+			if slot == 7 {continue}
+			testing.expect_value(t, second.bank.filled[slot], factory.filled[slot])
+			testing.expect_value(t, patch.slots_name(&second.bank, slot), patch.slots_name(factory, slot))
+			if factory.filled[slot] {testing.expect_value(t, second.bank.values[slot], factory.values[slot])}
+		}
+		target_expect_saved(t, &second.bank, 7, "DetachedSave")
+		target_stop(second)
+		free(factory)
+		testing.expect_value(t, target_bytes(other), other_before)
 	}
 }
