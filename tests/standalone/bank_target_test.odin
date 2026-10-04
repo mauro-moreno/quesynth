@@ -540,3 +540,110 @@ test_a_tui_save_under_bank_is_there_when_a_tui_attaches_after_a_restart :: proc(
 	testing.expect_value(t, target_bytes(notes), "not a bank")
 	testing.expect_value(t, target_bytes(config_bank), json_before)
 }
+
+@(test)
+test_exporting_the_selected_file_makes_save_and_keep_work_without_restart :: proc(t: ^testing.T) {
+	dir := target_dir_make()
+	defer target_dir_free(dir)
+	config_bank, cok := target_config_bank(dir)
+	if !testing.expect(t, cok) {return}
+	json_before := target_bytes(config_bank)
+	cwd, werr := os.get_working_directory(context.temp_allocator)
+	if !testing.expect(t, werr == nil) {return}
+
+	for invalid in ([]bool{false, true}) {
+		for mode in ([]string{"absolute", "relative", "dot", "symlink", "hardlink"}) {
+			named := fmt.tprintf("%s/%v-%s bank.json", dir, invalid, mode)
+			if invalid && !testing.expect(t, os.write_entire_file_from_string(named, "not a bank") == nil) {return}
+			first, fok := target_start(dir, "first", named, config_bank)
+			if !testing.expect(t, fok) {return}
+			path := named
+			switch mode {
+			case "relative":
+				path = strings.concatenate({strings.repeat("../", strings.count(cwd, "/"), context.temp_allocator), named[1:]}, context.temp_allocator)
+			case "dot":
+				path = fmt.tprintf("%s/../%s", dir, named[len("/tmp/"):])
+			case "symlink":
+				path = fmt.tprintf("%s/export-link.json", dir)
+				os.remove(path)
+				if !testing.expect(t, os.symlink(named, path) == nil) {target_stop(first);return}
+			case "hardlink":
+				if !invalid && !testing.expect(t, os.write_entire_file_from_string(named, "late notes") == nil) {target_stop(first);return}
+				path = fmt.tprintf("%s/export-hardlink.json", dir)
+				os.remove(path)
+				if !testing.expect(t, os.link(named, path) == nil) {target_stop(first);return}
+			}
+			before := new_clone(first.bank)
+			identity := first.identity
+			sound := standalone.snapshot_read(&first.live.snapshot)
+			free_space := standalone.param_ring_free_space(&first.live.ring)
+			testing.expect_value(t, target_ask(first, fmt.tprintf("1 1 bank.write %s", path)), fmt.tprintf("1 1 ok bytes=%d", len(target_bytes(named))))
+			testing.expect(t, first.bank == before^, "export changed the bank")
+			free(before)
+			testing.expect(t, first.identity == identity, "export changed identity or bank_rev")
+			testing.expect(t, standalone.snapshot_read(&first.live.snapshot) == sound, "export changed the audio snapshot")
+			testing.expect_value(t, standalone.param_ring_free_space(&first.live.ring), free_space)
+			testing.expect_value(t, target_ask(first, "1 2 patch.current"), target_nothing_current(2, 0))
+			testing.expect_value(t, target_ask(first, "1 3 patch.save 12 AfterExport"), "1 3 ok slot=12 name=AfterExport bank_rev=1")
+			testing.expect_value(t, target_ask(first, "1 4 bank.keep"), fmt.tprintf("1 4 ok bytes=%d path=%s", len(target_bytes(named)), named))
+			target_stop(first)
+
+			second, sok := target_start(dir, "second", named, config_bank)
+			if !testing.expect(t, sok) {return}
+			target_expect_saved(t, &second.bank, 12, "AfterExport")
+			testing.expect_value(t, target_ask(second, "1 1 patch.current"), target_nothing_current(1, 1))
+			testing.expect(t, strings.has_prefix(target_ask(second, "1 2 patch.load 12"), "1 2 ok slot=12 name=AfterExport "))
+			target_stop(second)
+			testing.expect_value(t, target_bytes(config_bank), json_before)
+		}
+	}
+}
+
+@(test)
+test_other_exports_failed_exports_and_loading_do_not_own_the_selected_file :: proc(t: ^testing.T) {
+	dir := target_dir_make()
+	defer target_dir_free(dir)
+	config_bank, cok := target_config_bank(dir)
+	if !testing.expect(t, cok) {return}
+	json_before := target_bytes(config_bank)
+	for invalid in ([]bool{false, true}) {
+		named := fmt.tprintf("%s/%v guarded.json", dir, invalid)
+		if invalid && !testing.expect(t, os.write_entire_file_from_string(named, "not a bank") == nil) {return}
+		d, ok := target_start(dir, fmt.tprintf("negative-%v", invalid), named, config_bank)
+		if !testing.expect(t, ok) {return}
+		defer target_stop(d)
+		if !invalid && !testing.expect(t, os.write_entire_file_from_string(named, "not a bank") == nil) {return}
+		other := fmt.tprintf("%s/%v other.json", dir, invalid)
+		before := new_clone(d.bank)
+		defer free(before)
+		identity := d.identity
+		sound := standalone.snapshot_read(&d.live.snapshot)
+		testing.expect_value(t, target_ask(d, fmt.tprintf("1 1 bank.write %s", other)), fmt.tprintf("1 1 ok bytes=%d", len(target_bytes(other))))
+		other_before := target_bytes(other)
+		testing.expect_value(t, target_ask(d, "1 2 patch.save 12 Refused"), "1 2 err internal_error cannot keep bank")
+		testing.expect_value(t, target_ask(d, "1 3 bank.keep"), "1 3 err internal_error cannot write file")
+		testing.expect_value(t, target_bytes(named), "not a bank")
+		testing.expect(t, d.bank == before^ && d.identity == identity, "unrelated export or refused save changed bank/identity")
+		testing.expect(t, standalone.snapshot_read(&d.live.snapshot) == sound, "unrelated export changed audio")
+
+		if !testing.expect(t, os.remove(named) == nil && os.make_directory_all(named) == nil) {return}
+		testing.expect_value(t, target_ask(d, fmt.tprintf("1 4 bank.write %s", named)), "1 4 err internal_error cannot write file")
+		if !testing.expect(t, os.remove(named) == nil && os.write_entire_file_from_string(named, "not a bank") == nil) {return}
+		testing.expect_value(t, target_ask(d, "1 5 patch.save 12 Refused"), "1 5 err internal_error cannot keep bank")
+		testing.expect_value(t, target_ask(d, "1 6 bank.keep"), "1 6 err internal_error cannot write file")
+		testing.expect(t, d.bank == before^ && d.identity == identity, "failed export or refused save changed bank/identity")
+		testing.expect(t, standalone.snapshot_read(&d.live.snapshot) == sound, "failed export changed audio")
+
+		testing.expect(t, strings.has_prefix(target_ask(d, fmt.tprintf("1 7 bank.load_file %s", other)), "1 7 ok label="))
+		testing.expect_value(t, target_ask(d, "1 8 patch.save 12 Refused"), "1 8 err internal_error cannot keep bank")
+		testing.expect_value(t, target_ask(d, "1 9 bank.keep"), "1 9 err internal_error cannot write file")
+		testing.expect_value(t, target_bytes(named), "not a bank")
+		testing.expect_value(t, target_bytes(other), other_before)
+		if !testing.expect(t, os.write_entire_file_from_string(named, other_before) == nil) {return}
+		testing.expect(t, strings.has_prefix(target_ask(d, fmt.tprintf("1 10 bank.load_file %s", named)), "1 10 ok label="))
+		testing.expect_value(t, target_ask(d, "1 11 patch.save 12 Refused"), "1 11 err internal_error cannot keep bank")
+		testing.expect_value(t, target_ask(d, "1 12 bank.keep"), "1 12 err internal_error cannot write file")
+		testing.expect_value(t, target_bytes(named), other_before)
+		testing.expect_value(t, target_bytes(config_bank), json_before)
+	}
+}
