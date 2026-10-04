@@ -200,8 +200,9 @@ jobs:
   # Two runners, one job definition, because the Audio Unit is the macOS-only
   # host and a Mac user's machine is Apple Silicon or Intel -- and a fault in the
   # hand-written AU bindings, the WebKit editor, or an Odin codegen path can bite
-  # one architecture and not the other. macos-latest is Apple Silicon; macos-13
-  # is the last Intel image GitHub offers. Everything below -- the AU build,
+  # one architecture and not the other. macos-latest is Apple Silicon;
+  # macos-15-intel is the last Intel image GitHub offers (macos-13 is retired
+  # and its jobs queue forever). Everything below -- the AU build,
   # auval, and pluginval's editor tests -- therefore runs natively on both, so
   # the x86_64 slice release.yml ships is validated where it will actually run
   # rather than only cross-compiled. fail-fast is off so one architecture's
@@ -210,7 +211,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-13]
+        os: [macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
