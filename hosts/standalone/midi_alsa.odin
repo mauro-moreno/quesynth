@@ -5,14 +5,16 @@ import "base:intrinsics"
 import "core:c"
 import "core:dynlib"
 import "core:fmt"
+import "core:strings"
 import "core:sys/posix"
 
 // Linux MIDI input: ALSA raw MIDI.
 //
 // The other half of the platform seam in backend.odin, the Linux counterpart of
-// midi_winmm.odin. It opens every hardware MIDI input the system reports and
-// pushes what arrives into the lock-free queue; it never touches the engine, and
-// it never learns what a note is.
+// midi_winmm.odin. It opens every hardware MIDI input the system reports, or
+// the one the daemon's selection names, and pushes what arrives into the
+// lock-free queue; it never touches the engine, and it never learns what a note
+// is.
 //
 // Raw MIDI rather than the sequencer API: rawmidi delivers a plain byte stream,
 // so the whole ALSA-facing surface is an open, a read and a close plus a short
@@ -75,7 +77,7 @@ Alsa_Midi :: struct {
 	ports:              [dynamic]^Alsa_Midi_Port,
 	names:              [dynamic]string,
 
-	// One flag for every reader thread; set false by close, read each nap.
+	// One flag for every reader thread; cleared by close_inputs, read each nap.
 	running:            b32,
 }
 
@@ -96,9 +98,12 @@ Alsa_Midi_Port :: struct {
 alsa_midi_input :: proc() -> (Midi_Input, bool) {
 	m := new(Alsa_Midi)
 	input := Midi_Input {
-		impl  = m,
-		open  = alsa_midi_open,
-		close = alsa_midi_close,
+		impl         = m,
+		open         = alsa_midi_open,
+		list         = alsa_midi_list,
+		open_device  = alsa_midi_open_device,
+		close_inputs = alsa_midi_close_inputs,
+		close        = alsa_midi_close,
 	}
 	return input, true
 }
@@ -137,6 +142,87 @@ alsa_midi_load :: proc(m: ^Alsa_Midi) -> bool {
 	return true
 }
 
+// One hardware raw-MIDI input as the enumeration found it. `name` is the
+// library's own name for it, possibly empty, and owned by the enumeration.
+Alsa_Midi_Found :: struct {
+	card:   i32,
+	device: i32,
+	name:   string,
+}
+
+// Every hardware raw-MIDI input across every sound card, in card then device
+// order, opening none of them. Opening every input, listing them and opening
+// one all walk this, so an id `list` reports is exactly the port `open_device`
+// finds again.
+//
+// Nothing here uses the temporary allocator: the daemon's main thread runs this
+// when it opens every input at start, and nothing frees that thread's
+// temporary allocations. The control thread runs it on every midi.list and
+// midi.select too.
+alsa_midi_enumerate :: proc(m: ^Alsa_Midi) -> [dynamic]Alsa_Midi_Found {
+	found: [dynamic]Alsa_Midi_Found
+
+	// The info block is opaque and sized by the library; a byte buffer of the
+	// reported size, cleared, is what its setters and getters expect.
+	info := make([]u8, int(m.info_sizeof()))
+	defer delete(info)
+
+	card := i32(-1)
+	if m.card_next(&card) < 0 {
+		card = -1
+	}
+	for card >= 0 {
+		ctl_name := fmt.caprintf("hw:%d", card)
+		ctl: rawptr
+		if m.ctl_open(&ctl, ctl_name, 0) >= 0 && ctl != nil {
+			device := i32(-1)
+			for {
+				if m.next_device(ctl, &device) < 0 || device < 0 {
+					break
+				}
+
+				for i in 0 ..< len(info) {
+					info[i] = 0
+				}
+				m.info_set_device(raw_data(info), u32(device))
+				m.info_set_subdevice(raw_data(info), 0)
+				m.info_set_stream(raw_data(info), SND_RAWMIDI_STREAM_INPUT)
+				// Non-zero means this device has no input on subdevice 0; skip.
+				if m.ctl_info(ctl, raw_data(info)) < 0 {
+					continue
+				}
+
+				raw := m.info_get_name(raw_data(info))
+				append(&found, Alsa_Midi_Found {
+					card   = card,
+					device = device,
+					name   = strings.clone(string(raw) if raw != nil else ""),
+				})
+			}
+			m.ctl_close(ctl)
+		}
+		delete(ctl_name)
+
+		if m.card_next(&card) < 0 {
+			break
+		}
+	}
+	return found
+}
+
+alsa_midi_found_free :: proc(found: [dynamic]Alsa_Midi_Found) {
+	for f in found {
+		delete(f.name)
+	}
+	delete(found)
+}
+
+// The id a port is listed and selected by: the hw address it is opened at,
+// which is one token, where the name two identical controllers share is not.
+alsa_midi_id :: proc(buffer: []u8, card, device: i32) -> string {
+	return fmt.bprintf(buffer, "hw:%d,%d", card, device)
+}
+
 // Open every hardware raw-MIDI input across every sound card.
 //
 // A device that refuses to open is skipped rather than failing the whole call:
@@ -150,49 +236,15 @@ alsa_midi_open :: proc(input: ^Midi_Input, queue: ^Midi_Queue) -> bool {
 		return true
 	}
 	// Raised before any reader thread is created; each thread checks it on every
-	// nap and exits when close clears it.
+	// nap and exits when close_inputs clears it. Raising it again after a
+	// close_inputs is safe because that joined every reader first: no thread of
+	// the old set is left to see the flag come back up and keep reading.
 	intrinsics.atomic_store_explicit(&m.running, true, .Release)
 
-
-	// The info block is opaque and sized by the library; a byte buffer of the
-	// reported size, cleared, is what its setters and getters expect.
-	info_size := int(m.info_sizeof())
-	info := make([]u8, info_size, context.temp_allocator)
-
-	card := i32(-1)
-	if m.card_next(&card) < 0 {
-		card = -1
-	}
-	for card >= 0 {
-		ctl_name := fmt.ctprintf("hw:%d", card)
-		ctl: rawptr
-		if m.ctl_open(&ctl, ctl_name, 0) >= 0 && ctl != nil {
-			device := i32(-1)
-			for {
-				if m.next_device(ctl, &device) < 0 || device < 0 {
-					break
-				}
-
-				for i in 0 ..< info_size {
-					info[i] = 0
-				}
-				m.info_set_device(raw_data(info), u32(device))
-				m.info_set_subdevice(raw_data(info), 0)
-				m.info_set_stream(raw_data(info), SND_RAWMIDI_STREAM_INPUT)
-				// Non-zero means this device has no input on subdevice 0; skip.
-				if m.ctl_info(ctl, raw_data(info)) < 0 {
-					continue
-				}
-
-				name := alsa_midi_device_name(m, info, card, device)
-				alsa_midi_open_device(m, queue, card, device, name)
-			}
-			m.ctl_close(ctl)
-		}
-
-		if m.card_next(&card) < 0 {
-			break
-		}
+	found := alsa_midi_enumerate(m)
+	defer alsa_midi_found_free(found)
+	for f in found {
+		alsa_midi_open_port(m, queue, f)
 	}
 
 	input.count = len(m.ports)
@@ -200,25 +252,68 @@ alsa_midi_open :: proc(input: ^Midi_Input, queue: ^Midi_Queue) -> bool {
 	return true
 }
 
-// The friendly name the library reports, falling back to the hw address so every
-// entry has an owned string that close can free alike.
-alsa_midi_device_name :: proc(m: ^Alsa_Midi, info: []u8, card, device: i32) -> string {
-	raw := m.info_get_name(raw_data(info))
-	text := string(raw) if raw != nil else ""
-	if text == "" {
-		return fmt.aprintf("hw:%d,%d", card, device)
+// Every input, open or not. No libasound lists nothing, as it opens nothing.
+alsa_midi_list :: proc(input: ^Midi_Input) -> []Midi_Device {
+	m := (^Alsa_Midi)(input.impl)
+	if m == nil || !alsa_midi_load(m) {
+		return nil
 	}
-	return fmt.aprintf("%s (hw:%d,%d)", text, card, device)
+	found := alsa_midi_enumerate(m)
+	defer alsa_midi_found_free(found)
+
+	devices := make([]Midi_Device, len(found))
+	for f, i in found {
+		buffer: [32]u8
+		id := alsa_midi_id(buffer[:], f.card, f.device)
+		devices[i] = Midi_Device {
+			id   = strings.clone(id),
+			name = strings.clone(f.name if f.name != "" else id),
+		}
+	}
+	return devices
+}
+
+// Open the one input listed as `id`, if it is still there.
+alsa_midi_open_device :: proc(input: ^Midi_Input, queue: ^Midi_Queue, id: string) -> bool {
+	m := (^Alsa_Midi)(input.impl)
+	if m == nil || !alsa_midi_load(m) {
+		return false
+	}
+	found := alsa_midi_enumerate(m)
+	defer alsa_midi_found_free(found)
+	for f in found {
+		buffer: [32]u8
+		if alsa_midi_id(buffer[:], f.card, f.device) != id {
+			continue
+		}
+		// Safe to raise again for the reason given in alsa_midi_open.
+		intrinsics.atomic_store_explicit(&m.running, true, .Release)
+		opened := alsa_midi_open_port(m, queue, f)
+		input.count = len(m.ports)
+		input.names = m.names[:]
+		return opened
+	}
+	return false
+}
+
+// The friendly name the library reports with its hw address, or the address
+// alone, as the startup banner prints it. Always an owned string, so close can
+// free every entry alike.
+alsa_midi_device_name :: proc(f: Alsa_Midi_Found) -> string {
+	if f.name == "" {
+		return fmt.aprintf("hw:%d,%d", f.card, f.device)
+	}
+	return fmt.aprintf("%s (hw:%d,%d)", f.name, f.card, f.device)
 }
 
 // Open one device in non-blocking input mode and start its reader thread. On any
-// failure the half-built port is dropped and the name freed.
-alsa_midi_open_device :: proc(m: ^Alsa_Midi, queue: ^Midi_Queue, card, device: i32, name: string) {
-	hw := fmt.ctprintf("hw:%d,%d", card, device)
+// failure the half-built port is dropped and nothing is added.
+alsa_midi_open_port :: proc(m: ^Alsa_Midi, queue: ^Midi_Queue, f: Alsa_Midi_Found) -> bool {
+	hw := fmt.caprintf("hw:%d,%d", f.card, f.device)
+	defer delete(hw)
 	handle: rawptr
 	if m.rawmidi_open(&handle, nil, hw, SND_RAWMIDI_NONBLOCK) < 0 || handle == nil {
-		delete(name)
-		return
+		return false
 	}
 
 	port := new(Alsa_Midi_Port)
@@ -229,12 +324,12 @@ alsa_midi_open_device :: proc(m: ^Alsa_Midi, queue: ^Midi_Queue, card, device: i
 	if posix.pthread_create(&port.thread, nil, alsa_midi_thread, port) != .NONE {
 		m.rawmidi_close(handle)
 		free(port)
-		delete(name)
-		return
+		return false
 	}
 
 	append(&m.ports, port)
-	append(&m.names, name)
+	append(&m.names, alsa_midi_device_name(f))
+	return true
 }
 
 // Runs on its own thread, one per device. Reads bytes and feeds them to the
@@ -320,7 +415,10 @@ alsa_midi_nap :: proc "c" () {
 	posix.nanosleep(&request, nil)
 }
 
-alsa_midi_close :: proc(input: ^Midi_Input) {
+// Stop and close every open input, keeping the library loaded and the backend
+// ready for another open. With nothing open it does nothing, so the final close
+// after a switch to none closes nothing twice.
+alsa_midi_close_inputs :: proc(input: ^Midi_Input) {
 	m := (^Alsa_Midi)(input.impl)
 	if m == nil {
 		return
@@ -339,11 +437,25 @@ alsa_midi_close :: proc(input: ^Midi_Input) {
 		}
 		free(port)
 	}
-	delete(m.ports)
+	clear(&m.ports)
 
 	for name in m.names {
 		delete(name)
 	}
+	clear(&m.names)
+
+	input.count = 0
+	input.names = nil
+}
+
+alsa_midi_close :: proc(input: ^Midi_Input) {
+	m := (^Alsa_Midi)(input.impl)
+	if m == nil {
+		return
+	}
+
+	alsa_midi_close_inputs(input)
+	delete(m.ports)
 	delete(m.names)
 
 	if m.loaded {
@@ -353,6 +465,4 @@ alsa_midi_close :: proc(input: ^Midi_Input) {
 
 	free(m)
 	input.impl = nil
-	input.count = 0
-	input.names = nil
 }

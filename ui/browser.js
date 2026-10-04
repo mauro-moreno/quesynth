@@ -117,6 +117,52 @@
     empty.textContent = "No bank of that name";
     empty.hidden = true;
 
+    var archiveArea = document.createElement("div");
+    archiveArea.className = "browser-archive";
+    var archiveLabel = document.createElement("label");
+    archiveLabel.textContent = "Archive";
+    var archivePath = document.createElement("input");
+    archivePath.type = "text";
+    archivePath.className = "browser-archive-path";
+    archivePath.placeholder = "Path to a ZIP on the host";
+    archivePath.setAttribute("aria-label", "Archive path");
+    archiveLabel.appendChild(archivePath);
+    archiveArea.appendChild(archiveLabel);
+    var archiveActions = document.createElement("div");
+    archiveActions.className = "browser-heading-actions";
+    var archiveOpen = button("browser-mini", "Open");
+    archiveOpen.setAttribute("aria-label", "Open archive");
+    function openArchive() { api().openArchive(archivePath.value); }
+    archiveOpen.addEventListener("click", openArchive);
+    archivePath.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); openArchive(); }
+    });
+    var archiveClose = button("browser-mini", "Close");
+    archiveClose.setAttribute("aria-label", "Close archive");
+    archiveClose.addEventListener("click", function () { api().closeArchive(); });
+    archiveActions.appendChild(archiveOpen);
+    archiveActions.appendChild(archiveClose);
+    archiveArea.appendChild(archiveActions);
+    var archiveStatus = document.createElement("div");
+    archiveStatus.className = "browser-status";
+    archiveStatus.setAttribute("role", "status");
+    archiveArea.appendChild(archiveStatus);
+    var lastPath = null;
+
+    function paintArchive() {
+      var a = api().archive();
+      archiveArea.hidden = writing || !a;
+      if (!a) return;
+      // A peer's change updates the remembered path, but a patch poll must
+      // not wipe out a path the user is still typing.
+      if (a.path !== lastPath) { archivePath.value = a.path; lastPath = a.path; }
+      archiveClose.hidden = !a.open;
+      var error = api().archiveError();
+      archiveStatus.textContent = error || (a.open ? a.banks.length + " banks · read-only"
+        : a.path ? "Archive unavailable" : "No archive open");
+      archiveStatus.className = "browser-status" + (error ? " error" : "");
+    }
+
     function buildHeader() {
       var head = document.createElement("div");
       head.className = "browser-heading";
@@ -173,6 +219,7 @@
       actions.appendChild(folder);
       head.appendChild(actions);
       left.appendChild(head);
+      left.appendChild(archiveArea);
 
       // Bank names, not patch names.
       //
@@ -221,10 +268,12 @@
     }
 
     function paintSources() {
+      paintArchive();
       rows.textContent = "";
       var shown = 0;
 
       api().list().forEach(function (b, i) {
+        if (writing && b.kind === "archive") return;
         if (query && b.label.toLowerCase().indexOf(query) < 0) return;
         shown++;
         var row = button("browser-source" + (b.current ? " on" : "") +
@@ -269,18 +318,32 @@
       head.className = "browser-slots-head";
       var title = document.createElement("span");
       title.className = "browser-bank-name";
-      title.textContent = api().label();
+      var browsing = !writing ? api().browsing() : null;
+      title.textContent = browsing ? "Browsing: " + browsing.label : api().label();
       var count = document.createElement("span");
       count.className = "browser-bank-count";
-      var slots = api().slots();
-      count.textContent = slots.filter(Boolean).length + " of " + slots.length + " used";
+      var slots = browsing ? browsing.slots : api().slots();
+      count.textContent = browsing && browsing.loading ? "Opening…"
+        : slots.filter(Boolean).length + " of " + slots.length + " used";
       head.appendChild(title);
       head.appendChild(count);
       right.appendChild(head);
+      if (api().archive()) {
+        var provenance = api().playing();
+        var line = document.createElement("div");
+        line.className = "browser-playing";
+        var position = provenance && provenance.source === "archive"
+          ? (provenance.archive ? provenance.archive.patch : null)
+          : (provenance ? provenance.index : null);
+        line.textContent = "Playing: " + (provenance ? provenance.name : "Untitled") +
+          (provenance && provenance.bank ? " · " + provenance.bank : "") +
+          (position !== null ? " · " + (provenance.source === "archive" ? "#" : "slot ") + position : "");
+        right.appendChild(line);
+      }
 
       var grid = document.createElement("div");
       grid.className = "browser-grid";
-      var here = api().index();
+      var here = browsing ? browsing.index : api().index();
 
       slots.forEach(function (slot, i) {
         var marked = writing ? i === target : i === here;
@@ -304,13 +367,15 @@
             setTarget(i);
             paintSlots();
           } else {
-            api().load(i);
+            if (browsing) api().loadBrowsed(i);
+            else api().load(i);
             paintSlots();
           }
         });
         if (!writing) {
           b.addEventListener("dblclick", function () {
-            api().load(i);
+            if (browsing) api().loadBrowsed(i);
+            else api().load(i);
             window.SynthModal.close();
           });
         }
@@ -379,7 +444,7 @@
             // difference between them is why both exist: this one writes a
             // file you choose -- in a plugin, that means Downloads -- and Keep
             // puts it where the instrument will look for it next time.
-            label: "Export",
+            label: api().archive() ? "Export ordinary bank" : "Export",
             onClick: function () { if (files() && files().saveBank) files().saveBank(); },
           },
           { label: "Done", primary: true, onClick: function (close) { close(); } },
@@ -390,7 +455,7 @@
     // and the rest are files you opened.
     if (!writing && api().hosted && api().hosted()) {
       actions.splice(actions.length - 1, 0, {
-        label: "Keep",
+        label: api().archive() ? "Keep ordinary bank" : "Keep",
         // Says so afterwards. Keeping a bank writes a file somewhere the player
         // cannot see, and a button that does nothing visible is one people
         // press twice and then distrust.
@@ -413,6 +478,10 @@
   }
 
   window.SynthBrowser = {
+    refresh: function () {
+      var body = document.querySelector(".browser");
+      if (body && body.refresh) body.refresh();
+    },
     open: function () { open("load"); },
     write: function () { open("write"); },
   };

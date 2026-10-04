@@ -175,7 +175,7 @@ what keeps the label and the sound in agreement.
 | `layout.js` | hand written — panels, groups, both names per control, descriptions, option names |
 | `bridge.js` | host transport; absorbs every platform difference |
 | `app.js` | builds the panel and keeps it in step with the host |
-| `midi.js` | Web MIDI: a controller plays the panel and lights its keys |
+| `midi.js` | Web MIDI: a controller plays the panel and lights its keys; under a host that claims MIDI input (`window.SynthHostMidi`), never Web MIDI, only the host's input selection |
 | `bank.js` | **generated**, optional — the patch bank; see the note in .gitignore |
 
 Regenerate `params.js` after any change to the measured tables in `src/engine`:
@@ -221,6 +221,79 @@ To the interface:
 
 `edit` brackets a gesture so a host recording automation records one move rather
 than the few hundred values a drag passes through.
+
+A host that reads the MIDI devices itself sets `window.SynthHostMidi = true`
+before `midi.js` loads, the way a host inside the page claims `SynthVolume`.
+Web MIDI in that page would be a second way in for the same keyboard, and every
+note would sound twice, so `midi.js` then never asks for it. The MIDI button
+shows the host's selection instead and offers All inputs, each input, and None.
+It keeps no selection of its own: choosing sends a request, and the button
+changes only when the host's answer comes back.
+
+```json
+{"type":"midi-select","id":"hw:1,0"}
+{"type":"midi-list"}
+{"type":"midi","inputs":[{"id":"hw:1,0","name":"Keystation 49"}],"selected":"hw:1,0","name":"Keystation 49","rev":2}
+```
+
+`midi-select` takes `all`, `none` or an input's id. `midi-list` asks for the
+inputs again, which the page does whenever the list opens. `midi`, from the
+host, is the selection with its inputs; `selected` is null when there is
+nothing to select.
+
+A host that keeps a zip of banks itself and shares it between its clients, as
+the standalone daemon does, says so by sending `archive`. The archive, its open
+bank and where the playing sound came from are then the host's, and the page
+only shows them and asks:
+
+```json
+{"type":"archive-open","path":"/srv/banks.zip"}
+{"type":"archive-bank","index":1}
+{"type":"archive-load","bank":1,"index":2}
+{"type":"archive-close"}
+{"type":"archive","rev":3,"open":true,"path":"/srv/banks.zip","banks":["bankA.zip","bankB.zip"],"bank":1,"patches":["Pad","Bass","Keys"]}
+{"type":"patch","name":"Bass","index":null,"bank":"bankB.zip","source":"archive","archive":{"bank":1,"patch":1}}
+```
+
+`archive-open` without a path, or with `""`, reopens the path the host
+remembers. `archive` is the host's whole view, sent again after every request
+(after an `error` when the host refused it): `banks` and `patches` (the open
+bank's, `[]` when none is open) by index, `bank` the open bank or null, and
+`path` the remembered path (`""` if none, and possibly set while `open` is
+false). `source` in `patch` is `none`, `bank`, `archive` or `file`; `index` is
+only ever an ordinary slot, and `archive` the archive bank and patch, or null.
+A `patch` with a `source` puts the slot (`bank`) or the archive patch's index
+(`archive`) in front of the name on the strip, as in `002:Bass`, shows its bank
+label beside it, sets `data-source` on `#bank`, and leaves an ordinary slot
+selected only when `source` is `bank` and `index` is a number.
+
+Once one `archive` has arrived (`SynthBank.archive()` is not null):
+
+- The bank browser lists the host's ordinary bank first and the archive's
+  banks after it. A `bank` from the host replaces the ordinary bank's row in
+  place.
+- Picking an archive bank browses it (`archive-bank`): its patches are shown
+  by the host's names, however many there are, and nothing is loaded.
+  Clicking one sends `archive-load` with the bank being browsed. Clicking an
+  ordinary slot loads it as before.
+- The open bank is shared: when an `archive` names another one, a page
+  browsing the archive follows it, and a page browsing the ordinary bank stays
+  there with only the archive's rows updated.
+- A row is marked playing only from the last `patch`, never from the cursor:
+  an ordinary slot when `source` is `bank` and `index` is that slot, an
+  archive patch when `source` is `archive` and `archive` names the bank being
+  browsed and that patch.
+- The dialog has an archive field: the remembered path, Open, Close (only
+  while one is open) and a line saying how many banks it has, that it is
+  unavailable, that none is open, or what the host refused. A zip picked in
+  the page is refused with a message pointing at that field.
+- PREV and NEXT during an archive patch send `patch-step`, for the host to
+  step through that archive bank.
+- WRITE offers only the ordinary bank, and Export and Keep work on it alone:
+  archive banks are read-only.
+
+A host that never sends `archive` (a plugin, the browser build, the page on
+its own) keeps its own banks and reads a zip in the page as before.
 
 ## Using it
 

@@ -31,10 +31,46 @@
 //              {"type":"wheel","which":"mod","value":0.7}      modulation on 0..1
 //              {"type":"volume","value":0.8}             master gain on 0..1
 //              {"type":"edit","index":19,"begin":true}  gesture start and end
+//              {"type":"midi-select","id":"hw:1,0"}     input id, all or none
+//              {"type":"midi-list"}                     list host inputs again
+//              {"type":"archive-open","path":"/srv/banks.zip"}  "" or none: reopen
+//              {"type":"archive-bank","index":1}        browse an archive bank
+//              {"type":"archive-load","bank":1,"index":2}  play one of its patches
+//              {"type":"archive-close"}                 close it, forget its path
 //
 //   to interface  {"type":"state","values":[...]}       all parameters at once
 //                 {"type":"param","index":19,"value":80} one changed elsewhere
 //                 {"type":"patch","name":"Computer","bank":"soundbank00"}
+//                 {"type":"patch","name":"Bass","index":null,"bank":"bankB.zip",
+//                  "source":"archive","archive":{"bank":1,"patch":1}}
+//                 {"type":"midi","inputs":[{"id":"hw:1,0","name":"..."}],
+//                  "selected":"all","name":"All inputs","rev":3}
+//                 {"type":"archive","rev":3,"open":true,"path":"/srv/banks.zip",
+//                  "banks":["bankA.zip","bankB.zip"],"bank":1,
+//                  "patches":["Pad","Bass","Keys"]}
+//
+// The three MIDI messages are for a host that reads the MIDI devices itself.
+// It claims them by setting window.SynthHostMidi = true before midi.js loads,
+// as a host in the page claims SynthVolume below. midi.js then never opens Web
+// MIDI, which would be a second way in for the same keyboard and sound every
+// note twice, and shows only what the last `midi` said: `selected` is "all",
+// "none" or an input's id, and null when the host has no selection to offer.
+//
+// The archive messages are for a host that keeps a zip of banks itself and
+// shares it between clients, as the standalone daemon does. Sending one
+// `archive` claims it: the page then lists the host's ordinary bank and the
+// archive's banks as one list, browses and loads through the four requests
+// rather than reading a zip itself, and refuses a zip opened in the page.
+// `archive` is the host's whole view: `banks` and `patches` (the open bank's,
+// [] when none) by index, `bank` the open bank or null, `path` the one the
+// host remembers ("" if none); closed, it is open:false with no banks. Each
+// request is answered with a fresh `archive`, after an `error` when refused.
+// A `patch` with `source` ("none", "bank", "archive" or "file") says where the
+// sound came from: `index` is then only an ordinary slot, and `archive` the
+// archive bank and patch, or null. After an `archive`, PREV and NEXT during an
+// archive patch send {"type":"patch-step","step":1} for the host to walk its
+// bank. A host that never sends `archive` keeps the page's own zip handling,
+// and a `patch` without `source` is read as it always was.
 
 (function () {
   "use strict";

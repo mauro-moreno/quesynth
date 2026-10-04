@@ -4509,3 +4509,218 @@ test_filter_saturation_curve_is_algebraic :: proc(t: ^testing.T) {
 		prev = y
 	}
 }
+
+// ---------------------------------------------------------------------------
+// A patch change under a running instrument: what `engine_apply_patch` clears,
+// what it keeps, and what a controller does across it. The standalone daemon
+// replaces every patch it loads through this procedure, on its audio thread,
+// so these are the engine half of that contract.
+
+// Every section that holds memory switched on and set to hold a lot of it, so a
+// patch change that forgets one of them leaves something to find.
+@(private = "file")
+tail_patch :: proc() -> patch.Patch {
+	p := default_patch()
+	p.values[28] = 0 // amp release: the note ends at once, its tails do not
+	p.values[65] = 1 // delay on
+	p.values[36] = 120 // delay feedback
+	p.values[37] = 64 // delay dry/wet
+	p.values[66] = 1 // chorus on
+	p.values[77] = 1 // effect on
+	p.values[78] = 6 // ph1, a phaser: allpass state and a swept corner
+	p.values[81] = 127 // effect level
+	return p
+}
+
+// Play a note into the tails and let the voice itself finish.
+@(private = "file")
+fill_tails :: proc(e: ^engine.Engine) {
+	left, right: [256]f32
+	engine.engine_note_on(e, 60, 1)
+	for _ in 0 ..< 40 {engine.engine_process(e, left[:], right[:])}
+	engine.engine_note_off(e, 60)
+	for _ in 0 ..< 400 {
+		engine.engine_process(e, left[:], right[:])
+		if engine.engine_active_voice_count(e) == 0 {break}
+	}
+}
+
+@(private = "file")
+all_zero :: proc(buffer: []f32) -> bool {
+	for v in buffer {
+		if v != 0 {return false}
+	}
+	return true
+}
+
+// A controller slot routed to the cutoff at full positive amount; the other
+// slot listens to nothing, so only the one under test can move anything.
+@(private = "file")
+routed_patch :: proc(source: int) -> patch.Patch {
+	p := default_patch()
+	p.values[86] = source
+	p.values[87] = 19
+	p.values[50] = 127
+	p.values[88] = 0
+	return p
+}
+
+// The reference for "nothing carried over" is the same patch loaded into an
+// engine that never played the first one.
+@(test)
+test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T) {
+	from := tail_patch()
+	to := tail_patch()
+	to.values[19] = 20
+	to.values[29] = 40
+	to.values[90] = 100
+
+	fresh: engine.Engine
+	engine.engine_load_patch(&fresh, to, SR)
+	defer engine.engine_destroy(&fresh)
+
+	for snap in ([?]bool{false, true}) {
+		e: engine.Engine
+		engine.engine_load_patch(&e, from, SR)
+		defer engine.engine_destroy(&e)
+		fill_tails(&e)
+		if !testing.expect(t, !all_zero(e.delay_left) && !all_zero(e.chorus_left), "no tail to clear") {
+			return
+		}
+		testing.expect(t, e.effect != fresh.effect, "the effect unit held no state")
+		smoothed := [3]f32{e.cutoff_smooth.value, e.gain_smooth.value, e.pan_smooth.value}
+
+		engine.engine_apply_patch(&e, to, snap)
+
+		if !snap {
+			// An edit keeps its tails and glides; that is what a knob needs.
+			testing.expect(t, !all_zero(e.delay_left), "an edit cleared the delay")
+			testing.expect_value(t, e.cutoff_smooth.value, smoothed[0])
+			testing.expect_value(t, e.gain_smooth.value, smoothed[1])
+			testing.expect_value(t, e.pan_smooth.value, smoothed[2])
+			continue
+		}
+		for buffer in ([?][]f32{e.delay_left, e.delay_right, e.chorus_left, e.chorus_right}) {
+			testing.expect(t, all_zero(buffer), "a delay line still holds the previous patch")
+		}
+		testing.expect(t, e.effect == fresh.effect, "the effect unit kept the previous patch's state")
+		testing.expect(t, e.equalizer == fresh.equalizer, "the equaliser kept the previous patch's state")
+		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
+		testing.expect_value(t, e.chorus.phase, fresh.chorus.phase)
+		testing.expect_value(t, e.cutoff_smooth.value, fresh.cutoff_smooth.value)
+		testing.expect_value(t, e.gain_smooth.value, fresh.gain_smooth.value)
+		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)
+	}
+}
+
+// A caller on the audio thread can change the patch without the pool being
+// rebuilt: no allocation, and the held key keeps sounding. Without the flag the
+// pool still follows parameter 94, which is what the browser build relies on.
+@(test)
+test_patch_change_can_keep_the_voice_pool_and_the_held_note :: proc(t: ^testing.T) {
+	from := default_patch()
+	to := default_patch()
+	to.values[94] = 4
+	to.values[19] = 30
+	if !testing.expect(t, engine.bind_patch(to).polyphony != engine.bind_patch(from).polyphony) {
+		return
+	}
+	left, right: [256]f32
+
+	e: engine.Engine
+	engine.engine_load_patch(&e, from, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_note_on(&e, 60, 1)
+	engine.engine_set_pitch_bend(&e, 0.5)
+	engine.engine_process(&e, left[:], right[:])
+	pool := raw_data(e.voices)
+	size := len(e.voices)
+
+	engine.engine_apply_patch(&e, to, snap = true, keep_voice_pool = true)
+	testing.expect(t, raw_data(e.voices) == pool, "the voice pool was reallocated")
+	testing.expect_value(t, len(e.voices), size)
+	testing.expect_value(t, e.params.polyphony, size)
+	testing.expect_value(t, engine.engine_patch_value(&e, 94), 4)
+	testing.expect_value(t, e.held_notes, 1)
+	testing.expect_value(t, e.pitch_bend, f32(0.5))
+	held := false
+	for &v in e.voices {
+		if v.active && v.gate && v.note == 60 {held = true}
+	}
+	testing.expect(t, held, "the held note was cut")
+	engine.engine_process(&e, left[:], right[:])
+	testing.expect(t, !all_zero(left[:]), "the held note stopped sounding")
+
+	f: engine.Engine
+	engine.engine_load_patch(&f, from, SR)
+	defer engine.engine_destroy(&f)
+	engine.engine_note_on(&f, 60, 1)
+	engine.engine_apply_patch(&f, to, snap = true)
+	testing.expect_value(t, len(f.voices), engine.bind_patch(to).polyphony)
+	testing.expect_value(t, engine.engine_active_voice_count(&f), 0)
+}
+
+// A controller's position survives a patch change only while its slot listens
+// to the same number; reassigned, the slot starts from zero and the new patch
+// plays exactly as written.
+@(test)
+test_patch_change_keeps_a_controller_only_while_its_number_is_the_same :: proc(t: ^testing.T) {
+	from := routed_patch(0xB001)
+	from.values[19] = 0
+
+	{
+		e: engine.Engine
+		engine.engine_load_patch(&e, from, SR)
+		defer engine.engine_destroy(&e)
+		engine.engine_control_change(&e, 1, 127)
+
+		to := routed_patch(0xB001)
+		to.values[19] = 40
+		engine.engine_apply_patch(&e, to, snap = true, keep_voice_pool = true)
+		testing.expect_value(t, e.ctrl_value[0], f32(1))
+		want := to
+		want.values[19] = 127
+		testing.expect_value(t, e.params.filter_cutoff_hz, engine.bind_patch(want).filter_cutoff_hz)
+
+		// An ordinary edit afterwards keeps the displacement, as it always has.
+		engine.engine_set_stored(&e, 20, 10)
+		want.values[20] = 10
+		testing.expect_value(t, e.params.filter_cutoff_hz, engine.bind_patch(want).filter_cutoff_hz)
+		testing.expect_value(t, e.params.filter_resonance, engine.bind_patch(want).filter_resonance)
+	}
+	{
+		e: engine.Engine
+		engine.engine_load_patch(&e, from, SR)
+		defer engine.engine_destroy(&e)
+		engine.engine_control_change(&e, 1, 127)
+
+		to := routed_patch(0xB002)
+		to.values[19] = 40
+		engine.engine_apply_patch(&e, to, snap = true, keep_voice_pool = true)
+		testing.expect_value(t, e.ctrl_value[0], f32(0))
+		want := engine.bind_patch(to)
+		want.polyphony = len(e.voices)
+		testing.expect(t, e.params == want, "a controller the new patch does not listen to moved it")
+	}
+}
+
+// The smoothers snap to what the engine will actually play. With a controller
+// kept across the change that is the displaced value, not the patch's own base:
+// snapping to the base would sweep the new patch up to where the wheel already
+// is, the very glide `snap` exists to remove.
+@(test)
+test_patch_change_snaps_to_where_a_kept_controller_puts_the_target :: proc(t: ^testing.T) {
+	from := routed_patch(0xB001)
+	from.values[19] = 0
+	e: engine.Engine
+	engine.engine_load_patch(&e, from, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_control_change(&e, 1, 127)
+
+	to := routed_patch(0xB001)
+	to.values[19] = 40
+	engine.engine_apply_patch(&e, to, snap = true, keep_voice_pool = true)
+	want := to
+	want.values[19] = 127
+	testing.expect_value(t, e.cutoff_smooth.value, engine.bind_patch(want).filter_cutoff_state)
+}

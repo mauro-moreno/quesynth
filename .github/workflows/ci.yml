@@ -37,7 +37,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-08
 
       # Odin will not create the directory it is told to write into, and a
       # fresh checkout has no build/ because it is ignored. The failure is
@@ -100,10 +100,11 @@ jobs:
       # boots the page's own scripts in a stand-in DOM and checks that the
       # sections, the navigator and the controls came out. It needs no browser,
       # so it costs nothing here; the macOS job runs the same file first, ahead
-      # of a real WebKit render.
+      # of a real WebKit render. The terminal UI's copy of the panel's layout
+      # is checked against ui/layout.js alongside it.
       - name: The panel builds (GUI smoke)
         shell: pwsh
-        run: node --test tests/ui/panel-smoke.test.mjs
+        run: node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
 
       # The measurement tool behind the sub-oscillator level section of
       # docs/null-test.md. It cannot run its own measurement here -- that needs
@@ -145,7 +146,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-08
 
       # Odin will not create the directory it writes into; the Windows job above
       # carries the same line for the same reason.
@@ -199,8 +200,9 @@ jobs:
   # Two runners, one job definition, because the Audio Unit is the macOS-only
   # host and a Mac user's machine is Apple Silicon or Intel -- and a fault in the
   # hand-written AU bindings, the WebKit editor, or an Odin codegen path can bite
-  # one architecture and not the other. macos-latest is Apple Silicon; macos-13
-  # is the last Intel image GitHub offers. Everything below -- the AU build,
+  # one architecture and not the other. macos-latest is Apple Silicon;
+  # macos-15-intel is the last Intel image GitHub offers (macos-13 is retired
+  # and its jobs queue forever). Everything below -- the AU build,
   # auval, and pluginval's editor tests -- therefore runs natively on both, so
   # the x86_64 slice release.yml ships is validated where it will actually run
   # rather than only cross-compiled. fail-fast is off so one architecture's
@@ -209,7 +211,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-13]
+        os: [macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +220,7 @@ jobs:
       - name: Install Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-05
+          release: dev-2026-08
 
       - name: Somewhere to build into
         run: mkdir -p build

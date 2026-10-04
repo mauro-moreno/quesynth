@@ -1520,7 +1520,8 @@ body.modal-open { overflow: hidden; }
 
 /* Searching the bank list. Bank names only -- see the note in ui/browser.js
  * about why the patches inside an unopened bank are not searchable. */
-.browser-search {
+.browser-search,
+.browser-archive-path {
   flex: 0 0 auto;
   width: 100%;
   appearance: none;
@@ -1559,6 +1560,26 @@ body.modal-open { overflow: hidden; }
 }
 .browser-status.error { color: var(--ink); }
 .browser-status.ok { color: var(--ink-faint); }
+
+/* The archive is a source beside the ordinary bank, not the playing patch.
+ * Paths can be far wider than the narrow source pane; never size it by one. */
+.browser-archive { min-width: 0; padding: 4px 0 8px; }
+.browser-archive > label {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.browser-archive-path { min-width: 0; margin-top: 4px; }
+.browser-archive-path:focus { outline: 2px solid var(--accent); }
+.browser-archive .browser-status { padding: 6px 0; overflow-wrap: anywhere; }
+.browser-playing {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--panel-edge);
+}
 
 /* --------------------------------------------------------------- configure */
 

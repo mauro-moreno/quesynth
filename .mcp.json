@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "quesynth": {
+      "command": "quesynth",
+      "args": ["--mcp"]
+    }
+  }
+}

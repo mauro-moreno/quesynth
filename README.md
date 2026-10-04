@@ -80,6 +80,7 @@ user manual.
 
 | Topic | Contents |
 |---|---|
+| [Standalone manual](docs/quesynth-manual.md) | Daemon, TUI, browser, banks and archives, MIDI, configuration, MCP server, troubleshooting, safety |
 | [Getting started](https://github.com/mauro-moreno/quesynth/wiki/Getting-Started) | Browser, standalone, and plugin setup |
 | [The panel](https://github.com/mauro-moreno/quesynth/wiki/The-Panel) | Control-by-control reference |
 | [Banks and patches](https://github.com/mauro-moreno/quesynth/wiki/Banks-And-Patches) | Browsing, writing, importing, and persistence |
@@ -136,6 +137,71 @@ node hosts/wasm/serve.js
 
 Then open `http://localhost:8177`. Additional build and platform details are in
 the host-specific README files under `hosts/`.
+
+For the native standalone daemon with the same HTML panel, build the standalone
+binary and run:
+
+```sh
+./build/quesynth --browser
+```
+
+This starts or attaches to the daemon, serves the shared `ui/` over a local
+WebSocket bridge, and opens the default browser. The page is a peer of the
+TUI: both are clients of the same daemon, which owns the sound, the bank and
+the current patch, so a change made in either shows in the other. Node.js is
+required; set `QUESYNTH_ROOT` when running the binary outside the repository
+tree. See [`hosts/standalone/browser`](hosts/standalone/browser/README.md).
+
+The daemon also owns which MIDI input it listens to: the TUI chooses it with
+`M`, and the page's MIDI button shows and changes the same selection. A page
+served by `--browser` does not use Web MIDI, so a keyboard is never heard
+twice. By default every input is open, as it always has been.
+
+A native controller can also select patches: CC 0 and CC 32 hold the bank's
+MSB and LSB per MIDI channel, and Program Change loads slot 0–127. Bank 0 is
+the daemon's current factory or user bank. A channel that has never sent
+Bank Select stays in the bank the sound is playing from instead, so after a
+patch is loaded from an archive bank, Program Change picks patch 0–127 of
+that bank. Other banks, empty slots and patches past a bank's end leave the
+sound unchanged. Both halves start at zero; sending only one keeps the
+other's last value, and Program Change does not reset them. Loads use the same
+atomic replacement as the TUI and browser, with held notes kept sounding.
+
+## Standalone manual and MCP server
+
+[`docs/quesynth-manual.md`](docs/quesynth-manual.md) is the reference for the
+native standalone: build and `--selftest`, the daemon's lifecycle and socket,
+the TUI, the browser front-end, ordinary and ZIP banks, patch identity, MIDI
+input selection with Bank Select and Program Change, the files Quesynth keeps,
+the MCP server, troubleshooting, and safety. `quesynth --help` lists every
+mode.
+
+```sh
+./build/quesynth                  # attach the TUI, starting the daemon if needed
+./build/quesynth --browser        # the same daemon, in a browser at 127.0.0.1:8177
+./build/quesynth --mcp            # serve MCP over stdio to a running daemon
+./build/quesynth --stop           # stop the daemon
+```
+
+`quesynth --mcp` is a local stdio [MCP server](docs/quesynth-manual.md#mcp-server)
+built into the same executable. It is a client of the daemon's control socket
+and offers 33 typed tools. Two came first: `inspect_synth`, and
+`apply_parameters`, an atomic batch of parameter values that applies only if the
+daemon's revision is still the one you name. The other 31 are one for each
+command the daemon accepts: status, info and shutdown, parameters, the state
+snapshot, patches, the bank, the archive, MIDI and the master volume. Every tool
+checks its arguments
+before it sends anything and carries read-only, destructive and idempotent
+annotations. No tool takes a command, a shell string or a URL, and the server
+opens no file itself. The daemon reads and writes any path a tool names.
+There are also two resources, `quesynth://parameters` and `quesynth://patch`.
+
+The tools can load patches, overwrite a bank file and stop the daemon, so
+register the server only with clients you trust. The project registers it in
+[`.mcp.json`](.mcp.json) as `quesynth --mcp`, so `quesynth` has to be on your
+`PATH`; the manual shows how. Start a daemon first: until one is running, the
+calls that need it return `daemon_unavailable`. The MCP server needs no Node.js.
+Only `--browser` does, and it needs Node.js 20 or later.
 
 ## Compatibility and verification
 

@@ -189,7 +189,8 @@ engine_load_patch :: proc(e: ^Engine, p: patch.Patch, sample_rate: f32) {
 //
 // So the parameters are rebuilt and swapped in, and everything the voices are
 // mid-note on is left alone. The one exception is the voice count, which cannot
-// change size under a sounding note; that still goes the long way round.
+// change size under a sounding note; that still goes the long way round, unless
+// `keep_voice_pool` says it may not.
 // `snap` is the difference between loading a patch and turning a knob.
 //
 // The smoothed parameters -- cutoff, gain, pan -- glide to their target, which is
@@ -202,7 +203,27 @@ engine_load_patch :: proc(e: ^Engine, p: patch.Patch, sample_rate: f32) {
 // which is why it is worth stating: rendered against the reference, a patch loaded
 // without snapping came out at a peak of 0.0519 where the same patch loaded fresh
 // gives 0.0333, because the note began under the wrong filter.
-engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false) {
+//
+// A controller's position is the one piece of performance state a patch change
+// has to decide about, and it belongs to the physical controller, not to the
+// patch. A slot that still listens to the same CC number keeps where that
+// controller sits: the wheel has not moved, and forgetting it would make the
+// new patch jump the next time it is touched. A slot reassigned to another
+// number starts at zero, because the old number's position says nothing about
+// a controller that has not been heard from, and carrying it over would bend
+// the new patch by a wheel nobody is holding. The plugin hosts' apply_params
+// follow the same rule, and the standalone daemon relies on it for every load.
+//
+// `keep_voice_pool` is for a caller on the audio thread, which is where the
+// standalone daemon replaces a patch. Resizing goes through `engine_init`,
+// which allocates and frees and wipes every voice, the held keys and the pitch
+// bend: an allocator on the audio path and a cut to the key that is down, the
+// two things a patch change there must never do. So the pool keeps the size it
+// was given before the stream started, and parameter 94 is what the daemon
+// treats it as -- configuration, not patch state. The patch still records its
+// own value for it, so a snapshot or a save reports the patch as it was
+// written. Only an engine with no pool at all is given one.
+engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false, keep_voice_pool := false) {
 	params := bind_patch(p)
 	previous_ctrl := e.params.midi_ctrl
 	e.patch = p
@@ -214,16 +235,22 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false) {
 	}
 
 	count := clamp_int(params.polyphony, 1, MAX_POLYPHONY)
-	if e.voices == nil || count != len(e.voices) {
+	if e.voices == nil || (!keep_voice_pool && count != len(e.voices)) {
 		engine_init(e, params, e.sample_rate)
 		engine_refresh_controllers(e)
 		return
 	}
 
+	e.params = params
+	engine_refresh_controllers(e)
+
 	if snap {
-		smoother_reset(&e.cutoff_smooth, params.filter_cutoff_state)
-		smoother_reset(&e.gain_smooth, params.amp_gain)
-		smoother_reset(&e.pan_smooth, params.pan)
+		// After the controllers, not before: a controller kept across the
+		// change displaces the target, and snapping to the patch's undisplaced
+		// value would sweep the new sound from there to where the wheel sits.
+		smoother_reset(&e.cutoff_smooth, e.params.filter_cutoff_state)
+		smoother_reset(&e.gain_smooth, e.params.amp_gain)
+		smoother_reset(&e.pan_smooth, e.params.pan)
 
 		// And the effects' own memory, which is the part that is audible if it is
 		// forgotten.
@@ -242,9 +269,6 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false) {
 		dsp.effect_reset(&e.effect)
 		dsp.equalizer_reset(&e.equalizer)
 	}
-
-	e.params = params
-	engine_refresh_controllers(e)
 }
 
 // A MIDI control change arrived.
@@ -333,6 +357,30 @@ engine_refresh_controllers :: proc(e: ^Engine) {
 		voice_apply_params(&e.voices[i], &e.params, e.sample_rate)
 	}
 	engine_update_lfo_rates(e)
+}
+
+// Set one stored parameter and rebind, keeping every sounding voice.
+//
+// This is the engine side of an external control edit: the protocol's
+// parameter.set ends here. It deliberately takes the same path a MIDI control
+// change already does -- write the stored value into the patch and rebuild the
+// live parameters through `engine_refresh_controllers`, which reaches no
+// allocator and never resizes the voice pool, so it is safe on the audio
+// thread. `engine_apply_patch` is the wrong tool for a single control: it can
+// reallocate the pool and cut the sound. That is for loading a patch.
+engine_set_stored :: proc(e: ^Engine, index, stored: int) {
+	if index < 0 || index >= patch.PARAMETER_COUNT {return}
+	if !e.has_patch {return}
+	e.patch.values[index] = stored
+	engine_refresh_controllers(e)
+}
+
+// The stored integer currently held for a parameter -- the value a get returns.
+// Reads the base patch, not the controller-displaced live block, so a get
+// reflects what was set rather than where a moving wheel happens to sit.
+engine_patch_value :: proc(e: ^Engine, index: int) -> int {
+	if index < 0 || index >= patch.PARAMETER_COUNT {return 0}
+	return e.patch.values[index]
 }
 
 // The reference's destination menu does not offer the routing controls
@@ -623,6 +671,12 @@ engine_active_voice_count :: proc(e: ^Engine) -> int {
 		}
 	}
 	return n
+}
+
+// The size of the voice pool -- the most voices this engine can sound at once.
+// Fixed in engine_init and never grown, so reading it as a metric is stable.
+engine_max_voices :: proc(e: ^Engine) -> int {
+	return len(e.voices)
 }
 
 // Render `len(left)` samples. The buffers are written, not accumulated, and

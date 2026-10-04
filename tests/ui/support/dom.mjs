@@ -126,11 +126,12 @@ function createClassList(element) {
 }
 
 // Selectors: comma lists of descendant chains of compound selectors built from
-// a tag, #id, .class, [attr] and [attr=value]. That is every form the panel uses.
+// a tag, #id, .class, [attr], [attr=value] (the value may hold spaces) and
+// :not() of those. That is every form the panel uses.
 function parseCompound(text) {
-  const match = /^(\*|[a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[^\]]+\])*)$/.exec(text);
+  const match = /^(\*|[a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[^\]]+\])*)((?::not\([^()]+\))*)$/.exec(text);
   if (!match) throw new Error(`unsupported selector: ${text}`);
-  const compound = { tag: match[1] && match[1] !== "*" ? match[1].toLowerCase() : null, ids: [], classes: [], attrs: [] };
+  const compound = { tag: match[1] && match[1] !== "*" ? match[1].toLowerCase() : null, ids: [], classes: [], attrs: [], nots: [] };
   for (const part of match[2].match(/[.#][\w-]+|\[[^\]]+\]/g) || []) {
     if (part[0] === "#") compound.ids.push(part.slice(1));
     else if (part[0] === ".") compound.classes.push(part.slice(1));
@@ -140,18 +141,20 @@ function parseCompound(text) {
       compound.attrs.push({ name: attr[1], value: attr[2] });
     }
   }
+  for (const part of match[3].match(/:not\([^()]+\)/g) || []) compound.nots.push(parseCompound(part.slice(5, -1)));
   return compound;
 }
 
 function parseSelector(selector) {
   return selector.split(",").map(s => s.trim()).filter(Boolean)
-    .map(chain => chain.split(/\s+/).map(parseCompound));
+    .map(chain => chain.match(/(?:\[[^\]]*\]|[^\s[])+/g).map(parseCompound));
 }
 
 function matchesCompound(element, compound) {
   if (compound.tag && element.localName.toLowerCase() !== compound.tag) return false;
   if (compound.ids.some(id => element.id !== id)) return false;
   if (compound.classes.some(c => !element.classList.contains(c))) return false;
+  if (compound.nots.some(not => matchesCompound(element, not))) return false;
   return compound.attrs.every(a =>
     a.value === undefined ? element.hasAttribute(a.name) : element.getAttribute(a.name) === a.value);
 }
@@ -275,6 +278,7 @@ class Element extends Node {
   scrollBy() {}
   focus() {}
   blur() {}
+  select() {}
   click() { this.dispatchEvent(new Event("click", { bubbles: true })); }
   setPointerCapture() {}
   releasePointerCapture() {}
