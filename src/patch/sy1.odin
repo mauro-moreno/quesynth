@@ -162,49 +162,49 @@ parse_sy1 :: proc(data: []byte) -> (patch: Patch, err: Sy1_Error) {
 		}
 	}
 
-    for pos < len(data) {
-        line, pos = line_end(data, pos)
-        line = trim_ascii_space(line)
-        if len(line) == 0 {
-            continue
-        }
+	for pos < len(data) {
+		line, pos = line_end(data, pos)
+		line = trim_ascii_space(line)
+		if len(line) == 0 {
+			continue
+		}
 
-        comma := -1
-        for c, i in line {
-            if c == ',' {
-                if comma >= 0 {
-                    return {}, .Malformed_Line
-                }
-                comma = i
-            }
-        }
-        if comma <= 0 || comma >= len(line)-1 {
-            return {}, .Malformed_Line
-        }
+		comma := -1
+		for c, i in line {
+			if c == ',' {
+				if comma >= 0 {
+					return {}, .Malformed_Line
+				}
+				comma = i
+			}
+		}
+		if comma <= 0 || comma >= len(line)-1 {
+			return {}, .Malformed_Line
+		}
 
-        index_text := trim_ascii_space(line[:comma])
-        value_text := trim_ascii_space(line[comma+1:])
-        if len(index_text) == 0 || len(value_text) == 0 {
-            return {}, .Malformed_Line
-        }
-        index, index_ok := strconv.parse_int(bytes_string(index_text), 10)
-        if !index_ok {
-            return {}, .Invalid_Index
-        }
-        if index < 0 {
-            return {}, .Invalid_Index
-        }
-        if index >= PARAMETER_COUNT {
-            return {}, .Index_Out_Of_Range
-        }
-        value, value_ok := strconv.parse_int(bytes_string(value_text), 10)
-        if !value_ok {
-            return {}, .Invalid_Value
-        }
-        // Duplicate records are accepted; the later record is the effective one.
-        patch.values[index] = value
-        patch.present[index] = true
-    }
+		index_text := trim_ascii_space(line[:comma])
+		value_text := trim_ascii_space(line[comma+1:])
+		if len(index_text) == 0 || len(value_text) == 0 {
+			return {}, .Malformed_Line
+		}
+		index, index_ok := strconv.parse_int(bytes_string(index_text), 10)
+		if !index_ok {
+			return {}, .Invalid_Index
+		}
+		if index < 0 {
+			return {}, .Invalid_Index
+		}
+		if index >= PARAMETER_COUNT {
+			return {}, .Index_Out_Of_Range
+		}
+		value, value_ok := strconv.parse_int(bytes_string(value_text), 10)
+		if !value_ok {
+			return {}, .Invalid_Value
+		}
+		// Duplicate records are accepted; the later record is the effective one.
+		patch.values[index] = value
+		patch.present[index] = true
+	}
 
 	upgrade_pre_107(&patch)
 	return patch, .None
