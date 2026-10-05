@@ -67,6 +67,11 @@ Archive :: struct {
 // on-demand reads until the result is swapped in or released.
 @(private = "file")
 archive_index :: proc(path: string) -> (fresh: Archive, ok: bool) {
+	// Before open: opening a FIFO waits for a writer that may never come, and
+	// the daemon would wait with it.
+	if !path_is_regular_file(path) {
+		return
+	}
 	f, err := os.open(path)
 	if err != nil {
 		return
@@ -85,6 +90,12 @@ archive_index :: proc(path: string) -> (fresh: Archive, ok: bool) {
 	}
 	cd_offset, cd_size, count, found := zip.find_eocd(tail[:tn])
 	if !found {
+		os.close(f)
+		return
+	}
+	// The directory is read into memory whole, so it must lie inside the file
+	// before anything is allocated for it: cd_size is a u32 from the file.
+	if i64(cd_offset) + i64(cd_size) > size {
 		os.close(f)
 		return
 	}
@@ -203,6 +214,13 @@ archive_read_entry :: proc(a: ^Archive, e: zip.Entry, allocator := context.alloc
 	name_len := int(hdr[26]) | int(hdr[27]) << 8
 	extra_len := int(hdr[28]) | int(hdr[29]) << 8
 	data_start := i64(e.local_offset) + 30 + i64(name_len) + i64(extra_len)
+	// The sizes are the central directory's own claims: bound them by the cap
+	// and the file before they become an allocation.
+	file_size, serr := os.file_size(a.file)
+	if serr != nil || e.comp_size > zip.MAX_ENTRY_SIZE || e.uncomp_size > zip.MAX_ENTRY_SIZE ||
+	   data_start + i64(e.comp_size) > file_size {
+		return nil, false
+	}
 	comp := make([]u8, e.comp_size, context.temp_allocator)
 	dn, derr := os.read_at(a.file, comp, data_start)
 	if derr != nil || dn != int(e.comp_size) {
