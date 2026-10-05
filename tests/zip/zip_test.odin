@@ -292,6 +292,51 @@ test_zip_stored_and_deflate_agree_on_a_small_entry :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+test_zip_repeated_reads_into_an_arena_keep_only_their_output :: proc(t: ^testing.T) {
+	exact, eok := zip.zip_open(craft_zip(zip.METHOD_DEFLATE, DEFLATE_A_5000[:], 5000), context.temp_allocator)
+	if !testing.expect(t, eok) {return}
+	defer zip.zip_close(&exact)
+	short, sok := zip.zip_open(craft_zip(zip.METHOD_DEFLATE, DEFLATE_A_5000[:], 4999), context.temp_allocator)
+	if !testing.expect(t, sok) {return}
+	defer zip.zip_close(&short)
+
+	arena: runtime.Arena
+	if !testing.expect(t, runtime.arena_init(&arena, 0, runtime.heap_allocator()) == nil) {return}
+	defer runtime.arena_destroy(&arena)
+	alloc := runtime.arena_allocator(&arena)
+
+	READS :: 16
+	outs: [2 * READS][]u8
+	for i in 0 ..< 2 * READS {
+		ok, rok: bool
+		before: uint
+		if i < READS {
+			outs[i], ok = zip.zip_read(&exact, 0, alloc)
+			before = arena.total_used
+			_, rok = zip.zip_read(&short, 0, alloc)
+		} else {
+			context.allocator = alloc
+			outs[i], ok = zip.zip_read(&exact, 0)
+			before = arena.total_used
+			_, rok = zip.zip_read(&short, 0)
+		}
+		testing.expect(t, ok)
+		testing.expect(t, !rok)
+		testing.expectf(t, arena.total_used == before, "refused read %d kept %d bytes", i, arena.total_used - before)
+	}
+	for out, i in outs {
+		testing.expectf(t, len(out) == 5000 && strings.count(string(out), "a") == 5000, "read %d", i)
+	}
+	testing.expectf(
+		t,
+		arena.total_used >= 2 * READS * 5000 && arena.total_used <= 2 * READS * (5000 + 64),
+		"arena holds %d bytes after %d reads of 5000",
+		arena.total_used,
+		2 * READS,
+	)
+}
+
 // A declared size over the cap is refused before anything is allocated, even
 // though the stream behind it is tiny.
 @(test)

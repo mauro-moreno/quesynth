@@ -1,5 +1,6 @@
 package zip
 
+import "base:runtime"
 import "core:bytes"
 import "core:compress"
 import "core:compress/zlib"
@@ -249,7 +250,7 @@ inflate_entry :: proc(
 		return out, true
 	case METHOD_DEFLATE:
 		budget := Inflate_Budget {
-			backing   = allocator,
+			backing   = runtime.heap_allocator(),
 			// One byte over: zlib wants a spare slot past its last write.
 			max_alloc = max(want + 1, compress.COMPRESS_OUTPUT_ALLOCATE_MIN),
 		}
