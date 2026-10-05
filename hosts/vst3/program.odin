@@ -96,3 +96,27 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 		p.params_dirty = true
 	}
 }
+
+// `select_program` for the main thread.
+//
+// The same program, reached by staging the set instead of writing it into
+// `values`: that is the audio thread's, and a host selecting a program on the
+// controller must not change it under a block that is rendering. The other
+// path -- a program change arriving as a parameter change inside `process` --
+// is the audio thread already and stays a direct write.
+stage_program :: proc "contextless" (p: ^Plugin, program: int) {
+	if program < 0 || program >= patch.FACTORY_SLOTS {
+		return
+	}
+	p.program = i32(program)
+
+	values, ok := patch.slots_patch(&p.slots, program)
+	if !ok {
+		return
+	}
+	// A program is the whole patch, so there is nothing of the current set to
+	// carry over; and a program the instrument already holds changes nothing.
+	if values != main_thread_values(p)^ {
+		stage_values(p, values)
+	}
+}

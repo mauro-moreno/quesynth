@@ -1100,6 +1100,244 @@ test_state_rejects_a_foreign_or_truncated_blob :: proc(t: ^testing.T) {
 	testing.expect(t, !state.load(plugin, &short_stream.input), "a truncated blob was accepted")
 }
 
+// -- the shared state format, against bytes written out by hand --------------
+//
+// Nothing below builds a blob with the plugin's own encoder and reads it back
+// with its decoder: two halves of one mistake agree with each other, and that
+// is how a layout error survives a whole test suite (see CONTRIBUTING). The
+// reference is GOLDEN_STATE, a literal -- the shared "S1OD" format: the magic,
+// a little-endian u32 version of 1, a little-endian u32 parameter count of 99,
+// then one little-endian i32 per parameter in parameter order, verbatim.
+//
+// It is the same literal, byte for byte, as GOLDEN_STATE in
+// tests/vst3/state_test.odin. The two plugin formats have to write and accept
+// the same bytes, and keeping one copy in each suite -- rather than one suite
+// importing the other -- is what makes a drift in either of them a failing test.
+//
+// The values were chosen to be distinctive rather than meaningful: each lies in
+// its parameter's stored range, and a few are there for their bytes -- a
+// negative one (parameter 9), the out-of-table 128 (parameter 21), and two
+// 16-bit controller values.
+
+GOLDEN_STATE := [?]u8 {
+	'S', '1', 'O', 'D', // magic
+	0x01, 0x00, 0x00, 0x00, // version 1
+	0x63, 0x00, 0x00, 0x00, // 99 parameters
+	0x03, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x11, 0x00, 0x00, 0x00,  0x18, 0x00, 0x00, 0x00, // 0..3
+	0x01, 0x00, 0x00, 0x00,  0x26, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 4..7
+	0x3B, 0x00, 0x00, 0x00,  0xFD, 0xFF, 0xFF, 0xFF,  0x01, 0x00, 0x00, 0x00,  0x50, 0x00, 0x00, 0x00, // 8..11
+	0x57, 0x00, 0x00, 0x00,  0x5E, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x6C, 0x00, 0x00, 0x00, // 12..15
+	0x73, 0x00, 0x00, 0x00,  0x7A, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x08, 0x00, 0x00, 0x00, // 16..19
+	0x0F, 0x00, 0x00, 0x00,  0x80, 0x00, 0x00, 0x00,  0x1D, 0x00, 0x00, 0x00,  0x24, 0x00, 0x00, 0x00, // 20..23
+	0x01, 0x00, 0x00, 0x00,  0x32, 0x00, 0x00, 0x00,  0x39, 0x00, 0x00, 0x00,  0x40, 0x00, 0x00, 0x00, // 24..27
+	0x47, 0x00, 0x00, 0x00,  0x4E, 0x00, 0x00, 0x00,  0x55, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 28..31
+	0x03, 0x00, 0x00, 0x00,  0x6A, 0x00, 0x00, 0x00,  0x71, 0x00, 0x00, 0x00,  0x78, 0x00, 0x00, 0x00, // 32..35
+	0x7F, 0x00, 0x00, 0x00,  0x06, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00,  0x14, 0x00, 0x00, 0x00, // 36..39
+	0x08, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00,  0x03, 0x00, 0x00, 0x00,  0x30, 0x00, 0x00, 0x00, // 40..43
+	0x37, 0x00, 0x00, 0x00,  0x3E, 0x00, 0x00, 0x00,  0x05, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00, // 44..47
+	0x53, 0x00, 0x00, 0x00,  0x5A, 0x00, 0x00, 0x00,  0x61, 0x00, 0x00, 0x00,  0x68, 0x00, 0x00, 0x00, // 48..51
+	0x6F, 0x00, 0x00, 0x00,  0x76, 0x00, 0x00, 0x00,  0x7D, 0x00, 0x00, 0x00,  0x04, 0x00, 0x00, 0x00, // 52..55
+	0x0B, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 56..59
+	0x27, 0x00, 0x00, 0x00,  0x2E, 0x00, 0x00, 0x00,  0x35, 0x00, 0x00, 0x00,  0x3C, 0x00, 0x00, 0x00, // 60..63
+	0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 64..67
+	0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00, // 68..71
+	0x7B, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x10, 0x00, 0x00, 0x00, // 72..75
+	0x17, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x09, 0x00, 0x00, 0x00,  0x2C, 0x00, 0x00, 0x00, // 76..79
+	0x33, 0x00, 0x00, 0x00,  0x3A, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x48, 0x00, 0x00, 0x00, // 80..83
+	0x4F, 0x00, 0x00, 0x00,  0x56, 0x00, 0x00, 0x00,  0x01, 0xB1, 0x00, 0x00,  0x64, 0x02, 0x00, 0x00, // 84..87
+	0x6B, 0x02, 0x00, 0x00,  0xFF, 0xFF, 0x00, 0x00,  0x79, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 88..91
+	0x07, 0x00, 0x00, 0x00,  0x06, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x1C, 0x00, 0x00, 0x00, // 92..95
+	0x03, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x31, 0x00, 0x00, 0x00, // 96..98
+}
+
+// What GOLDEN_STATE says each parameter is, written out the other way round.
+GOLDEN_VALUES := [?]i32 {
+	3, 0, 17, 24, 1, 38, 1, 0, 59, -3, 1, 80,
+	87, 94, 1, 108, 115, 122, 1, 8, 15, 128, 29, 36,
+	1, 50, 57, 64, 71, 78, 85, 0, 3, 106, 113, 120,
+	127, 6, 2, 20, 8, 2, 3, 48, 55, 62, 5, 2,
+	83, 90, 97, 104, 111, 118, 125, 4, 11, 0, 1, 0,
+	39, 46, 53, 60, 1, 0, 1, 0, 1, 0, 1, 2,
+	123, 0, 1, 16, 23, 0, 9, 44, 51, 58, 1, 72,
+	79, 86, 45313, 612, 619, 65535, 121, 0, 7, 6, 1, 28,
+	3, 0, 49,
+}
+
+// Bytes of the header: magic, version, count.
+STATE_HEADER :: 12
+
+// Load `bytes` as a state blob through a stream that hands over a few bytes at
+// a time.
+load_state_bytes :: proc(plugin: ^clap.Plugin, bytes: []u8) -> bool {
+	stream: Memory_Stream
+	memory_stream_init(&stream, 5)
+	defer memory_stream_destroy(&stream)
+	append(&stream.data, ..bytes)
+	return state_of(plugin).load(plugin, &stream.input)
+}
+
+// What the host reads back for a parameter.
+value_of :: proc(t: ^testing.T, plugin: ^clap.Plugin, index: int) -> int {
+	value: f64
+	testing.expect(t, params_of(plugin).get_value(plugin, clap.Id(index), &value), "get_value failed")
+	return int(value)
+}
+
+default_of :: proc(index: int) -> int {
+	return patch.PARAMETERS[index].default
+}
+
+@(test)
+test_state_golden_blob_loads_and_saves_the_same_bytes :: proc(t: ^testing.T) {
+	TEST_CONTEXT = context
+
+	// The golden values are written for this many parameters. If the table
+	// grows the format has not changed but the blob has: write a new golden
+	// deliberately rather than letting this one drift.
+	testing.expect_value(t, patch.PARAMETER_COUNT, len(GOLDEN_VALUES))
+
+	plugin := make_plugin(t)
+	if plugin == nil {return}
+	defer plugin.destroy(plugin)
+
+	testing.expect(t, load_state_bytes(plugin, GOLDEN_STATE[:]), "the golden blob was refused")
+	for i in 0 ..< len(GOLDEN_VALUES) {
+		testing.expect_value(t, value_of(t, plugin, i), int(GOLDEN_VALUES[i]))
+	}
+
+	out: Memory_Stream
+	memory_stream_init(&out, 7)
+	defer memory_stream_destroy(&out)
+	testing.expect(t, state_of(plugin).save(plugin, &out.out), "state.save failed")
+	testing.expect_value(t, len(out.data), len(GOLDEN_STATE))
+	for i in 0 ..< min(len(out.data), len(GOLDEN_STATE)) {
+		testing.expectf(t, out.data[i] == GOLDEN_STATE[i], "byte %d is 0x%02X, the golden says 0x%02X", i, out.data[i], GOLDEN_STATE[i])
+	}
+}
+
+// A blob from a build with fewer parameters than this one: the ones the two
+// share are loaded, and every other parameter is its reference default -- not
+// what the instance held beforehand.
+@(test)
+test_state_with_fewer_parameters_loads_the_shared_ones_and_defaults_the_rest :: proc(t: ^testing.T) {
+	TEST_CONTEXT = context
+	SHARED :: 10
+
+	// Ten parameters declared and exactly ten present, and ten declared with
+	// the whole golden set following: the count, not how much follows, says how
+	// much of it is the state.
+	for with_trailing_values in ([]bool{false, true}) {
+		plugin := make_plugin(t)
+		if plugin == nil {return}
+		defer plugin.destroy(plugin)
+
+		// Everything off its default first, so that a parameter the blob does
+		// not cover cannot look right by having been left alone.
+		testing.expect(t, load_state_bytes(plugin, GOLDEN_STATE[:]), "the golden blob was refused")
+		moved := 0
+		for i in SHARED ..< patch.PARAMETER_COUNT {
+			if int(GOLDEN_VALUES[i]) != default_of(i) {moved += 1}
+		}
+		testing.expect(t, moved > 0, "the golden set is the defaults, so this proves nothing")
+
+		blob := make([dynamic]u8)
+		defer delete(blob)
+		append(&blob, ..GOLDEN_STATE[:])
+		blob[8] = SHARED
+		if !with_trailing_values {
+			resize(&blob, STATE_HEADER + SHARED * 4)
+		}
+		testing.expect(t, load_state_bytes(plugin, blob[:]), "a blob with fewer parameters was refused")
+
+		for i in 0 ..< SHARED {
+			testing.expect_value(t, value_of(t, plugin, i), int(GOLDEN_VALUES[i]))
+		}
+		for i in SHARED ..< patch.PARAMETER_COUNT {
+			testing.expectf(t, value_of(t, plugin, i) == default_of(i), "parameter %d is not its default %d", i, default_of(i))
+		}
+	}
+}
+
+// A blob from a build with more parameters than this one: the first
+// PARAMETER_COUNT are loaded and the rest ignored. The declared count is never
+// trusted for how much to read.
+@(test)
+test_state_with_more_parameters_loads_the_first_ones_and_ignores_the_rest :: proc(t: ^testing.T) {
+	TEST_CONTEXT = context
+
+	for declared in ([]u32{u32(patch.PARAMETER_COUNT) + 3, 0xFFFF_FFFF}) {
+		plugin := make_plugin(t)
+		if plugin == nil {return}
+		defer plugin.destroy(plugin)
+
+		blob := make([dynamic]u8)
+		defer delete(blob)
+		append(&blob, ..GOLDEN_STATE[:])
+		blob[8] = u8(declared)
+		blob[9] = u8(declared >> 8)
+		blob[10] = u8(declared >> 16)
+		blob[11] = u8(declared >> 24)
+		// Three more parameters than this build has, which are what is ignored.
+		// For the absurd count they are all there is, and nothing like that
+		// many bytes follow: reading what the count claims would run off the end.
+		append(&blob, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0)
+		testing.expectf(t, load_state_bytes(plugin, blob[:]), "a blob with more parameters was refused (declared %d)", declared)
+
+		for i in 0 ..< len(GOLDEN_VALUES) {
+			testing.expectf(t, value_of(t, plugin, i) == int(GOLDEN_VALUES[i]), "parameter %d is %d, the blob says %d (declared %d)", i, value_of(t, plugin, i), GOLDEN_VALUES[i], declared)
+		}
+	}
+}
+
+// A blob that is not this format, or that ends before the parameters both
+// builds share, is refused -- and refusing it leaves the instrument exactly as
+// it was.
+@(test)
+test_state_foreign_or_truncated_blobs_are_refused_and_change_nothing :: proc(t: ^testing.T) {
+	TEST_CONTEXT = context
+
+	wrong_magic := make([dynamic]u8)
+	defer delete(wrong_magic)
+	append(&wrong_magic, ..GOLDEN_STATE[:])
+	wrong_magic[0] = 'X'
+
+	other_version := make([dynamic]u8)
+	defer delete(other_version)
+	append(&other_version, ..GOLDEN_STATE[:])
+	other_version[4] = 2
+
+	nine_of_ten := make([dynamic]u8)
+	defer delete(nine_of_ten)
+	append(&nine_of_ten, ..GOLDEN_STATE[:STATE_HEADER + 9 * 4])
+	nine_of_ten[8] = 10
+
+	cases := [?]struct {
+		name:  string,
+		bytes: []u8,
+	} {
+		{"foreign magic", wrong_magic[:]},
+		{"version 2", other_version[:]},
+		{"an empty stream", nil},
+		{"a header cut short", GOLDEN_STATE[:STATE_HEADER - 1]},
+		{"a header and nothing after it", GOLDEN_STATE[:STATE_HEADER]},
+		{"the last value one byte short", GOLDEN_STATE[:len(GOLDEN_STATE) - 1]},
+		{"the last value missing", GOLDEN_STATE[:len(GOLDEN_STATE) - 4]},
+		{"ten values declared and nine present", nine_of_ten[:]},
+	}
+	for c in cases {
+		plugin := make_plugin(t)
+		if plugin == nil {return}
+		defer plugin.destroy(plugin)
+
+		testing.expectf(t, !load_state_bytes(plugin, c.bytes), "%s was accepted", c.name)
+		// A fresh instrument is on its defaults, so anything the refused blob
+		// had been allowed to set would show.
+		for i in 0 ..< patch.PARAMETER_COUNT {
+			testing.expectf(t, value_of(t, plugin, i) == default_of(i), "%s changed parameter %d to %d", c.name, i, value_of(t, plugin, i))
+		}
+	}
+}
+
 // -- .sy1 loading ------------------------------------------------------------
 
 SY1_TEXT :: "Synth1 test patch\r\ncolor=default\r\nver=113\r\n0,1\r\n19,40\r\n21,37\r\n29,120\r\n94,4\r\n"
