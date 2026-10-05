@@ -167,6 +167,20 @@ jobs:
           odin test tests/panel
           odin test tests/vst3
 
+      # The standalone host's own packages: the daemon (tests/standalone), its
+      # control protocol and registry, the terminal UI, the MCP server that is
+      # part of the same executable, and the archive reader. The daemon tests
+      # talk over Unix sockets under /tmp; none of these needs a web view, an
+      # audio device or anything installed.
+      - name: The standalone host's suites
+        run: |
+          odin test tests/standalone
+          odin test tests/control
+          odin test tests/registry
+          odin test tests/tui
+          odin test tests/mcp
+          odin test tests/zip
+
       # The standalone builds against the ALSA backend in hosts/standalone
       # (libasound is loaded at run time, so nothing here needs the -dev package)
       # and renders a patch offline. --selftest opens no device, so it is a valid
@@ -176,6 +190,29 @@ jobs:
         run: |
           odin build hosts/standalone -o:speed -out:build/quesynth
           ./build/quesynth --selftest tools/s1probe/fixtures/unison-four.sy1 build/linux-selftest.wav
+
+      # The Node suites come after the build above on purpose: tests/mcp and
+      # tests/docs launch the real executable (build/quesynth, or QUESYNTH_BIN)
+      # and have nothing to test without it. They run it against a stand-in
+      # daemon on a Unix socket in a temporary XDG_RUNTIME_DIR, so no audio
+      # device or home directory is needed. tests/mcp/schema.test.mjs alone
+      # takes about 15 s and uses up to 8 worker processes.
+      - name: The MCP server and the manual agree with the built host
+        run: |
+          node --test tests/mcp/*.test.mjs
+          node --test tests/docs/*.test.mjs
+
+      # The browser adapter needs only Node. node --check reads only its first
+      # argument, so it is run once per file.
+      - name: The browser adapter parses and passes its tests
+        run: |
+          for f in hosts/standalone/browser/*.js; do node --check "$f"; done
+          node --test tests/browser/*.test.mjs
+
+      # The wasm host's development server reads a path from whoever connects:
+      # a bad escape must not stop it and no path may leave its roots.
+      - name: The development server stays inside its roots
+        run: node --test tests/ui/serve.test.mjs
 
       # The plugins build here as headless instruments: the panel is Windows-only,
       # so on Linux a host draws its own generic parameter view. This is the guard

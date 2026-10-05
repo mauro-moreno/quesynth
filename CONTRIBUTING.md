@@ -57,12 +57,13 @@ odin test tests/registry
 odin test tests/standalone
 odin test tests/tui
 odin test tests/mcp
+odin test tests/zip
 odin build hosts/standalone -o:speed -out:build/quesynth
 odin build hosts/clap -build-mode:dll -out:build/quesynth.clap
 odin build hosts/vst3 -build-mode:dll -out:build/quesynth.vst3
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/check-imports.js
-node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
+node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs tests/ui/serve.test.mjs
 for f in hosts/standalone/browser/*.js; do node --check "$f"; done
 node --test tests/browser/*.test.mjs
 node --test tests/mcp/*.test.mjs
