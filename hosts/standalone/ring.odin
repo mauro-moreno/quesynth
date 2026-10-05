@@ -72,9 +72,12 @@ midi_queue_push :: proc "contextless" (q: ^Midi_Queue, message: u32) -> bool {
 	for {
 		cell = &q.cells[pos & MIDI_QUEUE_MASK]
 		sequence := intrinsics.atomic_load_explicit(&cell.sequence, .Acquire)
-		// Signed difference: `sequence` and `pos` both wrap, and only their
-		// distance is meaningful.
-		difference := i64(sequence) - i64(pos)
+		// Signed 32-bit distance: `sequence` and `pos` are u32 and both wrap,
+		// so only their wrapped distance is meaningful. Widening to i64 first
+		// would be off by 2^32 once either side has wrapped and the queue
+		// would misread full/empty. Capacity divides 2^32, so the slot mask
+		// stays a valid modulo across the wrap.
+		difference := i32(sequence - pos)
 
 		switch {
 		case difference == 0:
@@ -118,8 +121,9 @@ midi_queue_pop :: proc "contextless" (q: ^Midi_Queue) -> (message: u32, ok: bool
 		cell = &q.cells[pos & MIDI_QUEUE_MASK]
 		sequence := intrinsics.atomic_load_explicit(&cell.sequence, .Acquire)
 		// A cell is readable once its sequence has advanced one past the
-		// ticket that wrote it, which is `pos + 1`.
-		difference := i64(sequence) - i64(pos + 1)
+		// ticket that wrote it, which is `pos + 1`. Wrapped u32 subtraction
+		// then a signed reinterpretation, for the reason given in push.
+		difference := i32(sequence - (pos + 1))
 
 		switch {
 		case difference == 0:
