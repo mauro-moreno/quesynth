@@ -90,6 +90,12 @@ Engine :: struct {
 	// and costing one branch a sample, when parameter 59 is off.
 	arp:         Arpeggiator,
 	held_keys:   [128]bool,
+	// When each held key went down, from `key_clock`. Mono and legato fall
+	// back to the newest key still held when the sounding one is released, so
+	// press order has to be kept and not only the set; a repeated note-on of
+	// a held key makes it the newest. Meaningless for a key not in `held_keys`.
+	key_order:   [128]u64,
+	key_clock:   u64,
 }
 
 // Allocate and configure the engine. This is the only procedure here that
@@ -105,6 +111,8 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	e.last_note = 60.0
 	e.held_notes = 0
 	e.held_keys = {}
+	e.key_order = {}
+	e.key_clock = 0
 	arp_reset(&e.arp)
 
 	count := clamp_int(params.polyphony, 1, MAX_POLYPHONY)
@@ -442,6 +450,8 @@ engine_mark_key_down :: proc(e: ^Engine, note: int) {
 		e.held_keys[note] = true
 		e.held_notes += 1
 	}
+	e.key_clock += 1
+	e.key_order[note] = e.key_clock
 }
 
 engine_mark_key_up :: proc(e: ^Engine, note: int) {
@@ -454,6 +464,19 @@ engine_mark_key_up :: proc(e: ^Engine, note: int) {
 			e.held_notes -= 1
 		}
 	}
+}
+
+// The most recently pressed key still held, if any.
+engine_newest_held_key :: proc(e: ^Engine) -> (note: int, ok: bool) {
+	newest: u64 = 0
+	for key in 0 ..< len(e.held_keys) {
+		if e.held_keys[key] && (!ok || e.key_order[key] > newest) {
+			note = key
+			newest = e.key_order[key]
+			ok = true
+		}
+	}
+	return
 }
 
 engine_find_gated_voice :: proc(e: ^Engine) -> ^Voice {
@@ -514,41 +537,28 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		return
 	}
 
-	// Mono and legato collapse the pool to a single sounding voice. Legato
-	// additionally keeps the envelopes running when a note arrives while another
-	// key is still held, which is the difference between the two modes.
-	legato := false
-	legato_voice: ^Voice = nil
+	// Mono and legato collapse the pool to a single sounding voice. A key
+	// pressed while another is held moves that voice to the new key rather
+	// than starting a note; see `engine_move_line`.
 	switch e.params.play_mode {
 	case .Poly:
 		// Nothing to collapse.
-	case .Mono:
+	case .Mono, .Legato:
+		if e.held_notes > 0 {
+			if line := engine_find_gated_voice(e); line != nil {
+				engine_mark_key_down(e, note)
+				engine_move_line(e, line, note, velocity)
+				return
+			}
+		}
 		for i in 0 ..< len(e.voices) {
 			if e.voices[i].active {
 				voice_note_off(&e.voices[i])
 			}
 		}
-	case .Legato:
-		legato = e.held_notes > 0
-		if legato {
-			// A legato note continues the currently sounding voice instead of
-			// taking a fresh pool slot. That preserves envelope level and oscillator
-			// phase through the note change, and keeps polyphony > 1 from exposing a
-			// zero-valued, never-configured voice.
-			legato_voice = engine_find_gated_voice(e)
-		}
-		for i in 0 ..< len(e.voices) {
-			v := &e.voices[i]
-			if v.active && v != legato_voice {
-				voice_note_off(v)
-			}
-		}
 	}
 
-	v := legato_voice
-	if v == nil {
-		v = engine_allocate_voice(e, note)
-	}
+	v := engine_allocate_voice(e, note)
 	if v == nil {
 		return
 	}
@@ -566,12 +576,43 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.sample_rate,
 		seed,
 		e.last_note,
-		legato,
+		.Fresh,
+		false,
 		&e.global_lfo,
 	)
 
 	e.last_note = f32(note)
 	engine_mark_key_down(e, note)
+}
+
+// Move the sounding mono or legato voice to another key: a new key pressed
+// over a held one, or the fallback when the sounding key is released and
+// another is still down. Measured in the reference with `s1probe behavior
+// keys`: both take the same path, mono restarting the amplitude and filter
+// attacks from their current level and legato leaving them alone (see
+// `Note_Start`).
+//
+// The voice keeps its velocity on a fallback: the key it returns to was
+// struck before, and what level it was struck at is not tracked. Whether the
+// reference re-reads it has not been measured.
+engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32) {
+	legato := e.params.play_mode == .Legato
+	e.age += 1
+	v.age = e.age
+	seed := u32(e.age * 2654435761) ~ u32(note * 40503) ~ 0x9E3779B9
+	voice_note_on(
+		v,
+		&e.params,
+		note,
+		velocity,
+		e.sample_rate,
+		seed,
+		e.last_note,
+		legato ? .Legato : .Retrigger,
+		legato,
+		&e.global_lfo,
+	)
+	e.last_note = f32(note)
 }
 
 // Sound a note without touching the held-key set.
@@ -605,6 +646,7 @@ engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.sample_rate,
 		seed,
 		e.last_note,
+		.Fresh,
 		false,
 		&e.global_lfo,
 	)
@@ -646,9 +688,19 @@ engine_note_off :: proc(e: ^Engine, note: int) {
 
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
-		if v.active && v.gate && v.note == note {
-			voice_note_off(v)
+		if !(v.active && v.gate && v.note == note) {
+			continue
 		}
+		// Mono and legato return to the newest key still held, which the
+		// reference does in both modes: releasing 67 over a held 60 plays 60
+		// again, where this used to fall silent.
+		if e.params.play_mode != .Poly {
+			if held, ok := engine_newest_held_key(e); ok {
+				engine_move_line(e, v, held, v.velocity)
+				continue
+			}
+		}
+		voice_note_off(v)
 	}
 }
 

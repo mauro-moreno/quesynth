@@ -70,7 +70,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 
 | # | clause | reference evidence (before) | change | regression coverage | status |
 |---|---|---|---|---|---|
-| 1 | releasing the newest key in mono/legato returns to the still-held previous key; mono retriggers amp/filter, legato does not | falls back in both modes; mono restarts the attack from the current level; legato leaves amp and filter alone (see "Clause 1") | pending | pending | pending |
+| 1 | releasing the newest key in mono/legato returns to the still-held previous key; mono retriggers amp/filter, legato does not | falls back in both modes; mono restarts the attack from the current level; legato leaves amp and filter alone (see "Clause 1") | `engine_note_off` falls back to the newest held key through `engine_move_line`, shared with the overlapping note-on; `Note_Start` separates fresh, mono retrigger and legato | `tests/dsp/behavior_test.odin`: fallback, non-sounding release, repeated key, overlap retrigger | implemented |
 | 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | pending | pending | pending |
 | 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | pending, as a requested change | pending | pending |
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | pending | pending | pending |
@@ -310,7 +310,33 @@ voice gets no chorus at all), and that is deferred with it.
 
 ## Per-slice records
 
-(filled in per slice)
+### Slice 1: mono/legato fallback (clause 1)
+
+- **Change.** `Engine.key_order`/`key_clock` record press order, and a
+  repeated note-on re-stamps the key. `engine_newest_held_key` picks the
+  fallback. `engine_move_line` moves the one gated voice for both the
+  overlapping note-on and the fallback. `voice_note_on` takes a `Note_Start`
+  (`Fresh`, `Retrigger`, `Legato`) and an `overlap` flag in place of its
+  `legato` bool. The glide and modulation-envelope rules are left as they
+  were: legato key changes still auto-glide and mono ones still do not, until
+  slice 2; the modulation envelope still restarts from zero in mono and
+  re-enters its attack in legato, until slice 3.
+- **Red.** On the old code, `odin test tests/dsp -define:ODIN_TEST_NAMES=...`
+  failed 3 of 4 tests with 8 errors (build/behavior/red-slice1.txt). The
+  fallback played no pitch and fell to −200 dB in both modes; the legato
+  overlap rose to −10.1 dB; the mono overlap dipped to −37.6 dB; a repeated
+  key did not fall back to 67. The non-sounding-release control passed, as it
+  should.
+- **Green.** 4/4. The full `odin test tests/dsp` passes 123/123;
+  `tests/clap` 40/40 and `tests/vst3` 26/26.
+- **Reference after.** Rerun with the same probe commands
+  (build/behavior/after1-*.txt). Every offset in the clause 1 table now
+  matches the reference within 0.1 dB and 0.01 semitone. For example, mono
+  `off 67` at +5/+15/+30 ms reads ref −17.4/−13.1/−10.0 against ours
+  −17.5/−13.2/−9.9, and legato `off 67` reads −28.8/−28.6/−28.8 on both. The
+  level change after each event matches within 0.1 dB in the fallback,
+  repeat and non-sounding-release scenarios, filter envelope included (mono
+  fallback +5.1/+5.1 dB, legato +3.1/+3.2 dB).
 
 ## Environment and unavailable checks
 
