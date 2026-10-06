@@ -395,3 +395,59 @@ test_only_pressure_and_bend_sources_follow_pressure_and_bend :: proc(t: ^testing
 	testing.expect(t, abs(assigned_osc2_pitch(0xE000, press) - 60) < 0.01,
 		"a bend source moved on channel pressure")
 }
+
+// Power in [lo_hz, hi_hz) of a Hann-windowed stretch, by direct DFT; slow and
+// simple, which is all a band level needs.
+band_power_db :: proc(x: []f32, from, n: int, lo_hz, hi_hz: f64) -> f64 {
+	bin_hz := f64(SR) / f64(n)
+	sum := 0.0
+	for k := int(math.ceil(lo_hz / bin_hz)); f64(k) * bin_hz < hi_hz; k += 1 {
+		re, im := 0.0, 0.0
+		for i in 0 ..< n {
+			w := 0.5 * (1.0 - math.cos(2.0 * math.PI * f64(i) / f64(n)))
+			v := f64(x[from + i]) * w
+			phase := 2.0 * math.PI * f64(k) * f64(i) / f64(n)
+			re += v * math.cos(phase)
+			im -= v * math.sin(phase)
+		}
+		sum += re * re + im * im
+	}
+	return 10.0 * math.log10(max(sum, 1.0e-30))
+}
+
+// Echo level minus dry level in one band, for one setting of parameter 98.
+first_echo_db :: proc(tone: int, lo_hz, hi_hz: f64) -> f64 {
+	p := behavior_patch(0, 0, 40, 0) // a short pluck, gone before the echo
+	p.values[0] = 1 // saw: energy across the band
+	p.values[65] = 1 // delay on
+	p.values[35] = 8 // "(8)": 250 ms at the default 120 BPM
+	p.values[36] = 0 // no feedback, so the echo is the first and only one
+	p.values[37] = 64 // 50% wet
+	p.values[82] = 0
+	p.values[98] = tone
+	x := render_keys(p, []Key_Event{{0.0, 48, true}, {0.1, 48, false}}, 0.6)
+	defer delete(x)
+	N :: 2048
+	echo := behavior_frame(0.25)
+	return band_power_db(x, echo, N, lo_hz, hi_hz) - band_power_db(x, 0, N, lo_hz, hi_hz)
+}
+
+// Parameter 98 shapes the first echo, not only what is fed back. Measured with
+// `s1probe behavior delaytone`, feedback 0, echo against dry per band, relative
+// to tone 64: tone 0 takes the first echo down 33.6 dB at 6.4-12.8 kHz and
+// tone 127 takes it down 32.4 dB at 100-400 Hz. This engine read 0.00 in every
+// band at every tone, because the tone sat only in the feedback path.
+@(test)
+test_delay_tone_shapes_the_first_echo :: proc(t: ^testing.T) {
+	flat_high := first_echo_db(64, 6400, 12800)
+	dark_high := first_echo_db(0, 6400, 12800)
+	testing.expectf(t, dark_high - flat_high < -10,
+		"tone 0 left the first echo's top octave at %.2f dB against tone 64 (reference -33.58)",
+		dark_high - flat_high)
+
+	flat_low := first_echo_db(64, 100, 400)
+	thin_low := first_echo_db(127, 100, 400)
+	testing.expectf(t, thin_low - flat_low < -10,
+		"tone 127 left the first echo's bottom at %.2f dB against tone 64 (reference -32.37)",
+		thin_low - flat_low)
+}

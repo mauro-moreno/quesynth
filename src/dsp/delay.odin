@@ -37,9 +37,10 @@ Delay_Params :: struct {
 
 Delay :: struct {
 	line: [2]Delay_Line,
-	// The tone control, per channel, in the feedback path. Shared with the
-	// equaliser: the manual describes parameter 98 here and parameter 60 there in
-	// the same words, so it is the same control and lives in one place.
+	// The tone control, per channel, on everything that comes out of a line:
+	// the echo heard and the signal fed back. Shared with the equaliser: the
+	// manual describes parameter 98 here and parameter 60 there in the same
+	// words, so it is the same control and lives in one place.
 	tone: [2]Tone,
 }
 
@@ -107,8 +108,15 @@ delay_process :: proc "contextless" (
 		delay_line_write(&d.line[1], right_in + shaped_right * feedback)
 	}
 
-	left = lerp32(left_in, delayed_left, wet)
-	right = lerp32(right_in, delayed_right, wet)
+	// The echo heard is the shaped one, the first repeat included. With
+	// feedback at zero, `s1probe behavior delaytone` reads the reference's
+	// only echo 33.6 dB down at 6.4-12.8 kHz with the tone fully dark and
+	// 32.4 dB down at 100-400 Hz fully bright, against the same echo at the
+	// centre. This engine used to output the unshaped read, so the first echo
+	// came out flat at every tone and only the repeats were coloured. At the
+	// centre the tone is an identity and nothing changes.
+	left = lerp32(left_in, shaped_left, wet)
+	right = lerp32(right_in, shaped_right, wet)
 	return sanitize(left), sanitize(right)
 }
 

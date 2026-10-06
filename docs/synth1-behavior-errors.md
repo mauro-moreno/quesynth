@@ -83,7 +83,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 | 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | every new key restarts it from zero; a fallback (not a new key) follows the reference | `test_mod_envelope_restarts_from_zero_on_every_new_key` (requested, **not** reference); `test_falling_back_keeps_the_mod_envelope_level` (reference) | requested change; conflicts with the reference |
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | `Midi_Control.source` (`Midi_Source`); `engine_channel_pressure`; `engine_set_pitch_bend` moves bend-sourced assignments; 0xD0 forwarded by CLAP, AU, standalone (hardware MIDI) and the browser build (`ui/midi.js` → wasm) | `tests/clap/controller_source_test.odin` (plugin MIDI in, pitch out, against the reference); `test_only_pressure_and_bend_sources_follow_pressure_and_bend`; `tests/standalone/pressure_test.odin` (Linux only) | implemented; VST3 deferred |
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
-| 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | pending | pending | pending |
+| 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | `delay_process` outputs the shaped read instead of the raw one | `test_delay_tone_shapes_the_first_echo` | implemented |
 | 7 | the arpeggiator honours play mode, legato and portamento, gate 127 included | gate 127 steps overlap: legato does not retrigger, mono restarts from the current level, auto portamento glides (see "Clause 7") | pending | pending | pending |
 | 8 | (lower confidence) oscillator 2 with key tracking off still receives key shift, fine tune and unison detune | fine tune and unison detune apply; **key shift does not** | pending: fine tune and unison only | pending | pending |
 | 9 | (lower confidence) chorus x1 is a mono sum of both inputs, not left only | **mono sum unsupported**: the reference keeps L and R apart (see "Item 9") | none | probe record only | deferred |
@@ -434,6 +434,30 @@ voice gets no chorus at all), and that is deferred with it.
   sensitivity: at −25% it reads 45.000/30.000 against the reference's
   44.080/29.037 (after4-ctrl-cc-sens47.txt). That is the existing
   displacement law for negative values, not the bend, and it is deferred.
+
+### Slice 6: delay tone on the first echo (clause 6)
+
+- **Change.** `delay_process` mixes the tone-shaped line output into the wet
+  signal rather than the raw read. The feedback was already shaped, so every
+  echo now passes the tone once per trip through a line, the first one
+  included. At tone 64 `tone_process` is an identity, so patches with a centred
+  tone render bit for bit as before.
+- **Red.** On slice 4's code, `test_delay_tone_shapes_the_first_echo` read
+  0.00 dB at tone 0 in the top octave (reference −33.58) and 0.00 dB at tone
+  127 in the bottom band (reference −32.37) (build/behavior/red-slice6.txt).
+- **Green.** The test passes; `odin test tests/dsp` passes 128/128.
+- **Reference after** (build/behavior/after6-delaytone.txt), first echo
+  relative to tone 64, per band, ours against the reference:
+
+  | tone | 100–400 | 0.4–1.6k | 1.6–3.2k | 3.2–6.4k | 6.4–12.8k |
+  |---|---|---|---|---|---|
+  | 0 | −1.73 / −1.94 | −10.25 / −10.81 | −19.65 / −20.27 | −24.88 / −25.88 | −32.63 / −33.58 |
+  | 32 | +0.00 / +0.00 | −0.52 / −0.52 | −2.86 / −2.86 | −6.07 / −6.41 | −12.77 / −13.09 |
+  | 96 | −5.57 / −5.56 | −0.66 / −0.66 | −0.08 / −0.08 | −0.02 / −0.02 | −0.00 / −0.00 |
+  | 127 | −32.12 / −32.37 | −19.43 / −19.67 | −11.37 / −11.61 | −6.85 / −6.52 | −2.23 / −2.18 |
+
+  Every cell is within 1.0 dB, against up to 33.6 dB before. The chosen tone
+  corners were close all along; only their place in the signal path was wrong.
 
 ## Environment and unavailable checks
 
