@@ -100,6 +100,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       case "set":       w.synth_set_param(slot, m.index, m.value); break;
       case "mix":       w.synth_set_mix(slot, m.volume, m.pan); break;
       case "cc":        w.synth_control_change(slot, m.cc, m.value); break;
+      case "pressure":  w.synth_channel_pressure(slot, m.value); break;
       case "bend":      w.synth_pitch_bend(slot, m.value); break;
       case "tempo":     w.synth_set_tempo(slot, m.bpm); break;
       case "panic":     w.synth_all_notes_off(Number.isInteger(m.slot) ? slot : -1); break;

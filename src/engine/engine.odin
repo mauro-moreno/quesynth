@@ -61,7 +61,8 @@ Engine :: struct {
 	// through `bind_patch` rather than through a second copy of its mapping.
 	patch:         patch.Patch,
 	has_patch:     bool,
-	// Where each of the two assigned controllers currently sits, on 0..1.
+	// Where each of the two assigned controllers currently sits: 0..1 for a
+	// control change or aftertouch, -1..1 for pitch bend.
 	ctrl_value:    [2]f32,
 
 	effect:        dsp.Effect,
@@ -237,7 +238,7 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false, keep_voice
 	e.patch = p
 	e.has_patch = true
 	for i in 0 ..< 2 {
-		if previous_ctrl[i].cc != params.midi_ctrl[i].cc {
+		if !midi_ctrl_same_source(previous_ctrl[i], params.midi_ctrl[i]) {
 			e.ctrl_value[i] = 0
 		}
 	}
@@ -303,7 +304,7 @@ engine_control_change :: proc(e: ^Engine, cc: int, value: int) {
 	changed := false
 	for i in 0 ..< 2 {
 		c := e.params.midi_ctrl[i]
-		if c.cc != cc || c.target < 0 {
+		if c.source != .Control || c.cc != cc || c.target < 0 {
 			continue
 		}
 		e.ctrl_value[i] = f32(clamp_int(value, 0, 127)) / 127.0
@@ -316,6 +317,40 @@ engine_control_change :: proc(e: ^Engine, cc: int, value: int) {
 	engine_refresh_controllers(e)
 }
 
+// MIDI channel pressure (aftertouch), 0..127. An assignment whose source is
+// 53248 (0xD000) takes it exactly as it would a control change at that value;
+// see `Midi_Source`.
+engine_channel_pressure :: proc(e: ^Engine, value: int) {
+	engine_route_source(e, .Pressure, f32(clamp_int(value, 0, 127)) / 127.0)
+}
+
+// Move every assignment listening to `source` to `value` and rebind.
+engine_route_source :: proc(e: ^Engine, source: Midi_Source, value: f32) {
+	if !e.has_patch {
+		return
+	}
+	changed := false
+	for i in 0 ..< 2 {
+		c := e.params.midi_ctrl[i]
+		if c.source != source || c.target < 0 {
+			continue
+		}
+		e.ctrl_value[i] = value
+		changed = true
+	}
+	if changed {
+		engine_refresh_controllers(e)
+	}
+}
+
+// Whether two assignments listen to the same physical controller, which is
+// what decides if a controller's position survives a patch change. The hosts
+// that keep their own copy of that rule ask this rather than comparing
+// controller numbers, which every non-CC source shares as -1.
+midi_ctrl_same_source :: proc(a, b: Midi_Control) -> bool {
+	return a.source == b.source && a.cc == b.cc
+}
+
 // Rebuild the live parameter block from the stored patch and the last value of
 // each controller assignment. Hosts call this after adopting automation so an
 // unrelated knob edit does not erase modulation until the wheel moves again.
@@ -326,7 +361,7 @@ engine_refresh_controllers :: proc(e: ^Engine) {
 	touched: [patch.PARAMETER_COUNT]bool
 	for i in 0 ..< 2 {
 		c := e.params.midi_ctrl[i]
-		if !controller_target_valid(c.target) || c.cc < 0 {
+		if !controller_target_valid(c.target) || c.source == .None {
 			continue
 		}
 		top := len(patch.parameter_states(c.target)) - 1
@@ -433,9 +468,14 @@ engine_set_tempo :: proc(e: ^Engine, bpm: f32) {
 	engine_update_lfo_rates(e)
 }
 
-// -1..1.
+// -1..1. Also the position of any assignment whose source is pitch bend,
+// 57344 (0xE000), which is bipolar about the rest position; see
+// `Midi_Source`. The pitch is still bent by parameter 40's range too. Whether
+// the reference does both at once is not measured: its probe sets the range
+// to zero.
 engine_set_pitch_bend :: proc(e: ^Engine, bend: f32) {
 	e.pitch_bend = dsp.clamp32(bend, -1, 1)
+	engine_route_source(e, .Bend, e.pitch_bend)
 }
 
 engine_note_in_key_range :: proc(note: int) -> bool {

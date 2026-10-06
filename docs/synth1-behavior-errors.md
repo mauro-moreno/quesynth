@@ -81,7 +81,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 | 1 | releasing the newest key in mono/legato returns to the still-held previous key; mono retriggers amp/filter, legato does not | falls back in both modes; mono restarts the attack from the current level; legato leaves amp and filter alone (see "Clause 1") | `engine_note_off` falls back to the newest held key through `engine_move_line`, shared with the overlapping note-on; `Note_Start` separates fresh, mono retrigger and legato | `tests/dsp/behavior_test.odin`: fallback, non-sounding release, repeated key, overlap retrigger | implemented |
 | 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | `engine_move_line` passes `overlap = true` in both modes | `test_auto_portamento_glides_on_overlapping_keys_in_mono` | implemented (glide time law deferred) |
 | 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | every new key restarts it from zero; a fallback (not a new key) follows the reference | `test_mod_envelope_restarts_from_zero_on_every_new_key` (requested, **not** reference); `test_falling_back_keeps_the_mod_envelope_level` (reference) | requested change; conflicts with the reference |
-| 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | pending | pending | pending |
+| 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | `Midi_Control.source` (`Midi_Source`); `engine_channel_pressure`; `engine_set_pitch_bend` moves bend-sourced assignments; 0xD0 forwarded by CLAP, AU, standalone (hardware MIDI) and the browser build (`ui/midi.js` → wasm) | `tests/clap/controller_source_test.odin` (plugin MIDI in, pitch out, against the reference); `test_only_pressure_and_bend_sources_follow_pressure_and_bend`; `tests/standalone/pressure_test.odin` (Linux only) | implemented; VST3 deferred |
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
 | 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | pending | pending | pending |
 | 7 | the arpeggiator honours play mode, legato and portamento, gate 127 included | gate 127 steps overlap: legato does not retrigger, mono restarts from the current level, auto portamento glides (see "Clause 7") | pending | pending | pending |
@@ -395,6 +395,46 @@ voice gets no chorus at all), and that is deferred with it.
     reference's is about 34). That is the modulation envelope's unmeasured
     24-semitone scale, which is deferred.
 
+### Slice 4: aftertouch and pitch bend as controller sources (clause 4)
+
+- **Change.** `Midi_Control` gains `source: Midi_Source`, appended so the
+  existing `cc`, `target` and `amount` keep their meaning and order.
+  `bind_midi_ctrl` reads the high byte: 0xB0 control, 0xD0 pressure, 0xE0
+  bend; anything else stays inert. `engine_channel_pressure` is new.
+  `engine_set_pitch_bend` now also moves bend-sourced assignments, on −1..1
+  (bipolar), and still bends the pitch by parameter 40. The rule for keeping a
+  controller's position across a patch change compares source and number
+  (`midi_ctrl_same_source`), in the engine and in the three plugin hosts that
+  keep a copy of that rule.
+- **Host forwarding.** 0xD0 now reaches the engine from CLAP raw MIDI, AU,
+  the standalone daemon's MIDI input, and the browser build. The browser path
+  runs `ui/midi.js` 0xD0 → `{type:"pressure"}` → `hosts/wasm/host.js` →
+  `worklet.js` → `synth_channel_pressure`. Bend already reached
+  `engine_set_pitch_bend` from every host. The standalone browser page does
+  not open Web MIDI (`SynthHostMidi`); the daemon reads the port.
+- **Red.** On slice 3's code, `test_aftertouch_and_bend_move_their_controller_assignment`
+  failed 3 of 4 cases (build/behavior/red-slice4-clap.txt): pressure 127,
+  bend 0 and bend 16383 all left oscillator 2 at 60.000, against the
+  reference's 89.907, 29.065 and 89.962. The controller-1 control case passed.
+  The engine test and the standalone test name an entry point that did not
+  exist before, so they could not be run red; the CLAP test is the red run.
+- **Green.** `tests/clap` passes 41/41, `tests/dsp` 127/127, `tests/vst3`
+  26/26. `odin check tests/standalone -target:linux_amd64 -no-entry-point` and
+  `odin check hosts/au -no-entry-point -target:darwin_arm64` (with and without
+  `QUESYNTH_AU_EDITOR=false`) pass. The standalone suite itself is Linux-only
+  and was not run here. `odin build hosts/wasm -target:js_wasm32 -o:speed`
+  builds, and `node hosts/wasm/check-imports.js` reports all 7 imports
+  provided. `node --check` passes on the three edited scripts.
+- **Reference after** (build/behavior/after4-ctrl-*.txt). Pressure now reads
+  60.000/68.000/75.000/83.000/90.000 against the reference's
+  60.000/67.960/74.907/82.960/89.907, the same residual as controller 1.
+  Bend reads 30.000/45.000/60.000/75.000/90.000 against
+  29.065/43.962/59.920/74.962/89.962. The upward side is within 0.04 st. The
+  downward side is a semitone short, and so is controller 1 with negative
+  sensitivity: at −25% it reads 45.000/30.000 against the reference's
+  44.080/29.037 (after4-ctrl-cc-sens47.txt). That is the existing
+  displacement law for negative values, not the bend, and it is deferred.
+
 ## Environment and unavailable checks
 
 - Odin `dev-2026-09-nightly:a2fb372`. The CI pin `dev-2026-08` is not
@@ -431,6 +471,15 @@ voice gets no chorus at all), and that is deferred with it.
 - **Modulation envelope depth.** At amount stored 100 the reference's
   oscillator-2 offset peaks near 34 st and ours near 12 st. The 24-semitone
   scale in `voice_process` is a guess, and fixing it is not part of clause 3.
+- **Negative controller displacement.** With negative sensitivity, or a
+  downward bend, the displaced parameter lands about one state short of the
+  reference: controller 1 at 127, −25%, reads 30.000 against 29.037. This is
+  pre-existing, in `engine_refresh_controllers`, and every source shares it.
+- **VST3 controller sources.** The VST3 plugin routes no host MIDI
+  controller, pitch bend or aftertouch to the engine's assignments at all:
+  `IMidiMapping` maps seven sound controllers straight onto parameters. Adding
+  aftertouch there would mean building the CC/bend route it lacks, which is
+  outside this clause.
 - **Small controller offsets.** Returning a controller to rest reads
   60.062 (CC/pressure 0) and 59.920 (bend 8192) in the reference, against
   60.000 before. This is not modelled.

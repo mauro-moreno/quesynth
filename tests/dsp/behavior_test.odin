@@ -341,3 +341,57 @@ test_falling_back_keeps_the_mod_envelope_level :: proc(t: ^testing.T) {
 			mode, before, after)
 	}
 }
+
+// Oscillator 2's pitch through a controller assignment, after `move` has run on
+// a held note.
+assigned_osc2_pitch :: proc(source: int, move: proc(e: ^engine.Engine)) -> f64 {
+	p := behavior_patch(MONO, 0, 0, 127)
+	p.values[1] = 3
+	p.values[5] = 127
+	p.values[4] = 1
+	p.values[2] = 64
+	p.values[3] = 64
+	p.values[40] = 0 // no direct bend, so only the assignment can move pitch
+	p.values[86] = source
+	p.values[87] = 2 // oscillator 2 pitch
+	p.values[50] = 80 // +25%
+	p.values[88] = 0
+
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 9600)
+	defer delete(left)
+	right := make([]f32, 9600)
+	defer delete(right)
+	engine.engine_note_on(&e, 60, 100.0 / 127.0)
+	move(&e)
+	engine.engine_process(&e, left, right)
+	return pitch_at(left, 0.05, 0.2)
+}
+
+// Only 0xB0nn, 0xD000 and 0xE000 route anything. A source the reference does
+// not route stays inert: poly aftertouch (0xA000) and program change (0xC000)
+// do not turn into channel pressure or bend because their high byte is near.
+// The positive controls are the two new sources at their full reading.
+@(test)
+test_only_pressure_and_bend_sources_follow_pressure_and_bend :: proc(t: ^testing.T) {
+	press :: proc(e: ^engine.Engine) {engine.engine_channel_pressure(e, 127)}
+	bend_down :: proc(e: ^engine.Engine) {engine.engine_set_pitch_bend(e, -1)}
+
+	testing.expectf(t, abs(assigned_osc2_pitch(0xD000, press) - 89.907) < 0.15,
+		"pressure source: the reference reads 89.907")
+	testing.expect(t, assigned_osc2_pitch(0xE000, bend_down) < 31,
+		"bend source: raw 0 should take oscillator 2 down by a full displacement")
+	for source in ([]int{0xA000, 0xC000, 0x0000}) {
+		testing.expectf(t, abs(assigned_osc2_pitch(source, press) - 60) < 0.01,
+			"source %x moved on channel pressure", source)
+		testing.expectf(t, abs(assigned_osc2_pitch(source, bend_down) - 60) < 0.01,
+			"source %x moved on pitch bend", source)
+	}
+	// And the two new sources do not answer each other's message.
+	testing.expect(t, abs(assigned_osc2_pitch(0xD000, bend_down) - 60) < 0.01,
+		"a pressure source moved on pitch bend")
+	testing.expect(t, abs(assigned_osc2_pitch(0xE000, press) - 60) < 0.01,
+		"a bend source moved on channel pressure")
+}

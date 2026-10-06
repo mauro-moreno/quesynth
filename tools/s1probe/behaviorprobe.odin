@@ -199,12 +199,11 @@ ours_apply_event :: proc(eng: ^sengine.Engine, ev: Script_Event) {
 	}
 }
 
-// Channel pressure had no way into the engine before clause 4 of
-// docs/synth1-behavior-errors.md; every host dropped 0xD0. Kept as its own
-// procedure so the before/after measurement differs only here.
+// Channel pressure, as the hosts deliver it. Before clause 4 of
+// docs/synth1-behavior-errors.md there was no engine entry point for it and
+// every host dropped 0xD0, which is what the "before" measurements recorded.
 ours_channel_pressure :: proc(eng: ^sengine.Engine, value: int) {
-	_ = eng
-	_ = value
+	sengine.engine_channel_pressure(eng, value)
 }
 
 render_ours_script :: proc(parsed: cpatch.Patch, events: []Script_Event, frames: int) -> []f32 {

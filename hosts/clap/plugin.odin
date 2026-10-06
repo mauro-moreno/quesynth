@@ -155,7 +155,7 @@ apply_params :: proc(s: ^Synth) {
 	s.eng.patch = s.mirror
 	s.eng.has_patch = true
 	for i in 0 ..< 2 {
-		if s.eng.params.midi_ctrl[i].cc != params.midi_ctrl[i].cc {
+		if !engine.midi_ctrl_same_source(s.eng.params.midi_ctrl[i], params.midi_ctrl[i]) {
 			s.eng.ctrl_value[i] = 0
 		}
 	}
@@ -312,6 +312,7 @@ MIDI_NOTE_OFF :: 0x80
 MIDI_NOTE_ON :: 0x90
 MIDI_CONTROL_CHANGE :: 0xB0
 MIDI_PROGRAM_CHANGE :: 0xC0
+MIDI_CHANNEL_PRESSURE :: 0xD0
 MIDI_PITCH_BEND :: 0xE0
 
 // Bank Select, from the MIDI specification: two controllers that set a
@@ -396,6 +397,11 @@ handle_event :: proc(s: ^Synth, header: ^clap.Event_Header) {
 
 		case MIDI_PROGRAM_CHANGE:
 			program_change(s, int(event.data[1]))
+
+		case MIDI_CHANNEL_PRESSURE:
+			// Aftertouch is one data byte. What it moves is the patch's
+			// decision, through parameters 86 to 89, as for a controller.
+			engine.engine_channel_pressure(&s.eng, int(event.data[1]))
 
 		case MIDI_PITCH_BEND:
 			raw := int(event.data[1]) | (int(event.data[2]) << 7)

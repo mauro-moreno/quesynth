@@ -107,6 +107,11 @@
         // parameters 86..89 were set to.
         out = { type: "cc", cc: msg.cc, value: msg.value };
         break;
+      case "pressure":
+        // Channel aftertouch, 0..127. Moves whatever parameters 86..89 assign
+        // to source 53248 (0xD000), like a controller does.
+        out = { type: "pressure", value: msg.value };
+        break;
       case "sync":
         // Nothing to answer with. The engine holds no state the panel did not
         // send it, and the browser build's patches come from the bank compiled
