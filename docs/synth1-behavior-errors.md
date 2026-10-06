@@ -85,7 +85,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
 | 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | `delay_process` outputs the shaped read instead of the raw one | `test_delay_tone_shapes_the_first_echo` | implemented |
 | 7 | the arpeggiator honours play mode, legato and portamento, gate 127 included | gate 127 steps overlap: legato does not retrigger, mono restarts from the current level, auto portamento glides (see "Clause 7") | in mono/legato `arp_trigger` moves a still-gated step's voice through `engine_move_line`; a released step stays a fresh note; poly unchanged | `test_arp_gate_127_steps_are_legato_or_mono_key_changes`, `test_arp_auto_portamento_glides_only_between_held_steps` | implemented (poly unmeasurable) |
-| 8 | (lower confidence) oscillator 2 with key tracking off still receives key shift, fine tune and unison detune | fine tune and unison detune apply; **key shift does not** | pending: fine tune and unison only | pending | pending |
+| 8 | (lower confidence) oscillator 2 with key tracking off still receives key shift, fine tune and unison detune | fine tune and unison detune apply; **key shift does not** | fine tune (parameter 72) and unison detune added to the untracked pitch; key shift left out | `test_untracked_oscillator_2_takes_fine_tune_and_unison_detune` | partial: fine tune and unison implemented; key shift deferred (disproved) |
 | 9 | (lower confidence) chorus x1 is a mono sum of both inputs, not left only | **mono sum unsupported**: the reference keeps L and R apart (see "Item 9") | none | probe record only | deferred |
 | 10 | `docs/reference-notes.md` LFO waveform table positions 2/3/4/5 corrected; LFO pulse width stays inert | pending `lfoshape` rerun | docs only | pending | pending |
 
@@ -492,6 +492,29 @@ voice gets no chorus at all), and that is deferred with it.
   - The gate-127 auto glide now happens (62.28, 63.78, 63.98 at 250, 275 and
     300 ms). It is faster than the reference's (60.57, 61.59, 62.31), which
     is the deferred portamento time law.
+
+### Slice 8: untracked oscillator 2 takes fine tune and unison detune (item 8, partial)
+
+- **Scope.** This is a partial, supported fix. Of the three controls the item
+  names, the reference applies two to an untracked oscillator 2. Key shift is
+  disproved (220.02 Hz with and without "12") and is not added. Nothing here
+  touches the fixed base pitch (reference 220.02 Hz, ours 261.6 Hz).
+- **Change.** The tracking-off branch of `voice_process` adds `u.detune` and
+  `p.fine_tune_cents`, the same two terms the tracked branch receives through
+  `base_note` and the layer detune.
+- **Red.** On slice 7's code, `test_untracked_oscillator_2_takes_fine_tune_and_unison_detune`
+  read 0.0 cents for "+50 cent" (reference +50.1), and the unison render had
+  its power at the centre (73.5 dB) rather than at ±50 cents (27.6 and
+  22.7 dB) (build/behavior/red-slice8.txt).
+- **Green.** The test passes; `odin test tests/dsp` passes 131/131.
+- **Reference after** (build/behavior/after8-osc2track.txt), with tracking
+  off:
+  - Fine tune: ours 261.67 → 269.27 Hz (+49.6 cents), the reference
+    220.02 → 226.49 Hz (+50.2 cents).
+  - Unison: ours 254.13 and 269.27 Hz (−50.0/+49.6 cents), the reference
+    213.73 and 226.49 Hz (−50.2/+50.2 cents).
+  - Key shift: unchanged on both.
+  - The tracked rows are unchanged and still agree.
 
 ## Environment and unavailable checks
 

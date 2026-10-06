@@ -519,3 +519,67 @@ test_arp_auto_portamento_glides_only_between_held_steps :: proc(t: ^testing.T) {
 			"mode %v, gate 64: a released step glided with auto portamento", mode)
 	}
 }
+
+// Windowed DFT power at one frequency.
+tone_power_db :: proc(x: []f32, from, n: int, hz: f64) -> f64 {
+	re, im := 0.0, 0.0
+	for i in 0 ..< n {
+		w := 0.5 * (1.0 - math.cos(2.0 * math.PI * f64(i) / f64(n)))
+		v := f64(x[from + i]) * w
+		phase := 2.0 * math.PI * hz * f64(i) / f64(SR)
+		re += v * math.cos(phase)
+		im -= v * math.sin(phase)
+	}
+	return 10.0 * math.log10(max(re * re + im * im, 1.0e-30))
+}
+
+osc2_untracked :: proc(setup: proc(p: ^patch.Patch)) -> []f32 {
+	p := behavior_patch(0, 0, 0, 127)
+	p.values[1] = 3 // oscillator 2 triangle
+	p.values[5] = 127 // oscillator 2 only
+	p.values[4] = 0 // key tracking off
+	p.values[2] = 64
+	p.values[3] = 64
+	setup(&p)
+	return render_keys(p, []Key_Event{{0.0, 60, true}}, 1.1)
+}
+
+// With oscillator 2's key tracking off, the fine tune (parameter 72) and the
+// unison detune still move it. Measured with `s1probe behavior osc2track`:
+// "+50 cent" takes the reference's untracked oscillator 2 from 220.02 to
+// 226.49 Hz (+50.1 cents), and unison 2 at detune 127 splits it into 213.73
+// and 226.49 Hz (-50.0 and +50.1 cents). This engine ignored both. Key shift,
+// the third control the request named, leaves the reference at 220.02 Hz and
+// is deliberately not tested for; see docs/synth1-behavior-errors.md.
+//
+// The comparison is relative, in cents from this engine's own untracked
+// pitch: the reference's fixed pitch (220 Hz against this engine's 261.6) is a
+// separate, deferred finding.
+@(test)
+test_untracked_oscillator_2_takes_fine_tune_and_unison_detune :: proc(t: ^testing.T) {
+	plain := osc2_untracked(proc(p: ^patch.Patch) {})
+	defer delete(plain)
+	base := pitch_at(plain, 0.2, 1.0)
+
+	tuned := osc2_untracked(proc(p: ^patch.Patch) {p.values[72] = 116}) // "+50 cent"
+	defer delete(tuned)
+	cents := (pitch_at(tuned, 0.2, 1.0) - base) * 100
+	testing.expectf(t, abs(cents - 50.1) < 2,
+		"fine tune +50 cent moved untracked oscillator 2 by %.1f cents (reference +50.1)", cents)
+
+	spread := osc2_untracked(proc(p: ^patch.Patch) {
+		p.values[73] = 1 // unison on
+		p.values[93] = 2 // "2" voices
+		p.values[75] = 127 // full detune
+	})
+	defer delete(spread)
+	hz := 440.0 * math.pow(2.0, (base - 69.0) / 12.0)
+	N :: 24000
+	from := behavior_frame(0.5)
+	centre := tone_power_db(spread, from, N, hz)
+	low := tone_power_db(spread, from, N, hz * math.pow(2.0, -50.0 / 1200.0))
+	high := tone_power_db(spread, from, N, hz * math.pow(2.0, 50.1 / 1200.0))
+	testing.expectf(t, low - centre > 10 && high - centre > 10,
+		"unison detune did not split untracked oscillator 2: -50c %.1f dB, centre %.1f, +50c %.1f",
+		low, centre, high)
+}

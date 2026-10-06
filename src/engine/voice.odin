@@ -880,9 +880,19 @@ voice_process :: proc(
 			osc2_hz = dsp.note_to_hz(note2)
 		} else {
 			// Tracking off fixes oscillator 2's base note, but unison pitch
-			// still separates the alternating layers.
+			// still separates the alternating layers -- and the fine tune and
+			// the unison detune still apply. Measured with `s1probe behavior
+			// osc2track`: "+50 cent" takes the reference's untracked
+			// oscillator 2 from 220.02 to 226.49 Hz, and two layers at detune
+			// 127 split it to 213.73 and 226.49 Hz. Key shift does *not*
+			// apply (220.02 Hz either way), so it stays out. That the
+			// reference's fixed pitch is 220 Hz and this one's is middle C is
+			// a separate finding, left alone here; see
+			// docs/synth1-behavior-errors.md.
 			note2 :=
 				60.0 + layer_pitch +
+				u.detune / CENTS_PER_SEMITONE +
+				p.fine_tune_cents / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones
