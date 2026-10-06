@@ -227,11 +227,17 @@ inflate_budget_proc :: proc(
 // inflates to more or fewer fails. Nothing is allocated for a size over the
 // cap, and inflation never holds more than the declared size plus zlib's 1 MiB
 // working minimum. The caller owns the returned slice.
+//
+// zlib's working memory comes from `scratch`, not `allocator`, and is released
+// before return: under an arena that never frees, it would otherwise stay in the
+// arena on every read. The zero value means the heap; tests pass a tracking
+// allocator to observe it.
 inflate_entry :: proc(
 	comp: []u8,
 	method: u16,
 	uncomp_size: u32,
 	allocator := context.allocator,
+	scratch := mem.Allocator{},
 ) -> (
 	[]u8,
 	bool,
@@ -250,7 +256,7 @@ inflate_entry :: proc(
 		return out, true
 	case METHOD_DEFLATE:
 		budget := Inflate_Budget {
-			backing   = runtime.heap_allocator(),
+			backing   = scratch.procedure != nil ? scratch : runtime.heap_allocator(),
 			// One byte over: zlib wants a spare slot past its last write.
 			max_alloc = max(want + 1, compress.COMPRESS_OUTPUT_ALLOCATE_MIN),
 		}

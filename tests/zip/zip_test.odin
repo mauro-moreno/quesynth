@@ -236,19 +236,25 @@ test_zip_deflate_bomb_is_refused_within_a_bounded_allocation :: proc(t: ^testing
 	for _ in 0 ..< 3047 {append(&bomb, 0)}
 	append(&bomb, 0x7c, 0x1b)
 
-	track: mem.Tracking_Allocator
+	// zlib's working memory is what the budget bounds, so it is tracked apart
+	// from the output.
+	track, scratch_track: mem.Tracking_Allocator
 	alloc := tracked(&track)
+	scratch := tracked(&scratch_track)
 	defer mem.tracking_allocator_destroy(&track)
+	defer mem.tracking_allocator_destroy(&scratch_track)
 
-	_, ok := zip.inflate_entry(bomb[:], zip.METHOD_DEFLATE, 10, alloc)
+	_, ok := zip.inflate_entry(bomb[:], zip.METHOD_DEFLATE, 10, alloc, scratch)
 	testing.expect(t, !ok)
 	testing.expect_value(t, len(track.allocation_map), 0)
-	testing.expectf(t, track.peak_memory_allocated < 2 << 20, "peak %d", track.peak_memory_allocated)
+	testing.expect_value(t, len(scratch_track.allocation_map), 0)
+	testing.expectf(t, scratch_track.peak_memory_allocated < 2 << 20, "scratch peak %d", scratch_track.peak_memory_allocated)
 
 	// Declared right, it is a real 3 MiB entry and inflates in full.
-	out, ok2 := zip.inflate_entry(bomb[:], zip.METHOD_DEFLATE, 3 << 20, alloc)
+	out, ok2 := zip.inflate_entry(bomb[:], zip.METHOD_DEFLATE, 3 << 20, alloc, scratch)
 	testing.expect(t, ok2)
 	testing.expect_value(t, len(out), 3 << 20)
+	testing.expect_value(t, len(scratch_track.allocation_map), 0)
 	delete(out, alloc)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
@@ -263,19 +269,24 @@ test_zip_stored_blocks_past_the_declared_size_are_refused :: proc(t: ^testing.T)
 		append(&stream, i == 17 ? 0x01 : 0x00, 0xff, 0xff, 0x00, 0x00)
 		for _ in 0 ..< 65535 {append(&stream, 0x42)}
 	}
-	track: mem.Tracking_Allocator
+	track, scratch_track: mem.Tracking_Allocator
 	alloc := tracked(&track)
+	scratch := tracked(&scratch_track)
 	defer mem.tracking_allocator_destroy(&track)
-	_, ok := zip.inflate_entry(stream[:], zip.METHOD_DEFLATE, 10, alloc)
+	defer mem.tracking_allocator_destroy(&scratch_track)
+	_, ok := zip.inflate_entry(stream[:], zip.METHOD_DEFLATE, 10, alloc, scratch)
 	testing.expect(t, !ok)
 	testing.expect_value(t, len(track.allocation_map), 0)
-	testing.expectf(t, track.peak_memory_allocated < 3 << 20, "peak %d", track.peak_memory_allocated)
+	testing.expect_value(t, len(scratch_track.allocation_map), 0)
+	testing.expectf(t, scratch_track.peak_memory_allocated < 3 << 20, "scratch peak %d", scratch_track.peak_memory_allocated)
 
 	// Declared right, the same stream is a real 18-block entry.
-	out, ok2 := zip.inflate_entry(stream[:], zip.METHOD_DEFLATE, 18 * 65535, alloc)
+	out, ok2 := zip.inflate_entry(stream[:], zip.METHOD_DEFLATE, 18 * 65535, alloc, scratch)
 	testing.expect(t, ok2)
 	testing.expect_value(t, len(out), 18 * 65535)
+	testing.expect_value(t, len(scratch_track.allocation_map), 0)
 	delete(out, alloc)
+	testing.expect_value(t, len(track.allocation_map), 0)
 }
 
 @(test)
