@@ -51,6 +51,21 @@ test_sy1_fields_and_defaults :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pre_107_lfo_destinations_use_the_current_state_encoding :: proc(t: ^testing.T) {
+	old_text := "Synth1 brastring\nver=105\n41,5\n46,3\n"
+	old, old_err := patch.parse_sy1(transmute([]byte)old_text)
+	testing.expect_value(t, old_err, patch.Sy1_Error.None)
+	testing.expect_value(t, old.values[41], 6)
+	testing.expect_value(t, old.values[46], 4)
+
+	current_text := "Synth1 brastring\nver=113\n41,5\n46,3\n"
+	current, current_err := patch.parse_sy1(transmute([]byte)current_text)
+	testing.expect_value(t, current_err, patch.Sy1_Error.None)
+	testing.expect_value(t, current.values[41], 5)
+	testing.expect_value(t, current.values[46], 3)
+}
+
+@(test)
 test_sy1_index_errors :: proc(t: ^testing.T) {
 	text_99 := "Synth1 x\ncolor=default\nver=105\n99,1\n"
 	_, err_99 := patch.parse_sy1(transmute([]byte)text_99)

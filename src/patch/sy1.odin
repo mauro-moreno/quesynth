@@ -325,6 +325,17 @@ SY1_RATE_POINTS := [?][2]int{{19, 24}, {26, 29}, {64, 50}}
 // alone: 64 is unchanged in three patches, while the two patches with a short
 // delay both move up, 16 -> 19 and 23 -> 24.
 SY1_DELAY_TIME_POINTS := [?][2]int{{16, 19}, {23, 24}, {64, 64}}
+// v1.05 stores LFO destinations in the old five-item order; current state 2
+// (both-pitch) shifts the later destinations by one.
+SY1_LFO_DESTINATION_OLD_TO_CURRENT := [?]int{1, 3, 4, 5, 6}
+
+sy1_lfo_destination_convert :: proc(v: int) -> int {
+	if v < 1 || v > len(SY1_LFO_DESTINATION_OLD_TO_CURRENT) {
+		return v
+	}
+	return SY1_LFO_DESTINATION_OLD_TO_CURRENT[v - 1]
+}
+
 
 upgrade_pre_107 :: proc(patch: ^Patch) {
 	if patch.version <= 0 || patch.version >= SY1_BIPOLAR_VERSION {
@@ -362,6 +373,11 @@ upgrade_pre_107 :: proc(patch: ^Patch) {
 	for i in ([?]int{16, 18, 26, 28}) {
 		if patch.present[i] {
 			patch.values[i] = sy1_env_convert(patch.values[i])
+		}
+	}
+	for index in ([?]int{41, 46}) {
+		if patch.present[index] {
+			patch.values[index] = sy1_lfo_destination_convert(patch.values[index])
 		}
 	}
 	// 50 and 51 are deliberately untouched. The same input (127) converts to

@@ -662,6 +662,16 @@ test_lfo_shape_follows_state_position :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+test_pre_107_lfo_destinations_bind_to_their_measured_mechanisms :: proc(t: ^testing.T) {
+	text := "Synth1 brastring\nver=105\n41,5\n46,3\n57,1\n58,1\n"
+	p, err := patch.parse_sy1(transmute([]byte)text)
+	testing.expect_value(t, err, patch.Sy1_Error.None)
+	bound := engine.bind_patch(p)
+	testing.expect_value(t, bound.lfo[0].destination, engine.Lfo_Destination.Fm)
+	testing.expect_value(t, bound.lfo[1].destination, engine.Lfo_Destination.Amplitude)
+}
+
 // The five measured filter states map onto the four documented responses plus
 // LPDL, which this slice binds to the 24 dB low pass.
 @(test)
