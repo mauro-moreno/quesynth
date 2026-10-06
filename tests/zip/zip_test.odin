@@ -280,6 +280,13 @@ test_zip_stored_blocks_past_the_declared_size_are_refused :: proc(t: ^testing.T)
 	testing.expect_value(t, len(scratch_track.allocation_map), 0)
 	testing.expectf(t, scratch_track.peak_memory_allocated < 3 << 20, "scratch peak %d", scratch_track.peak_memory_allocated)
 
+	// Declared one block short, which is past zlib's 1 MiB minimum, the buffer
+	// fills to exactly the declared size and the last block is dropped, so the
+	// length agrees and only the refused allocation says the stream ran over.
+	_, short_ok := zip.inflate_entry(stream[:], zip.METHOD_DEFLATE, 17 * 65535, alloc, scratch)
+	testing.expect(t, !short_ok)
+	testing.expect_value(t, len(scratch_track.allocation_map), 0)
+
 	// Declared right, the same stream is a real 18-block entry.
 	out, ok2 := zip.inflate_entry(stream[:], zip.METHOD_DEFLATE, 18 * 65535, alloc, scratch)
 	testing.expect(t, ok2)
@@ -352,18 +359,21 @@ test_zip_repeated_reads_into_an_arena_keep_only_their_output :: proc(t: ^testing
 // though the stream behind it is tiny.
 @(test)
 test_zip_refuses_a_declared_size_over_the_cap_without_allocating :: proc(t: ^testing.T) {
-	track: mem.Tracking_Allocator
+	track, scratch_track: mem.Tracking_Allocator
 	alloc := tracked(&track)
+	scratch := tracked(&scratch_track)
 	defer mem.tracking_allocator_destroy(&track)
+	defer mem.tracking_allocator_destroy(&scratch_track)
 
 	over := u32(zip.MAX_ENTRY_SIZE + 1)
-	_, dok := zip.inflate_entry(STORED_HELLO[:], zip.METHOD_DEFLATE, over, alloc)
+	_, dok := zip.inflate_entry(STORED_HELLO[:], zip.METHOD_DEFLATE, over, alloc, scratch)
 	testing.expect(t, !dok)
-	_, sok := zip.inflate_entry(STORED_HELLO[5:], zip.METHOD_STORE, over, alloc)
+	_, sok := zip.inflate_entry(STORED_HELLO[5:], zip.METHOD_STORE, over, alloc, scratch)
 	testing.expect(t, !sok)
-	_, hok := zip.inflate_entry(STORED_HELLO[:], zip.METHOD_DEFLATE, 0xffff_ffff, alloc)
+	_, hok := zip.inflate_entry(STORED_HELLO[:], zip.METHOD_DEFLATE, 0xffff_ffff, alloc, scratch)
 	testing.expect(t, !hok)
 	testing.expect_value(t, track.total_allocation_count, 0)
+	testing.expect_value(t, scratch_track.total_allocation_count, 0)
 }
 
 // A forged central directory is refused before it is allocated for: a count
