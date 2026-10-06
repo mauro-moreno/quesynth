@@ -138,12 +138,14 @@ level_at :: proc(x: []f32, from_s, to_s: f64) -> f64 {
 	return rms > 1.0e-10 ? 20.0 * math.log10(rms) : -200
 }
 
-// The lowest 1 ms level in a span, so a restart from silence cannot hide
-// inside a window average.
+// The lowest level in a span, from 4 ms windows stepped by 1 ms, so a restart
+// from silence cannot hide inside one long average. Four milliseconds is a
+// whole cycle of the lowest note these tests play; a shorter window would
+// read a sine's own zero crossings as dips.
 lowest_level :: proc(x: []f32, from_s, to_s: f64) -> f64 {
 	lowest := 1000.0
-	for t := from_s; t + 0.001 <= to_s; t += 0.001 {
-		lowest = min(lowest, level_at(x, t, t + 0.001))
+	for t := from_s; t + 0.004 <= to_s; t += 0.001 {
+		lowest = min(lowest, level_at(x, t, t + 0.004))
 	}
 	return lowest
 }
@@ -450,4 +452,70 @@ test_delay_tone_shapes_the_first_echo :: proc(t: ^testing.T) {
 	testing.expectf(t, thin_low - flat_low < -10,
 		"tone 127 left the first echo's bottom at %.2f dB against tone 64 (reference -32.37)",
 		thin_low - flat_low)
+}
+
+arp_patch :: proc(mode, gate, porta, auto: int) -> patch.Patch {
+	p := behavior_patch(mode, 50, 50, 40)
+	p.values[59] = 1 // arpeggiator on
+	p.values[31] = 2 // up
+	p.values[32] = 0 // one octave
+	p.values[33] = 11 // "(8)": 250 ms at the default 120 BPM
+	p.values[34] = gate
+	p.values[39] = porta
+	p.values[74] = auto
+	return p
+}
+
+ARP_CHORD :: []Key_Event{{0.0, 60, true}, {0.0, 64, true}, {0.0, 67, true}}
+
+// At gate 127 a step is still held when the next one starts, so mono and
+// legato treat it as an overlapping key -- the manual's own advice ("Turned
+// all the way to the right, the notes sound without interruption, which is
+// effective in combination with legato and portamento modes"). Measured with
+// `s1probe behavior arp`, chord 60 64 67, up, "(8)": legato holds the sustain
+// level through every step (-0.2 to -1.2 dB within 60 ms of the boundary) and
+// mono restarts the attack from that level (+1.1 to +2.3 dB, never a dip),
+// where this engine started every step from silence in a fresh voice (-8.0 to
+// -3.5 dB). The pitch still steps to 64 in both.
+@(test)
+test_arp_gate_127_steps_are_legato_or_mono_key_changes :: proc(t: ^testing.T) {
+	for mode in ([2]int{MONO, LEGATO}) {
+		x := render_keys(arp_patch(mode, 127, 0, 0), ARP_CHORD, 0.6)
+		defer delete(x)
+		before := level_at(x, 0.24, 0.245)
+		lowest := lowest_level(x, 0.25, 0.28)
+		peak := level_at(x, 0.275, 0.285)
+		testing.expectf(t, abs(pitch_at(x, 0.27, 0.3) - 64) < 0.05,
+			"mode %v: the second step did not play 64", mode)
+		testing.expectf(t, lowest > before - 1.5,
+			"mode %v: the step restarted from silence: %.1f dB before, %.1f lowest", mode, before, lowest)
+		if mode == MONO {
+			testing.expectf(t, peak - before > 8,
+				"mono step did not retrigger: %.1f dB before, %.1f at +30 ms", before, peak)
+		} else {
+			testing.expectf(t, abs(peak - before) < 1.5,
+				"legato step retriggered: %.1f dB before, %.1f at +30 ms", before, peak)
+		}
+	}
+}
+
+// Below gate 127 the step has been released before the next starts, so it is
+// not an overlap: no auto glide, and the reference's level and pitch match the
+// fresh note this engine already played (within 0.2 dB). With gate 127 and
+// auto portamento the steps glide (legato reads 60.57, 61.59, 62.31 over the
+// first 50 ms of the 60 -> 64 step), where this engine jumped to 63.92.
+@(test)
+test_arp_auto_portamento_glides_only_between_held_steps :: proc(t: ^testing.T) {
+	for mode in ([2]int{MONO, LEGATO}) {
+		held := render_keys(arp_patch(mode, 127, 64, 1), ARP_CHORD, 0.6)
+		defer delete(held)
+		gliding := pitch_at(held, 0.252, 0.265)
+		testing.expectf(t, gliding > 60.3 && gliding < 63.5,
+			"mode %v, gate 127: the 60 -> 64 step did not glide: %.2f just after the step", mode, gliding)
+
+		gated := render_keys(arp_patch(mode, 64, 64, 1), ARP_CHORD, 0.6)
+		defer delete(gated)
+		testing.expectf(t, abs(pitch_at(gated, 0.255, 0.28) - 64) < 0.05,
+			"mode %v, gate 64: a released step glided with auto portamento", mode)
+	}
 }

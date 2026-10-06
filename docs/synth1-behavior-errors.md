@@ -84,7 +84,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | `Midi_Control.source` (`Midi_Source`); `engine_channel_pressure`; `engine_set_pitch_bend` moves bend-sourced assignments; 0xD0 forwarded by CLAP, AU, standalone (hardware MIDI) and the browser build (`ui/midi.js` → wasm) | `tests/clap/controller_source_test.odin` (plugin MIDI in, pitch out, against the reference); `test_only_pressure_and_bend_sources_follow_pressure_and_bend`; `tests/standalone/pressure_test.odin` (Linux only) | implemented; VST3 deferred |
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
 | 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | `delay_process` outputs the shaped read instead of the raw one | `test_delay_tone_shapes_the_first_echo` | implemented |
-| 7 | the arpeggiator honours play mode, legato and portamento, gate 127 included | gate 127 steps overlap: legato does not retrigger, mono restarts from the current level, auto portamento glides (see "Clause 7") | pending | pending | pending |
+| 7 | the arpeggiator honours play mode, legato and portamento, gate 127 included | gate 127 steps overlap: legato does not retrigger, mono restarts from the current level, auto portamento glides (see "Clause 7") | in mono/legato `arp_trigger` moves a still-gated step's voice through `engine_move_line`; a released step stays a fresh note; poly unchanged | `test_arp_gate_127_steps_are_legato_or_mono_key_changes`, `test_arp_auto_portamento_glides_only_between_held_steps` | implemented (poly unmeasurable) |
 | 8 | (lower confidence) oscillator 2 with key tracking off still receives key shift, fine tune and unison detune | fine tune and unison detune apply; **key shift does not** | pending: fine tune and unison only | pending | pending |
 | 9 | (lower confidence) chorus x1 is a mono sum of both inputs, not left only | **mono sum unsupported**: the reference keeps L and R apart (see "Item 9") | none | probe record only | deferred |
 | 10 | `docs/reference-notes.md` LFO waveform table positions 2/3/4/5 corrected; LFO pulse width stays inert | pending `lfoshape` rerun | docs only | pending | pending |
@@ -458,6 +458,40 @@ voice gets no chorus at all), and that is deferred with it.
 
   Every cell is within 1.0 dB, against up to 33.6 dB before. The chosen tone
   corners were close all along; only their place in the signal path was wrong.
+
+### Slice 7: arpeggiator play mode, legato and portamento (clause 7)
+
+- **Change.** In mono and legato, `arp_trigger` checks whether the previous
+  step's voice is still gated, which happens at gate 127, when the gate never
+  closes inside a step. If it is, the step moves that voice to the new note
+  with `engine_move_line`, the same transition a keyboard key pressed over a
+  held one takes: legato carries the envelopes, mono restarts the attack from
+  the current level, and auto portamento glides. A step released by a shorter
+  gate stays a fresh note through `engine_start_voice`, as before. Poly is
+  unchanged, because the reference cannot be measured there under this host.
+  An arpeggiator step counts as a new key for clause 3's modulation-envelope
+  reset.
+- **Red.** On slice 6's code both new tests failed
+  (build/behavior/red-slice7.txt, rerun with the final 4 ms `lowest_level`
+  window by restoring `arpeggiator.odin` alone in this checkout):
+  - At gate 127, mono and legato steps fell to −32.0 dB from −28.9 before;
+    legato rose to −11.2 dB.
+  - With auto portamento, both modes jumped to 63.87 right after the
+    60 → 64 step.
+- **Green.** Both pass; `odin test tests/dsp` passes 130/130.
+- **Reference after** (build/behavior/after7-arp-*.txt). The level change
+  within 60 ms of steps 1–4:
+  - Mono, gate 127: ours +1.1/+2.3/+1.8/+1.1 dB against the reference's
+    +1.1/+2.2/+1.8/+1.1 (was −8.0/−6.5/−3.5/−8.0).
+  - Legato, gate 127: −1.2/−0.8/−0.3/−1.0 dB on both.
+  - With portamento 64 and auto on, gate 127: legato −1.2/−1.1/−0.8/−0.9
+    against −0.8/−1.2/−1.1/−0.9; mono +1.5/+1.1/+1.9/+1.5 against
+    +1.6/+1.2/+2.2/+1.7.
+  - Gate 64 is a fresh note per step in both engines, with no auto glide
+    (64.00 at +0 ms on both).
+  - The gate-127 auto glide now happens (62.28, 63.78, 63.98 at 250, 275 and
+    300 ms). It is faster than the reference's (60.57, 61.59, 62.31), which
+    is the deferred portamento time law.
 
 ## Environment and unavailable checks
 
