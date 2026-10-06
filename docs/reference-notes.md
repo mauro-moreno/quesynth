@@ -115,6 +115,82 @@ So the English manual's five destinations are wrong about the order, the Japanes
 manual's six are right about the set except that its fifth — pulse width — is
 **inert in v1.13 beta 3**, and the seventh, pan, is undocumented in both.
 
+## Settled by measurement: hard sync resets oscillator 2's noise
+
+Hard sync does not only reset oscillator 2's phase. It rewinds its noise
+generator, which turns a noise oscillator 2 into a *repeating waveform* at
+oscillator 1's period rather than an endless hiss.
+
+`s1probe noiseprobe` sets oscillator 2 to noise, mixes it alone through an open
+filter and a flat gate, and reads the normalised autocorrelation of the render.
+Both renders of every configuration are bit-identical across two fresh plugin
+loads, so the figures are measurements and not samples of a random process. It
+renders the same patch through this engine beside the reference:
+
+```
+build/s1probe.exe noiseprobe ext/synth1/Synth1/Synth1\ VST64.dll --notes 48,60,72
+```
+
+| note | osc1 period | sync | reference r | ours r | ref first lag past 0.5 | ours |
+|---|---|---|---|---|---|---|
+| 48 | 366.9 | off | 0.00108 | −0.00448 | — | — |
+| 48 | 366.9 | on | **0.96621** | **0.98129** | 366 | 366 |
+| 60 | 183.5 | off | −0.00242 | −0.00131 | — | — |
+| 60 | 183.5 | on | **0.79381** | **0.87516** | 183 | 182 |
+| 72 | 91.7 | off | 0.01261 | 0.00112 | — | — |
+| 72 | 91.7 | on | **0.90911** | **0.92444** | 91 | 91 |
+
+So the repeat tracks the master octave for octave, and both engines put it at the
+same lag. With sync off no lag anywhere in the search band reaches 0.5 in either:
+unsynced noise does not repeat at all, and that behaviour is unchanged.
+
+The two `r` columns are not expected to match exactly. The reference is a
+wavetable oscillator and this one is PolyBLEP, and the correlation is read at a
+whole-sample lag against a period that is not a whole number of samples, so the
+figure depends on how the cycle length alternates between its floor and its
+ceiling. The lag is the claim; the exact height is not.
+
+The vendor changelog says the same thing. v1.05a lists `modify sync noise reset`,
+and the Japanese readme for that version is more explicit —
+`Sync時のノイズリセット方法に問題があったのを修正`, the noise reset method during
+sync was wrong and was fixed. A stream that is never reset has no reset method to
+get wrong.
+
+## Settled by measurement: oscillator 2's pitch cannot reach its noise
+
+Noise has no pitch, and the reference is strict about it. The same probe drives
+every route that reaches oscillator 2's pitch to an extreme and compares the
+render against the same patch with that route neutral:
+
+| route | noise, sync off | noise, sync on | saw control |
+|---|---|---|---|
+| osc2 pitch +11 st | 0.00000 | 0.00000 | 1.04 |
+| osc2 pitch −11 st | 0.00000 | 0.00000 | 1.04 |
+| osc2 pitch −60 st | 0.00000 | 0.00000 | 1.00 |
+| osc2 fine +34 cent | 0.00000 | 0.00000 | 1.05 |
+| osc2 key tracking off | 0.00000 | 0.00000 | 1.03 |
+| modulation envelope → osc2 pitch | 0.00000 | 0.00000 | 1.02 |
+| LFO 1 → osc2 pitch, full depth | 0.00000 | 0.00000 | 0.97 |
+
+Peak absolute difference. The saw column is the control: with oscillator 2 set to
+a saw instead, every one of those routes moves the render by about a full unit,
+so the zeros are the routes failing to reach the noise rather than the probe
+failing to change the parameter.
+
+The mod wheel is covered by the same result. It reaches oscillator 2's pitch only
+by displacing parameters 2 and 3, which are the first two rows.
+
+This engine gets both behaviours from one field, `dsp.Oscillator.noise_anchor`:
+the generator state a cycle began from, restored by `oscillator_sync`. Nothing in
+the noise path reads `increment`, which is what makes the table above hold —
+oscillator 2's frequency has no route into its own noise, so neither has anything
+that modulates it.
+
+The change is inert on the factory bank. No patch in `soundbank00` combines a
+noise oscillator 2 with sync — fourteen use noise, all with sync off — and
+`s1probe compare ext/synth1/Synth1/soundbank00 --csv` produces a byte-identical
+CSV before and after it.
+
 ## Settled by measurement: the LFO waveform states
 
 `s1probe lfoshape` points each LFO at the stereo position, folds the resulting
@@ -288,7 +364,8 @@ parameter arrive, and where the old `level` knob is replaced by a dry/wet balanc
 ## Smaller confirmations
 
 - Ring modulation is `osc2_out *= osc1_out`, and it takes precedence over FM.
-- Hard sync makes oscillator 1 the master and resets oscillator 2.
+- Hard sync makes oscillator 1 the master and resets oscillator 2 — both its
+  phase and, as measured above, its noise generator.
 - Pulse width and the `tune` fine-tune both apply to oscillators 1 and 2.
 - Filter keyboard tracking: fully right is one octave of cutoff per octave of
   note, fully left is no change — the linear 0..1 reading already used.
