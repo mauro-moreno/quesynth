@@ -82,26 +82,26 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 | 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | `engine_move_line` passes `overlap = true` in both modes | `test_auto_portamento_glides_on_overlapping_keys_in_mono` | implemented (glide time law deferred) |
 | 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | every new key restarts it from zero; a fallback (not a new key) follows the reference | `test_mod_envelope_restarts_from_zero_on_every_new_key` (requested, **not** reference); `test_falling_back_keeps_the_mod_envelope_level` (reference) | requested change; conflicts with the reference |
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | `Midi_Control.source` (`Midi_Source`); `engine_channel_pressure`; `engine_set_pitch_bend` moves bend-sourced assignments; 0xD0 forwarded by CLAP, AU, standalone (hardware MIDI) and the browser build (`ui/midi.js` → wasm) | `tests/clap/controller_source_test.odin` (plugin MIDI in, pitch out, against the reference); `test_only_pressure_and_bend_sources_follow_pressure_and_bend`; `tests/standalone/pressure_test.odin` (Linux only) | implemented; VST3 deferred |
-| 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
+| 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none: `git diff 36481ee -- src/dsp/oscillator.odin src/dsp/noise.odin` is empty | existing noise tests in `odin test tests/dsp`; `noiseprobe --notes 48,60,72` rerun reproduces every committed figure | verified unchanged |
 | 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | `delay_process` outputs the shaped read instead of the raw one | `test_delay_tone_shapes_the_first_echo` | implemented |
 | 7 | the arpeggiator honours play mode, legato and portamento, gate 127 included | gate 127 steps overlap: legato does not retrigger, mono restarts from the current level, auto portamento glides (see "Clause 7") | in mono/legato `arp_trigger` moves a still-gated step's voice through `engine_move_line`; a released step stays a fresh note; poly unchanged | `test_arp_gate_127_steps_are_legato_or_mono_key_changes`, `test_arp_auto_portamento_glides_only_between_held_steps` | implemented (poly unmeasurable) |
 | 8 | (lower confidence) oscillator 2 with key tracking off still receives key shift, fine tune and unison detune | fine tune and unison detune apply; **key shift does not** | fine tune (parameter 72) and unison detune added to the untracked pitch; key shift left out | `test_untracked_oscillator_2_takes_fine_tune_and_unison_detune` | partial: fine tune and unison implemented; key shift deferred (disproved) |
 | 9 | (lower confidence) chorus x1 is a mono sum of both inputs, not left only | **mono sum unsupported**: the reference keeps L and R apart (see "Item 9") | none | probe record only | deferred |
-| 10 | `docs/reference-notes.md` LFO waveform table positions 2/3/4/5 corrected; LFO pulse width stays inert | pending `lfoshape` rerun | docs only | pending | pending |
+| 10 | `docs/reference-notes.md` LFO waveform table positions 2/3/4/5 corrected; LFO pulse width stays inert | `lfoshape --param 42/47` stored 0..5: 2 square, 3 sample & hold, 4 random smoothed, 5 sine on the reference; the table's display/position columns for stored 2..5 came from the probe's mislabel | rows 2..5 now read display "2"/"3"/"4"/"5", position 3/4/5/2; waveforms unchanged; LFO destination table (state 5 inert) untouched | docs only; engine binding (`resolved_position` → shape) checked against the corrected table | implemented |
 
 Process clauses (user receipt requirements, not product behaviour):
 
 | # | requirement | how it is checked | status |
 |---|---|---|---|
-| P1 | branch `fix/synth1-behavior-errors` based on `main` 36481ee | `git merge-base HEAD 36481ee` equals 36481ee | pending final check |
-| P2 | independently verifiable slices, one commit each | `git log --oneline 36481ee..HEAD` | pending |
-| P3 | focused regression per implemented slice; the bug-fix test fails on the old code | red run recorded per slice below | pending |
-| P4 | relevant Odin suites and host builds pass | commands under "Host and suite checks" | pending |
-| P5 | numerical external evidence, not self-referential tests | reference columns from `s1probe behavior` | in progress |
-| P6 | lower-confidence items measured, then fixed or deferred with rationale | items 8 and 9 | measured |
-| P7 | `specs/` preserved byte for byte, untracked, never added or ignored | `sha256sum specs/2026-09-28-sequencer.md`; `git status --short` shows `?? specs/` | pending final check |
-| P8 | no guessing, no unrelated DSP rewrite, no PR | deferred list below; no `gh pr` was run | ongoing |
-| P9 | unavailable checks reported, not implied | "Environment and unavailable checks" | ongoing |
+| P1 | branch `fix/synth1-behavior-errors` based on `main` 36481ee | `git merge-base HEAD 36481ee` equals 36481ee | see "Final gates" |
+| P2 | independently verifiable slices, one commit each | `git log --oneline 36481ee..HEAD` | see "Final gates" |
+| P3 | focused regression per implemented slice; the bug-fix test fails on the old code | red run recorded per slice below | done for slices 1–4 and 6–8; slice 4's engine-level and standalone tests target a new entry point, so its red run is the CLAP test |
+| P4 | relevant Odin suites and host builds pass | commands under "Final gates" | see "Final gates" |
+| P5 | numerical external evidence, not self-referential tests | reference columns from `s1probe behavior`, `lfoshape`, `noiseprobe`, `compare` | done; clause 3 is labelled as a requested change *against* the reference |
+| P6 | lower-confidence items measured, then fixed or deferred with rationale | items 8 and 9 | item 8 partial (key shift disproved); item 9 deferred (mono sum disproved) |
+| P7 | `specs/` preserved byte for byte, untracked, never added or ignored | `sha256sum specs/2026-09-28-sequencer.md`; `git status --short` shows `?? specs/` | see "Final gates" |
+| P8 | no guessing, no unrelated DSP rewrite, no PR | deferred list below; no `gh pr` was run | held |
+| P9 | unavailable checks reported, not implied | "Environment and unavailable checks" | held |
 | P10 | parent host/browser validation | owned by the parent session | pending, supplied by parent |
 
 ## Invariants and how each is checked
@@ -516,6 +516,71 @@ voice gets no chorus at all), and that is deferred with it.
   - Key shift: unchanged on both.
   - The tracked rows are unchanged and still agree.
 
+### Clause 10: LFO waveform table (docs only)
+
+- **Measurement.** `build/s1probe.exe lfoshape --param 42` (stored 0..127,
+  build/behavior/lfoshape-42.txt) and `--param 47 --values 0,1,2,3,4,5`
+  (build/behavior/lfoshape-47.txt). The reference's verdicts:
+  - stored 2: square (0.967 / 0.963)
+  - stored 3: sample & hold (repeat 0.172)
+  - stored 4: random smoothed (repeat 0.128, step 0.01)
+  - stored 5: sine (0.991 / 0.992)
+- **What was wrong.** The table's display and position columns. Parameters
+  42 and 47 are display-keyed, so the stored integer is the display.
+  `resolved_display`/`resolved_position` give stored 2 → "2"/3,
+  3 → "3"/4, 4 → "4"/5 and 5 → "5"/2. The old rows paired stored 2 with
+  display "5" and position 2 because `lfoshape` labels each row with
+  `parameter_states(42)[stored].display`, using the stored integer as a
+  position.
+- **What was kept.** The waveforms (measured per stored value, and matching
+  what `bind_lfo` binds), the readme-order conclusion, and the LFO
+  destination table, whose state 5 (pulse width) stays inert.
+
+### Clause 5: synced noise kept
+
+`git diff --stat 36481ee -- src/dsp/oscillator.odin src/dsp/noise.odin` is
+empty. `build/s1probe.exe noiseprobe --notes 48,60,72`
+(build/behavior/noiseprobe-final.txt) reproduces every figure committed in
+docs/reference-notes.md:
+
+- r at the oscillator-1 lag: 0.96621/0.98129, 0.79381/0.87516 and
+  0.90911/0.92444.
+- First lags: 366/366, 183/182 and 91/91.
+- All seven pitch routes read 0.00000.
+
+### Full-bank comparison
+
+```
+build/s1probe-bank-2844dbb.exe compare ext/synth1/Synth1/soundbank00 --csv build/behavior/bank-before-2844dbb.csv
+build/s1probe-bank-fd6a0d7.exe compare ext/synth1/Synth1/soundbank00 --csv build/behavior/bank-after-fd6a0d7.csv
+node build/behavior/bankdiff.js build/behavior/bank-before-2844dbb.csv build/behavior/bank-after-fd6a0d7.csv
+build/s1probe.exe summarise build/behavior/bank-before-2844dbb.csv
+build/s1probe.exe summarise build/behavior/bank-after-fd6a0d7.csv
+```
+
+- **The baseline is limited.** "Before" is commit 2844dbb (slices 1–4
+  applied), **not** main/36481ee. No binary from main was kept, and checking
+  main out in this checkout was ruled out. Slices 1–4 change only what happens
+  between notes and on controller messages. `compare` renders one note with no
+  controllers and starts each note as a fresh voice, so it cannot exercise
+  them. That is an argument from how `compare` works, not a measurement.
+- **"After"** is fd6a0d7 (slices 6–8 added, the ones a single note can
+  reach).
+- **Result.** All 128 rows are identical, including the five whose reference
+  crashes (095, 098, 100, 101, 106). Over the 119 rows valid in both, the
+  means are unchanged: spectral 4.6177 dB, envelope 1.7752 dB, level
+  −1.1764 dB, null −9.1793 dB.
+- **Expected.** `node build/behavior/bankscan.js ext/synth1/Synth1/soundbank00`
+  finds no factory patch these slices can reach in a one-note render:
+  - none combines delay on with a tone off centre (the ver=105 files do not
+    store parameter 98);
+  - none has an untracked oscillator 2 with fine tune or unison;
+  - the three mono arpeggio patches (110, 111, 126) use gates 64, 64 and 16,
+    not 127.
+
+  soundbank01..09 hold only a placeholder file. The new behaviour is
+  therefore evidenced by the focused probes above, not by the bank.
+
 ## Environment and unavailable checks
 
 - Odin `dev-2026-09-nightly:a2fb372`. The CI pin `dev-2026-08` is not
@@ -564,3 +629,16 @@ voice gets no chorus at all), and that is deferred with it.
 - **Small controller offsets.** Returning a controller to rest reads
   60.062 (CC/pressure 0) and 59.920 (bend 8192) in the reference, against
   60.000 before. This is not modelled.
+- **`lfoshape` row label.** `tools/s1probe/lfoshapeprobe.odin` prints
+  `parameter_states(param)[stored].display`, which is the wrong display for a
+  display-keyed parameter. That label is where the old LFO table's columns came
+  from. The probe's measurements are unaffected; only the label is wrong.
+- **LFO shape, stored 1.** The current `lfoshape` run's best template for the
+  reference at stored 1 is sine (0.993 on 42, 0.994 on 47), where the table
+  says triangle (0.993). The folded cycle has the straight slopes and sharp
+  peak of a triangle. Row 1 is outside clause 10 and was left as it was.
+- **LFO shape, stored 6..127.** Out of range for parameters 42/47, the
+  reference plays a sine (0.991) at every value and this engine a random
+  smoothed shape. No patch in the factory bank stores these values.
+- **Mono retrigger from a releasing voice, poly between notes.** These are
+  unmeasured (see "Environment").

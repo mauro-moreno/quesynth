@@ -202,10 +202,21 @@ that against the deterministic candidates over every phase alignment. Parameters
 |---|---|---|---|---|
 | 0 | "0" | 0 | **saw**, descending | repeats at 1.000, one discontinuity per cycle |
 | 1 | "1" | 1 | **triangle** | 0.993 against the template |
-| 2 | "5" | 2 | **square** | 0.967, two levels |
-| 3 | "2" | 3 | **sample & hold** | does not repeat; steps a quarter of its range at once |
-| 4 | "3" | 4 | **random, smoothed** | does not repeat; never moves a hundredth of its range in a frame |
-| 5 | "4" | 5 | **sine** | 0.991 |
+| 2 | "2" | 3 | **square** | 0.967, two levels |
+| 3 | "3" | 4 | **sample & hold** | does not repeat; steps a quarter of its range at once |
+| 4 | "4" | 5 | **random, smoothed** | does not repeat; never moves a hundredth of its range in a frame |
+| 5 | "5" | 2 | **sine** | 0.991 |
+
+The display and position of stored 2..5 above are the parameter table's:
+parameters 42 and 47 are display-keyed, so the stored integer is the display
+identifier, and the state list holds the displays in the order 0, 1, 5, 2, 3, 4.
+An earlier version of this table read them off `lfoshape`'s per-row label,
+which looks the state list up by the stored integer as though it were a
+position, and so paired stored 2 with display "5" and position 2. The
+waveforms were measured per stored value and are unaffected: `lfoshape
+--param 42` and `--param 47`, stored 0..5, reproduce the verdicts for stored 2..5
+on the reference (square 0.967/0.963, sample & hold, random smoothed, sine
+0.991/0.992).
 
 So the English readme's list — "saw, triangle, sine, square, random(sample &
 hold) or random (smoothed)" — is **right**, and it indexes the state's *position*.
