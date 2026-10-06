@@ -581,6 +581,44 @@ build/s1probe.exe summarise build/behavior/bank-after-fd6a0d7.csv
   soundbank01..09 hold only a placeholder file. The new behaviour is
   therefore evidenced by the focused probes above, not by the bank.
 
+## Final gates
+
+Run at ad9429d on Windows with `bash build/behavior/final-gates.sh`; the
+logs are build/behavior/gate-*.log.
+
+| check | result |
+|---|---|
+| `odin test tests/dsp` | 131/131 |
+| `odin test tests/patch` | 29/29 |
+| `odin test tests/clap` | 41/41 |
+| `odin test tests/panel` | 4/4 |
+| `odin test tests/vst3` | 26/26 |
+| `odin test tests/control` | 12/12 |
+| `odin test tests/registry` | 8/8 |
+| `odin test tests/standalone` | 24/24 (the Windows-buildable cases; `pressure_test.odin` and the other `#+build linux` files did not run) |
+| `odin test tests/tui` | **does not compile on Windows** (`hosts/standalone/tui/client.odin` uses `posix.read` and friends). Pre-existing, since there is no diff under `hosts/standalone/tui` or `tests/tui`. `odin check tests/tui -target:linux_amd64 -no-entry-point` passes |
+| `odin test tests/mcp` | 47/47 |
+| `odin test tests/zip` | 13/13 |
+| `odin test tools/s1probe` | 50/50 |
+| `odin build hosts/standalone -o:speed` | ok |
+| `odin build hosts/clap -build-mode:dll` | ok |
+| `odin build hosts/vst3 -build-mode:dll` | ok |
+| `odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm` | ok (the output is ignored by git; rebuilt for the parent's browser check) |
+| `node hosts/wasm/check-imports.js` | all 7 imports provided |
+| `odin build tools/s1probe` | ok |
+| `odin run tools/uiparams` + `git diff --exit-code -- ui/params.js` | no change |
+| `node --check` on `ui/*.js`, `hosts/standalone/browser/*.js`, `hosts/wasm/*.js` | 0 failures |
+| `node --test tests/ui/{panel-smoke,tui-layout,serve}.test.mjs` | 18 pass |
+| `node --test tests/browser/*.test.mjs` | 18 pass, 123 skipped (Unix-socket tests skip on Windows) |
+| `node --test tests/mcp/*.test.mjs` | 2 pass, 57 skipped (skip on Windows) |
+| `node --test tests/docs/*.test.mjs` | 11 pass, 18 skipped |
+| `node --test tools/corpus-level.test.mjs` | 10 pass |
+| `pwsh tools/build-vst3.ps1` + `tools/vst3host` on the staged bundle | OK, peak 0.090877 |
+| `odin check hosts/au -no-entry-point -target:darwin_arm64` (editor on and off) | ok (type check only; AU build, auval and pluginval need macOS) |
+| `odin check tests/standalone -target:linux_amd64 -no-entry-point` | ok |
+| process | `git merge-base HEAD 36481ee` = 36481ee; 9 commits in `36481ee..HEAD`, all unsigned like their neighbours; `git diff --check 36481ee..HEAD` clean; no `make(`/`new(`/`append(`/`core:os`/`core:fmt` added under `src/dsp` or `src/engine` |
+| `specs/` | `?? specs/` untracked; `specs/2026-09-28-sequencer.md` SHA256 `807053ad…ce54`, unchanged |
+
 ## Environment and unavailable checks
 
 - Odin `dev-2026-09-nightly:a2fb372`. The CI pin `dev-2026-08` is not
@@ -588,7 +626,14 @@ build/s1probe.exe summarise build/behavior/bank-after-fd6a0d7.csv
   compiler was not run.
 - The reference dies in poly mode with two voices sounding under this host, so
   poly-mode behaviour between notes (and a poly arpeggio) is unmeasured.
-- qlty: `.qlty/qlty.toml` enables actionlint only, and `qlty` is not on PATH.
+- qlty: `.qlty/qlty.toml` enables actionlint only, for the workflow files.
+  `qlty` is not on PATH and not cached (`~/.qlty/bin` is absent). No workflow
+  file changed, so it was not installed and not run: it would have nothing in
+  scope to check.
+- Linux-only and macOS-only checks were not run here: `tests/standalone`'s
+  Linux files (including the new `pressure_test.odin`), `tests/tui`, the ALSA
+  standalone self-test, `tools/clapprobe`, and the AU build, `auval` and
+  `pluginval`.
 
 ## Deferred and out of scope
 
