@@ -71,7 +71,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 | # | clause | reference evidence (before) | change | regression coverage | status |
 |---|---|---|---|---|---|
 | 1 | releasing the newest key in mono/legato returns to the still-held previous key; mono retriggers amp/filter, legato does not | falls back in both modes; mono restarts the attack from the current level; legato leaves amp and filter alone (see "Clause 1") | `engine_note_off` falls back to the newest held key through `engine_move_line`, shared with the overlapping note-on; `Note_Start` separates fresh, mono retrigger and legato | `tests/dsp/behavior_test.odin`: fallback, non-sounding release, repeated key, overlap retrigger | implemented |
-| 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | pending | pending | pending |
+| 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | `engine_move_line` passes `overlap = true` in both modes | `test_auto_portamento_glides_on_overlapping_keys_in_mono` | implemented (glide time law deferred) |
 | 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | pending, as a requested change | pending | pending |
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | pending | pending | pending |
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
@@ -337,6 +337,22 @@ voice gets no chorus at all), and that is deferred with it.
   level change after each event matches within 0.1 dB in the fallback,
   repeat and non-sounding-release scenarios, filter envelope included (mono
   fallback +5.1/+5.1 dB, legato +3.1/+3.2 dB).
+
+### Slice 2: auto portamento on overlapping keys in mono (clause 2)
+
+- **Change.** `engine_move_line` now reports every key change as an overlap,
+  which it is by construction. Before, it said so only in legato.
+- **Red.** On slice 1's code, `test_auto_portamento_glides_on_overlapping_keys_in_mono`
+  failed (build/behavior/red-slice2.txt). It read 72.00 at +5 ms for 72 over a
+  held 60 (reference 62.34), and 60.00 at +5 ms falling back from 72
+  (reference 69.85). The separated-keys control (72.00) passed.
+- **Green.** The test passes; `odin test tests/dsp` passes 124/124.
+- **Reference after.** These are build/behavior/after2-*.txt. Mono, overlap,
+  auto on now glides: 68.42/70.48/71.59 at +5/+15/+30 ms, against 72.06
+  before; legato reads 68.54 at +5 ms. Falling back from 72 glides
+  (63.74/61.63/60.39). Separated keys still jump to 72.00, as the reference
+  does. The remaining gap (the reference reads 62.34/63.56/65.00) is the
+  portamento time law, which is deferred.
 
 ## Environment and unavailable checks
 

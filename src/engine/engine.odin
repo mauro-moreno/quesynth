@@ -592,6 +592,11 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 // attacks from their current level and legato leaving them alone (see
 // `Note_Start`).
 //
+// Every move is an overlap -- a key is held across it by construction -- so
+// auto portamento glides in mono as well as in legato. The reference does:
+// mono, portamento 64, auto on, 72 over a held 60 reads 62.34, 65.00 and
+// 71.96 at +5, +30 and +300 ms, and falling back to 60 glides the same way.
+//
 // The voice keeps its velocity on a fallback: the key it returns to was
 // struck before, and what level it was struck at is not tracked. Whether the
 // reference re-reads it has not been measured.
@@ -609,7 +614,7 @@ engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32) {
 		seed,
 		e.last_note,
 		legato ? .Legato : .Retrigger,
-		legato,
+		true,
 		&e.global_lfo,
 	)
 	e.last_note = f32(note)

@@ -236,3 +236,35 @@ test_an_overlapping_key_retriggers_mono_from_its_level_and_not_legato :: proc(t:
 		}
 	}
 }
+
+// Parameter 74 limits portamento to keys that overlap, and that is an overlap
+// in mono as much as in legato. The reference, mono, portamento 64, auto on,
+// 72 pressed over a held 60: 62.34 at +5 ms, 65.00 at +30, 71.96 at +300. With
+// the keys separated it is 72.00 from the start. Releasing 72 back onto 60
+// glides too (69.85 at +5 ms). This engine jumped in mono either way.
+//
+// The bound is loose on purpose: the portamento *time* law is a chosen curve
+// that settles faster than the reference's, and is not what this tests.
+@(test)
+test_auto_portamento_glides_on_overlapping_keys_in_mono :: proc(t: ^testing.T) {
+	p := behavior_patch(MONO, 0, 0, 127)
+	p.values[39] = 64
+	p.values[74] = 1
+
+	overlap := []Key_Event{{0.0, 60, true}, {0.5, 72, true}, {1.0, 72, false}}
+	x := render_keys(p, overlap, 1.3)
+	defer delete(x)
+	rising := pitch_at(x, 0.505, 0.515)
+	testing.expectf(t, rising > 60.5 && rising < 71.5,
+		"72 over a held 60 did not glide: %.2f at +5 ms (reference 62.34)", rising)
+	falling := pitch_at(x, 1.005, 1.015)
+	testing.expectf(t, falling > 60.5 && falling < 71.5,
+		"falling back from 72 to 60 did not glide: %.2f at +5 ms (reference 69.85)", falling)
+
+	separate := []Key_Event{{0.0, 60, true}, {0.45, 60, false}, {0.5, 72, true}}
+	y := render_keys(p, separate, 0.7)
+	defer delete(y)
+	jump := pitch_at(y, 0.505, 0.515)
+	testing.expectf(t, abs(jump - 72) < 0.05,
+		"separated keys glided with auto portamento on: %.2f at +5 ms (reference 72.00)", jump)
+}
