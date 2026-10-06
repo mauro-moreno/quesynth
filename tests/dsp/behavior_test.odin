@@ -573,12 +573,12 @@ test_untracked_oscillator_2_takes_fine_tune_and_unison_detune :: proc(t: ^testin
 		p.values[75] = 127 // full detune
 	})
 	defer delete(spread)
-	hz := 440.0 * math.pow(2.0, (base - 69.0) / 12.0)
+	hz := 440.0 * math.pow(f64(2), (base - 69.0) / 12.0)
 	N :: 24000
 	from := behavior_frame(0.5)
 	centre := tone_power_db(spread, from, N, hz)
-	low := tone_power_db(spread, from, N, hz * math.pow(2.0, -50.0 / 1200.0))
-	high := tone_power_db(spread, from, N, hz * math.pow(2.0, 50.1 / 1200.0))
+	low := tone_power_db(spread, from, N, hz * math.pow(f64(2), -50.0 / 1200.0))
+	high := tone_power_db(spread, from, N, hz * math.pow(f64(2), 50.1 / 1200.0))
 	testing.expectf(t, low - centre > 10 && high - centre > 10,
 		"unison detune did not split untracked oscillator 2: -50c %.1f dB, centre %.1f, +50c %.1f",
 		low, centre, high)
