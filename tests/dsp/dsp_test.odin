@@ -610,6 +610,293 @@ test_rng_bounded_and_reproducible :: proc(t: ^testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Noise under hard sync
+// ---------------------------------------------------------------------------
+//
+// Measured on the reference with `s1probe noiseprobe`, whose output is quoted in
+// the comment on `dsp.Oscillator.noise_anchor`. The short version: with
+// oscillator 2 set to noise and mixed alone, a synced render correlates with
+// itself at oscillator 1's own period (0.966 / 0.794 / 0.909 at notes 48 / 60 /
+// 72) and an unsynced one correlates nowhere (0.001 / -0.002 / 0.013, with no
+// lag in the search band clearing 0.5). Every oscillator-2 pitch route driven to
+// an extreme leaves a noise render bit-identical, while moving a saw render by
+// around a full unit of peak difference.
+
+// One cycle of a synced noise slave must be the same cycle every time. This is
+// the whole behaviour: a rewound generator is what turns noise into a waveform
+// at the master's pitch instead of a hiss.
+@(test)
+test_sync_rewinds_the_noise_generator_to_one_repeating_cycle :: proc(t: ^testing.T) {
+	CYCLE :: 64
+	CYCLES :: 8
+
+	o: dsp.Oscillator
+	dsp.oscillator_init(&o, 0x5EED)
+	dsp.oscillator_set_frequency(&o, 300.0, SR)
+
+	cycles: [CYCLES][CYCLE]f32
+	for c in 0 ..< CYCLES {
+		for i in 0 ..< CYCLE {
+			dsp.oscillator_advance(&o)
+			cycles[c][i] = dsp.oscillator_value(&o, .Noise, 0.5)
+		}
+		// The master wrapped exactly on the sample boundary.
+		dsp.oscillator_sync(&o, 0.0)
+	}
+
+	// A cycle that was constant would satisfy the repeat test trivially.
+	distinct_values := 0
+	for i in 1 ..< CYCLE {
+		if cycles[0][i] != cycles[0][0] {distinct_values += 1}
+	}
+	testing.expectf(t, distinct_values > CYCLE / 2,
+		"the first cycle is not noise: only %v of %v samples differ from the first",
+		distinct_values, CYCLE - 1)
+
+	for c in 1 ..< CYCLES {
+		for i in 0 ..< CYCLE {
+			testing.expectf(t, cycles[c][i] == cycles[0][i],
+				"cycle %v sample %v is %v; the first cycle has %v, so sync did not rewind",
+				c, i, cycles[c][i], cycles[0][i])
+		}
+	}
+}
+
+// Without sync the stream must stay a stream. The reference's unsynced noise
+// correlates at 0.001 at the oscillator's own period, so nothing here may start
+// repeating just because the rewind exists.
+@(test)
+test_unsynced_noise_stays_a_fresh_stream :: proc(t: ^testing.T) {
+	CYCLE :: 64
+	CYCLES :: 8
+
+	o: dsp.Oscillator
+	dsp.oscillator_init(&o, 0x5EED)
+	dsp.oscillator_set_frequency(&o, 300.0, SR)
+
+	cycles: [CYCLES][CYCLE]f32
+	for c in 0 ..< CYCLES {
+		for i in 0 ..< CYCLE {
+			dsp.oscillator_advance(&o)
+			cycles[c][i] = dsp.oscillator_value(&o, .Noise, 0.5)
+		}
+	}
+
+	repeats := 0
+	for c in 1 ..< CYCLES {
+		for i in 0 ..< CYCLE {
+			if cycles[c][i] == cycles[0][i] {repeats += 1}
+		}
+	}
+	// Two independent 24-bit draws collide with probability 2^-24, so any
+	// coincidence at all here would be remarkable; the bar is deliberately loose
+	// rather than zero so this cannot become flaky on a different seed.
+	testing.expectf(t, repeats < CYCLE / 4,
+		"%v of %v unsynced samples matched the first cycle: the stream is repeating",
+		repeats, CYCLE * (CYCLES - 1))
+}
+
+// The slave's own frequency must not reach its noise. This is the property that
+// makes oscillator 2's pitch modulation inaudible on noise, pinned at the layer
+// where it could be broken: a future rate-dependent noise would fail here long
+// before anyone rendered a patch.
+@(test)
+test_synced_noise_ignores_the_slave_increment :: proc(t: ^testing.T) {
+	CYCLE :: 64
+	CYCLES :: 6
+
+	steady: dsp.Oscillator
+	swept: dsp.Oscillator
+	dsp.oscillator_init(&steady, 0x5EED)
+	dsp.oscillator_init(&swept, 0x5EED)
+	dsp.oscillator_set_frequency(&steady, 300.0, SR)
+
+	for c in 0 ..< CYCLES {
+		for i in 0 ..< CYCLE {
+			// A frequency that moves every sample, the way a pitch LFO or a
+			// modulation envelope moves it, and across three octaves.
+			hz := f32(80.0 + f32(c * CYCLE + i) * 9.0)
+			dsp.oscillator_set_frequency(&swept, hz, SR)
+
+			dsp.oscillator_advance(&steady)
+			dsp.oscillator_advance(&swept)
+			a := dsp.oscillator_value(&steady, .Noise, 0.5)
+			b := dsp.oscillator_value(&swept, .Noise, 0.5)
+			testing.expectf(t, a == b,
+				"cycle %v sample %v: steady %v against swept %v; the slave's pitch moved its noise",
+				c, i, a, b)
+		}
+		// Both are synced by the same master, at the same instant.
+		dsp.oscillator_sync(&steady, 0.25)
+		dsp.oscillator_sync(&swept, 0.25)
+	}
+}
+
+// Oscillator 2 alone, as noise, with oscillator 1 left running as the sync
+// master. The same patch `s1probe noiseprobe` builds for the reference.
+noise_sync_patch :: proc(sync: bool) -> patch.Patch {
+	p := phase_probe_patch()
+	p.values[0] = 1 // oscillator 1 = saw: the master, with a clean wrap
+	p.values[1] = 4 // parameter 1 is display-keyed; display "4" is noise
+	p.values[5] = 127 // mix hard right: oscillator 2 alone
+	p.values[6] = sync ? 1 : 0
+	p.values[91] = 1 // pin the start phase
+	return p
+}
+
+// One held note, left channel. The caller owns the slice.
+render_noise_sync :: proc(p: patch.Patch, note: int, frames: int) -> []f32 {
+	left := make([]f32, frames)
+	right := make([]f32, frames)
+	defer delete(right)
+
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_note_on(&e, note, 1.0)
+	engine.engine_process(&e, left, right)
+	return left
+}
+
+// Normalised autocorrelation at one lag, on -1..1. The same statistic
+// `s1probe noiseprobe` reports for the reference.
+noise_autocorr :: proc(x: []f32, lag: int) -> f64 {
+	n := len(x) - lag
+	if lag <= 0 || n <= 0 {return 0}
+	num, ea, eb := 0.0, 0.0, 0.0
+	for i in 0 ..< n {
+		u := f64(x[i])
+		v := f64(x[i + lag])
+		num += u * v
+		ea += u * u
+		eb += v * v
+	}
+	if ea <= 0 || eb <= 0 {return 0}
+	return num / math.sqrt(ea * eb)
+}
+
+// The behaviour end to end: a synced noise oscillator 2 must come out periodic
+// at oscillator 1's period, and an unsynced one must not.
+//
+// The reference reads 0.966, 0.794 and 0.909 at notes 48, 60 and 72 with sync
+// on, against 0.001, -0.002 and 0.013 with it off. The thresholds below sit
+// well inside that gap rather than on the reference's exact figures, because
+// this engine's oscillator is a PolyBLEP one against the reference's wavetable
+// and the two do not have to agree sample for sample to agree on periodicity.
+@(test)
+test_osc2_noise_under_sync_repeats_at_the_oscillator_1_period :: proc(t: ^testing.T) {
+	FRAMES :: 24000
+	SKIP :: 4800
+
+	for note in ([]int{48, 60, 72}) {
+		hz := 440.0 * math.pow(f64(2.0), f64(note - 69) / 12.0)
+		lag := int(math.round(f64(SR) / hz))
+
+		synced := render_noise_sync(noise_sync_patch(true), note, FRAMES)
+		defer delete(synced)
+		free := render_noise_sync(noise_sync_patch(false), note, FRAMES)
+		defer delete(free)
+
+		r_sync := noise_autocorr(synced[SKIP:], lag)
+		r_free := noise_autocorr(free[SKIP:], lag)
+
+		testing.expectf(t, r_sync > 0.5,
+			"note %v synced noise correlates %.4f at lag %v; the reference reads 0.79 or better",
+			note, r_sync, lag)
+		testing.expectf(t, r_free < 0.15,
+			"note %v unsynced noise correlates %.4f at lag %v; it must not repeat at all",
+			note, r_free, lag)
+	}
+}
+
+// Every route that reaches oscillator 2's pitch, driven to an extreme. None of
+// them may move a noise render, synced or not; all of them must move a saw.
+//
+// The reference answers this with an exact column of zeros on noise and around
+// a full unit of peak difference on a saw, for all seven routes.
+@(test)
+test_osc2_noise_ignores_every_oscillator_2_pitch_route :: proc(t: ^testing.T) {
+	FRAMES :: 12000
+	// Not 60. Key tracking off pins oscillator 2 at note 60, so at note 60 the
+	// "track off" route is a no-op and its saw control could never fire.
+	NOTE :: 67
+
+	Route :: struct {
+		label: string,
+		apply: proc(p: ^patch.Patch),
+	}
+	// Parameters 2 and 3 are direct state indices on a 128-entry table centred
+	// on 64, so the labels are the displays these positions resolve to.
+	routes := []Route {
+		{"osc2 pitch +11 st", proc(p: ^patch.Patch) {p.values[2] = 76}},
+		{"osc2 pitch -11 st", proc(p: ^patch.Patch) {p.values[2] = 52}},
+		{"osc2 pitch -60 st", proc(p: ^patch.Patch) {p.values[2] = 0}},
+		{"osc2 fine +34 cent", proc(p: ^patch.Patch) {p.values[3] = 100}},
+		{"osc2 track off", proc(p: ^patch.Patch) {p.values[4] = 0}},
+		{
+			"mod env -> osc2 pitch",
+			proc(p: ^patch.Patch) {
+				p.values[10] = 1 // modulation envelope on
+				p.values[71] = 0 // destination: oscillator 2 pitch
+				p.values[11] = 127 // amount, display "+63"
+				p.values[12] = 0 // instant attack
+				p.values[13] = 100 // a decay long enough to sweep the note
+			},
+		},
+		{
+			"lfo1 -> osc2 pitch",
+			proc(p: ^patch.Patch) {
+				p.values[57] = 1 // lfo1 on
+				p.values[41] = 1 // display-keyed; display "1" is oscillator 2 pitch
+				p.values[42] = 2
+				p.values[43] = 80
+				p.values[44] = 127 // full depth
+			},
+		},
+	}
+
+	for sync in ([]bool{false, true}) {
+		base_noise := render_noise_sync(noise_sync_patch(sync), NOTE, FRAMES)
+		defer delete(base_noise)
+
+		saw_patch := noise_sync_patch(sync)
+		saw_patch.values[1] = 1 // oscillator 2 = saw, the control
+		base_saw := render_noise_sync(saw_patch, NOTE, FRAMES)
+		defer delete(base_saw)
+
+		for route in routes {
+			moved := noise_sync_patch(sync)
+			route.apply(&moved)
+			got := render_noise_sync(moved, NOTE, FRAMES)
+			defer delete(got)
+
+			worst := f32(0)
+			for i in 0 ..< FRAMES {
+				worst = max(worst, abs(got[i] - base_noise[i]))
+			}
+			testing.expectf(t, worst == 0,
+				"sync=%v, %v moved the noise by %v; the reference reads an exact zero",
+				sync, route.label, worst)
+
+			// Without this the test would also pass if the route were never
+			// applied, or if the patch field had been renumbered.
+			control := saw_patch
+			route.apply(&control)
+			saw := render_noise_sync(control, NOTE, FRAMES)
+			defer delete(saw)
+
+			saw_moved := f32(0)
+			for i in 0 ..< FRAMES {
+				saw_moved = max(saw_moved, abs(saw[i] - base_saw[i]))
+			}
+			testing.expectf(t, saw_moved > 0.01,
+				"sync=%v, %v left a saw render unchanged (%v), so the route never fired",
+				sync, route.label, saw_moved)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Patch binding
 // ---------------------------------------------------------------------------
 

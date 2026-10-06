@@ -152,7 +152,7 @@ apply_params :: proc(s: ^AU) {
 	s.eng.patch = s.mirror
 	s.eng.has_patch = true
 	for i in 0 ..< 2 {
-		if s.eng.params.midi_ctrl[i].cc != params.midi_ctrl[i].cc {
+		if !engine.midi_ctrl_same_source(s.eng.params.midi_ctrl[i], params.midi_ctrl[i]) {
 			s.eng.ctrl_value[i] = 0
 		}
 	}
@@ -275,6 +275,7 @@ au_set_parameter :: proc "c" (self: rawptr, param: u32, scope: u32, element: u32
 MIDI_NOTE_OFF :: 0x80
 MIDI_NOTE_ON :: 0x90
 MIDI_CONTROL_CHANGE :: 0xB0
+MIDI_CHANNEL_PRESSURE :: 0xD0
 MIDI_PITCH_BEND :: 0xE0
 MIDI_BEND_CENTRE :: 8192.0
 
@@ -296,6 +297,9 @@ au_midi_event :: proc "c" (self: rawptr, status_byte: u32, data1: u32, data2: u3
 		engine.engine_note_off(&s.eng, int(data1))
 	case MIDI_CONTROL_CHANGE:
 		engine.engine_control_change(&s.eng, int(data1), int(data2))
+	case MIDI_CHANNEL_PRESSURE:
+		// One data byte; parameters 86 to 89 decide what it moves.
+		engine.engine_channel_pressure(&s.eng, int(data1))
 	case MIDI_PITCH_BEND:
 		raw := int(data1) | (int(data2) << 7)
 		engine.engine_set_pitch_bend(&s.eng, f32((f64(raw) - MIDI_BEND_CENTRE) / MIDI_BEND_CENTRE))

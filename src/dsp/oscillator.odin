@@ -22,19 +22,49 @@ Waveform :: enum u8 {
 // below is expressed as a fraction of one sample's phase advance, and that is
 // only cheap in turns.
 Oscillator :: struct {
-	phase:     f32,
+	phase:        f32,
 	// Phase advance per sample, in turns. Positive; the descending saw gets its
 	// direction from the waveform expression, not from the increment.
-	increment: f32,
-	rng:       Rng,
+	increment:    f32,
+	rng:          Rng,
+	// The generator state the current noise cycle began from.
+	//
+	// Hard sync rewinds `rng` to this, which is what makes a synced noise
+	// oscillator a repeating waveform at the master's period instead of an
+	// endless fresh stream. The anchor itself never advances, so every cycle
+	// replays the same sequence for as long as the note is held.
+	//
+	// Measured on the reference by `s1probe noiseprobe`. With oscillator 2 set
+	// to noise and mixed alone, the normalised autocorrelation of the render at
+	// oscillator 1's own period reads 0.966 at note 48, 0.794 at note 60 and
+	// 0.909 at note 72 with sync on, and the first lag to clear 0.5 implies
+	// 131.1, 262.3 and 527.5 Hz against the notes' own 130.8, 261.6 and 523.3.
+	// So the repeat tracks the master, octave for octave. With sync off the same
+	// renders correlate at 0.001, -0.002 and 0.013, and no lag anywhere in the
+	// search band clears 0.5: unsynced noise does not repeat at all.
+	//
+	// It is also what the vendor changelog describes. v1.05a lists "modify sync
+	// noise reset"; the Japanese readme for the same version is more explicit --
+	// "Sync時のノイズリセット方法に問題があったのを修正", the noise reset method
+	// during sync was wrong and was fixed. A stream that is never reset has no
+	// reset method to get wrong.
+	//
+	// Held per oscillator rather than per voice because Synth1's own history
+	// records "Noise generator on each voice", and because the sub oscillator
+	// and the unison layers each need their own.
+	noise_anchor: Rng,
 	// Held between samples so the noise waveform keeps one value per sample
 	// instead of one per read.
-	noise:     f32,
+	noise:        f32,
 }
 
 oscillator_init :: proc "contextless" (o: ^Oscillator, seed: u32) {
 	o^ = {}
 	rng_init(&o.rng, seed)
+	// The next draw is the first sample of the first cycle, so the anchor is the
+	// seeded state itself. A note-on re-inits, which is what gives each note its
+	// own waveform rather than the whole instrument one fixed noise loop.
+	o.noise_anchor = o.rng
 }
 
 oscillator_set_phase :: proc "contextless" (o: ^Oscillator, phase: f32) {
@@ -161,8 +191,24 @@ oscillator_advance_modulated :: proc "contextless" (
 // Reset the slave oscillator because the master wrapped `wrap_frac` of a sample
 // ago. Advancing by that fraction of the increment puts the slave where it
 // would be if the reset had landed at the true zero crossing.
+//
+// The noise generator is rewound with the phase, so a `Noise` slave restarts the
+// same sequence every cycle and the result is a waveform at the master's pitch
+// rather than a hiss. See `noise_anchor` for the measurement.
+//
+// The rewind is not conditioned on the waveform. `o.noise` is only ever read
+// back by the `Noise` branch of `oscillator_value`, so rewinding the generator
+// under a saw or a pulse slave cannot reach the output, and threading a shape
+// through the sync call to suppress it would buy nothing.
+//
+// Nothing here reads `increment` except the sub-sample phase placement, which is
+// the whole reason oscillator 2's pitch -- and so every modulation routed at it
+// -- cannot move the noise. The sequence is drawn one sample at a time by
+// `oscillator_advance` and restarted by the master, and neither rate depends on
+// the slave's own frequency.
 oscillator_sync :: proc "contextless" (o: ^Oscillator, wrap_frac: f32) {
 	o.phase = clamp32(wrap_frac, 0.0, 1.0) * o.increment
+	o.rng = o.noise_anchor
 }
 
 // The waveform value at the current phase, on roughly -1..1.

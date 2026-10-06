@@ -34,6 +34,7 @@ MIDI_NOTE_OFF :: 0x80
 MIDI_NOTE_ON :: 0x90
 MIDI_CONTROL_CHANGE :: 0xB0
 MIDI_PROGRAM_CHANGE :: 0xC0
+MIDI_CHANNEL_PRESSURE :: 0xD0
 MIDI_PITCH_BEND :: 0xE0
 
 // Bank Select, from the MIDI specification: two controllers that set a pending
@@ -322,6 +323,10 @@ live_handle_midi :: proc(s: ^Live, message: u32) {
 
 	case MIDI_PROGRAM_CHANGE:
 		midi_queue_push(&s.select_queue, message)
+
+	case MIDI_CHANNEL_PRESSURE:
+		// One data byte; parameters 86 to 89 decide what it moves.
+		engine.engine_channel_pressure(&s.eng, int(data1))
 
 	case MIDI_PITCH_BEND:
 		raw := int(data1) | (int(data2) << 7)

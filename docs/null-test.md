@@ -9811,3 +9811,35 @@ which are 1.4 dB short with the level exact.
 Gated: percussion spectral better on 22 patches against 9 and level on 36 against
 12, with the driven subset going 5.932 to 5.852 and 3.168 to 3.077. The factory
 bank has two patches driven that hard and does not move.
+
+
+### Hard-sync noise reset (2026-10-06)
+
+`noiseprobe` isolates oscillator 2 as noise and renders it with hard sync off and
+on. Each configuration is bit-identical across two fresh reference-plugin
+loads. With sync on, the reference and this engine repeat at oscillator 1's
+period. With sync off, neither repeats:
+
+| note | osc1 period | reference, off / on | ours, off / on | first lag past 0.5, reference / ours |
+|---|---:|---:|---:|---:|
+| 48 | 366.9 | 0.00108 / 0.96621 | −0.00448 / 0.98129 | 366 / 366 |
+| 60 | 183.5 | −0.00242 / 0.79381 | −0.00131 / 0.87516 | 183 / 182 |
+| 72 | 91.7 | 0.01261 / 0.90911 | 0.00112 / 0.92444 | 91 / 91 |
+
+No sync-off lag in the search band clears 0.5. The state model follows that
+result: note-on seeds `noise_anchor`, hard sync restores the generator to that
+anchor, and unsynced noise never restores it. Oscillator 2's pitch increment is
+absent from the noise path. All seven pitch routes leave the reference's noise
+render bit-identical with sync off and on, while the saw controls move by
+0.46–1.05 peak.
+
+The factory no-change gate compared executables built from parent `d576c6b` and
+the repair across all 123 loadable `soundbank00` patches. The CSVs are
+byte-identical. Fourteen factory patches use oscillator 2 noise, but none enables
+hard sync, so this change cannot reach the bank.
+
+```powershell
+./build/s1probe.exe noiseprobe "ext/synth1/Synth1/Synth1 VST64.dll" --notes 48,60,72
+./build/s1probe-before.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" ext/synth1/Synth1/soundbank00 --csv build/synced-noise-before.csv
+./build/s1probe.exe compare "ext/synth1/Synth1/Synth1 VST64.dll" ext/synth1/Synth1/soundbank00 --csv build/synced-noise-after.csv
+```

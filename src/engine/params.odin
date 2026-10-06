@@ -298,6 +298,32 @@ Midi_Control :: struct {
 	target: int,
 	// -1..1. Negative inverts, and the centre is no effect.
 	amount: f32,
+	// Which kind of message drives it. `cc` above is only meaningful for
+	// `.Control`.
+	source: Midi_Source,
+}
+
+// The kind of message a controller assignment listens to: the high byte of
+// parameter 86 or 88, a MIDI status on channel 1.
+//
+// Aftertouch and pitch bend are the two the readme adds to control changes
+// ("You can assign major MIDI control change and the channel after touch to
+// arbitrary synthesizer parameter"), and the reference routes both. Measured
+// with `s1probe behavior ctrl`, aimed at oscillator 2's pitch:
+//
+//   53248 (0xD000), channel pressure: 0/32/64/96/127 read 60.000, 67.960,
+//   74.907, 82.960 and 89.907 -- the same pitches as controller 1 at the same
+//   values, so pressure is a controller value like any other.
+//
+//   57344 (0xE000), pitch bend: raw 0/4096/8192/12288/16383 read 29.065,
+//   43.962, 59.920, 74.962 and 89.962. Bipolar: the rest position moves
+//   nothing and each extreme displaces as far as a full controller does.
+Midi_Source :: enum u8 {
+	// Anything else, left inert rather than misread as controller zero.
+	None,
+	Control,
+	Pressure,
+	Bend,
 }
 
 Lfo_Params :: struct {

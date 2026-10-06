@@ -1224,11 +1224,21 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// for what the numbers mean and how that was established.
 	bind_midi_ctrl :: proc(c: ^Midi_Control, p: patch.Patch, src, dest, sens: int) {
 		source := p.values[src]
-		// 0xB0 in the high byte is a control change; the low byte is the
-		// controller number. Anything else -- aftertouch, pitch bend -- is a
-		// source this engine does not route yet, and is left inert rather than
-		// misread as controller zero.
-		c.cc = (source >> 8) == 0xB0 ? source & 0x7F : -1
+		// The high byte is the MIDI status. 0xB0 is a control change and the
+		// low byte its controller number; 0xD0 is channel aftertouch (53248)
+		// and 0xE0 pitch bend (57344), which carry no number. Anything else is
+		// left inert rather than misread as controller zero. See `Midi_Source`.
+		switch source >> 8 {
+		case 0xB0:
+			c.source = .Control
+		case 0xD0:
+			c.source = .Pressure
+		case 0xE0:
+			c.source = .Bend
+		case:
+			c.source = .None
+		}
+		c.cc = c.source == .Control ? source & 0x7F : -1
 		target := p.values[dest]
 		c.target = target >= 0 && target < patch.PARAMETER_COUNT ? target : -1
 		// Signed, centred at the two states that both read "0%".

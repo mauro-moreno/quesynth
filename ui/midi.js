@@ -174,6 +174,12 @@
           }
         }
         break;
+      case 0xD0:
+        // Channel aftertouch: one data byte. Like a controller, everything
+        // goes to the engine, where parameters 86..89 can assign it (source
+        // 53248) to any destination.
+        bridge.send({ type: "pressure", value: d[1] });
+        break;
       case 0xE0:
         // 14 bits across two bytes, centred at 8192, delivered on -1..1.
         var raw = (d[2] << 7) | d[1];

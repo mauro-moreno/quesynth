@@ -463,6 +463,25 @@ voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	}
 }
 
+// How a note-on treats the voice it is given.
+//
+// Mono and legato move one sounding voice from key to key rather than starting
+// a new one, and they differ in what that does to the envelopes. Measured with
+// `s1probe behavior keys` (docs/synth1-behavior-errors.md): with sustain well
+// under the peak, a mono key change takes the level from -28.7 dB back up to
+// the -10.0 dB peak and down again, starting where it was rather than from
+// silence (-17.4 dB in the first 10 ms, where a restart from zero reads -20.2);
+// legato holds -28.7 dB straight through. The filter envelope does the same.
+Note_Start :: enum u8 {
+	// A new note: envelopes from silence, oscillators laid out afresh.
+	Fresh,
+	// Mono changing key: amplitude and filter attacks restart from their
+	// current level.
+	Retrigger,
+	// Legato changing key: amplitude and filter envelopes carry on untouched.
+	Legato,
+}
+
 voice_note_on :: proc(
 	v: ^Voice,
 	p: ^Engine_Params,
@@ -471,7 +490,10 @@ voice_note_on :: proc(
 	sample_rate: f32,
 	seed: u32,
 	glide_from: f32,
-	legato: bool,
+	start: Note_Start,
+	// Another key was down when this one arrived. Parameter 74 ("portament
+	// auto mode") restricts the glide to exactly that case.
+	overlap: bool,
 	global_lfo: ^[2]dsp.Lfo,
 ) {
 	v.active = true
@@ -483,10 +505,8 @@ voice_note_on :: proc(
 
 	// Portamento. `glide_from` is where the pitch starts; the caller supplies
 	// the previous note for a mono line and the new note itself when there is
-	// nothing to glide from. Parameter 74 ("portament auto mode") restricts the
-	// glide to legato playing, which is why it is the caller's `legato` flag
-	// that decides rather than the time alone.
-	glide := p.portamento_time > 0 && (!p.portamento_auto || legato)
+	// nothing to glide from.
+	glide := p.portamento_time > 0 && (!p.portamento_auto || overlap)
 	if glide {
 		v.current_note = glide_from
 		// A one-pole reaching 99.9% of the interval in the portamento time.
@@ -501,20 +521,38 @@ voice_note_on :: proc(
 		v.glide_coef = 0
 	}
 
-	// A legato note keeps the envelopes and existing oscillator phases where they
-	// are, which is the whole point of the mode; every other case restarts them.
-	// The unison layout is still refreshed on every note-on so a fresh or resized
-	// voice can never enter the audio path with unison_count == 0.
-	retrigger := !legato
-	voice_configure_unison(v, p, seed, retrigger)
+	// A legato note keeps the existing oscillator phases, which is the whole
+	// point of the mode; every other case lays them out again. The unison
+	// layout is still refreshed on every note-on so a fresh or resized voice
+	// can never enter the audio path with unison_count == 0.
+	voice_configure_unison(v, p, seed, start != .Legato)
 	voice_apply_params(v, p, sample_rate)
 
-	dsp.envelope_gate_on(&v.amp_env, retrigger)
-	dsp.envelope_gate_on(&v.filter_env, retrigger)
-	if p.mod_env_on {
-		dsp.envelope_gate_on(&v.mod_env, retrigger)
-	} else {
+	switch start {
+	case .Fresh:
+		dsp.envelope_gate_on(&v.amp_env, true)
+		dsp.envelope_gate_on(&v.filter_env, true)
+	case .Retrigger:
+		dsp.envelope_gate_on(&v.amp_env, false)
+		dsp.envelope_gate_on(&v.filter_env, false)
+	case .Legato:
+		// Untouched: re-entering the attack here, even from the current
+		// level, is the mono behaviour, and it is audible as a swell.
+	}
+	// The modulation envelope follows the amplitude and filter envelopes, as
+	// measured with `s1probe behavior keys --modenv`. Legato carries it
+	// straight through a key change (29.92 -> 29.40 st, and a decayed envelope
+	// stays at zero); mono restarts the attack from the current level
+	// (29.9 -> 33.9 st), not from zero. A fallback to a held key does the
+	// same: mono 27.43 -> 29.70 st, legato 23.49 -> 23.07 st.
+	//
+	// The unofficial v1.12 manual says this envelope starts "from zero" on
+	// every key. The v1.13 reference does not, and the reference wins; see
+	// docs/synth1-behavior-errors.md, clause 3.
+	if !p.mod_env_on {
 		dsp.envelope_reset(&v.mod_env)
+	} else if start != .Legato {
+		dsp.envelope_gate_on(&v.mod_env, start == .Fresh)
 	}
 
 	for i in 0 ..< 2 {
@@ -835,9 +873,19 @@ voice_process :: proc(
 			osc2_hz = dsp.note_to_hz(note2)
 		} else {
 			// Tracking off fixes oscillator 2's base note, but unison pitch
-			// still separates the alternating layers.
+			// still separates the alternating layers -- and the fine tune and
+			// the unison detune still apply. Measured with `s1probe behavior
+			// osc2track`: "+50 cent" takes the reference's untracked
+			// oscillator 2 from 220.02 to 226.49 Hz, and two layers at detune
+			// 127 split it to 213.73 and 226.49 Hz. Key shift does *not*
+			// apply (220.02 Hz either way), so it stays out. That the
+			// reference's fixed pitch is 220 Hz and this one's is middle C is
+			// a separate finding, left alone here; see
+			// docs/synth1-behavior-errors.md.
 			note2 :=
 				60.0 + layer_pitch +
+				u.detune / CENTS_PER_SEMITONE +
+				p.fine_tune_cents / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones

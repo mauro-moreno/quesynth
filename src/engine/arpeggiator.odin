@@ -258,11 +258,33 @@ arp_process :: proc(e: ^Engine, params: ^Engine_Params) {
 }
 
 arp_trigger :: proc(e: ^Engine, params: ^Engine_Params) {
-	arp_silence(e)
 	note, ok := arp_step_note(e, params, e.arp.step)
 	if !ok {
+		arp_silence(e)
 		return
 	}
+
+	// At gate 127 the previous step is still held when this one starts, and in
+	// mono and legato that makes the step an overlapping key: the same voice
+	// moves to the new note, legato without retriggering, mono restarting its
+	// attack from where it is, and auto portamento gliding. Measured with
+	// `s1probe behavior arp` (docs/synth1-behavior-errors.md, clause 7); the
+	// manual's gate description recommends exactly this pairing. A step that
+	// was released by a shorter gate is a fresh note, which the reference
+	// also plays.
+	if params.play_mode != .Poly && e.arp.sounding >= 0 {
+		for i in 0 ..< len(e.voices) {
+			v := &e.voices[i]
+			if v.active && v.gate && v.note == e.arp.sounding {
+				engine_move_line(e, v, note, e.arp.velocity)
+				e.arp.sounding = note
+				e.arp.phase += 1
+				return
+			}
+		}
+	}
+
+	arp_silence(e)
 	engine_start_voice(e, note, e.arp.velocity)
 	e.arp.sounding = note
 	e.arp.phase += 1

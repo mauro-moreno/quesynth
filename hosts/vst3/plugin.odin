@@ -167,7 +167,7 @@ apply_params :: proc(p: ^Plugin) {
 	p.eng.patch = p.mirror
 	p.eng.has_patch = true
 	for i in 0 ..< 2 {
-		if p.eng.params.midi_ctrl[i].cc != params.midi_ctrl[i].cc {
+		if !engine.midi_ctrl_same_source(p.eng.params.midi_ctrl[i], params.midi_ctrl[i]) {
 			p.eng.ctrl_value[i] = 0
 		}
 	}

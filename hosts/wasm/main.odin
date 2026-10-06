@@ -241,6 +241,16 @@ synth_control_change :: proc "c" (slot: i32, cc: i32, value: i32) {
 	engine.engine_control_change(&g_engines[slot], int(cc), int(value))
 }
 
+// Channel aftertouch, 0..127. Like a control change, what it moves is the
+// patch's decision: an assignment whose source is 53248 (0xD000).
+@(export)
+synth_channel_pressure :: proc "c" (slot: i32, value: i32) {
+	context = wasm_context()
+	if !g_ready || !slot_ok(slot) {return}
+	slot_initialize(int(slot))
+	engine.engine_channel_pressure(&g_engines[slot], int(value))
+}
+
 @(export)
 synth_set_tempo :: proc "c" (slot: i32, bpm: f32) {
 	context = wasm_context()
