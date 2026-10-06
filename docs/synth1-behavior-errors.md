@@ -620,7 +620,7 @@ logs are build/behavior/gate-*.log.
 | `pwsh tools/build-vst3.ps1` + `tools/vst3host` on the staged bundle | OK, peak 0.090877 |
 | `odin check hosts/au -no-entry-point -target:darwin_arm64` (editor on and off) | ok (type check only; AU build, auval and pluginval need macOS) |
 | `odin check tests/standalone -target:linux_amd64 -no-entry-point` | ok |
-| process | `git merge-base HEAD 36481ee` = 36481ee; 11 commits in `36481ee..HEAD`, all unsigned like their neighbours; `git diff --check 36481ee..HEAD` clean; no `make(`/`new(`/`append(`/`core:os`/`core:fmt` added under `src/dsp` or `src/engine` |
+| process | `git merge-base HEAD 36481ee` = 36481ee; 12 commits in `36481ee..HEAD`, all unsigned like their neighbours; `git diff --check 36481ee..HEAD` clean; no `make(`/`new(`/`append(`/`core:os`/`core:fmt` added under `src/dsp` or `src/engine` |
 | `specs/` | `?? specs/` untracked; `specs/2026-09-28-sequencer.md` SHA256 `807053ad…ce54`, unchanged |
 
 ## Parent host and browser validation (P10)
