@@ -1100,19 +1100,19 @@ test_state_rejects_a_foreign_or_truncated_blob :: proc(t: ^testing.T) {
 	testing.expect(t, !state.load(plugin, &short_stream.input), "a truncated blob was accepted")
 }
 
-// -- the shared state format, against bytes written out by hand --------------
+// -- the state format, against bytes written out by hand ---------------------
 //
 // Nothing below builds a blob with the plugin's own encoder and reads it back
 // with its decoder: two halves of one mistake agree with each other, and that
 // is how a layout error survives a whole test suite (see CONTRIBUTING). The
-// reference is GOLDEN_STATE, a literal -- the shared "S1OD" format: the magic,
-// a little-endian u32 version of 1, a little-endian u32 parameter count of 99,
+// reference is GOLDEN_STATE, a literal -- the "S1OD" format: the magic, a
+// little-endian u32 version of 1, a little-endian u32 parameter count of 99,
 // then one little-endian i32 per parameter in parameter order, verbatim.
 //
-// It is the same literal, byte for byte, as GOLDEN_STATE in
-// tests/vst3/state_test.odin. The two plugin formats have to write and accept
-// the same bytes, and keeping one copy in each suite -- rather than one suite
-// importing the other -- is what makes a drift in either of them a failing test.
+// GOLDEN_STATE in tests/vst3/state_test.odin is the same layout under that
+// plugin's version 2, its version 1 being an older layout with no count. Each
+// suite keeps its own literal rather than importing the other's, so a drift
+// in either plugin is a failing test.
 //
 // The values were chosen to be distinctive rather than meaningful: each lies in
 // its parameter's stored range, and a few are there for their bytes -- a

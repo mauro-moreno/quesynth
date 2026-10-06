@@ -62,19 +62,24 @@ Plugin :: struct {
 	values:          [PARAM_COUNT]i32,
 
 	// Staged by the main thread (state load, a parameter set on the
-	// controller, the editor). `staged_seq` is bumped after the values are
-	// written; the audio thread compares it with `applied_seq` at the top of a
-	// block.
+	// controller, the editor), one parameter at a time. `staged_seq[i]` is
+	// bumped after `staged[i]` is written; the audio thread compares it with
+	// `applied_seq[i]` at the top of a block and takes up only the parameters
+	// whose sequence moved.
 	//
-	// This is a sequence handshake, not a lock: a process() call that runs
-	// exactly while the main thread is mid-write can observe a mix of the old
-	// and new set for one block, and will observe the complete new set on the
-	// next one, because the sequence is stored last. It never reads
-	// uninitialised memory and it never blocks the audio thread, which is the
-	// property that matters here.
+	// Per parameter, because a whole set staged for one knob carried every
+	// other parameter as the main thread last saw it, and taking it up put
+	// back whatever the audio thread's own automation or a program change had
+	// done to them in the meantime.
+	//
+	// This is a sequence handshake, not a lock: a block that runs while the
+	// main thread is part way through staging a whole set takes up the
+	// parameters staged so far and the rest at the next block. Every value and
+	// sequence is one atomic word, so none is ever seen half-written, and the
+	// audio thread never blocks, which is the property that matters here.
 	staged:          [PARAM_COUNT]i32,
-	staged_seq:      u32,
-	applied_seq:     u32,
+	staged_seq:      [PARAM_COUNT]u32,
+	applied_seq:     [PARAM_COUNT]u32,
 
 	// Scratch for rebinding, held in the struct so a rebind on the audio thread
 	// does not depend on stack size.
@@ -171,46 +176,60 @@ apply_params :: proc(p: ^Plugin) {
 	p.params_dirty = false
 }
 
-// Stage a full parameter set from the main thread.
-stage_values :: proc "contextless" (p: ^Plugin, values: [PARAM_COUNT]i32) {
-	p.staged = values
-	intrinsics.atomic_store_explicit(&p.staged_seq, p.staged_seq + 1, .Release)
-
-	// When the plugin is not active there is no audio thread to hand the set
-	// to, so it is adopted immediately; `setActive` builds the engine from it.
+// Stage one parameter from the main thread.
+//
+// When the plugin is not active there is no audio thread to hand it to, so it
+// is adopted immediately; `setActive` builds the engine from it.
+stage_value :: proc "contextless" (p: ^Plugin, index: int, value: i32) {
+	stage_one(p, index, value)
 	if !p.active {
 		sync_staged(p)
 	}
 }
 
-// Adopt a set the main thread staged: at the top of a block, and wherever the
+// Stage every parameter `values` carries, from the first: a state load, a
+// program, a patch from the panel. Each of them replaces what it carries.
+stage_values :: proc "contextless" (p: ^Plugin, values: []i32) {
+	for i in 0 ..< min(len(values), PARAM_COUNT) {
+		stage_one(p, i, values[i])
+	}
+	if !p.active {
+		sync_staged(p)
+	}
+}
+
+// Only the main thread writes `staged` and `staged_seq`, so its plain read of
+// its own sequence is not a race.
+stage_one :: proc "contextless" (p: ^Plugin, index: int, value: i32) {
+	intrinsics.atomic_store_explicit(&p.staged[index], value, .Relaxed)
+	intrinsics.atomic_store_explicit(&p.staged_seq[index], p.staged_seq[index] + 1, .Release)
+}
+
+// Adopt what the main thread staged: at the top of a block, and wherever the
 // main thread is about to rebuild the engine from `values`.
 sync_staged :: proc "contextless" (p: ^Plugin) {
-	seq := intrinsics.atomic_load_explicit(&p.staged_seq, .Acquire)
-	if seq == p.applied_seq {
-		return
+	for i in 0 ..< PARAM_COUNT {
+		seq := intrinsics.atomic_load_explicit(&p.staged_seq[i], .Acquire)
+		if seq == p.applied_seq[i] {
+			continue
+		}
+		intrinsics.atomic_store_explicit(&p.values[i], intrinsics.atomic_load_explicit(&p.staged[i], .Relaxed), .Relaxed)
+		intrinsics.atomic_store_explicit(&p.applied_seq[i], seq, .Release)
+		p.params_dirty = true
 	}
-	p.values = p.staged
-	p.applied_seq = seq
-	p.params_dirty = true
 }
 
-// True when the main thread has staged a set the audio thread has not adopted.
-staged_pending :: proc "contextless" (p: ^Plugin) -> bool {
-	return intrinsics.atomic_load_explicit(&p.staged_seq, .Acquire) != p.applied_seq
-}
-
-// The parameter set as the main thread should see it: what it last staged
-// until the audio thread has taken that over, and what the audio thread holds
-// otherwise. Everything on the main thread that reports or builds on the
-// current values goes through here, so a set staged a moment ago is already
-// the answer even though the audio thread will not adopt it until its next
-// block.
-main_thread_values :: proc "contextless" (p: ^Plugin) -> ^[PARAM_COUNT]i32 {
-	if staged_pending(p) {
-		return &p.staged
+// A parameter as the main thread should see it: what it last staged until
+// the audio thread has taken that up, and what the audio thread holds
+// otherwise -- that thread's own automation and program changes included.
+// Everything on the main thread that reports or compares against the current
+// values goes through here, so a value staged a moment ago is already the
+// answer even though the audio thread will not adopt it until its next block.
+main_thread_value :: proc "contextless" (p: ^Plugin, index: int) -> i32 {
+	if intrinsics.atomic_load_explicit(&p.applied_seq[index], .Acquire) != p.staged_seq[index] {
+		return p.staged[index]
 	}
-	return &p.values
+	return intrinsics.atomic_load_explicit(&p.values[index], .Relaxed)
 }
 
 // A parameter's normalised 0..1 value, which is what VST3 trades in, from its
@@ -652,7 +671,7 @@ apply_parameter_changes :: proc(p: ^Plugin, changes: ^vst3.IParameterChanges) {
 		}
 		stored := stored_of(int(id), value)
 		if p.values[id] != stored {
-			p.values[id] = stored
+			intrinsics.atomic_store_explicit(&p.values[id], stored, .Relaxed)
 			p.params_dirty = true
 		}
 	}
@@ -820,7 +839,7 @@ controller_get_param_normalized :: proc "c" (this: rawptr, id: u32) -> f64 {
 	if int(id) >= PARAM_COUNT {
 		return 0
 	}
-	return normalized_of(int(id), main_thread_values(p)[id])
+	return normalized_of(int(id), main_thread_value(p, int(id)))
 }
 
 controller_set_param_normalized :: proc "c" (this: rawptr, id: u32, value: f64) -> vst3.Result {
@@ -845,15 +864,13 @@ controller_set_param_normalized :: proc "c" (this: rawptr, id: u32, value: f64) 
 		return vst3.INVALID_ARGUMENT
 	}
 	stored := stored_of(int(id), value)
-	values := main_thread_values(p)^
-	if values[id] != stored {
-		values[id] = stored
+	if main_thread_value(p, int(id)) != stored {
 		// Staged, not written: `values` is the audio thread's, and rebinding
 		// the engine from this thread while `process` renders is a race over
-		// the whole parameter block. It takes the set up at the top of its
+		// the whole parameter block. It takes the value up at the top of its
 		// next block, which is soon enough for a knob turned while stopped to
 		// be audible.
-		stage_values(p, values)
+		stage_value(p, int(id), stored)
 		// And shown, if the panel is open: this call is how a host reports an
 		// automation lane or its own generic control moving, and the web view
 		// has no other way to hear about it.

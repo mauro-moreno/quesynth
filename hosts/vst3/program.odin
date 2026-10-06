@@ -1,5 +1,7 @@
 package synth_vst3
 
+import "base:intrinsics"
+
 import "../../src/patch"
 import "../panel"
 
@@ -88,7 +90,7 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 	for i in 0 ..< PARAM_COUNT {
 		wanted := values[i]
 		if p.values[i] != wanted {
-			p.values[i] = wanted
+			intrinsics.atomic_store_explicit(&p.values[i], wanted, .Relaxed)
 			changed = true
 		}
 	}
@@ -116,7 +118,10 @@ stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 	}
 	// A program is the whole patch, so there is nothing of the current set to
 	// carry over; and a program the instrument already holds changes nothing.
-	if values != main_thread_values(p)^ {
-		stage_values(p, values)
+	for i in 0 ..< PARAM_COUNT {
+		if values[i] != main_thread_value(p, i) {
+			stage_values(p, values[:])
+			return
+		}
 	}
 }

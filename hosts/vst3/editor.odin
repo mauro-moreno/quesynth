@@ -54,9 +54,8 @@ editor_read_values :: proc(user: rawptr, out: []i32) {
 	}
 	// The main thread's picture, so a state load that has been staged and not
 	// yet adopted by the audio thread is what the panel is shown.
-	values := main_thread_values(ed.plugin)
 	for i in 0 ..< min(len(out), PARAM_COUNT) {
-		out[i] = values[i]
+		out[i] = main_thread_value(ed.plugin, i)
 	}
 }
 
@@ -66,14 +65,11 @@ editor_set_param :: proc(user: rawptr, index: int, stored: i32) {
 		return
 	}
 	p := ed.plugin
-	// Staged rather than written into `values`: that is the audio thread's, and
-	// a set staged a moment ago would overwrite a plain write at its next
-	// block. Starting from the main thread's picture keeps this edit on top of
-	// it, and `process` rebinds on the audio thread when it next runs, so the
-	// engine is never rebuilt underneath a render.
-	values := main_thread_values(p)^
-	values[index] = stored
-	stage_values(p, values)
+	// Staged rather than written into `values`, which is the audio thread's,
+	// and only this parameter: the others stay as that thread has them.
+	// `process` rebinds when it next runs, so the engine is never rebuilt
+	// underneath a render.
+	stage_value(p, index, stored)
 	// And told to the host, or the move exists only inside the web view -- no
 	// automation recorded, and a session saved without it.
 	if p.handler != nil {
@@ -89,21 +85,17 @@ editor_set_state :: proc(user: rawptr, values: []i32) {
 	}
 	p := ed.plugin
 	count := min(len(values), PARAM_COUNT)
-	// One staged set for the whole patch, built on the main thread's picture
-	// for the same reason as in `editor_set_param`. Rebinding ninety-nine times
-	// on the way to one sound is what staging it once avoids.
-	set := main_thread_values(p)^
-	for i in 0 ..< count {
-		set[i] = values[i]
-	}
-	stage_values(p, set)
+	// Every value the panel sent, staged together: the audio thread takes them
+	// up at the top of one block and rebinds once. Rebinding ninety-nine times
+	// on the way to one sound is what that avoids.
+	stage_values(p, values[:count])
 
 	// Every parameter reported, or the host keeps the old automation values and
 	// writes them back over this the moment the transport moves.
 	if p.handler != nil {
 		handler := (^vst3.IComponentHandler)(p.handler)
 		for i in 0 ..< count {
-			handler.vtbl.perform_edit(p.handler, u32(i), normalized_of(i, set[i]))
+			handler.vtbl.perform_edit(p.handler, u32(i), normalized_of(i, values[i]))
 		}
 	}
 }

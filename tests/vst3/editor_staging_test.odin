@@ -150,3 +150,68 @@ a_single_edit_from_the_editor_is_staged_and_reported :: proc(t: ^testing.T) {
 	process_block(t, p)
 	testing.expect_value(t, p.values[CUTOFF], turned)
 }
+
+// A knob turned on the panel, as `during` runs it.
+Editor_Knob :: struct {
+	ed:     rawptr,
+	index:  int,
+	stored: i32,
+}
+
+turn_on_the_editor :: proc(user: rawptr) {
+	k := (^Editor_Knob)(user)
+	synth.editor_set_param(k.ed, k.index, k.stored)
+}
+
+// A knob turned on the panel while a block applies the host's automation of
+// another parameter, or a program change: the panel is shown both between the
+// blocks, and the next block takes up the knob without taking the block's own
+// change back.
+@(test)
+an_editor_knob_turned_during_a_block_keeps_that_blocks_automation_and_program :: proc(t: ^testing.T) {
+	for program_change in ([]bool{false, true}) {
+		p := make_active_plugin(t)
+		if p == nil {return}
+		defer synth.release(p)
+		ed := synth.Editor {
+			plugin = p,
+		}
+		synth.plugin_set_bank(p, TWO_PATCH_BANK, false)
+
+		AUTOMATED :: 19
+		TURNED :: 33
+		before := p.values
+		expected := before
+		point: Parameter_Point
+		if program_change {
+			program, filled := patch.slots_patch(&p.slots, 1)
+			testing.expect(t, filled, "slot 1 is empty")
+			expected = program
+			point = Parameter_Point {
+				id    = synth.PROGRAM_PARAM_ID,
+				value = synth.program_normalized(1),
+			}
+		} else {
+			expected[AUTOMATED] = other_than(before[AUTOMATED])
+			point = Parameter_Point {
+				id    = AUTOMATED,
+				value = synth.normalized_of(AUTOMATED, expected[AUTOMATED]),
+			}
+		}
+		testing.expect(t, expected != before, "the block changes nothing, so this proves nothing")
+		expected[TURNED] = other_than(expected[TURNED])
+
+		knob := Editor_Knob{rawptr(&ed), TURNED, expected[TURNED]}
+		point.during = turn_on_the_editor
+		point.user = &knob
+		process_block(t, p, &point)
+
+		shown: [patch.PARAMETER_COUNT]i32
+		synth.editor_read_values(rawptr(&ed), shown[:])
+		testing.expectf(t, shown == expected, "program change %v: the panel is shown %v between the blocks, not %v", program_change, shown, expected)
+
+		process_block(t, p)
+		testing.expectf(t, p.values == expected, "program change %v: the next block holds %v, not %v", program_change, p.values, expected)
+		expect_engine_holds(t, p, expected, "after the next block")
+	}
+}

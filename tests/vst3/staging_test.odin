@@ -1,5 +1,6 @@
 package vst3_tests
 
+import "base:runtime"
 import "core:testing"
 
 import "../../src/patch"
@@ -36,11 +37,18 @@ make_active_plugin :: proc(t: ^testing.T) -> ^synth.Plugin {
 // automation to the audio thread. Both interfaces are this one struct: the
 // changes list is its first field, and the queue the list hands out is the
 // second, found again by subtracting its offset.
+//
+// `during`, if set, runs once, when `process` reads the point and before it
+// has applied it: the main thread doing something in the middle of a block,
+// at a moment a test can name instead of one a scheduler picks.
 Parameter_Point :: struct {
 	changes: vst3.IParameterChanges,
 	queue:   vst3.IParamValueQueue,
 	id:      u32,
 	value:   f64,
+	during:  proc(user: rawptr),
+	user:    rawptr,
+	ctx:     runtime.Context,
 }
 
 POINT_CHANGES_VTBL := vst3.IParameterChanges_Vtbl {
@@ -60,8 +68,15 @@ POINT_QUEUE_VTBL := vst3.IParamValueQueue_Vtbl {
 		return 1
 	},
 	get_point = proc "c" (this: rawptr, index: i32, sample_offset: ^i32, value: ^f64) -> vst3.Result {
+		point := (^Parameter_Point)(uintptr(this) - offset_of(Parameter_Point, queue))
+		if point.during != nil {
+			context = point.ctx
+			during := point.during
+			point.during = nil
+			during(point.user)
+		}
 		sample_offset^ = 0
-		value^ = (^Parameter_Point)(uintptr(this) - offset_of(Parameter_Point, queue)).value
+		value^ = point.value
 		return vst3.RESULT_OK
 	},
 }
@@ -84,6 +99,7 @@ process_block :: proc(t: ^testing.T, p: ^synth.Plugin, point: ^Parameter_Point =
 	if point != nil {
 		point.changes.vtbl = &POINT_CHANGES_VTBL
 		point.queue.vtbl = &POINT_QUEUE_VTBL
+		point.ctx = context
 		data.input_parameter_changes = &point.changes
 	}
 	testing.expect_value(t, synth.processor_process(rawptr(&p.processor_vtbl), &data), vst3.RESULT_OK)
@@ -196,6 +212,129 @@ a_point_in_the_block_lands_on_top_of_a_staged_value :: proc(t: ^testing.T) {
 	testing.expect_value(t, p.values[CUTOFF], automated)
 }
 
+// -- the main thread in the middle of a block --------------------------------
+//
+// A knob is one parameter, and handing it over must not hand over the rest of
+// the set as the main thread last saw it: by the time the audio thread takes
+// the knob up, its own automation or a program change may have moved the rest.
+
+// A knob turned on the controller, as `during` runs it.
+Controller_Knob :: struct {
+	p:      ^synth.Plugin,
+	id:     u32,
+	stored: i32,
+}
+
+turn_on_the_controller :: proc(user: rawptr) {
+	k := (^Controller_Knob)(user)
+	synth.controller_set_param_normalized(controller_of(k.p), k.id, synth.normalized_of(int(k.id), k.stored))
+}
+
+@(test)
+a_knob_turned_during_a_block_leaves_that_blocks_automation_alone :: proc(t: ^testing.T) {
+	p := make_active_plugin(t)
+	if p == nil {return}
+	defer synth.release(p)
+
+	AUTOMATED :: 19
+	TURNED :: 33
+	before := p.values
+	expected := before
+	expected[AUTOMATED] = other_than(before[AUTOMATED])
+	expected[TURNED] = other_than(before[TURNED])
+
+	knob := Controller_Knob{p, TURNED, expected[TURNED]}
+	point := Parameter_Point {
+		id     = AUTOMATED,
+		value  = synth.normalized_of(AUTOMATED, expected[AUTOMATED]),
+		during = turn_on_the_controller,
+		user   = &knob,
+	}
+	process_block(t, p, &point)
+
+	// Between the two blocks the main thread sees both: the automation the
+	// audio thread applied, and the knob it has yet to take up.
+	for id in ([]int{AUTOMATED, TURNED}) {
+		testing.expect_value(t, synth.controller_get_param_normalized(controller_of(p), u32(id)), synth.normalized_of(id, expected[id]))
+	}
+	saved, ok := saved_values_of(t, p)
+	testing.expect(t, ok, "no saved state")
+	testing.expect_value(t, saved, expected)
+
+	process_block(t, p)
+	testing.expect_value(t, p.values, expected)
+	expect_engine_holds(t, p, expected, "after the next block")
+
+	// Taken up, the knob is the audio thread's like any other value, and what
+	// the main thread reports follows that thread's later automation of it.
+	later := other_than(expected[TURNED])
+	point = Parameter_Point {
+		id    = TURNED,
+		value = synth.normalized_of(TURNED, later),
+	}
+	process_block(t, p, &point)
+	testing.expect_value(t, synth.controller_get_param_normalized(controller_of(p), TURNED), synth.normalized_of(TURNED, later))
+	saved, ok = saved_values_of(t, p)
+	testing.expect(t, ok, "no saved state")
+	testing.expect_value(t, saved[TURNED], later)
+}
+
+@(test)
+a_knob_turned_during_a_program_change_keeps_the_program :: proc(t: ^testing.T) {
+	p := make_active_plugin(t)
+	if p == nil {return}
+	defer synth.release(p)
+
+	synth.plugin_set_bank(p, TWO_PATCH_BANK, false)
+	expected, filled := patch.slots_patch(&p.slots, 1)
+	testing.expect(t, filled, "slot 1 is empty")
+	testing.expect(t, expected != p.values, "the program is what the plugin started with, so this proves nothing")
+
+	TURNED :: 33
+	expected[TURNED] = other_than(expected[TURNED])
+	knob := Controller_Knob{p, TURNED, expected[TURNED]}
+	point := Parameter_Point {
+		id     = synth.PROGRAM_PARAM_ID,
+		value  = synth.program_normalized(1),
+		during = turn_on_the_controller,
+		user   = &knob,
+	}
+	process_block(t, p, &point)
+	testing.expect_value(t, p.program, i32(1))
+
+	process_block(t, p)
+	testing.expect_value(t, p.values, expected)
+	expect_engine_holds(t, p, expected, "after the next block")
+}
+
+// What the main thread is refused leaves what it had already staged alone.
+@(test)
+a_refused_state_or_parameter_leaves_a_pending_knob_alone :: proc(t: ^testing.T) {
+	p := make_active_plugin(t)
+	if p == nil {return}
+	defer synth.release(p)
+
+	CUTOFF :: 19
+	before := p.values
+	expected := before
+	expected[CUTOFF] = other_than(before[CUTOFF])
+	synth.controller_set_param_normalized(controller_of(p), CUTOFF, synth.normalized_of(CUTOFF, expected[CUTOFF]))
+
+	in_: Memory_Stream
+	memory_stream_init(&in_, 64, LEGACY_STATE[:len(LEGACY_STATE) - 4])
+	defer memory_stream_destroy(&in_)
+	testing.expect(t, synth.component_set_state(rawptr(p), stream_of(&in_)) != vst3.RESULT_OK, "a truncated session was accepted")
+	testing.expect_value(t, synth.controller_set_param_normalized(controller_of(p), u32(patch.PARAMETER_COUNT) + 1, 0.5), vst3.INVALID_ARGUMENT)
+
+	testing.expect_value(t, p.values, before)
+	for i in 0 ..< patch.PARAMETER_COUNT {
+		testing.expect_value(t, synth.controller_get_param_normalized(controller_of(p), u32(i)), synth.normalized_of(i, expected[i]))
+	}
+
+	process_block(t, p)
+	testing.expect_value(t, p.values, expected)
+}
+
 // -- a state load -------------------------------------------------------------
 
 @(test)
@@ -244,17 +383,18 @@ a_state_load_while_active_is_staged_for_the_audio_thread :: proc(t: ^testing.T) 
 
 // -- a program selected on the controller ---------------------------------------
 
+TWO_PATCH_BANK :: `{"format":"quesynth.bank","version":1,"name":"Staged","patches":[
+	{"name":"Zero","parameters":{"osc1 shape":0}},
+	{"name":"One","parameters":{"osc1 shape":3,"amp gain":90}}
+]}`
+
 @(test)
 a_program_selected_on_the_controller_is_staged_for_the_audio_thread :: proc(t: ^testing.T) {
 	p := make_active_plugin(t)
 	if p == nil {return}
 	defer synth.release(p)
 
-	text: string = `{"format":"quesynth.bank","version":1,"name":"Staged","patches":[
-		{"name":"Zero","parameters":{"osc1 shape":0}},
-		{"name":"One","parameters":{"osc1 shape":3,"amp gain":90}}
-	]}`
-	synth.plugin_set_bank(p, text, false)
+	synth.plugin_set_bank(p, TWO_PATCH_BANK, false)
 	wanted, filled := patch.slots_patch(&p.slots, 1)
 	testing.expect(t, filled, "slot 1 is empty")
 	before := p.values

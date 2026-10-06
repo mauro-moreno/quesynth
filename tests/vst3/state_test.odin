@@ -12,14 +12,20 @@ import synth "../../hosts/vst3"
 // Nothing here builds a blob with the plugin's own encoder and reads it back
 // with its decoder: two halves of one mistake agree with each other, and that
 // is how a layout error survives a whole test suite (see CONTRIBUTING). The
-// reference is GOLDEN_STATE, a literal -- the shared "S1OD" format: the magic,
-// a little-endian u32 version of 1, a little-endian u32 parameter count of 99,
+// references are literals, one per layout this plugin reads.
+//
+// GOLDEN_STATE is version 2, the one it writes: the "S1OD" magic, a
+// little-endian u32 version of 2, a little-endian u32 parameter count of 99,
 // then one little-endian i32 per parameter in parameter order, verbatim.
 //
-// It is the same literal, byte for byte, as GOLDEN_STATE in
-// tests/clap/clap_test.odin. The two plugin formats have to write and accept the
-// same bytes, and keeping one copy in each suite -- rather than one suite
-// importing the other -- is what makes a drift in either of them a failing test.
+// LEGACY_STATE is version 1, what every build before the count wrote: the
+// magic, a version of 1, and the same values straight after it with no count.
+// A session saved by one of those builds has to come back as it was saved,
+// not shifted along by a count it never had.
+//
+// The CLAP plugin's blob is the version 2 layout under a version of 1 -- it had
+// its count from the start -- so tests/clap/clap_test.odin keeps a golden of
+// its own rather than sharing this one.
 //
 // The values were chosen to be distinctive rather than meaningful: each lies in
 // its parameter's stored range, and a few are there for their bytes -- a
@@ -28,7 +34,7 @@ import synth "../../hosts/vst3"
 
 GOLDEN_STATE := [?]u8 {
 	'S', '1', 'O', 'D', // magic
-	0x01, 0x00, 0x00, 0x00, // version 1
+	0x02, 0x00, 0x00, 0x00, // version 2
 	0x63, 0x00, 0x00, 0x00, // 99 parameters
 	0x03, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x11, 0x00, 0x00, 0x00,  0x18, 0x00, 0x00, 0x00, // 0..3
 	0x01, 0x00, 0x00, 0x00,  0x26, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 4..7
@@ -70,8 +76,41 @@ GOLDEN_VALUES := [?]i32 {
 	3, 0, 49,
 }
 
-// Bytes of the header: magic, version, count.
+// GOLDEN_VALUES again, as a version 1 session holds them.
+LEGACY_STATE := [?]u8 {
+	'S', '1', 'O', 'D', // magic
+	0x01, 0x00, 0x00, 0x00, // version 1, and no count
+	0x03, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x11, 0x00, 0x00, 0x00,  0x18, 0x00, 0x00, 0x00, // 0..3
+	0x01, 0x00, 0x00, 0x00,  0x26, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 4..7
+	0x3B, 0x00, 0x00, 0x00,  0xFD, 0xFF, 0xFF, 0xFF,  0x01, 0x00, 0x00, 0x00,  0x50, 0x00, 0x00, 0x00, // 8..11
+	0x57, 0x00, 0x00, 0x00,  0x5E, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x6C, 0x00, 0x00, 0x00, // 12..15
+	0x73, 0x00, 0x00, 0x00,  0x7A, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x08, 0x00, 0x00, 0x00, // 16..19
+	0x0F, 0x00, 0x00, 0x00,  0x80, 0x00, 0x00, 0x00,  0x1D, 0x00, 0x00, 0x00,  0x24, 0x00, 0x00, 0x00, // 20..23
+	0x01, 0x00, 0x00, 0x00,  0x32, 0x00, 0x00, 0x00,  0x39, 0x00, 0x00, 0x00,  0x40, 0x00, 0x00, 0x00, // 24..27
+	0x47, 0x00, 0x00, 0x00,  0x4E, 0x00, 0x00, 0x00,  0x55, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 28..31
+	0x03, 0x00, 0x00, 0x00,  0x6A, 0x00, 0x00, 0x00,  0x71, 0x00, 0x00, 0x00,  0x78, 0x00, 0x00, 0x00, // 32..35
+	0x7F, 0x00, 0x00, 0x00,  0x06, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00,  0x14, 0x00, 0x00, 0x00, // 36..39
+	0x08, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00,  0x03, 0x00, 0x00, 0x00,  0x30, 0x00, 0x00, 0x00, // 40..43
+	0x37, 0x00, 0x00, 0x00,  0x3E, 0x00, 0x00, 0x00,  0x05, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00, // 44..47
+	0x53, 0x00, 0x00, 0x00,  0x5A, 0x00, 0x00, 0x00,  0x61, 0x00, 0x00, 0x00,  0x68, 0x00, 0x00, 0x00, // 48..51
+	0x6F, 0x00, 0x00, 0x00,  0x76, 0x00, 0x00, 0x00,  0x7D, 0x00, 0x00, 0x00,  0x04, 0x00, 0x00, 0x00, // 52..55
+	0x0B, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 56..59
+	0x27, 0x00, 0x00, 0x00,  0x2E, 0x00, 0x00, 0x00,  0x35, 0x00, 0x00, 0x00,  0x3C, 0x00, 0x00, 0x00, // 60..63
+	0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 64..67
+	0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x02, 0x00, 0x00, 0x00, // 68..71
+	0x7B, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x10, 0x00, 0x00, 0x00, // 72..75
+	0x17, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x09, 0x00, 0x00, 0x00,  0x2C, 0x00, 0x00, 0x00, // 76..79
+	0x33, 0x00, 0x00, 0x00,  0x3A, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x48, 0x00, 0x00, 0x00, // 80..83
+	0x4F, 0x00, 0x00, 0x00,  0x56, 0x00, 0x00, 0x00,  0x01, 0xB1, 0x00, 0x00,  0x64, 0x02, 0x00, 0x00, // 84..87
+	0x6B, 0x02, 0x00, 0x00,  0xFF, 0xFF, 0x00, 0x00,  0x79, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, // 88..91
+	0x07, 0x00, 0x00, 0x00,  0x06, 0x00, 0x00, 0x00,  0x01, 0x00, 0x00, 0x00,  0x1C, 0x00, 0x00, 0x00, // 92..95
+	0x03, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,  0x31, 0x00, 0x00, 0x00, // 96..98
+}
+
+// Bytes of the header: magic, version, count -- and of version 1's, which has
+// no count.
 HEADER :: 12
+LEGACY_HEADER :: 8
 
 // -- an in-memory IBStream ---------------------------------------------------
 //
@@ -150,10 +189,22 @@ expect_values_are_the_defaults_from :: proc(t: ^testing.T, p: ^synth.Plugin, fro
 	}
 }
 
-// -- the golden blob ---------------------------------------------------------
+// -- the golden blobs --------------------------------------------------------
+
+expect_saves_the_golden :: proc(t: ^testing.T, p: ^synth.Plugin, what: string) {
+	out: Memory_Stream
+	memory_stream_init(&out, 7)
+	defer memory_stream_destroy(&out)
+	testing.expect_value(t, synth.component_get_state(rawptr(p), stream_of(&out)), vst3.RESULT_OK)
+
+	testing.expectf(t, len(out.data) == len(GOLDEN_STATE), "%s: saved %d bytes, the golden is %d", what, len(out.data), len(GOLDEN_STATE))
+	for i in 0 ..< min(len(out.data), len(GOLDEN_STATE)) {
+		testing.expectf(t, out.data[i] == GOLDEN_STATE[i], "%s: byte %d is 0x%02X, the golden says 0x%02X", what, i, out.data[i], GOLDEN_STATE[i])
+	}
+}
 
 @(test)
-save_state_writes_the_shared_golden_blob :: proc(t: ^testing.T) {
+save_state_writes_the_version_2_golden_blob :: proc(t: ^testing.T) {
 	// The golden values are written for this many parameters. If the table
 	// grows the format has not changed but the blob has: write a new golden
 	// deliberately rather than letting this one drift.
@@ -166,20 +217,11 @@ save_state_writes_the_shared_golden_blob :: proc(t: ^testing.T) {
 	for i in 0 ..< len(GOLDEN_VALUES) {
 		p.values[i] = GOLDEN_VALUES[i]
 	}
-
-	out: Memory_Stream
-	memory_stream_init(&out, 7)
-	defer memory_stream_destroy(&out)
-	testing.expect_value(t, synth.component_get_state(rawptr(p), stream_of(&out)), vst3.RESULT_OK)
-
-	testing.expect_value(t, len(out.data), len(GOLDEN_STATE))
-	for i in 0 ..< min(len(out.data), len(GOLDEN_STATE)) {
-		testing.expectf(t, out.data[i] == GOLDEN_STATE[i], "byte %d is 0x%02X, the golden says 0x%02X", i, out.data[i], GOLDEN_STATE[i])
-	}
+	expect_saves_the_golden(t, p, "saved")
 }
 
 @(test)
-load_state_reads_the_shared_golden_blob :: proc(t: ^testing.T) {
+load_state_reads_the_version_2_golden_blob_and_saves_it_back :: proc(t: ^testing.T) {
 	p := synth.make_plugin()
 	if p == nil {return}
 	defer synth.release(p)
@@ -193,21 +235,15 @@ load_state_reads_the_shared_golden_blob :: proc(t: ^testing.T) {
 	for i in 0 ..< len(GOLDEN_VALUES) {
 		testing.expectf(t, p.values[i] == GOLDEN_VALUES[i], "parameter %d loaded as %d, the golden says %d", i, p.values[i], GOLDEN_VALUES[i])
 	}
+	expect_saves_the_golden(t, p, "saved back")
 }
 
-// -- a blob from a build with a different parameter table --------------------
-
-// Fewer parameters than this build has: the ones the two share are loaded, and
-// every other parameter is its reference default -- not what the instance held
-// beforehand.
+// A session from before the count: every value where it was saved, and saved
+// again in the current layout. Bytes after the last value were never read by
+// the build that wrote it, and are not read now.
 @(test)
-a_blob_with_fewer_parameters_loads_the_shared_ones_and_defaults_the_rest :: proc(t: ^testing.T) {
-	SHARED :: 10
-
-	// Ten parameters declared and exactly ten present, and ten declared with
-	// the whole golden set following: the count, not how much follows, says how
-	// much of it is the state.
-	for with_trailing_values in ([]bool{false, true}) {
+a_version_1_session_loads_unshifted_and_saves_as_version_2 :: proc(t: ^testing.T) {
+	for with_trailing_bytes in ([]bool{false, true}) {
 		p := synth.make_plugin()
 		if p == nil {return}
 		defer synth.release(p)
@@ -215,21 +251,58 @@ a_blob_with_fewer_parameters_loads_the_shared_ones_and_defaults_the_rest :: proc
 
 		blob := make([dynamic]u8)
 		defer delete(blob)
-		append(&blob, ..GOLDEN_STATE[:])
-		blob[8] = SHARED
-		if !with_trailing_values {
-			resize(&blob, HEADER + SHARED * 4)
+		append(&blob, ..LEGACY_STATE[:])
+		if with_trailing_bytes {
+			append(&blob, 1, 0, 0, 0, 2, 0, 0, 0)
 		}
 
 		in_: Memory_Stream
-		memory_stream_init(&in_, 64, blob[:])
+		memory_stream_init(&in_, 5, blob[:])
 		defer memory_stream_destroy(&in_)
 		testing.expect_value(t, synth.component_set_state(rawptr(p), stream_of(&in_)), vst3.RESULT_OK)
 
-		for i in 0 ..< SHARED {
-			testing.expectf(t, p.values[i] == GOLDEN_VALUES[i], "shared parameter %d loaded as %d, the blob says %d", i, p.values[i], GOLDEN_VALUES[i])
+		for i in 0 ..< len(GOLDEN_VALUES) {
+			testing.expectf(t, p.values[i] == GOLDEN_VALUES[i], "parameter %d loaded as %d, the version 1 session says %d", i, p.values[i], GOLDEN_VALUES[i])
 		}
-		expect_values_are_the_defaults_from(t, p, SHARED)
+		expect_saves_the_golden(t, p, "re-saved version 1 session")
+	}
+}
+
+// -- a blob from a build with a different parameter table --------------------
+
+// Fewer parameters than this build has, down to none: the ones the two share
+// are loaded, and every other parameter is its reference default -- not what
+// the instance held beforehand.
+@(test)
+a_blob_with_fewer_parameters_loads_the_shared_ones_and_defaults_the_rest :: proc(t: ^testing.T) {
+	// Each count declared with exactly that many values present, and with the
+	// whole golden set following: the count, not how much follows, says how
+	// much of it is the state.
+	for shared in ([]int{0, 10}) {
+		for with_trailing_values in ([]bool{false, true}) {
+			p := synth.make_plugin()
+			if p == nil {return}
+			defer synth.release(p)
+			move_off_defaults(p)
+
+			blob := make([dynamic]u8)
+			defer delete(blob)
+			append(&blob, ..GOLDEN_STATE[:])
+			blob[8] = u8(shared)
+			if !with_trailing_values {
+				resize(&blob, HEADER + shared * 4)
+			}
+
+			in_: Memory_Stream
+			memory_stream_init(&in_, 64, blob[:])
+			defer memory_stream_destroy(&in_)
+			testing.expectf(t, synth.component_set_state(rawptr(p), stream_of(&in_)) == vst3.RESULT_OK, "%d declared was refused", shared)
+
+			for i in 0 ..< shared {
+				testing.expectf(t, p.values[i] == GOLDEN_VALUES[i], "shared parameter %d loaded as %d, the blob says %d", i, p.values[i], GOLDEN_VALUES[i])
+			}
+			expect_values_are_the_defaults_from(t, p, shared)
+		}
 	}
 }
 
@@ -275,14 +348,21 @@ a_foreign_or_truncated_blob_is_refused_and_changes_nothing :: proc(t: ^testing.T
 	append(&wrong_magic, ..GOLDEN_STATE[:])
 	wrong_magic[0] = 'X'
 
-	other_version := make([dynamic]u8)
-	defer delete(other_version)
-	append(&other_version, ..GOLDEN_STATE[:])
-	other_version[4] = 2
+	version_0 := make([dynamic]u8)
+	defer delete(version_0)
+	append(&version_0, ..GOLDEN_STATE[:])
+	version_0[4] = 0
+
+	version_3 := make([dynamic]u8)
+	defer delete(version_3)
+	append(&version_3, ..GOLDEN_STATE[:])
+	version_3[4] = 3
 
 	// Every length short of the header, then the shared values cut one byte
 	// short, a whole parameter short, and short of what a smaller count claims.
+	// Version 1 has no count, so all of its values are the shared ones.
 	short_of_the_header := GOLDEN_STATE[:HEADER - 1]
+	short_of_the_version := GOLDEN_STATE[:LEGACY_HEADER - 1]
 	no_values := GOLDEN_STATE[:HEADER]
 	one_byte_short := GOLDEN_STATE[:len(GOLDEN_STATE) - 1]
 	one_value_short := GOLDEN_STATE[:len(GOLDEN_STATE) - 4]
@@ -296,13 +376,18 @@ a_foreign_or_truncated_blob_is_refused_and_changes_nothing :: proc(t: ^testing.T
 		bytes: []u8,
 	} {
 		{"foreign magic", wrong_magic[:]},
-		{"version 2", other_version[:]},
+		{"version 0", version_0[:]},
+		{"version 3", version_3[:]},
 		{"an empty stream", nil},
+		{"a version cut short", short_of_the_version},
 		{"a header cut short", short_of_the_header},
 		{"a header and nothing after it", no_values},
 		{"the last value one byte short", one_byte_short},
 		{"the last value missing", one_value_short},
 		{"ten values declared and nine present", nine_of_ten[:]},
+		{"a version 1 header and nothing after it", LEGACY_STATE[:LEGACY_HEADER]},
+		{"a version 1 session one byte short", LEGACY_STATE[:len(LEGACY_STATE) - 1]},
+		{"a version 1 session missing its last value", LEGACY_STATE[:len(LEGACY_STATE) - 4]},
 	}
 	for c in cases {
 		p := synth.make_plugin()

@@ -19,7 +19,8 @@ import "../../src/patch"
 // as this build goes and the surplus ignored. Refusing either would throw away
 // a whole saved patch because a knob was added or removed. Defaults rather than
 // whatever the instance held, so what a load produces never depends on what was
-// loaded before it. hosts/vst3/state.odin writes and reads the same bytes.
+// loaded before it. hosts/vst3/state.odin writes this layout as its version 2;
+// its version 1, from before it had a count, is not this layout.
 //
 // The values are the stored .sy1 integers, written verbatim. Some of them are
 // deliberately outside their own state table -- parameter 21's reference
