@@ -21,7 +21,8 @@ without guessing and without rewriting unrelated DSP:
 1. mono/legato held-key fallback when the newest key is released, retriggering
    amp/filter in mono but not in legato;
 2. auto portamento gliding in mono when keys overlap;
-3. the modulation envelope restarting from zero on every new key, legato too;
+3. the modulation envelope restarting from zero on every new key, legato too
+   (later reversed to follow the reference; see "Slice 3 reversed");
 4. MIDI aftertouch and pitch bend as controller-assignment sources
    53248 (`0xD000`) and 57344 (`0xE000`);
 5. keeping the integrated synced oscillator-2 noise (9f0382e, 36481ee);
@@ -62,7 +63,10 @@ Supervisor decisions on the contradictions measured below (summarised):
 - **Clause 3:** the literal contract controls. The modulation envelope resets to
   zero on every new key, legato included. This is a **requested behaviour
   change, not a reference-matching fix**. The reference and the manual
-  contradict it, and that contradiction is recorded here.
+  contradict it, and that contradiction is recorded here. *Superseded in
+  review: the clause came from the unofficial v1.12 manual, the v1.13
+  reference measured here wins, and the reset was reverted (see "Slice 3
+  reversed").*
 - **Clause 1:** "retrigger" may restart the attack from the current level,
   because the clause does not say "from zero". Shared mono/legato
   sounding-voice transitions are authorised only as far as needed to make mono
@@ -84,7 +88,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 |---|---|---|---|---|---|
 | 1 | releasing the newest key in mono/legato returns to the still-held previous key; mono retriggers amp/filter, legato does not | falls back in both modes; mono restarts the attack from the current level; legato leaves amp and filter alone (see "Clause 1") | `engine_note_off` falls back to the newest held key through `engine_move_line`, shared with the overlapping note-on; `Note_Start` separates fresh, mono retrigger and legato | `tests/dsp/behavior_test.odin`: fallback, non-sounding release, repeated key, overlap retrigger | implemented |
 | 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | `engine_move_line` passes `overlap = true` in both modes | `test_auto_portamento_glides_on_overlapping_keys_in_mono` | implemented (glide time law deferred) |
-| 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | every new key restarts it from zero; a fallback (not a new key) follows the reference | `test_mod_envelope_restarts_from_zero_on_every_new_key` (requested, **not** reference); `test_falling_back_keeps_the_mod_envelope_level` (reference) | requested change; conflicts with the reference |
+| 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | follows the reference: fresh notes start from zero, mono key changes restart the attack from the current level, legato carries it through; new keys and fallbacks alike | `test_new_key_keeps_the_mod_envelope_level`; `test_falling_back_keeps_the_mod_envelope_level` | clause withdrawn; reference behaviour implemented |
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | `Midi_Control.source` (`Midi_Source`); `engine_channel_pressure`; `engine_set_pitch_bend` moves bend-sourced assignments; 0xD0 forwarded by CLAP, AU, standalone (hardware MIDI) and the browser build (`ui/midi.js` → wasm) | `tests/clap/controller_source_test.odin` (plugin MIDI in, pitch out, against the reference); `test_only_pressure_and_bend_sources_follow_pressure_and_bend`; `tests/standalone/pressure_test.odin` (Linux only) | implemented; VST3 deferred |
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none: `git diff 36481ee -- src/dsp/oscillator.odin src/dsp/noise.odin` is empty | existing noise tests in `odin test tests/dsp`; `noiseprobe --notes 48,60,72` rerun reproduces every committed figure | verified unchanged |
 | 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | `delay_process` outputs the shaped read instead of the raw one | `test_delay_tone_shapes_the_first_echo` | implemented |
@@ -101,7 +105,7 @@ Process clauses (user receipt requirements, not product behaviour):
 | P2 | independently verifiable slices, one commit each | `git log --oneline 36481ee..HEAD` | see "Final gates" |
 | P3 | focused regression per implemented slice; the bug-fix test fails on the old code | red run recorded per slice below | done for slices 1–4 and 6–8; slice 4's engine-level and standalone tests target a new entry point, so its red run is the CLAP test |
 | P4 | relevant Odin suites and host builds pass | commands under "Final gates" | see "Final gates" |
-| P5 | numerical external evidence, not self-referential tests | reference columns from `s1probe behavior`, `lfoshape`, `noiseprobe`, `compare` | done; clause 3 is labelled as a requested change *against* the reference |
+| P5 | numerical external evidence, not self-referential tests | reference columns from `s1probe behavior`, `lfoshape`, `noiseprobe`, `compare` | done; clause 3 was withdrawn in favour of the reference |
 | P6 | lower-confidence items measured, then fixed or deferred with rationale | items 8 and 9 | item 8 partial (key shift disproved); item 9 deferred (mono sum disproved) |
 | P7 | `specs/` preserved byte for byte, untracked, never added or ignored | `sha256sum specs/2026-09-28-sequencer.md`; `git status --short` shows `?? specs/` | see "Final gates" |
 | P8 | no guessing, no unrelated DSP rewrite, no PR | deferred list below; no `gh pr` was run | held |
@@ -214,9 +218,8 @@ routed to its pitch. Pitch minus the played key is the envelope.
 | mono, mid-decay | 29.9 → 32.2 → 33.9 st peak: restarted from the current level | from zero |
 
 The manual says the same: in legato "the VCO and VCA envelopes are not
-triggered". Clause 3 is implemented as worded anyway (see the contract
-amendments), and the regression test pins the requested behaviour. It does
-not claim the reference.
+triggered". Clause 3 was first implemented as worded anyway, then reverted in
+review to follow the reference; see "Slice 3 reversed".
 
 ### Clause 4: controller sources
 
@@ -399,6 +402,23 @@ voice gets no chorus at all), and that is deferred with it.
     reference's is about 34). That is the modulation envelope's unmeasured
     24-semitone scale, which is deferred.
 
+### Slice 3 reversed: the modulation envelope follows the reference
+
+- **Why.** Clause 3 came from the unofficial v1.12 manual's wording ("start
+  over from zero each time you press a new key"). This project's rule is that
+  a measurement of the v1.13 binary beats the manual, and the table under
+  "Clause 3" measures the opposite. Keeping a known divergence would widen the
+  null-test gap on every legato patch with the modulation envelope on.
+- **Change.** `new_key` is gone from `voice_note_on` and `engine_move_line`.
+  The modulation envelope now takes the same `Note_Start` path as the
+  amplitude and filter envelopes: `.Fresh` starts from zero, `.Retrigger`
+  re-enters the attack from the current level, `.Legato` leaves it alone.
+  New keys, fallbacks and gate-127 arpeggiator steps behave alike.
+- **Red.** `test_new_key_keeps_the_mod_envelope_level`, which replaces
+  `test_mod_envelope_restarts_from_zero_on_every_new_key`, fails on slice 3's
+  code in both modes.
+- **Green.** `odin test tests/dsp` passes 131/131.
+
 ### Slice 4: aftertouch and pitch bend as controller sources (clause 4)
 
 - **Change.** `Midi_Control` gains `source: Midi_Source`, appended so the
@@ -473,8 +493,8 @@ voice gets no chorus at all), and that is deferred with it.
   the current level, and auto portamento glides. A step released by a shorter
   gate stays a fresh note through `engine_start_voice`, as before. Poly is
   unchanged, because the reference cannot be measured there under this host.
-  An arpeggiator step counts as a new key for clause 3's modulation-envelope
-  reset.
+  An arpeggiator step moves the modulation envelope the same way it moves the
+  amplitude and filter envelopes.
 - **Red.** On slice 6's code both new tests failed
   (build/behavior/red-slice7.txt, rerun with the final 4 ms `lowest_level`
   window by restoring `arpeggiator.odin` alone in this checkout):
@@ -692,10 +712,6 @@ run for these paths.
 
 ## Deferred and out of scope
 
-- **Clause 3's reference behaviour.** In the reference, legato does not restart
-  the modulation envelope and mono restarts it from its current level. That
-  behaviour is recorded above and deliberately not implemented, per the
-  contract.
 - **Portamento time law.** At stored 64 the reference glides with a time
   constant of about 70 ms (60 → 71.96 in 300 ms). Ours settles in about 80 ms.
   The `exp_map(0.002, 3.0)` curve is chosen, not measured.

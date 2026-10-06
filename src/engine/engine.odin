@@ -587,7 +587,7 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		if e.held_notes > 0 {
 			if line := engine_find_gated_voice(e); line != nil {
 				engine_mark_key_down(e, note)
-				engine_move_line(e, line, note, velocity, true)
+				engine_move_line(e, line, note, velocity)
 				return
 			}
 		}
@@ -618,7 +618,6 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.last_note,
 		.Fresh,
 		false,
-		true,
 		&e.global_lfo,
 	)
 
@@ -641,8 +640,7 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 // The voice keeps its velocity on a fallback: the key it returns to was
 // struck before, and what level it was struck at is not tracked. Whether the
 // reference re-reads it has not been measured.
-// `new_key` is false for a fallback, which returns to a key already held.
-engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32, new_key: bool) {
+engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32) {
 	legato := e.params.play_mode == .Legato
 	e.age += 1
 	v.age = e.age
@@ -657,7 +655,6 @@ engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32, new_ke
 		e.last_note,
 		legato ? .Legato : .Retrigger,
 		true,
-		new_key,
 		&e.global_lfo,
 	)
 	e.last_note = f32(note)
@@ -696,7 +693,6 @@ engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.last_note,
 		.Fresh,
 		false,
-		true,
 		&e.global_lfo,
 	)
 	e.last_note = f32(note)
@@ -745,7 +741,7 @@ engine_note_off :: proc(e: ^Engine, note: int) {
 		// again, where this used to fall silent.
 		if e.params.play_mode != .Poly {
 			if held, ok := engine_newest_held_key(e); ok {
-				engine_move_line(e, v, held, v.velocity, false)
+				engine_move_line(e, v, held, v.velocity)
 				continue
 			}
 		}

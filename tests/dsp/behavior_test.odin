@@ -271,20 +271,17 @@ test_auto_portamento_glides_on_overlapping_keys_in_mono :: proc(t: ^testing.T) {
 		"separated keys glided with auto portamento on: %.2f at +5 ms (reference 72.00)", jump)
 }
 
-// The modulation envelope starts from zero on every new key, legato included.
+// A new key over a held one does not restart the modulation envelope from
+// zero. Measured with `s1probe behavior keys --modenv`: legato carries the
+// envelope straight through the key change (29.92 st before, 29.40 at +5 ms)
+// and mono restarts the attack from its current level (29.9, rising to 33.9).
+// The unofficial v1.12 manual says "from zero"; the v1.13 reference does not.
 //
-// This pins a *requested* behaviour, not the reference's. Measured with
-// `s1probe behavior keys --modenv`, the reference does not restart the
-// modulation envelope on a legato key change at all, and restarts it from its
-// current level in mono; the manual says legato does not trigger "the VCO and
-// VCA envelopes" either. The change was asked for in those terms regardless,
-// and docs/synth1-behavior-errors.md records the contradiction.
-//
-// Mid-decay is the case that tells "from zero" apart from "re-enter the attack
-// where it is": oscillator 2's pitch above the played key is the envelope, so
-// right after the new key it must be close to the key itself.
+// Mid-decay is the case that tells the two apart: oscillator 2's pitch above
+// the played key is the envelope, so a restart from zero would put it close to
+// the key itself right after the change.
 @(test)
-test_mod_envelope_restarts_from_zero_on_every_new_key :: proc(t: ^testing.T) {
+test_new_key_keeps_the_mod_envelope_level :: proc(t: ^testing.T) {
 	for mode in ([2]int{MONO, LEGATO}) {
 		p := behavior_patch(mode, 0, 0, 127)
 		p.values[1] = 3 // oscillator 2 triangle
@@ -304,18 +301,18 @@ test_mod_envelope_restarts_from_zero_on_every_new_key :: proc(t: ^testing.T) {
 
 		held := pitch_at(x, 0.47, 0.49) - 60
 		testing.expectf(t, held > 4, "mode %v: the envelope was not up before the key (%.2f st)", mode, held)
-		restarted := pitch_at(x, 0.5005, 0.506) - 67
-		testing.expectf(t, restarted < held * 0.5,
-			"mode %v: the modulation envelope carried on through the new key: %.2f st before, %.2f just after",
-			mode, held, restarted)
+		after := pitch_at(x, 0.5005, 0.506) - 67
+		testing.expectf(t, after > held - 1,
+			"mode %v: the new key dropped the modulation envelope: %.2f st before, %.2f just after",
+			mode, held, after)
 	}
 }
 
-// A fallback is not a new key, so the request above does not cover it, and
-// there the reference is followed. Releasing 67 back onto a held 60 with the
-// envelope mid-decay: legato carries the offset straight through (23.49 st
-// before, 23.07 at +5 ms) and mono restarts the attack from where it is
-// (27.43 before, 29.70 at +5 ms, rising to 33.87). Neither drops to zero.
+// Falling back to a held key behaves the same way. Releasing 67 back onto a
+// held 60 with the envelope mid-decay: legato carries the offset straight
+// through (23.49 st before, 23.07 at +5 ms) and mono restarts the attack from
+// where it is (27.43 before, 29.70 at +5 ms, rising to 33.87). Neither drops
+// to zero.
 @(test)
 test_falling_back_keeps_the_mod_envelope_level :: proc(t: ^testing.T) {
 	for mode in ([2]int{MONO, LEGATO}) {

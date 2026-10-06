@@ -276,7 +276,7 @@ arp_trigger :: proc(e: ^Engine, params: ^Engine_Params) {
 		for i in 0 ..< len(e.voices) {
 			v := &e.voices[i]
 			if v.active && v.gate && v.note == e.arp.sounding {
-				engine_move_line(e, v, note, e.arp.velocity, true)
+				engine_move_line(e, v, note, e.arp.velocity)
 				e.arp.sounding = note
 				e.arp.phase += 1
 				return

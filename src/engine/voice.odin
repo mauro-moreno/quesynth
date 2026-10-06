@@ -494,9 +494,6 @@ voice_note_on :: proc(
 	// Another key was down when this one arrived. Parameter 74 ("portament
 	// auto mode") restricts the glide to exactly that case.
 	overlap: bool,
-	// A key was pressed for this, as opposed to a mono/legato line falling
-	// back to a key that is still held from before.
-	new_key: bool,
 	global_lfo: ^[2]dsp.Lfo,
 ) {
 	v.active = true
@@ -542,24 +539,20 @@ voice_note_on :: proc(
 		// Untouched: re-entering the attack here, even from the current
 		// level, is the mono behaviour, and it is audible as a swell.
 	}
-	// The modulation envelope starts from zero on every new key, legato
-	// included. That was asked for, and it is *not* what the reference does:
-	// `s1probe behavior keys --modenv` shows its legato carrying the envelope
-	// straight through a key change (29.92 -> 29.40 st, no restart, and a
-	// decayed envelope stays at zero) and its mono restarting the attack from
-	// the current level (29.9 -> 33.9 st). The manual agrees with the
-	// reference. See docs/synth1-behavior-errors.md, clause 3, before
-	// "correcting" this back.
+	// The modulation envelope follows the amplitude and filter envelopes, as
+	// measured with `s1probe behavior keys --modenv`. Legato carries it
+	// straight through a key change (29.92 -> 29.40 st, and a decayed envelope
+	// stays at zero); mono restarts the attack from the current level
+	// (29.9 -> 33.9 st), not from zero. A fallback to a held key does the
+	// same: mono 27.43 -> 29.70 st, legato 23.49 -> 23.07 st.
 	//
-	// A fallback is not a new key, so the request does not reach it, and
-	// there the reference is followed: mono restarts the attack from where it
-	// is (27.43 -> 29.70 st) and legato carries on (23.49 -> 23.07 st).
+	// The unofficial v1.12 manual says this envelope starts "from zero" on
+	// every key. The v1.13 reference does not, and the reference wins; see
+	// docs/synth1-behavior-errors.md, clause 3.
 	if !p.mod_env_on {
 		dsp.envelope_reset(&v.mod_env)
-	} else if new_key {
-		dsp.envelope_gate_on(&v.mod_env, true)
 	} else if start != .Legato {
-		dsp.envelope_gate_on(&v.mod_env, false)
+		dsp.envelope_gate_on(&v.mod_env, start == .Fresh)
 	}
 
 	for i in 0 ..< 2 {
