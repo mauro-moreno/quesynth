@@ -19,9 +19,10 @@ function decoyRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "qs-root-"));
   const ui = path.join(root, "ui");
   fs.mkdirSync(ui);
-  for (const name of ["params.js", "index.html", "style.css", "store.js", "bank.js"]) {
+  for (const name of ["params.js", "index.html", "style.css", "store.js"]) {
     fs.copyFileSync(path.join(ROOT, "ui", name), path.join(ui, name));
   }
+  fs.writeFileSync(path.join(ui, "bank.js"), "// decoy: the generated factory bank\n");
   fs.writeFileSync(path.join(ui, "host.js"), "// decoy: not the adapter's transport\n");
   fs.writeFileSync(path.join(ui, ".hidden"), "secret\n");
   fs.writeFileSync(path.join(root, "README.md"), "outside ui\n");

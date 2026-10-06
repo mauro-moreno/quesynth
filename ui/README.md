@@ -17,7 +17,7 @@ To hear it, one of the hosts has to be running underneath. The quickest is the
 browser one:
 
 ```
-node hosts/wasm/serve.js     # builds nothing; then open :8177
+node hosts/wasm/serve.js     # builds nothing; then open :4817
 ```
 
 See `hosts/wasm/README.md` for what that host is and how to build its engine.

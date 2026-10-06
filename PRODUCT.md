@@ -189,4 +189,4 @@ accuracy claim must trace to a number in `docs/null-test.md`.
 - No image-generation tool is present in this session's surface, so this project
   proceeds **code-first** and nothing is recorded in `.impeccable/config.json`.
 - Live mode is not configured. The project is runnable via
-  `node hosts/wasm/serve.js` (port 8177) if it is wanted later.
+  `node hosts/wasm/serve.js` (port 4817) if it is wanted later.

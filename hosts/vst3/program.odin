@@ -1,5 +1,7 @@
 package synth_vst3
 
+import "base:intrinsics"
+
 import "../../src/patch"
 import "../panel"
 
@@ -88,11 +90,38 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 	for i in 0 ..< PARAM_COUNT {
 		wanted := values[i]
 		if p.values[i] != wanted {
-			p.values[i] = wanted
+			intrinsics.atomic_store_explicit(&p.values[i], wanted, .Relaxed)
 			changed = true
 		}
 	}
 	if changed {
 		p.params_dirty = true
+	}
+}
+
+// `select_program` for the main thread.
+//
+// The same program, reached by staging the set instead of writing it into
+// `values`: that is the audio thread's, and a host selecting a program on the
+// controller must not change it under a block that is rendering. The other
+// path -- a program change arriving as a parameter change inside `process` --
+// is the audio thread already and stays a direct write.
+stage_program :: proc "contextless" (p: ^Plugin, program: int) {
+	if program < 0 || program >= patch.FACTORY_SLOTS {
+		return
+	}
+	p.program = i32(program)
+
+	values, ok := patch.slots_patch(&p.slots, program)
+	if !ok {
+		return
+	}
+	// A program is the whole patch, so there is nothing of the current set to
+	// carry over; and a program the instrument already holds changes nothing.
+	for i in 0 ..< PARAM_COUNT {
+		if values[i] != main_thread_value(p, i) {
+			stage_values(p, values[:])
+			return
+		}
 	}
 }

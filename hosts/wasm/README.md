@@ -6,7 +6,7 @@ the protocol in `ui/bridge.js`.
 
 ```
 odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
-node hosts/wasm/serve.js                                  # then open :8177
+node hosts/wasm/serve.js                                  # then open :4817
 ```
 
 | file | |

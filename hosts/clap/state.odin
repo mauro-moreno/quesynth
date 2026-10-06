@@ -12,9 +12,15 @@ import "../../src/patch"
 // The state blob: a four byte magic, a format version, the parameter count, and
 // then one little-endian int32 per parameter.
 //
-// The count is recorded rather than assumed so that a state written by a build
-// with a different parameter table is rejected outright instead of being read
-// as a shorter or longer record of the same thing.
+// The count is recorded so that a blob outlives the parameter table it was
+// written against, instead of being refused when the table changes. A state
+// from a build with fewer parameters carries the ones the two share and the
+// rest take their reference defaults; one from a build with more is read as far
+// as this build goes and the surplus ignored. Refusing either would throw away
+// a whole saved patch because a knob was added or removed. Defaults rather than
+// whatever the instance held, so what a load produces never depends on what was
+// loaded before it. hosts/vst3/state.odin writes this layout as its version 2;
+// its version 1, from before it had a count, is not this layout.
 //
 // The values are the stored .sy1 integers, written verbatim. Some of them are
 // deliberately outside their own state table -- parameter 21's reference
@@ -85,27 +91,38 @@ state_encode :: proc "contextless" (values: [PARAM_COUNT]i32) -> [STATE_SIZE]u8 
 	return buffer
 }
 
-state_decode :: proc "contextless" (
-	buffer: [STATE_SIZE]u8,
-) -> (
-	values: [PARAM_COUNT]i32,
-	ok: bool,
-) {
+// Read a state blob into a set of its own, without touching the instrument.
+//
+// A foreign magic, another version, or a stream that ends before the header or
+// before the shared values is refused. Nothing else is: no trailing data is
+// required, and the declared count is only ever an upper bound on how much is
+// read -- never a size to allocate or to trust.
+state_read :: proc "contextless" (stream: ^clap.Istream) -> (values: [PARAM_COUNT]i32, ok: bool) {
+	header: [STATE_HEADER_SIZE]u8
+	if !stream_read_all(stream, header[:]) {
+		return {}, false
+	}
 	magic := STATE_MAGIC
 	for i in 0 ..< 4 {
-		if buffer[i] != magic[i] {
+		if header[i] != magic[i] {
 			return {}, false
 		}
 	}
-	source := buffer
-	if get_u32(source[4:]) != STATE_VERSION {
+	if get_u32(header[4:]) != STATE_VERSION {
 		return {}, false
 	}
-	if get_u32(source[8:]) != u32(PARAM_COUNT) {
+
+	shared := int(min(get_u32(header[8:]), u32(PARAM_COUNT)))
+	body: [PARAM_COUNT * 4]u8
+	if !stream_read_all(stream, body[:shared * 4]) {
 		return {}, false
 	}
 	for i in 0 ..< PARAM_COUNT {
-		values[i] = i32(get_u32(source[STATE_HEADER_SIZE + i * 4:]))
+		if i < shared {
+			values[i] = i32(get_u32(body[i * 4:]))
+		} else {
+			values[i] = i32(patch.PARAMETERS[i].default)
+		}
 	}
 	return values, true
 }
@@ -130,11 +147,7 @@ STATE := clap.Plugin_State {
 		if s == nil {
 			return false
 		}
-		buffer: [STATE_SIZE]u8
-		if !stream_read_all(stream, buffer[:]) {
-			return false
-		}
-		values, ok := state_decode(buffer)
+		values, ok := state_read(stream)
 		if !ok {
 			return false
 		}

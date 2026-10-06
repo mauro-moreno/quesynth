@@ -135,7 +135,7 @@ odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
 node hosts/wasm/serve.js
 ```
 
-Then open `http://localhost:8177`. Additional build and platform details are in
+Then open `http://127.0.0.1:4817`. Additional build and platform details are in
 the host-specific README files under `hosts/`.
 
 For the native standalone daemon with the same HTML panel, build the standalone
