@@ -53,6 +53,10 @@ Second verbatim confirmation from the originating session:
 > parity without proof. Defer unsupported lower-confidence changes with
 > rationale, then converge to final gates.
 
+Third verbatim confirmation from the originating session:
+
+> Proceed directly to the final evidence-note commit, hash/status audit, and stopping owned QA processes. Do not add new behavior or reopen deferred lower-confidence investigations. Ensure final report lists commit range, tests/builds, browser evidence, and explicit deferrals.
+
 Supervisor decisions on the contradictions measured below (summarised):
 
 - **Clause 3:** the literal contract controls. The modulation envelope resets to
@@ -102,7 +106,7 @@ Process clauses (user receipt requirements, not product behaviour):
 | P7 | `specs/` preserved byte for byte, untracked, never added or ignored | `sha256sum specs/2026-09-28-sequencer.md`; `git status --short` shows `?? specs/` | see "Final gates" |
 | P8 | no guessing, no unrelated DSP rewrite, no PR | deferred list below; no `gh pr` was run | held |
 | P9 | unavailable checks reported, not implied | "Environment and unavailable checks" | held |
-| P10 | parent host/browser validation | owned by the parent session | pending, supplied by parent |
+| P10 | parent host/browser validation | parent-captured evidence at 4099c61; see "Parent host and browser validation (P10)" | **passed**: dsp 131/131, clap 41/41, standalone selftest, WASM import and slot checks, and 15 browser audio assertions |
 
 ## Invariants and how each is checked
 
@@ -618,6 +622,57 @@ logs are build/behavior/gate-*.log.
 | `odin check tests/standalone -target:linux_amd64 -no-entry-point` | ok |
 | process | `git merge-base HEAD 36481ee` = 36481ee; 9 commits in `36481ee..HEAD`, all unsigned like their neighbours; `git diff --check 36481ee..HEAD` clean; no `make(`/`new(`/`append(`/`core:os`/`core:fmt` added under `src/dsp` or `src/engine` |
 | `specs/` | `?? specs/` untracked; `specs/2026-09-28-sequencer.md` SHA256 `807053ad…ce54`, unchanged |
+
+## Parent host and browser validation (P10)
+
+Captured independently by the parent session at 4099c61. It proves the host
+and browser audio paths with synthetic MIDI input. It is not physical-hardware
+or DAW validation, and it is not reference parity; the Odin regressions above
+are what guard the source changes durably.
+
+| check | result |
+|---|---|
+| `odin test tests/dsp -out:build/behavior-errors/dsp-tests.exe` | 131/131 (`dsp-parent.log`) |
+| `odin test tests/clap -out:build/behavior-errors/clap-tests.exe` | 41/41 (`clap-parent.log`) |
+| `odin build hosts/standalone -o:speed -out:build/behavior-errors/quesynth.exe` | ok |
+| `quesynth.exe --selftest tools/s1probe/fixtures/unison-four.sy1 build/behavior-errors/selftest.wav` | frames 120000, rate 48000, channels 2, nonfinite 0, peak 1.656574 (`selftest-parent.log`) |
+| `node hosts/wasm/check-imports.js` | all 7 imports provided |
+| `node hosts/wasm/check-slots.js` | 16 slots, isolation, mute, one-shot tail 0: passed |
+
+Browser run: `agent-browser` 0.27.0 (`npm install -g agent-browser`) driving
+native Brave, user agent HeadlessChrome/154 on Windows. The original page was
+served by `node hosts/wasm/serve.js 4826` at `http://127.0.0.1:4826/index.html`
+and opened with
+`agent-browser --session synth-behavior-review --init-script C:/Users/lamag/Code/synth/build/behavior-errors/browser/audio-observer.js open http://127.0.0.1:4826/index.html`.
+The init script captures the real `AudioContext` and `AudioWorkletNode` and
+connects an analyser only; there is no fake audio and no substitute engine.
+A CLI click on `#keys-toggle` brought audio up (48 kHz, running). The scenario
+`agent-browser --session synth-behavior-review eval --stdin < build/behavior-errors/browser/midi-scenario.js`
+fed MIDI fixtures through the product `SynthMidi.handleMessage({data:
+Uint8Array.from(bytes)})`, so they ran through the JS host, the worklet and
+the real WASM. It passed 15 assertions:
+
+- mono and legato: 60.00003 → 72.00002 → 60.00003 on fallback, and exact
+  silence (rms 0, peak 0) after the last release;
+- aftertouch: 53248 baseline 60.00003, pressure 127 gives 90.00000, reset
+  gives 60.00003;
+- pitch bend: 57344 (raw 16383) gives 90.00000, raw 0 gives 29.99988, centre
+  8192 gives 60.00003, with direct bend range 0;
+- DOM held keys 0 after the final release.
+
+Evidence files are local, gitignored build artifacts under
+`build/behavior-errors/browser/`: `midi-audio-results.json`,
+`running-snapshot.txt`, `final-snapshot.txt`, `final.png`, `errors.txt`
+(empty), `network.txt`. The commands and scenario inputs above are the durable
+record. The parent has read the screenshot, the audio JSON and the errors.
+
+Setup caveat, not a repository defect: the first post-load `AudioContext` hook
+missed the already-created context and the readiness wait failed. Registering
+`--init-script` before navigation fixed it and readiness then passed. The
+initial wait is not counted as passed and nothing was reopened for it.
+
+Remaining evidence gap: no physical MIDI hardware, DAW host or reference-parity
+run for these paths.
 
 ## Environment and unavailable checks
 
