@@ -45,6 +45,14 @@ Verbatim steering from the originating session, relayed by the parent:
 > tracking/chorus only if measurements do not support a safe change. Avoid
 > speculative broad refactors and do not create a PR.
 
+Second verbatim confirmation from the originating session:
+
+> Continue through bounded slices and keep each commit/test checkpoint
+> explicit. For mod-envelope reset, implement the user's stated behavior but
+> label any conflict with current reference evidence; do not claim reference
+> parity without proof. Defer unsupported lower-confidence changes with
+> rationale, then converge to final gates.
+
 Supervisor decisions on the contradictions measured below (summarised):
 
 - **Clause 3:** the literal contract controls. The modulation envelope resets to
@@ -72,7 +80,7 @@ Product clauses (status: *implemented*, *requested change*, *partial*,
 |---|---|---|---|---|---|
 | 1 | releasing the newest key in mono/legato returns to the still-held previous key; mono retriggers amp/filter, legato does not | falls back in both modes; mono restarts the attack from the current level; legato leaves amp and filter alone (see "Clause 1") | `engine_note_off` falls back to the newest held key through `engine_move_line`, shared with the overlapping note-on; `Note_Start` separates fresh, mono retrigger and legato | `tests/dsp/behavior_test.odin`: fallback, non-sounding release, repeated key, overlap retrigger | implemented |
 | 2 | auto portamento glides in mono when a new key arrives before the previous one is released | mono + auto + overlap glides (62.34 → 71.96 over 300 ms); separated keys do not glide | `engine_move_line` passes `overlap = true` in both modes | `test_auto_portamento_glides_on_overlapping_keys_in_mono` | implemented (glide time law deferred) |
-| 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | pending, as a requested change | pending | pending |
+| 3 | the modulation envelope restarts from zero on every new key, legato included | **contradicted**: legato does not restart it, and mono restarts from the current level (see "Clause 3") | every new key restarts it from zero; a fallback (not a new key) follows the reference | `test_mod_envelope_restarts_from_zero_on_every_new_key` (requested, **not** reference); `test_falling_back_keeps_the_mod_envelope_level` (reference) | requested change; conflicts with the reference |
 | 4 | controller-assignment source 53248 (`0xD000`, channel aftertouch) and 57344 (`0xE000`, pitch bend) move their assigned parameter | pressure acts exactly like CC1; bend is bipolar about 8192 | pending | pending | pending |
 | 5 | synced oscillator-2 noise (9f0382e/36481ee) is kept | `noiseprobe` figures in docs/reference-notes.md | none intended | existing tests and `noiseprobe` rerun | pending |
 | 6 | the delay tone filter shapes the first wet echo as well as the feedback | with feedback 0 the first echo is shaped by tone (see "Clause 6") | pending | pending | pending |
@@ -354,6 +362,39 @@ voice gets no chorus at all), and that is deferred with it.
   does. The remaining gap (the reference reads 62.34/63.56/65.00) is the
   portamento time law, which is deferred.
 
+### Slice 3: modulation envelope on a new key (clause 3, requested change)
+
+- **Labelled conflict.** This slice implements the stated behaviour against
+  the reference. In the reference, legato does not restart the modulation
+  envelope on a new key, and mono restarts it from its current level. After
+  this change both restart from zero. No reference parity is claimed for new
+  keys.
+- **Change.** `voice_note_on` takes `new_key`. A pressed key restarts the
+  modulation envelope from zero in every mode. A fallback is not a new key, so
+  the clause does not reach it; there the reference is followed, with mono
+  restarting the attack from the current level and legato leaving the
+  envelope alone. Arpeggiator steps count as new keys.
+- **Red.** On slice 2's code:
+  - `test_mod_envelope_restarts_from_zero_on_every_new_key` failed in legato
+    only: 11.78 st before the key, 11.88 just after
+    (build/behavior/red-slice3.txt). Mono already restarted from zero.
+  - With the reset applied to every move, the fallback test failed in both
+    modes: 11.78 st before, 0.48 and 0.40 after
+    (build/behavior/red-slice3b.txt). That is the reason for `new_key`.
+- **Green.** Both pass; `odin test tests/dsp` passes 126/126.
+- **Reference after** (build/behavior/after3-*.txt).
+  - Legato `on 67`, mid-decay: ours 71.77 → 67.94 (reset, as requested);
+    the reference 89.92 → 96.40 (carried through).
+  - Legato fallback: ours 78.77 → 71.57 → 71.42, a continuous offset of
+    11.77 → 11.57 → 11.42 st above the key; the reference
+    is continuous too, at 90.49 → 83.07 → 82.81.
+  - Mono fallback: ours 72.62 → 73.42, rising from the current level; the
+    reference does the same, 89.70 → 93.53.
+  - Decayed legato fallback: 60.00 on both.
+  - Depth differs throughout (our peak offset is about 12 st where the
+    reference's is about 34). That is the modulation envelope's unmeasured
+    24-semitone scale, which is deferred.
+
 ## Environment and unavailable checks
 
 - Odin `dev-2026-09-nightly:a2fb372`. The CI pin `dev-2026-08` is not
@@ -387,6 +428,9 @@ voice gets no chorus at all), and that is deferred with it.
 - **`bind_lfo` comment.** `src/engine/binding.odin` `bind_lfo` carries the same
   stale "reference" column as the docs table in clause 10, while its `switch`
   binds the correct shapes. The clause names the docs table only.
+- **Modulation envelope depth.** At amount stored 100 the reference's
+  oscillator-2 offset peaks near 34 st and ours near 12 st. The 24-semitone
+  scale in `voice_process` is a guess, and fixing it is not part of clause 3.
 - **Small controller offsets.** Returning a controller to rest reads
   60.062 (CC/pressure 0) and 59.920 (bend 8192) in the reference, against
   60.000 before. This is not modelled.
