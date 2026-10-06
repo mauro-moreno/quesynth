@@ -26,6 +26,16 @@ verification](README.md#compatibility-and-verification). Nothing of Synth1's is
 redistributed here, so a fresh clone cannot run the null test until you point it
 at a copy.
 
+To listen to one patch rather than measure it, `tools/compare-patch.ps1` picks
+it out of a bank, by number or by file name, builds the probe if it is missing,
+and writes the reference's render and this engine's side by side:
+
+```
+pwsh tools/compare-patch.ps1 ext/synth1/Synth1/soundbank00 5 -Open
+```
+
+`Get-Help tools/compare-patch.ps1 -Full` lists its options.
+
 A change that makes one patch better and three worse is not an improvement. Run
 the whole bank before and after.
 
