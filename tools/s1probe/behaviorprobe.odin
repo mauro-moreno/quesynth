@@ -42,6 +42,24 @@ Script_Event :: struct {
 	d1:     u8,
 	d2:     u8,
 	label:  string,
+	// For SCRIPT_SET_PARAM only: the parameter and the stored integer it is
+	// set to. MIDI events leave these at zero.
+	index:  int,
+	stored: int,
+}
+
+// Not a MIDI status: a host parameter edit. The reference is handed
+// `setParameter` with the state's measured normalised value at the top of the
+// block, and this engine `engine_set_stored`, which is the path a host's
+// parameter edit takes. 0xFF is a system real-time byte that a script never
+// sends as MIDI, so it cannot be confused with an event.
+SCRIPT_SET_PARAM :: u8(0xFF)
+
+script_set :: proc(seconds: f64, index, stored: int) -> Script_Event {
+	return {
+		frame = script_frame(seconds), status = SCRIPT_SET_PARAM, index = index, stored = stored,
+		label = fmt.aprintf("set %v=%v", index, stored),
+	}
 }
 
 script_frame :: proc(seconds: f64) -> int {
@@ -140,7 +158,11 @@ render_reference_script :: proc(
 		count := 0
 		for next < len(events) && events[next].frame < pos + BLOCK {
 			ev := events[next]
-			if count < len(g_midi_chord) {
+			if ev.status == SCRIPT_SET_PARAM {
+				if norm, ok := cpatch.parameter_norm(ev.index, ev.stored); ok {
+					e.set_parameter(e, i32(ev.index), norm)
+				}
+			} else if count < len(g_midi_chord) {
 				g_midi_chord[count] = VstMidiEvent {
 					type         = 1,
 					byte_size    = size_of(VstMidiEvent),
@@ -180,6 +202,10 @@ render_reference_script :: proc(
 // hosts/clap, hosts/au and hosts/standalone all turn a 14-bit bend into
 // (raw - 8192) / 8192 before it reaches the engine.
 ours_apply_event :: proc(eng: ^sengine.Engine, ev: Script_Event) {
+	if ev.status == SCRIPT_SET_PARAM {
+		sengine.engine_set_stored(eng, ev.index, ev.stored)
+		return
+	}
 	switch ev.status & 0xF0 {
 	case 0x90:
 		if ev.d2 > 0 {

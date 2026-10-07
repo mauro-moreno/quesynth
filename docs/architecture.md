@@ -106,9 +106,13 @@ worst case the parameters allow -- four beats at 30 BPM plus the 100 ms channel
 spread -- so a host changing tempo can never ask for a longer line than the one
 already there.
 
-The effect chain runs equaliser, then the extra effect unit, then delay, then
-chorus. That order is the one the manual lists the sections in, which turned out to
-be right for the three that the null test can check. The effect unit needs no
+The effect chain runs the extra effect unit, then equaliser, then delay, then
+chorus. Equaliser, delay and chorus are in the order the manual lists the sections
+in, which turned out to be right for the three that the null test can check. The
+effect unit is listed after the equaliser but measured ahead of it: with a
+distortion on, an equaliser peak at the fundamental keeps its full gain on the
+output, which only an equaliser after the nonlinearity does
+(`docs/synth1-architecture-evidence.md`, T1a). The effect unit needs no
 buffer of its own -- none of its ten types is a delay -- so it is plain state on
 the `Engine` struct.
 

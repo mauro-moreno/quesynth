@@ -1,0 +1,234 @@
+# Synth1 architecture theories: evidence notes
+
+Notes for goal run 57af21a1-b56f-4b5d-9f52-5aea71040c10, on `main` from
+59111ae. They record what was asked, how each theory was measured against the
+reference, what each measurement says, and what was changed or deliberately
+left alone.
+
+Every "reference" number comes from `build/s1probe.exe` driving
+`ext/synth1/Synth1/Synth1 VST64.dll` (SHA256
+`51C6FE60D767C78F5A15B7023173AC5709EDBCF03A55CBAC9032569BA22F32C7`) at
+48 kHz, 512-frame blocks, 120 BPM, one freshly loaded plugin per render. A
+number from this engine is labelled "ours" and is never reference proof. Raw
+probe output is kept under `build/architecture/` (ignored by git), one
+`<sub>.txt` per `s1probe arch <sub>`, each ending in the command and its exit
+code; `build/architecture/run-all.sh` regenerates all twelve and the
+after-change bank comparison.
+
+## Goal (frozen)
+
+> Probe and evaluate the user's listed Synth1 architecture theories, then
+> apply only evidence-backed changes in this repository. Scope: (1)
+> effect-vs-EQ order and nonlinear placement; (2) per-voice versus master
+> static/LFO pan and composition law; (3) filter LFO depth versus remaining
+> cutoff range; (4) shared/free-running versus key-synced LFO ownership; (5)
+> linear versus exponential envelope decay/release; (6) reference 50 ms
+> cutoff/pitch ramp versus our 10 ms smoothing; (7) output soft clip,
+> modulation update rate, fixed-point/table oscillator differences,
+> voice-pool/unison accounting, EQ-stage identity, and filter-type status.
+> Create focused reference probes or extend tools/s1probe where feasible, run
+> them against the available Synth1 reference and current engine, and
+> implement only changes with independent numerical evidence. Do not infer
+> disassembly facts unavailable in this checkout. Preserve existing
+> synced-noise and prior behavior fixes. Do not modify or add specs/, do not
+> create a PR, and keep unsupported theories explicitly deferred with
+> rationale.
+
+> Acceptance: each listed theory has a repository-backed evidence status
+> (confirmed, disproved, measured but unresolved, or unavailable); new/extended
+> probes and focused tests cover every feasible measurement; any applied engine
+> change is independently supported and regression-tested; no speculative
+> architecture rewrite; relevant Odin tests/builds pass; specs/ remains
+> byte-for-byte unchanged and untracked; no PR is created.
+
+Expressed preferences carried from the request: `specs/` is preserved byte
+for byte and stays untracked; no PR, push, branch switch, clone or worktree;
+engine changes only where evidence supports them, otherwise evidence only;
+commits carry the repository identity Mauro Moreno
+<moreno.mauro.emanuel@gmail.com> (GitHub `mauro-moreno`).
+
+## Contract amendments received
+
+User-authored confirmation relayed by the parent during the run. It confirms
+the scope; it is not a new acceptance criterion:
+
+> Continue on the frozen scope and acceptance criteria. The run remains
+> authorized to finish probe evidence and apply only independently supported
+> changes; do not broaden into disassembly or speculative rewrites. When
+> possible, checkpoint the evidence ledger and converge with explicit
+> per-theory statuses and remaining gates.
+
+Second user-authored confirmation, relayed by the parent:
+
+> Progress is useful. Please prioritize converging the current batch: finish
+> correcting invalid ramp measurements, record all statuses, apply only
+> narrowly evidenced fixes (if any), then run focused/full gates and commit.
+> Do not wait indefinitely for inherently unavailable internal-structure
+> proofs; mark them unavailable and stop.
+
+## What a status means here
+
+- **confirmed**: a controlled black-box measurement of the reference agrees
+  with the theory's observable prediction, and disagrees with the alternative.
+- **disproved**: the same kind of measurement contradicts the prediction.
+- **measured but unresolved**: measured, but the measurement cannot separate
+  the theory from its alternative, or the difference sits inside the
+  instrument's resolution.
+- **unavailable**: no measurement this host can make reaches the question
+  (for example it needs two notes sounding in poly mode, which kills the
+  reference under this host), or it is a claim about internal structure
+  rather than behaviour.
+
+A measurement is about behaviour. Words like "per voice", "table" or "fixed
+point" name an internal structure, and a black-box render can only show what
+that structure would do; where a theory is worded as an internal identity the
+status says which observable was tested. No disassembly is available in this
+checkout and none is inferred.
+
+## Acceptance matrix
+
+One row per theory or sub-clause. "Check" is the exact measurement; every
+number in the result column is the reference's unless marked ours, and comes
+from the logs under `build/architecture/`, regenerated by:
+
+```
+odin build tools/s1probe -out:build/s1probe.exe
+build/s1probe.exe arch <fxorder|pan|lfocutoff|lfophase|envshape|ramp|clip|rate|osc|voices|eq|filtertype>
+build/s1probe.exe compare ext/synth1/Synth1/soundbank00 --csv <before|after>.csv
+```
+
+All twelve subcommands exited 0. The one child render that died is listed in
+T7d with its exit code.
+
+| id | clause | check | result | status | engine change |
+|---|---|---|---|---|---|
+| T1a | effect unit vs EQ order | `arch fxorder`: sine note 48 through distortion a.d.2; EQ peak +24.8 dB at f0 (129.8 Hz), then at 3 f0 (386 Hz). Prediction for "EQ after": the gains the same peak gives a linear signal, read independently with the effect off (note 48 for f0, note 67 for 3 f0) | EQ at f0: H1 +24.79, H3 +7.01 dB; independent EQ-after prediction +24.79, +7.02. EQ at 3 f0: H1 +7.22, H3 +24.76; prediction +7.22, +24.76. Ours before the change: +0.02, +0.17 and +0.01, +0.09 (EQ ahead of the saturation, its boost saturated away) | **confirmed**: the effect unit runs before the EQ | **applied**: effect unit moved ahead of the EQ in `engine_process`; regression test `test_equalizer_shapes_harmonics_after_the_effect` |
+| T1b | nonlinear placement against the delay and the output | `arch fxorder` second table: note held 0.2 s, delay 250 ms, feedback 0; H3−H1 of the dry hit and of the echo. `arch clip` for the output stage (T7a) | effect on: dry −14.4, echo −14.5 dB, echo 6.2 dB under the dry hit (ours −14.6, −14.7, 6.2). A distortion after the delay would distort the quieter echo less; the balance does not move | **confirmed**: effect unit ahead of the delay; no nonlinear output stage (T7a) | none needed: ours was already ahead of the delay |
+| T2a | static pan per voice or on the master | `arch pan`: unison 2 with the alternating layer +12 st, so each layer is its own line; spread and pan swept; per-layer L/R gains against the same line at centre | each control alone follows min(1, 1∓p) in both engines (pan 32 → 1.002/0.501). Composed, the reference multiplies (T2c), which is also what one pan on the summed output gives: the same gains multiplied into every layer cannot be told from a master pan | **measured but unresolved** between per-voice product and master stage (observably identical); per-voice additive (ours) **disproved** | deferred (see T2c) |
+| T2b | LFO pan and its composition with static pan | `arch pan`, square LFO 1 on pan, rate 44, key sync, depths 32 and 127; the 30% of 4096-point windows furthest each way are the two halves | LFO alone: depth 32 → 1.292/0.423, depth 127 → 1.504/0.000, the near channel *above* unity, off the static law. Ours: 1.002/0.328 and 1.002/0.000. Composed with pan or spread, the reference is the product of each control's own measured gains (T2c) | composition **confirmed** multiplicative; the LFO's own gain law **measured but unresolved** (near = 1 + a/2, far = 1 − a fits both depths within 0.007, but two points do not establish a law) | deferred |
+| T2c | composition law | beside each composed cell: the product of the controls' gains *as measured alone through the same engine* (no law assumed, no cross-engine calibration), and the additive law only where every part lies on the static law | reference RMS gain error: static cells product **0.0014**, additive 0.4718 (16 gains); LFO cells product **0.0020** (32 gains), additive undefined (the LFO's gains are off-law). Ours: additive 0.0023 / 0.0021, product 0.4722 / 0.3586 | **confirmed**: product of per-control gains; ours adds then clamps | deferred |
+| T3 | filter LFO depth scales with remaining cutoff range | `arch lfocutoff`: noise, 12 dB LP, square LFO on cutoff at bases 32/56/72/88 and depths 16/32/48; each half matched to the same engine's static sweep (states 16..127), so the opening is in knob states with no cross-engine calibration | low half on the base (32.1, 56.1, 72.0, 88.0). Opening in states against depth/127·(127−base): base 32: 11.7/23.8/35.8 vs 11.97/23.94/35.91; base 56: 8.8/17.8/26.7 vs 8.94/17.89/26.83; base 72: 6.9/13.9/20.8 vs 6.93/13.86/20.79; base 88: 4.8/9.8/14.8 vs 4.91/9.83/14.74 (all within 0.3 states). Ours: a fixed 7.6–7.9 states per 16 of depth at every base (5.06 octaves × d/127) | **confirmed** for a static base: the depth is a fraction of the states left above the knob | deferred |
+| T4a | free-running vs key-synced LFO | `arch lfophase`: mono, LFO 1 saw on volume at 2.448 Hz, two separate notes; onset phase from the first saw jump | sync off: a note 0.299 s after load starts at phase 0.733 (elapsed-time prediction 0.732); moving the second note 96 ms moves its phase +0.239 turns (prediction +0.235). A residual drift of about +0.04 turns per second against the table rate remains (B−A 0.003/0.242/0.260/0.499 against predicted 0.950/0.185/0.219/0.454; ours within 0.004). sync on: every onset at 0.990–0.998, a reset, in both engines | **confirmed**: off runs free from plugin load, on restarts at the note; the ~1.5% drift is **measured but unresolved** | none needed |
+| T4b | one LFO shared by simultaneous voices, or one each | `arch lfophase` second table: poly 16, unison 2 in phase (the configuration in which the reference renders two notes under this host, T7d); note 60 at 0 s and 72 at 0.5 s; each note's saw read off its own line with a 20 ms single-bin DFT | key sync **on**: note 60's next jump is −0.025 turns from its own cycle and −0.252 from note 72's onset; note 72 is also −0.252 from its own onset, i.e. on note 60's cycle. Key sync off reads the same. Ours with sync on: note 60 −0.000 from its own onset, note 72 +0.003 from its own (an LFO per voice) | **confirmed** in this configuration: one LFO cycle for both notes, not restarted by a note that starts while another sounds | deferred |
+| T5a | decay linear vs exponential | `arch envshape`: sine note 84, peak once per cycle, sustain 0, decay 30/50/70/90; span 3 to 45 dB under the start, fitted as a line in dB and in amplitude | straight-line residual 0.23–0.31 dB in dB, 0.122–0.128 of the start level in amplitude. Late/early dB slope 1.10–1.13 (ours 1.00) | **confirmed exponential**, linear **disproved**; a 10–13% late steepening is **measured but unresolved** | none |
+| T5b | release linear vs exponential | same, release 30/50/70/90 from sustain 127 | dB-line 0.23–0.35 dB, amp-line 0.122–0.129, ratio 1.10–1.14 | as T5a | none |
+| T6a | cutoff edit ramps 50 ms (ref) vs 10 ms (ours) | `arch ramp`: note 108 above a 12 dB LP; cutoff 30↔70 by `setParameter` (ours `engine_set_stored`), by CC 1 through a controller assignment, and a quarter step 30↔40; progress u(t) from the event's block boundary on a 0.5 ms grid | u = 0.00/0.10/0.20/0.40/0.60/0.79/0.99 at 0/5/10/20/30/40/50 ms; 10–90% in 40.2 ms, mid 0.50 (linear). The quarter step takes the same 39.9 ms (fixed time, not fixed rate); CC the same (40.2/40.9 ms). Ours: 10–90% in 3.8 ms up and 7.4 ms down, mid 0.63–0.81 (one pole) | **confirmed**: a 50 ms linear ramp of fixed duration | deferred |
+| T6b | pitch edit ramp | same: oscillator 2 pitch (parameter 2) 0↔+12 st; and pitch bend, full and half range | parameter 2: 10–90% in 39.9 ms, mid 0.50, the same 50 ms linear ramp. Bend differs: 33.7 ms for 12 st and 17.4 ms for 6 st, a fixed *rate* of about 0.29 st/ms. Ours: both settle inside the 3 ms reading window | **confirmed** for parameter 2; bend **measured**, a separate fixed-rate law | deferred |
+| T7a | output soft clip | `arch clip`: 1, 2, 4, 8 in-phase unison layers at amp gain 127, and with a +24.8 dB EQ peak on f0 | peak −1.7/+4.4/+10.4/+16.4 dBFS with H3−H1 −121.0 dB throughout; 8 layers + EQ reach **+41.2 dBFS** at H3−H1 −117.3. Ours matches to +30.1 dBFS and limits above it (8 + EQ: +36.1 dBFS, H3−H1 −14.9) | soft clip in the reference **disproved** up to +41.2 dBFS; ours keeps its knee at 32.0 (+30.1 dBFS) | deferred (documented engine contract) |
+| T7b | modulation update rate | `arch rate`: pulse at note 0, modulated render divided by the flat one where the flat plateau is above half its peak; spikes in the gain's second difference | envelope: 171 spikes, commonest spacing 2 (56% on that grid), 39% exactly flat steps: no clear grid. LFO on volume: 215 spikes, commonest spacing **64** (62% of gaps multiples of 64, phase 0), no flat steps. Ours: no LFO grid | **measured but unresolved**: a 64-sample candidate grid for the LFO, too irregular to name an update rate | none |
+| T7c | fixed-point/table oscillator differences | `arch osc`: sine at notes 48/69/93, H2, H3, worst non-harmonic bin, frequency error; saw 72/96 and pulse 96, energy away from the harmonics | sine H2 −102.9/−138.9/−168.7 dB (ours −101.9/−131.3/−131.4); worst spur −45.8/−51.1/−48.4 dB in both (the same window floor); cents −0.581/+0.152/−0.045 in both. Saw/pulse inharmonic −43.2 to −43.6 dB (ours −41.8 to −43.1) | **measured but unresolved**: the differences sit 100 dB or more under the fundamental, or within 1.4 dB of a shared floor; "table" or "fixed point" is an internal identity no render shows (**unavailable**) | none |
+| T7d | voice-pool/unison accounting | `arch voices`: in-phase unison, notes 60/72/84 started 0.3 s apart, each line read in units of one layer of that note alone; every case in a child process | the reference counts **layers** against polyphony and takes them from the oldest note: poly 3 × unison 2 ends with 0/1/2 layers, poly 5 × 2 with 1/2/2, poly 7 × 4 with 0/3/4, poly 16 × 8 with 0/8/8; poly 1 × 2 sounds one layer. Ours counts notes and keeps U layers on each. Of 16 cases 15 exited 0x00000000; plain poly 16 with two notes died in the reference with 0xC0000005 | **confirmed** for unison ≥ 2 and for poly 1; plain poly with two notes **unavailable** under this host (a host limitation, not evidence) | deferred |
+| T7e | EQ-stage identity | `arch eq`: noise; transfer of the EQ render against the flat one at 1 kHz, ±24.8 dB, Q stored 0/32/64/96/127; a bilinear peaking curve fitted with centre and gain fixed | boost and cut mirror within 0.01–0.07 dB. Fitted Q 0.233/0.419/0.754/1.33/2.28, residual 0.31 falling to 0.05 dB; half-gain width 4.17/2.83/1.83/1.17/0.50 octaves. Ours: Q 0.299/0.682/1.53/3.32/6.53, width 3.67/1.83/0.83/0.50/0.17 | the peak's behaviour is **measured**: symmetric boost and cut, close to a peaking biquad, with a wider Q mapping than ours; the stage's internal identity is **unavailable** | deferred |
+| T7f | filter-type status | `arch filtertype`: noise, cutoff 64 (585 Hz), resonance 0; each type's transfer against the open 12 dB LP | types 0, 1 and 3 agree within 0.5 dB from −2 to +2 octaves (up to 3.8 dB at +4 on type 0); type 2 has the same +12.5 dB/octave slope but sits 2.5–2.7 dB deeper below the corner (−21.1/−8.4 against −23.7/−10.9 at −2/−1). Type 4 differs: −20.8 dB at the corner, −5.7 / −15.6 dB per octave below/above; ours renders type 4 as type 1 (−12.0 dB, −1.8 / −22.9) | types 0–3 **confirmed** as the bound responses by slope, type 2's 2.6 dB offset **measured but unresolved**; type 4 a **confirmed difference** whose identity is **unavailable** | deferred |
+
+## Invariants, artifacts and gates
+
+| id | requirement | check | result |
+|---|---|---|---|
+| I1 | synced oscillator-2 noise kept | `git diff 59111ae -- src/dsp` empty; `noiseprobe --notes 48,60,72` | no `src/dsp` change; noiseprobe repeatable (max diff 0), sync-on lag ref/ours 366/366, 183/182, 91/91, every osc2 pitch route 0 on noise |
+| I2 | prior behaviour fixes kept | `odin test tests/dsp`; `behavior keys/ctrl/delaytone/chorus1/osc2track/arp` | tests pass; all six behaviour probes exit 0 |
+| I3 | low-confidence withholding kept | `odin test tools/s1probe`; `analysis.odin` untouched | pass; untouched |
+| I4 | `specs/` byte for byte, untracked | SHA256 of `specs/2026-09-28-sequencer.md`; `git status --porcelain` | `807053ad…ce54`; `?? specs/` |
+| I5 | no PR, push, branch switch, clone or worktree | none run | none run |
+| I6 | layering | the one engine change reorders two existing calls in `src/engine/engine.odin` | no import, no allocation |
+| I7 | no disassembly fact inferred | wording of this file | internal identities are marked unavailable |
+| A1 | `s1probe arch <sub>`, twelve subcommands | built and run against both engines | all twelve exit 0 |
+| A2 | focused tests of the instruments, `tools/s1probe/archprobe_test.odin` | synthetic inputs whose answers are known by construction: exponential and linear decays, a held and a per-sample gain, a linear step, a falling saw, pan predictions, state matching, a cookbook peak written out independently of the engine, a known transfer gain, two lines an octave apart, an amplitude jump, and the script parameter event in this engine | 16 tests, pass |
+| A3 | raw evidence | `build/architecture/*.txt` | kept, ignored by git |
+| G1 | `odin test tools/s1probe` | pass | 78 tests pass |
+| G2 | `odin test tests/dsp`, `tests/patch`; since the engine changed, `tests/standalone` and `tests/control` too | pass | 132, 29, 24 and 12 tests pass; the new regression test failed before the change (H1 +0.02 dB against 24.79) |
+| G3 | `odin build tools/s1probe -out:build/s1probe.exe` | ok | ok |
+| G4 | whole factory bank before/after (CONTRIBUTING) | `compare soundbank00 --csv`, before with a probe built from the unmodified engine, after with the change | 128 patches, every CSV cell identical (mean spectral 4.6177 dB, envelope 1.7752, level −1.1764, null −9.1793 both times): no factory patch turns the effect unit on, and with it off the reorder is an identity. No outlier; nothing worse |
+| G5 | commit | trailers; `git status --porcelain` shows only `?? specs/` | see the commit |
+
+## Engine change
+
+**Effect unit ahead of the equaliser** (T1a). The chain in `engine_process`
+is now effect unit, equaliser, delay, chorus. The independent support: with
+the effect on, the reference's EQ-on minus EQ-flat differences equal, to
+0.01 dB, the gains the same EQ gives a linear signal at f0 and 3 f0, read from
+separate renders with the effect off. An EQ ahead of the saturation would have
+been flattened by it, which is what ours did (+0.02 dB). After the change ours
+reads B−A +24.76/+2.93 dB against its own linear prediction +24.76/+2.94; the
+remaining H3 gap to the reference (+2.93 against +7.01) is our narrower EQ Q
+(T7e), not the order. `tests/dsp/architecture_test.odin` failed before the
+change and passes after it. The factory bank is unchanged in every summary
+column (G4).
+
+## Deferred, with reasons
+
+Each of these is a confirmed or measured difference, and none is changed here.
+A difference is not by itself a design.
+
+- **Pan composition (T2).** The reference multiplies per-control gains, ours
+  adds positions. The product cannot be applied alone without a decision on
+  the LFO's own law, which on the reference raises the near channel to 1.29
+  and 1.50 at the two depths measured; two depths do not establish it, and a
+  product built on our current LFO law would change every LFO-pan patch
+  without matching it.
+- **Cutoff LFO depth (T3).** Measured only with a static base. Which base the
+  remaining range is counted from when the filter envelope, key tracking or
+  velocity also move the corner is not measured, and the order of those terms
+  would have to be chosen.
+- **Shared LFO (T4b).** When a shared, key-synced LFO does restart -- no key
+  held, no voice sounding, or something else -- is not measured, and the only
+  configuration the host can render with two notes is unison 2.
+- **Parameter ramp (T6).** The 10 ms smoother covers cutoff, gain and pan
+  together; how the reference ramps gain and pan, what it does on a retarget
+  mid-ramp and on a patch load are not measured; bend is a separate fixed-rate
+  law. The null test renders static patches and cannot check any of it.
+- **Output soft clip (T7a).** The reference does not limit up to +41.2 dBFS.
+  Ours is transparent to +30.1 dBFS and limits above it on purpose: the
+  limiter is this engine's stable-output contract (null-test.md, "One more
+  decibel was the output limiter"). Removing it is a product decision.
+- **Voice accounting (T7d).** Counting layers against polyphony and stealing
+  them from the oldest note is a voice-allocator change, and the plain-poly
+  case it would also govern cannot be rendered by the reference here.
+- **EQ Q mapping (T7e).** The fitted-Q residual of 0.31 dB at stored 0 shows
+  the reference's peak is not exactly the bilinear form, so a Q table fitted
+  to it would encode a form that is not established.
+- **Filter type 4 (T7f).** A new filter model with no measured identity is the
+  speculative rewrite the goal excludes; the binding already records that
+  type 4 has no model of its own.
+- **T4a drift, T5 late steepening, T7b grid, T7c spectra.** Measured, small,
+  and not separable from the instruments' resolution with these probes.
+
+## Interface decisions and preserved behaviour
+
+- New probe entry point `s1probe arch <sub>`, in its own file, reusing the
+  timed-script renderers of `behaviorprobe.odin`
+  (`render_reference_script`, `render_ours_script`), `neutral_probe_patch` and
+  the shared FFT. The existing `behavior` subcommands keep their output.
+- A parameter edit is a script event, `script_set` (status 0xFF, never sent as
+  MIDI): the reference gets `setParameter` with the state's measured
+  normalised value at the top of the block; ours gets `engine_set_stored`, the
+  path a host parameter edit takes. MIDI events are unchanged.
+- No public shape, parameter index, stored integer or host entry point
+  changes. The engine change reorders two calls inside `engine_process`.
+
+## States and transitions exercised
+
+- Note lifecycle: fresh note (idle → attack), held (decay → sustain), release
+  (release → idle), a later note after the previous voice went idle (T4a), a
+  note started while another sounds (T4b, T7d), and voice stealing (T7d).
+- Parameter, controller and bend edits while a note is held (T6).
+- Host lifecycle: every render is a fresh `LoadLibrary`, resume, then the
+  patch's state chunk; the transport is reset to bar one per render, so "free
+  running" in T4a means relative to that load.
+- Plain poly mode with two notes sounding dies inside the reference under this
+  host (docs/synth1-behavior-errors.md). Such probes run in a child process
+  and report the exit code; a crash is a host limitation, never evidence about
+  the reference's architecture, and is not extrapolated to the unison cases
+  that do render.
+
+## Contract-fidelity risks
+
+- **Self-agreement.** Where calibration is needed (T2, T3), each engine is
+  calibrated against its own static sweep or its own single-control reading.
+  The EQ-order prediction (T1a) comes from separate effect-off renders.
+- **Block-quantised events.** Script events land on 512-frame boundaries for
+  both engines; ramp times are read from the event's block boundary.
+- **Shape versus scale.** Shape questions (T5, T6) are answered with fits
+  whose residuals are printed, not with a ratio of two readings.
+- **A mismatch is not a design.** Only T1a met the bar of a controlled anchor,
+  a narrow change, a failing-then-passing test and an unchanged bank.

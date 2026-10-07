@@ -910,20 +910,27 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		out_l := dsp.sanitize(sum_l)
 		out_r := dsp.sanitize(sum_r)
 
-		// Equaliser first, then delay, then chorus, which is the order the
-		// reference's own panel and manual list them in. It matters: equalising
-		// before the delay colours what goes into the repeats, and after it would
-		// colour the repeats themselves.
-		out_l, out_r = dsp.equalizer_process(
-			&e.equalizer, out_l, out_r, &eq_params, &eq_coefficients, e.sample_rate,
-		)
-
-		// The effect unit sits between the equaliser and the delay, which is where
-		// the manual's section order puts it. The section carries its own dry/wet
-		// level, so unlike the delay and chorus below it does not need an
+		// The effect unit comes first. The manual lists it after the equaliser,
+		// but the reference does not run it there: with a distortion on, an
+		// equaliser peak at the fundamental raises the output's fundamental by
+		// the peak's full gain (+24.79 dB) and its third harmonic by what the
+		// same peak gives a linear signal at 3 f0, which is what an equaliser
+		// after the nonlinearity does; ahead of it the boost is saturated away
+		// (+0.02 dB). `s1probe arch fxorder` and
+		// docs/synth1-architecture-evidence.md, T1a. The section carries its own
+		// dry/wet level, so unlike the delay and chorus below it does not need an
 		// enable test out here: at level zero it returns its input untouched, and
 		// the reference behaves the same way.
 		out_l, out_r = dsp.effect_process(&e.effect, out_l, out_r, &fx_params, e.sample_rate)
+
+		// Then equaliser, delay, chorus, which is the order the reference's own
+		// panel and manual list them in. It matters: equalising before the delay
+		// colours what goes into the repeats, and after it would colour the
+		// repeats themselves. The same probe's echo keeps the dry hit's harmonic
+		// balance, so the effect unit is ahead of the delay too.
+		out_l, out_r = dsp.equalizer_process(
+			&e.equalizer, out_l, out_r, &eq_params, &eq_coefficients, e.sample_rate,
+		)
 
 		wet_l, wet_r := dsp.delay_process(&e.delay, out_l, out_r, &delay_params, e.sample_rate)
 		if params.delay_on {

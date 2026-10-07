@@ -1281,9 +1281,10 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	//
 	// Two things are worth saying here rather than there. No patch in the factory
 	// bank turns this unit on, so nothing in the null test exercises any of it.
-	// And its position in the chain -- after the equaliser, before the delay -- is
-	// inferred from the order the manual lists the sections in, which is the same
-	// order that turned out to be right for the equaliser, delay and chorus.
+	// And its position in the chain is ahead of the equaliser and the delay,
+	// although the manual lists it after the equaliser: measured with a
+	// distortion and an equaliser peak (`s1probe arch fxorder`, see the comment
+	// at the chain in engine.odin).
 	e.effect_on = resolved_position(77, p.values[77]) != 0
 	// Ten states displayed "0".."9" in order, so the identifier and the position
 	// agree. Read as an identifier anyway, because that is what it is.

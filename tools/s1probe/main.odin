@@ -629,6 +629,10 @@ usage :: proc() {
 	fmt.eprintln("  s1probe behavior [dll] <keys|ctrl|delaytone|chorus1|osc2track|arp> [options]")
 	fmt.eprintln("                        -- timed MIDI scripts through both engines; see")
 	fmt.eprintln("                           behaviorprobe.odin and docs/synth1-behavior-errors.md")
+	fmt.eprintln("  s1probe arch [dll] <fxorder|pan|lfocutoff|lfophase|envshape|ramp|clip|rate|osc|voices|eq|filtertype>")
+	fmt.eprintln("                        [--wav <dir>] [--values <list>] [--what cutoff|pitch|bend]")
+	fmt.eprintln("                        -- the architecture theories; see archprobe.odin and")
+	fmt.eprintln("                           docs/synth1-architecture-evidence.md")
 	fmt.eprintln("  s1probe qprobe  [dll] [--type <0..4>] [--cutoff <n>] [--values <list|all>]")
 	fmt.eprintln("                        [--note <n>] [--calibrate]")
 	fmt.eprintln("  s1probe qtable  [dll] [out.odin]")
@@ -2758,6 +2762,8 @@ main :: proc() {
 		cmd_waveprobe(dll, u8(clamp(wnote, 0, 127)), wdump)
 	case "behavior":
 		cmd_behavior(dll, rest)
+	case "arch":
+		cmd_arch(dll, rest)
 	case "noiseprobe":
 		nnotes := []int{48, 60, 72}
 		nseconds := NOISEPROBE_SECONDS
