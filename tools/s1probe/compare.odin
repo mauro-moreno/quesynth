@@ -579,7 +579,7 @@ print_summary :: proc(rows: []Row) {
 		// A low correlation is excluded rather than reported: it means the two
 		// spectra do not resemble each other under any shift, which is a statement
 		// about timbre, and a detuning read off it would be noise.
-		if c.pitch_confidence >= PITCH_CONFIDENCE_MIN {
+		if pitch_reading_trusted(c.pitch_confidence) {
 			append(&cents, c.pitch_cents)
 			if abs(c.pitch_cents) < 10.0 {
 				in_tune += 1

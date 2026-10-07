@@ -26,6 +26,7 @@
 // else.
 package s1probe
 
+import "core:fmt"
 import "core:math"
 
 // The steady-state window is analysed with a long FFT because the low end is
@@ -1343,6 +1344,40 @@ pitch_shift_cents :: proc(
 // exactly in tune score between 0.32 and 0.94 after it. A threshold picked for the
 // un-whitened curve would exclude most of the bank.
 PITCH_CONFIDENCE_MIN :: 0.25
+
+// Whether a reading may be reported as a tuning. One definition, so the bank
+// summary and `tuningcheck` cannot disagree about which readings count. A reading
+// exactly at the minimum is reported. `pitch_shift_cents` returns 0 cents at
+// confidence 0 for input it cannot measure, which this refuses like any other low
+// reading.
+pitch_reading_trusted :: proc(confidence: f64) -> bool {
+	return confidence >= PITCH_CONFIDENCE_MIN
+}
+
+// The line `tuningcheck` prints for a reading. Below the gate the cents figure is
+// left out: it is the position of the best of many bad alignments, and printed
+// beside "reported" it reads as a measurement of the tuning.
+tuning_reading_text :: proc(cents, confidence: f64) -> string {
+	if pitch_reading_trusted(confidence) {
+		return fmt.tprintf("reported: %+.1f cents at confidence %.2f", cents, confidence)
+	}
+	return fmt.tprintf(
+		"withheld: confidence %.3f is below the %.3f gate, so the spectra do not align under any shift (a timbre difference, not a tuning one)",
+		confidence,
+		PITCH_CONFIDENCE_MIN,
+	)
+}
+
+// Normalised correlation of two channels from their cross product and energies.
+// With a silent channel there is nothing to correlate, which is not the same as
+// uncorrelated: a reading of 0 means two channels that are both present and
+// independent. Silence is the exact-zero test the callers already used.
+correlation_of :: proc(cross, energy_a, energy_b: f64) -> (value: f64, defined: bool) {
+	if energy_a > 0 && energy_b > 0 {
+		return cross / math.sqrt(energy_a * energy_b), true
+	}
+	return 0, false
+}
 
 // The penalty applied to a candidate shift, in correlation units, for being far
 // from zero. Chosen from the measured curves rather than assumed -- see the note

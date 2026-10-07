@@ -298,6 +298,28 @@ oscillator 2 alone (triangle):
 | track on, fine tune "+50 cent" | 269.27 | 269.27 |
 | track on, unison 2, detune 127 | 269.27 and 254.13 | 269.27 and 254.13 |
 
+Reading the second peak (added by the low-confidence follow-up below). This
+table was assembled by eye from a probe that printed two frequencies per side
+and discarded their levels, so the second column mixed four different things,
+and it printed `0.00` where there was no second peak. The probe now prints the
+second peak's level against the strongest peak, and `-` for no peak. No number
+in the table above changed. The levels, from
+`build/behavior/after-lowconf-osc2track.txt`:
+
+| second peak | where | level against the strongest |
+|---|---|---|
+| second unison layer | reference, unison 2 detune 127 (213.73 and 226.49 Hz, track off) | −0.5 dB |
+| second unison layer | reference, track on (269.27 and 254.13 Hz); ours, both track settings | −0.3 dB |
+| 3 × the strongest peak's frequency | reference, track off (660.05 Hz, 679.31 Hz with fine tune) | −19.5 dB, −18.7 dB |
+| noise-floor maximum | ours (400.79, 203.15 and 384.11 Hz) | −90.3, −90.4 and −77.5 dB |
+| noise-floor maximum | reference, track on, fine tune (595.77 Hz) | −145.2 dB |
+| none | reference, track on, note 60, note 72 and key shift | `-` (was `0.00`) |
+
+Real second tones sit within 0.5 dB of the strongest peak here; everything
+else is 18 dB or more below it. That is an observation about these ten rows,
+not a threshold: the probe does not gate on it and still does not decide what a
+second peak is.
+
 ### Item 9: chorus x1
 
 ```
@@ -309,9 +331,9 @@ correlation of wet left against wet right.
 
 | input | ref wet L / R dB | ref corr | ours wet L / R dB | ours corr |
 |---|---|---|---|---|
-| pan L 100% | −11.1 / −inf | 0.000 | −11.2 / −11.2 | 1.000 |
+| pan L 100% | −11.1 / −inf | n/a | −11.2 / −11.2 | 1.000 |
 | pan centre | −11.1 / −11.1 | 1.000 | −11.2 / −11.2 | 1.000 |
-| pan R 100% | −inf / −11.1 | 0.000 | −inf / −inf | 0.000 |
+| pan R 100% | −inf / −11.1 | n/a | −inf / −inf | n/a |
 | unison spread (layers panned apart) | −11.1 / −11.1 | 0.046 | −11.2 / −11.2 | 1.000 |
 
 A mono sum would put a hard-panned input's wet into both channels and make the
@@ -322,6 +344,16 @@ therefore **unsupported** and is deferred. The measured alternative, each
 channel through its own line on the shared sweep, is recorded as deferred work
 rather than substituted. Ours is wrong too (a left-only tap, so a hard-right
 voice gets no chorus at all), and that is deferred with it.
+
+Correction (low-confidence follow-up below): three cells in the table were
+first recorded as `0.000` and are now `n/a` (reference pan L, reference pan R,
+ours pan R). Each sits beside a `-inf` channel. A correlation with a silent
+channel is undefined, and the probe printed 0 for it, which reads as two
+uncorrelated channels. The probe now prints `n/a`
+(`build/behavior/after-lowconf-chorus1.txt`); every other cell of the run is
+identical to `before-chorus1.txt`. The argument above does not use those cells.
+It rests on the unison-spread row, whose 0.046 is a defined correlation and did
+not change.
 
 ## Per-slice records
 
@@ -604,6 +636,91 @@ build/s1probe.exe summarise build/behavior/bank-after-fd6a0d7.csv
 
   soundbank01..09 hold only a placeholder file. The new behaviour is
   therefore evidenced by the focused probes above, not by the bank.
+
+## Low-confidence readings in the probes (follow-up)
+
+Three readings in `tools/s1probe` were printed as if they were measurements
+when they were not. This changes how the probes report. It changes no
+measurement, no `compare` number, nothing under `src/`, and makes no claim
+about the reference.
+
+| | what changed | where |
+|---|---|---|
+| A | `tuningcheck` ended with `reported: ... cents at confidence ...` for any confidence, while the bank summary already left out readings under `PITCH_CONFIDENCE_MIN`. Both now ask `pitch_reading_trusted`, defined next to the constant with the same `>=`. Below the gate `tuningcheck` prints `withheld:`, the confidence and the gate, and no cents figure. `pitch_shift_cents` returns 0 cents at confidence 0 for input it cannot measure, and that is withheld the same way | `analysis.odin` (`pitch_reading_trusted`, `tuning_reading_text`), `compare.odin`, `effectprobe.odin` |
+| B | `behavior chorus1` printed `0.000` for a correlation with a silent wet channel. `correlation_of` returns whether the value is defined, with the exact-zero silence test the probe already used, and the probe prints `n/a` | `analysis.odin` (`correlation_of`), `behaviorprobe.odin` (`corr_text`) |
+| C | `behavior osc2track` printed the second peak's frequency and discarded its level, and `0.00` for no peak. It now prints the level against the strongest peak and `-` for no peak. `two_peaks` no longer calls a bin with no power a peak: in a silent spectrum every bin is "not lower than its neighbours", so two bins at the bottom of the range came back as peaks | `behaviorprobe.odin` (`two_peaks`, `peak_pair_text`) |
+
+### Evidence
+
+All of it local and git-ignored under `build/behavior/`, run against
+`ext/synth1/Synth1/Synth1 VST64.dll`.
+
+- **A, `tuningcheck`.** Patches 119 and 003 are under the gate both in the
+  bank CSV (`bank-after-fd6a0d7.csv`: −457.07 cents at 0.0907, −5.23 at 0.1143)
+  and in `tuningcheck` at note 60, which uses its own render timing and so
+  gives different numbers (confidence −0.032 and 0.171). On 119 the binary
+  from before this change printed `reported: -156.9 cents at confidence -0.03`
+  and now prints `withheld: confidence -0.032 is below the 0.250 gate, ...`
+  (`after-lowconf-tuningcheck-119.txt`, `-003.txt`). Patches 001 (0.60) and 091
+  (0.52) are over the gate and still print `reported: +0.2 cents at confidence
+  0.60` and `reported: +0.1 cents at confidence 0.52`
+  (`after-lowconf-tuningcheck-001.txt`, `-091.txt`). Patch 113, whose CSV row is
+  confidence 0.0000, prints `withheld: confidence 0.000 ...`
+  (`-113.txt`).
+- **A, `compare` unchanged.** `s1probe-pre-lowconf.exe` (built from HEAD
+  97385a5 before the change) and the rebuilt `s1probe.exe` both ran `summarise
+  build/behavior/bank-after-fd6a0d7.csv`. The 47 lines are byte-identical
+  (`cmp`, `diff`: `summarise-before-lowconf.txt`, `summarise-after-lowconf.txt`),
+  including `tuning ... n=110 ... 13 more excluded`. The full-bank `compare`
+  was not re-run.
+- **B.** `before-chorus1.txt` against `after-lowconf-chorus1.txt` differs on
+  exactly the three cells above, `0.000` to `n/a`. `1.000` and the `0.046`
+  cell are unchanged.
+- **C.** `after-lowconf-osc2track.txt` against `after8-osc2track.txt`: all 40
+  frequencies are identical (strongest peak for both sides, second peak where
+  there is one) and the three `0.00` placeholders are `-`. The levels are in the
+  Item 8 note above.
+
+### Tests
+
+Ten tests were added: five in `tools/s1probe/analysis_test.odin` (gate
+boundary, unmeasurable input, the `tuningcheck` line, undefined and defined
+correlation) and five in the new `tools/s1probe/behaviorprobe_test.odin`
+(`two_peaks` with one peak, two peaks 20 dB apart, and no power; the
+second-peak text; the correlation text). They use synthetic spectra and
+channels whose answers are known in advance. Red run, with the new tests
+against stubs that keep the old behaviour: `odin test tools/s1probe` finished
+60 tests with 8 failed (`red-lowconf.txt`). Green: 60/60 (`green-lowconf.txt`),
+from 50/50 before.
+
+| check | result |
+|---|---|
+| `odin test tools/s1probe` | 60/60 (was 50/50) |
+| `odin build tools/s1probe -out:build/s1probe.exe` | ok |
+| `odin test tests/dsp` | 131/131 (`src/` is untouched; run once to confirm) |
+| `git diff --check` | clean |
+| `specs/` | `?? specs/` untracked, `specs/2026-09-28-sequencer.md` SHA256 `807053ad…ce54`, unchanged |
+
+### Still unsupported or deferred
+
+- **No gate on the second peak.** `osc2track` prints the level and leaves the
+  call to the reader. The tool does not decide what a second peak is, and no
+  cutoff was chosen.
+- **`lfoshape`.** The stored-1 verdict, sine against triangle (0.993 against
+  0.993), is still an unresolved tie, and the row label is unchanged. Both stay
+  in the deferred list below.
+- **Item 8 key shift and item 9 mono sum** remain unsupported and deferred
+  exactly as recorded.
+- **`hold_run_length`.** The `confidence > 0.5` gate in `deciprobe`
+  (`effectprobe.odin`) is a literal and was left as it is.
+- **The older gate table in `docs/null-test.md`** (median |cents| 226.7 at
+  `>= 0.20`, 18 of 123 patches reported) does not match the current 0.25 gate:
+  `bank-after-fd6a0d7.csv.summary.txt` reports 110 of 123. It is recorded
+  here and not rewritten. The same document uses patch 091 as its example of
+  a non-measurement (0.72 at +700 cents). Under the current metric 091 is
+  not under the gate: 0.5092 in the CSV, 0.52 in `tuningcheck`.
+- **No reference parity** is claimed for any of this. These are changes to what
+  the probes print.
 
 ## Final gates
 

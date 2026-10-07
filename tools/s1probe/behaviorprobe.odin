@@ -305,6 +305,10 @@ db_text :: proc(d: f64) -> string {
 	return d <= -199 ? "  -inf " : dec1(d, 7)
 }
 
+corr_text :: proc(value: f64, defined: bool) -> string {
+	return defined ? dec3(value, 6) : pad_left("n/a", 6)
+}
+
 ms_frames :: proc(ms: f64) -> int {
 	return int(ms * f64(SAMPLE_RATE) / 1000.0)
 }
@@ -762,6 +766,7 @@ cmd_behavior_chorus1 :: proc(dll: string, o: ^Behavior_Options) {
 	for input in inputs {
 		cells: [2][2]f64
 		corr: [2]f64
+		corr_defined: [2]bool
 		dry_db: [2]f64
 		for side in 0 ..< 2 {
 			renders: [2][]f32
@@ -812,7 +817,7 @@ cmd_behavior_chorus1 :: proc(dll: string, o: ^Behavior_Options) {
 				r := f64(renders[1][i * 2 + 1]) - f64(renders[0][i * 2 + 1])
 				cross += l * r
 			}
-			corr[side] = energy[0] > 0 && energy[1] > 0 ? cross / math.sqrt(energy[0] * energy[1]) : 0
+			corr[side], corr_defined[side] = correlation_of(cross, energy[0], energy[1])
 			write_pair(o.wav, fmt.tprintf("chorus1-%v-%v", input.label, side == 0 ? "ref" : "ours"), renders[0], renders[1])
 			delete(renders[0])
 			delete(renders[1])
@@ -820,20 +825,22 @@ cmd_behavior_chorus1 :: proc(dll: string, o: ^Behavior_Options) {
 		fmt.printfln("  %-14v | %v %v | %v %v %v | %v %v %v",
 			input.label,
 			db_text(dry_db[0]), db_text(dry_db[1]),
-			db_text(cells[0][0]), db_text(cells[0][1]), dec3(corr[0], 6),
-			db_text(cells[1][0]), db_text(cells[1][1]), dec3(corr[1], 6))
+			db_text(cells[0][0]), db_text(cells[0][1]), corr_text(corr[0], corr_defined[0]),
+			db_text(cells[1][0]), db_text(cells[1][1]), corr_text(corr[1], corr_defined[1]))
 	}
 }
 
 // ------------------------------------------------------------------ osc2 tracking off
 
-// The strongest one or two spectral peaks between lo and hi.
+// The strongest one or two spectral peaks between lo and hi. A frequency of 0 means
+// there is no such peak. A bin with no power is not a peak: in a silent spectrum
+// every bin is "not lower than its neighbours".
 two_peaks :: proc(power: []f64, bin_hz, lo, hi: f64) -> (a, b: f64, a_db, b_db: f64) {
 	best := [2]int{-1, -1}
 	for k in 2 ..< len(power) - 2 {
 		hz := f64(k) * bin_hz
 		if hz < lo || hz > hi {continue}
-		if power[k] < power[k - 1] || power[k] < power[k + 1] {continue}
+		if power[k] <= 0 || power[k] < power[k - 1] || power[k] < power[k + 1] {continue}
 		if best[0] < 0 || power[k] > power[best[0]] {
 			best[1] = best[0]
 			best[0] = k
@@ -858,6 +865,19 @@ two_peaks :: proc(power: []f64, bin_hz, lo, hi: f64) -> (a, b: f64, a_db, b_db: 
 		b_db = power_db(power[best[1]])
 	}
 	return
+}
+
+// The second peak comes with its level relative to the strongest, because the
+// frequency alone cannot say what it is. In a unison render it is the second
+// layer, in a single-oscillator render it is a harmonic, and in a spectrum with
+// one tone it is whichever noise-floor ripple happens to be highest. The level is
+// what separates them; the probe does not decide where the line is.
+peak_pair_text :: proc(a, b, a_db, b_db: f64) -> string {
+	hz :: proc(v: f64) -> string {
+		return v > 0 ? dec2(v, 8) : pad_left("-", 8)
+	}
+	relative := b > 0 ? fmt.tprintf("%v dB", sdec1(b_db - a_db, 6)) : pad_left("-", 9)
+	return fmt.tprintf("%v %v %v", hz(a), hz(b), relative)
 }
 
 Osc2_Variant :: struct {
@@ -892,10 +912,12 @@ cmd_behavior_osc2track :: proc(dll: string, o: ^Behavior_Options) {
 	}
 
 	fmt.println("behavior osc2track: oscillator 2 alone (triangle); strongest two peaks 150-700 Hz")
+	fmt.println("  second peak: frequency, then its level against the strongest peak. Nothing here")
+	fmt.println("  decides whether it is a second tone, a harmonic or a noise-floor maximum; \"-\" is no peak")
 	fmt.printfln("  key shift stored %v (%q), fine tune stored %v (%q), unison voices stored %v (%q)",
 		shift_up, sengine.resolved_display(9, shift_up), fine_up, sengine.resolved_display(72, fine_up),
 		unison_voices, sengine.resolved_display(93, unison_voices))
-	fmt.printfln("  %-6v %-22v | %18v | %18v", "track", "variant", "reference Hz", "this engine Hz")
+	fmt.printfln("  %-6v %-22v | %-27v | %v", "track", "variant", "reference Hz, 2nd dB", "this engine Hz, 2nd dB")
 
 	for track in ([2]int{0, 1}) {
 		for v in variants {
@@ -915,19 +937,17 @@ cmd_behavior_osc2track :: proc(dll: string, o: ^Behavior_Options) {
 			events := []Script_Event{script_on(0.0, v.note), script_off(1.5, v.note)}
 			ref_audio := render_reference_script(dll, &p, pristine, work, events, script_frame(1.5))
 			our_audio := render_ours_script(p, events, script_frame(1.5))
-			cells: [2][2]f64
+			cells: [2]string
 			for audio, side in ([2][]f32{ref_audio, our_audio}) {
 				x := script_channel(audio, -1)
 				power := welch_power(x, ms_frames(100), len(x))
 				bin_hz := f64(SAMPLE_RATE) / f64((len(power) - 1) * 2)
-				a, b, _, _ := two_peaks(power, bin_hz, 150, 700)
-				cells[side] = {a, b}
+				a, b, a_db, b_db := two_peaks(power, bin_hz, 150, 700)
+				cells[side] = peak_pair_text(a, b, a_db, b_db)
 				delete(power)
 				delete(x)
 			}
-			fmt.printfln("  %-6v %-22v | %v %v | %v %v",
-				track == 0 ? "off" : "on", v.label,
-				dec2(cells[0][0], 8), dec2(cells[0][1], 8), dec2(cells[1][0], 8), dec2(cells[1][1], 8))
+			fmt.printfln("  %-6v %-22v | %v | %v", track == 0 ? "off" : "on", v.label, cells[0], cells[1])
 			delete(ref_audio)
 			delete(our_audio)
 			free_all(context.temp_allocator)

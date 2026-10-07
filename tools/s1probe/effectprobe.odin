@@ -1015,7 +1015,7 @@ cmd_tuningcheck :: proc(dll: string, path: string, note: int) {
 				}
 				fmt.println()
 				cents, conf := pitch_shift_cents(rp, op, bin_hz)
-				fmt.printfln("  reported: %+.1f cents at confidence %.2f", cents, conf)
+				fmt.printfln("  %v", tuning_reading_text(cents, conf))
 			}
 		}
 	}

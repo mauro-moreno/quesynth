@@ -860,3 +860,81 @@ compare_timing_honours_a_shortened_hold :: proc(t: ^testing.T) {
 	testing.expect_value(t, g_hold_frames, full)
 	set_compare_timing(COMPARE_BLOCK_DEFAULT)
 }
+
+// ------------------------------------------------------------ low-confidence readings
+
+@(test)
+test_pitch_reading_gate_is_inclusive_at_the_minimum :: proc(t: ^testing.T) {
+	testing.expect(t, pitch_reading_trusted(PITCH_CONFIDENCE_MIN), "a reading exactly at the gate is reported")
+	testing.expect(t, pitch_reading_trusted(1.0), "a perfect alignment is reported")
+	testing.expect(
+		t,
+		!pitch_reading_trusted(PITCH_CONFIDENCE_MIN - 1.0e-9),
+		"a reading just under the gate is a timbre difference, not a tuning",
+	)
+	testing.expect(t, !pitch_reading_trusted(0), "zero confidence is never reported")
+}
+
+@(test)
+test_pitch_shift_of_unmeasurable_input_is_withheld :: proc(t: ^testing.T) {
+	// No power anywhere: the log-frequency profiles are flat, so nothing correlates.
+	// The 0 cents that comes back is a placeholder and must not read as "in tune".
+	silent := make([]f64, FFT_SIZE / 2 + 1)
+	defer delete(silent)
+	cents, confidence := pitch_shift_cents(silent, silent, f64(SAMPLE_RATE) / f64(FFT_SIZE))
+	testing.expect_value(t, cents, 0.0)
+	testing.expect_value(t, confidence, 0.0)
+	testing.expect(t, !pitch_reading_trusted(confidence), "an unmeasurable pair was treated as a reading")
+	testing.expect(
+		t,
+		!strings.contains(tuning_reading_text(cents, confidence), "reported:"),
+		"tuningcheck reported a tuning for input with no spectrum",
+	)
+}
+
+@(test)
+test_tuning_reading_text_reports_only_trusted_readings :: proc(t: ^testing.T) {
+	testing.expect_value(
+		t,
+		tuning_reading_text(-12.34, 0.87),
+		"reported: -12.3 cents at confidence 0.87",
+	)
+
+	// Patch 091 scored 0.72 at +700 cents and still is not a tuning measurement;
+	// the confidence that gets it excluded is the smaller of two tests, so a low
+	// value can sit beside a large shift.
+	low := tuning_reading_text(700.0, 0.10)
+	testing.expectf(t, !strings.contains(low, "reported:"), "low confidence was reported as a tuning: %q", low)
+	testing.expectf(t, strings.contains(low, "withheld"), "low confidence did not say it was withheld: %q", low)
+	testing.expectf(t, strings.contains(low, "0.100"), "the confidence is missing: %q", low)
+	testing.expectf(t, strings.contains(low, "0.250"), "the gate is missing: %q", low)
+	testing.expectf(t, !strings.contains(low, "700"), "a cents figure was printed for a withheld reading: %q", low)
+}
+
+@(test)
+test_correlation_is_undefined_when_a_channel_is_silent :: proc(t: ^testing.T) {
+	_, left_silent := correlation_of(0, 0, 4)
+	testing.expect(t, !left_silent, "correlation with a silent left channel is undefined, not zero")
+	_, right_silent := correlation_of(0, 4, 0)
+	testing.expect(t, !right_silent, "correlation with a silent right channel is undefined, not zero")
+	_, both_silent := correlation_of(0, 0, 0)
+	testing.expect(t, !both_silent, "correlation of two silent channels is undefined, not zero")
+}
+
+@(test)
+test_correlation_of_known_channels :: proc(t: ^testing.T) {
+	// l = r = {1, 2}: cross 5, energies 5 and 5.
+	same, same_ok := correlation_of(5, 5, 5)
+	testing.expect(t, same_ok, "identical channels are measurable")
+	testing.expectf(t, abs(same - 1.0) < 1.0e-12, "identical channels correlated at %.12f", same)
+
+	// r = -l.
+	inverted, inverted_ok := correlation_of(-5, 5, 5)
+	testing.expect(t, inverted_ok, "inverted channels are measurable")
+	testing.expectf(t, abs(inverted + 1.0) < 1.0e-12, "inverted channels correlated at %.12f", inverted)
+
+	// l = {1, 0}, r = {0, 1}: no overlap. A real zero, and defined.
+	orthogonal, orthogonal_ok := correlation_of(0, 1, 1)
+	testing.expect(t, orthogonal_ok, "orthogonal channels have energy, so the correlation is defined")
+	testing.expect_value(t, orthogonal, 0.0)
+}
