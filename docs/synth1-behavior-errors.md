@@ -662,9 +662,9 @@ All of it local and git-ignored under `build/behavior/`, run against
   from before this change printed `reported: -156.9 cents at confidence -0.03`
   and now prints `withheld: confidence -0.032 is below the 0.250 gate, so no
   tuning is reported (confidence is the smaller of the best shift's
-  correlation and its lead over the best rival at least half an octave away)`
-  (`after-lowconf-r2-tuningcheck-119.txt`; `-003.txt` prints the same with
-  0.171, `-113.txt` with 0.000). Patches 001 (0.60) and 091 (0.52) are over
+  correlation and its lead over the best rival at least half an octave away,
+  and 0 when no shift could be scored)` (`after-lowconf-r3-tuningcheck-119.txt`;
+  `-003.txt` prints the same with 0.171, `-113.txt` with 0.000). Patches 001 (0.60) and 091 (0.52) are over
   the gate and still print `reported: +0.2 cents at confidence 0.60` and
   `reported: +0.1 cents at confidence 0.52`, byte for byte as before
   (`after-lowconf-r2-tuningcheck-001.txt`, `-091.txt`, against
@@ -730,6 +730,14 @@ Red run against the production code of the first change: 62 tests, 3 failed
 `test_withheld_confidence_never_prints_as_the_gate_it_is_under`,
 `test_withheld_reading_does_not_blame_timbre_when_an_octave_rival_limits_the_margin`;
 `red-lowconf-r2.txt`). Green: 62/62 (`green-lowconf-r2.txt`).
+
+A third round made the parenthetical also state the 0 placeholder, "and 0 when
+no shift could be scored", because patch 113 (empty `tuning correlation at `
+line) and silent input return 0 at confidence 0 with no best shift, so the
+earlier definition described a shift that does not exist.
+`test_pitch_shift_of_unmeasurable_input_is_withheld` gained an assertion for
+the phrase. Red: 62 tests, 1 failed (that test; `red-lowconf-r3.txt`). Green:
+62/62 (`green-lowconf-r3.txt`).
 
 | check | result |
 |---|---|

@@ -888,6 +888,7 @@ test_pitch_shift_of_unmeasurable_input_is_withheld :: proc(t: ^testing.T) {
 	text := tuning_reading_text(cents, confidence)
 	testing.expectf(t, !strings.contains(text, "reported:"), "tuningcheck reported a tuning for input with no spectrum: %q", text)
 	testing.expectf(t, !withheld_text_names_a_cause(text), "the withheld line names a cause for input with no spectrum: %q", text)
+	testing.expectf(t, strings.contains(text, "no shift could be scored"), "the withheld line does not say that no shift could be scored: %q", text)
 }
 
 @(test)

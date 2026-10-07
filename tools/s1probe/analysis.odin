@@ -1373,7 +1373,7 @@ tuning_reading_text :: proc(cents, confidence: f64) -> string {
 		if math.round(confidence * scale) / scale < PITCH_CONFIDENCE_MIN {break}
 	}
 	return fmt.tprintf(
-		"withheld: confidence %.*f is below the %.3f gate, so no tuning is reported (confidence is the smaller of the best shift's correlation and its lead over the best rival at least half an octave away)",
+		"withheld: confidence %.*f is below the %.3f gate, so no tuning is reported (confidence is the smaller of the best shift's correlation and its lead over the best rival at least half an octave away, and 0 when no shift could be scored)",
 		decimals,
 		confidence,
 		PITCH_CONFIDENCE_MIN,
