@@ -35,7 +35,7 @@ test_equalizer_shapes_harmonics_after_the_effect :: proc(t: ^testing.T) {
 		p.values[80] = 64
 		p.values[81] = 127
 		x := render_keys(p, []Key_Event{{0, 48, true}}, 1.5)
-		f0 := 440.0 * math.pow(2.0, (48.0 - 69.0) / 12.0)
+		f0 := 440.0 * math.pow(f64(2.0), (48.0 - 69.0) / 12.0)
 		levels[on] = {line_db(x, f0), line_db(x, 3 * f0)}
 		delete(x)
 	}

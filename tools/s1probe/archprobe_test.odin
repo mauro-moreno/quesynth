@@ -226,7 +226,7 @@ test_arch_transfer_reads_a_known_gain_from_noise :: proc(t: ^testing.T) {
 	bin_hz := f64(SAMPLE_RATE) / 4096
 	for hz in ([]f64{100, 1000, 10000}) {
 		got := arch_transfer_db_at(h, bin_hz, hz)
-		testing.expectf(t, abs(got - 20 * math.log10(0.5)) < 1.0e-6, "transfer at %v Hz: %v dB, want -6.02", hz, got)
+		testing.expectf(t, abs(got - 20 * math.log10(f64(0.5))) < 1.0e-6, "transfer at %v Hz: %v dB, want -6.02", hz, got)
 	}
 }
 

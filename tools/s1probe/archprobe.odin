@@ -196,8 +196,8 @@ arch_transfer :: proc(x, y: []f32, from, to, n: int) -> []f64 {
 // The transfer magnitude at `hz`, in dB, averaged in power over the bins within
 // a twelfth of an octave so a single noisy bin cannot set it.
 arch_transfer_db_at :: proc(h: []f64, bin_hz, hz: f64) -> f64 {
-	lo := int(math.floor(hz * math.pow(2.0, -1.0 / 24.0) / bin_hz))
-	hi := int(math.ceil(hz * math.pow(2.0, 1.0 / 24.0) / bin_hz))
+	lo := int(math.floor(hz * math.pow(f64(2.0), -1.0 / 24.0) / bin_hz))
+	hi := int(math.ceil(hz * math.pow(f64(2.0), 1.0 / 24.0) / bin_hz))
 	sum := 0.0
 	count := 0
 	for k in max(lo, 1) ..= min(hi, len(h) - 1) {
@@ -533,8 +533,8 @@ ARCH_BAND_HI :: 15000.0
 
 arch_band_db :: proc(power: []f64, bin_hz: f64) -> []f64 {
 	out: [dynamic]f64
-	for lo := ARCH_BAND_LO; lo < ARCH_BAND_HI; lo *= math.pow(2.0, 1.0 / 6.0) {
-		hi := lo * math.pow(2.0, 1.0 / 6.0)
+	for lo := ARCH_BAND_LO; lo < ARCH_BAND_HI; lo *= math.pow(f64(2.0), 1.0 / 6.0) {
+		hi := lo * math.pow(f64(2.0), 1.0 / 6.0)
 		sum := 0.0
 		count := 0
 		for k in max(int(math.ceil(lo / bin_hz)), 1) ..< min(int(math.ceil(hi / bin_hz)), len(power)) {
@@ -1764,7 +1764,7 @@ rbj_peak_db :: proc(f0, gain_db, q, hz: f64) -> f64 {
 // The points every transfer report is read at: sixth octaves, 50 Hz to 12 kHz.
 arch_points :: proc() -> [dynamic]f64 {
 	out: [dynamic]f64
-	for hz := 50.0; hz <= 12000; hz *= math.pow(2.0, 1.0 / 6.0) {append(&out, hz)}
+	for hz := 50.0; hz <= 12000; hz *= math.pow(f64(2.0), 1.0 / 6.0) {append(&out, hz)}
 	return out
 }
 
