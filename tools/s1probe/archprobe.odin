@@ -8,6 +8,7 @@ package s1probe
 //   s1probe arch lfocutoff             cutoff LFO depth against the base cutoff
 //   s1probe arch lfophase              free-running against key-synced LFO
 //   s1probe arch envshape              decay and release: linear or exponential
+//   s1probe arch envlaw                finite envelope lengths and fade model
 //   s1probe arch ramp                  a cutoff/pitch edit's transition time
 //   s1probe arch clip                  output stage above full scale
 //   s1probe arch rate                  modulation update grid
@@ -1973,6 +1974,7 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "lfocutoff": cmd_arch_lfocutoff(dll, &c, &o)
 	case "lfophase": cmd_arch_lfophase(dll, &c, &o)
 	case "envshape": cmd_arch_envshape(dll, &c, &o)
+	case "envlaw": cmd_arch_envlaw(dll, &c, &o)
 	case "ramp": cmd_arch_ramp(dll, &c, &o)
 	case "clip": cmd_arch_clip(dll, &c, &o)
 	case "rate": cmd_arch_rate(dll, &c, &o)

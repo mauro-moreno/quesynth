@@ -1521,16 +1521,27 @@ test_envelope_times_bind_and_stay_in_range :: proc(t: ^testing.T) {
 	}
 }
 
-// The engine's release has to actually last as long as the table says, or the
-// table is decorative. dsp.segment_coef is defined to cover 99.9% -- 60 dB -- in
-// its argument, which is exactly what the reference was measured against.
+// The engine's release has to actually last as long as the law says, or the
+// law is decorative. The amplitude envelope's release is a segment of
+// 0.01 * 6000^(v/127) seconds whose level is exp(-8u) * (1 - u), so half way
+// through it the level is 0.00916 of where it started (-40.8 dB) and at its end
+// it is gone. The reference measured the same curve tick for tick
+// (docs/synth1-envelope-filter-evidence.md); the exponential 60 dB down in the
+// old table's time was already at 1/145 of its start half way through.
 @(test)
-test_release_lasts_as_long_as_the_measured_table_says :: proc(t: ^testing.T) {
+test_release_follows_the_fade_law_over_its_length :: proc(t: ^testing.T) {
 	p := default_patch()
 	p.values[25] = 0 // instant attack
 	p.values[26] = 0 // no decay
 	p.values[27] = 127 // full sustain
-	p.values[28] = 64 // a mid release, about half a second
+	p.values[28] = 64 // a mid release, 0.80 s
+	// One sine through an open filter: a peak read off the audio is then the
+	// amplitude envelope. The default patch's two detuned saws beat, which moves
+	// a peak read over a few milliseconds by as much as a fifth.
+	p.values[0] = 0 // sine
+	p.values[5] = 0 // oscillator 1 alone
+	p.values[19] = 127 // cutoff wide open
+	p.values[21] = 63 // filter envelope amount 0
 	// The effects have to be off for this to measure what it claims to. The
 	// delay's repeats keep the output alive long after the amplitude envelope has
 	// finished, which is the delay working correctly and this test measuring the
@@ -1538,14 +1549,14 @@ test_release_lasts_as_long_as_the_measured_table_says :: proc(t: ^testing.T) {
 	p.values[65] = 0 // delay off
 	p.values[66] = 0 // chorus off
 	bound := engine.bind_patch(p)
-	expected := bound.amp_release
+	length := bound.amp_release
 
 	e: engine.Engine
 	engine.engine_init(&e, bound, SR)
 	defer engine.engine_destroy(&e)
 
 	hold := int(0.2 * f32(SR))
-	tail := int((expected * 3.0 + 0.5) * f32(SR))
+	tail := int((length * 1.5 + 0.5) * f32(SR))
 	left := make([]f32, hold + tail)
 	defer delete(left)
 	right := make([]f32, hold + tail)
@@ -1556,7 +1567,8 @@ test_release_lasts_as_long_as_the_measured_table_says :: proc(t: ^testing.T) {
 	engine.engine_note_off(&e, 60)
 	engine.engine_process(&e, left[hold:], right[hold:])
 
-	// Peak level over a 5 ms window, at note off and at one release time after.
+	// Peak level over a 5 ms window, at note off, half way through the release
+	// and one length after it.
 	window := int(0.005 * f32(SR))
 	peak_at :: proc(x: []f32, from, count: int) -> f32 {
 		peak: f32 = 0
@@ -1569,15 +1581,15 @@ test_release_lasts_as_long_as_the_measured_table_says :: proc(t: ^testing.T) {
 	}
 
 	at_off := peak_at(left[:], hold - window, window)
-	one_release_later := peak_at(left[:], hold + int(expected * f32(SR)), window)
+	halfway := peak_at(left[:], hold + int(0.5 * length * f32(SR)), window)
+	one_length_later := peak_at(left[:], hold + int(length * f32(SR)) + 8, window)
 	testing.expect(t, at_off > 0.001, "the note was not sounding at note off")
 
-	// 60 dB down is a factor of 1000. Allow a wide band around it: the point is
-	// that the release is on the right order, not that the coefficient is exact.
-	ratio := at_off / max(one_release_later, 1.0e-9)
-	testing.expectf(t, ratio > 100.0 && ratio < 100_000.0,
-		"after one release time (%v s) the level fell by a factor of %v, expected about 1000",
-		expected, ratio)
+	ratio := at_off / max(halfway, 1.0e-9)
+	testing.expectf(t, ratio > 105.0 && ratio < 115.0,
+		"half way through the release (%v s long) the level fell by a factor of %v, expected about 109",
+		length, ratio)
+	testing.expectf(t, one_length_later == 0.0, "the release was still sounding after its length: %v", one_length_later)
 }
 
 // The pulse wave has to be free of DC at every width.

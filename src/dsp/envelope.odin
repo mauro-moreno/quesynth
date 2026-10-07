@@ -11,6 +11,11 @@ import "core:math"
 // going. Synth1's own history records "modify portament effect
 // (linear -> exponential)" for portamento, so exponential segments are in
 // keeping with the reference even though this slice does not chase its curves.
+//
+// The amplitude envelope has since been read against the reference and does
+// chase them: `envelope_set_fade` gives it finite decay and release segments
+// (see ENVELOPE_FADE_EXPONENT). The filter and modulation envelopes have not
+// been read, and stay exponential.
 Envelope_Stage :: enum u8 {
 	Idle,
 	Attack,
@@ -33,7 +38,25 @@ Envelope :: struct {
 	decay_coef:    f32,
 	release_coef:  f32,
 	sustain:       f32,
+	// The fade law, set by `envelope_set_fade`. Off, decay and release are the
+	// one-pole approaches above; on, they are the finite segments below.
+	fade:          bool,
+	decay_step:    f64,
+	release_step:  f64,
+	// How far through the current decay or release, 0 to 1.
+	progress:      f64,
+	// The level the release started from.
+	release_from:  f32,
 }
+
+// The amplitude envelope's decay and release, measured against the reference
+// (docs/synth1-envelope-filter-evidence.md): over a segment of `length` seconds
+// the level is exp(-8u) * (1 - u), u the share of the length gone, so it falls
+// like an exponential and reaches exactly zero at the end. A release scales it
+// by the level it started from; a decay falls from 1 to the sustain level by
+// the same curve. The reference reads the curve in whole 1/2048ths every 256
+// samples, which this does not copy.
+ENVELOPE_FADE_EXPONENT :: 8.0
 
 // Both segments reach -60 dB in their tabled time: ln(1000) = 6.9078.
 ENVELOPE_DECAY_SPAN :: f32(6.9078)
@@ -63,10 +86,35 @@ envelope_set :: proc "contextless" (e: ^Envelope, attack, decay, sustain, releas
 		sr = 48000.0
 	}
 
-	a := is_finite(attack) ? max(attack, f32(0)) : 0
 	d := is_finite(decay) ? max(decay, f32(0)) : 0
 	r := is_finite(release) ? max(release, f32(0)) : 0
 
+	envelope_set_attack_and_sustain(e, attack, sustain, sr)
+	e.fade = false
+	e.decay_coef = segment_coef(d, sr, ENVELOPE_DECAY_SPAN)
+	e.release_coef = segment_coef(r, sr, ENVELOPE_RELEASE_SPAN)
+}
+
+// The same, with decay and release as the fade law's segment lengths in seconds
+// rather than as the time an exponential takes to fall 60 dB.
+envelope_set_fade :: proc "contextless" (e: ^Envelope, attack, decay_length, sustain, release_length, sample_rate: f32) {
+	sr := sample_rate
+	if !is_finite(sr) || sr <= 0 {
+		sr = 48000.0
+	}
+
+	d := is_finite(decay_length) ? max(decay_length, f32(0)) : 0
+	r := is_finite(release_length) ? max(release_length, f32(0)) : 0
+
+	envelope_set_attack_and_sustain(e, attack, sustain, sr)
+	e.fade = true
+	// A segment shorter than a sample still takes one.
+	e.decay_step = 1.0 / max(f64(d) * f64(sr), 1.0)
+	e.release_step = 1.0 / max(f64(r) * f64(sr), 1.0)
+}
+
+envelope_set_attack_and_sustain :: proc "contextless" (e: ^Envelope, attack, sustain, sr: f32) {
+	a := is_finite(attack) ? max(attack, f32(0)) : 0
 	attack_samples := a * sr
 	if attack_samples < 1.0 {
 		// A zero attack still takes one sample, so no note ever starts with a
@@ -75,10 +123,13 @@ envelope_set :: proc "contextless" (e: ^Envelope, attack, decay, sustain, releas
 	} else {
 		e.attack_step = 1.0 / attack_samples
 	}
-
-	e.decay_coef = segment_coef(d, sr, ENVELOPE_DECAY_SPAN)
-	e.release_coef = segment_coef(r, sr, ENVELOPE_RELEASE_SPAN)
 	e.sustain = clamp32(is_finite(sustain) ? sustain : 0, 0.0, 1.0)
+}
+
+// exp(-8u) * (1 - u), the fraction of a fade segment's starting distance that
+// is left once a share u of its length has gone.
+envelope_fade_left :: proc "contextless" (u: f64) -> f32 {
+	return f32(math.exp(-ENVELOPE_FADE_EXPONENT * u) * (1.0 - u))
 }
 
 envelope_reset :: proc "contextless" (e: ^Envelope) {
@@ -96,9 +147,13 @@ envelope_gate_on :: proc "contextless" (e: ^Envelope, retrigger: bool) {
 }
 
 envelope_gate_off :: proc "contextless" (e: ^Envelope) {
-	if e.stage != .Idle {
-		e.stage = .Release
+	// A second note-off during the release must not restart it.
+	if e.stage == .Idle || e.stage == .Release {
+		return
 	}
+	e.stage = .Release
+	e.progress = 0
+	e.release_from = e.value
 }
 
 envelope_is_active :: proc "contextless" (e: ^Envelope) -> bool {
@@ -115,9 +170,20 @@ envelope_process :: proc "contextless" (e: ^Envelope) -> f32 {
 		if e.value >= 1.0 {
 			e.value = 1.0
 			e.stage = .Decay
+			e.progress = 0
 		}
 
 	case .Decay:
+		if e.fade {
+			e.progress += e.decay_step
+			if e.progress >= 1.0 {
+				e.value = e.sustain
+				e.stage = .Sustain
+			} else {
+				e.value = e.sustain + (1.0 - e.sustain) * envelope_fade_left(e.progress)
+			}
+			break
+		}
 		// A plain exponential approach to the sustain level.
 		//
 		// This was briefly replaced with a curve that aimed below the sustain, on the
@@ -147,7 +213,12 @@ envelope_process :: proc "contextless" (e: ^Envelope) -> f32 {
 		e.value = e.sustain
 
 	case .Release:
-		e.value *= e.release_coef
+		if e.fade {
+			e.progress += e.release_step
+			e.value = e.progress >= 1.0 ? 0 : e.release_from * envelope_fade_left(e.progress)
+		} else {
+			e.value *= e.release_coef
+		}
 		if e.value <= ENVELOPE_FLOOR {
 			e.value = 0
 			e.stage = .Idle

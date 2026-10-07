@@ -548,6 +548,18 @@ envelope_release_time :: proc(index, stored: int) -> f32 {
 	return ENVELOPE_RELEASE_SECONDS[envelope_table_index(index, stored)]
 }
 
+// How long the amplitude envelope's decay or release segment lasts, as opposed
+// to the time the tables above give for it to fall 60 dB. The reference's
+// segments are 0.01 * 6000^(v/127) seconds long and end exactly at zero:
+// `s1probe arch envlaw` reads them against floor(2048 * exp(-8u) * (1 - u))
+// and finds the readable ticks of every setting from stored 48 up equal to it,
+// within one step of 1/2048, which the 60 dB tables could not describe
+// (docs/synth1-envelope-filter-evidence.md). Only the amplitude envelope has been
+// read that way; the filter and modulation envelopes still use the tables.
+envelope_segment_length :: proc(index, stored: int) -> f32 {
+	return f32(0.01 * math.pow(f64(6000), f64(envelope_table_index(index, stored)) / 127))
+}
+
 // Filter cutoff. Parameter 19's display is a bare 0..127, so the 20 Hz..20 kHz
 // span is the chosen curve: it is the audible band, and it puts the reference
 // default of 81 at roughly 2.5 kHz, which is a plausible open-but-not-bypassed
@@ -1109,9 +1121,9 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// -- amplifier -----------------------------------------------------------
 
 	e.amp_attack = envelope_attack_time(25, p.values[25])
-	e.amp_decay = envelope_decay_time(26, p.values[26])
+	e.amp_decay = envelope_segment_length(26, p.values[26])
 	e.amp_sustain = AMP_SUSTAIN_LEVEL[clamp_int(resolved_position(27, p.values[27]), 0, AMP_TABLE_SIZE - 1)]
-	e.amp_release = envelope_release_time(28, p.values[28])
+	e.amp_release = envelope_segment_length(28, p.values[28])
 	// Parameter 29, measured rather than chosen.
 	//
 	// This was `unit^2`, "squared so the knob is roughly perceptual". The null

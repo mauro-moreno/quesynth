@@ -442,7 +442,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 
 // Push the current parameter block into the voice's envelopes.
 voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
-	dsp.envelope_set(&v.amp_env, p.amp_attack, p.amp_decay, p.amp_sustain, p.amp_release, sample_rate)
+	dsp.envelope_set_fade(&v.amp_env, p.amp_attack, p.amp_decay, p.amp_sustain, p.amp_release, sample_rate)
 	dsp.envelope_set(
 		&v.filter_env,
 		p.filter_attack,
