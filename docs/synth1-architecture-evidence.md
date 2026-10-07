@@ -118,7 +118,7 @@ T7d with its exit code.
 | T7b | modulation update rate | `arch rate`: pulse at note 0, modulated render divided by the flat one where the flat plateau is above half its peak; spikes in the gain's second difference | envelope: 171 spikes, commonest spacing 2 (56% on that grid), 39% exactly flat steps: no clear grid. LFO on volume: 215 spikes, commonest spacing **64** (62% of gaps multiples of 64, phase 0), no flat steps. Ours: no LFO grid | **measured but unresolved**: a 64-sample candidate grid for the LFO, too irregular to name an update rate | none |
 | T7c | fixed-point/table oscillator differences | `arch osc`: sine at notes 48/69/93, H2, H3, worst non-harmonic bin, frequency error; saw 72/96 and pulse 96, energy away from the harmonics | sine H2 −102.9/−138.9/−168.7 dB (ours −101.9/−131.3/−131.4); worst spur −45.8/−51.1/−48.4 dB in both (the same window floor); cents −0.581/+0.152/−0.045 in both. Saw/pulse inharmonic −43.2 to −43.6 dB (ours −41.8 to −43.1) | **measured but unresolved**: the differences sit 100 dB or more under the fundamental, or within 1.4 dB of a shared floor; "table" or "fixed point" is an internal identity no render shows (**unavailable**) | none |
 | T7d | voice-pool/unison accounting | `arch voices`: in-phase unison, notes 60/72/84 started 0.3 s apart, each line read in units of one layer of that note alone; every case in a child process | the reference counts **layers** against polyphony and takes them from the oldest note: poly 3 × unison 2 ends with 0/1/2 layers, poly 5 × 2 with 1/2/2, poly 7 × 4 with 0/3/4, poly 16 × 8 with 0/8/8; poly 1 × 2 sounds one layer. Ours counts notes and keeps U layers on each. Of 16 cases 15 exited 0x00000000; plain poly 16 with two notes died in the reference with 0xC0000005 | **confirmed** for unison ≥ 2 and for poly 1; plain poly with two notes **unavailable** under this host (a host limitation, not evidence) | deferred |
-| T7e | EQ-stage identity | `arch eq`: noise; transfer of the EQ render against the flat one at 1 kHz, ±24.8 dB, Q stored 0/32/64/96/127; a bilinear peaking curve fitted with centre and gain fixed | boost and cut mirror within 0.01–0.07 dB. Fitted Q 0.233/0.419/0.754/1.33/2.28, residual 0.31 falling to 0.05 dB; half-gain width 4.17/2.83/1.83/1.17/0.50 octaves. Ours: Q 0.299/0.682/1.53/3.32/6.53, width 3.67/1.83/0.83/0.50/0.17 | the peak's behaviour is **measured**: symmetric boost and cut, close to a peaking biquad, with a wider Q mapping than ours; the stage's internal identity is **unavailable** | deferred |
+| T7e | EQ-stage identity | `arch eq`: noise; transfer of the EQ render against the flat one at 1 kHz, ±24.8 dB, Q stored 0/32/64/96/127; a bilinear peaking curve fitted with centre and gain fixed | boost and cut mirror within 0.01–0.07 dB. Fitted Q 0.233/0.419/0.754/1.33/2.28, residual 0.31 falling to 0.05 dB; half-gain width 4.17/2.83/1.83/1.17/0.50 octaves. Ours: Q 0.299/0.682/1.53/3.32/6.53, width 3.67/1.83/0.83/0.50/0.17 | **measured but unresolved**: observable peak behaviour is symmetric boost and cut, close to a peaking biquad, with a wider Q mapping than ours; the stage's internal identity is **unavailable** | deferred |
 | T7f | filter-type status | `arch filtertype`: noise, cutoff 64 (585 Hz), resonance 0; each type's transfer against the open 12 dB LP | types 0, 1 and 3 agree within 0.5 dB from −2 to +2 octaves (up to 3.8 dB at +4 on type 0); type 2 has the same +12.5 dB/octave slope but sits 2.5–2.7 dB deeper below the corner (−21.1/−8.4 against −23.7/−10.9 at −2/−1). Type 4 differs: −20.8 dB at the corner, −5.7 / −15.6 dB per octave below/above; ours renders type 4 as type 1 (−12.0 dB, −1.8 / −22.9) | types 0–3 **confirmed** as the bound responses by slope, type 2's 2.6 dB offset **measured but unresolved**; type 4 a **confirmed difference** whose identity is **unavailable** | deferred |
 
 ## Invariants, artifacts and gates
@@ -205,6 +205,15 @@ A difference is not by itself a design.
   path a host parameter edit takes. MIDI events are unchanged.
 - No public shape, parameter index, stored integer or host entry point
   changes. The engine change reorders two calls inside `engine_process`.
+- **Probe option semantics (as implemented in `tools/s1probe/archprobe.odin`).**
+  All flags (`--wav`, `--what`, `--case`, `--child`, `--values`) are optional
+  with defaults. `--values` keeps the numeric values in the order given,
+  duplicates included; omitted or empty means the subcommand's existing
+  default sweep. `--wav` is retained as the raw directory string. The
+  `Script_Event` index/stored value defaults to 0 and is used only for status
+  0xFF (`script_set`). Engine public types are unaffected. No new restrictions
+  or validation were added: an unknown option prints usage, and malformed
+  integer tokens are silently ignored.
 
 ## States and transitions exercised
 
@@ -232,3 +241,37 @@ A difference is not by itself a design.
   whose residuals are printed, not with a ratio of two readings.
 - **A mismatch is not a design.** Only T1a met the bar of a controlled anchor,
   a narrow change, a failing-then-passing test and an unchanged bank.
+
+## Final independent validation
+
+Logs are in `build/architecture-validation/`; each test and build log records
+its command and exit 0.
+
+- Tests: s1probe 78 passed, dsp 132, patch 29, clap 41, panel 4, vst3 26,
+  standalone 24, control 12, registry 8, mcp 47, zip 13.
+- Builds (exit 0): standalone, clap, vst3, wasm. `wasm-imports.txt`: all 7
+  imports provided.
+- `selftest.txt`: 120000 frames, 48000 Hz, 2 channels, nonfinite 0, peak
+  1.656574.
+- `uiparams.txt`: 99 parameters; the parent's `git diff` of `ui/params.js` is
+  empty.
+- `vst3-stage.txt`: bundle assembled. `vst3host.txt`: the plugin actually
+  loaded and rendered 187 blocks, peak 0.090877, rms 0.037711, OK.
+- `fxorder.txt`: the same independent reference-versus-ours evidence as
+  before; `ramp.txt`: the 50 ms linear ramp evidence.
+- Bank: the parent parsed `build/architecture/bank-before.csv` and
+  `bank-after.csv`: 128 rows, 0 differing cells.
+- qlty 0.652.0 was installed into the ignored `build` directory only; its
+  config is actionlint-only, so there is no Odin lint coverage. Before and
+  after runs: no issues. This is supplemental, not a new acceptance criterion.
+
+## Inherited confirmations and deferrals
+
+User confirmations and every deferral above are preserved unchanged; this
+closure adds no goals.
+
+## Execution calibration
+
+Three recent comparable measured probe records took 9, 27 and 30 minutes
+(median 27, range 9-30; anecdotal). This wider batch was originally estimated
+at 60 minutes.

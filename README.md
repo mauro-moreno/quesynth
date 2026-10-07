@@ -60,7 +60,7 @@ audio engine still loads and the host draws its own generic parameter view.
 
 ```text
 OSC 1 ─┐
-OSC 2 ─┼─ modulation/mix ─ filter ─ amplifier ─ EQ ─ effect ─ delay ─ chorus ─ output
+OSC 2 ─┼─ modulation/mix ─ filter ─ amplifier ─ effect ─ EQ ─ delay ─ chorus ─ output
 SUB   ─┘                         ▲          ▲
                          filter envelope   amplitude envelope
                                 ▲
