@@ -646,7 +646,7 @@ about the reference.
 
 | | what changed | where |
 |---|---|---|
-| A | `tuningcheck` ended with `reported: ... cents at confidence ...` for any confidence, while the bank summary already left out readings under `PITCH_CONFIDENCE_MIN`. Both now ask `pitch_reading_trusted`, defined next to the constant with the same `>=`. Below the gate `tuningcheck` prints `withheld:`, the confidence and the gate, and no cents figure. `pitch_shift_cents` returns 0 cents at confidence 0 for input it cannot measure, and that is withheld the same way | `analysis.odin` (`pitch_reading_trusted`, `tuning_reading_text`), `compare.odin`, `effectprobe.odin` |
+| A | `tuningcheck` ended with `reported: ... cents at confidence ...` for any confidence, while the bank summary already left out readings under `PITCH_CONFIDENCE_MIN`. Both now ask `pitch_reading_trusted`, defined next to the constant with the same `>=`. Below the gate `tuningcheck` prints `withheld:`, the confidence, the gate and `so no tuning is reported`, and no cents figure. It names no cause: the confidence is the smaller of the best shift's correlation and its lead over the best rival at least half an octave away, so a withheld reading can come from spectra with little in common or from a good alignment with a close octave rival (patch 003: zero-shift correlation 0.648, confidence 0.171). The first version of this change said the spectra "do not align under any shift (a timbre difference)", which the second case contradicts. A confidence that three decimals would round up to the gate prints with more decimals, so it never reads as equal to the gate. `pitch_shift_cents` returns 0 cents at confidence 0 for input it cannot measure, and that is withheld the same way | `analysis.odin` (`pitch_reading_trusted`, `tuning_reading_text`), `compare.odin`, `effectprobe.odin` |
 | B | `behavior chorus1` printed `0.000` for a correlation with a silent wet channel. `correlation_of` returns whether the value is defined, with the exact-zero silence test the probe already used, and the probe prints `n/a` | `analysis.odin` (`correlation_of`), `behaviorprobe.odin` (`corr_text`) |
 | C | `behavior osc2track` printed the second peak's frequency and discarded its level, and `0.00` for no peak. It now prints the level against the strongest peak and `-` for no peak. `two_peaks` no longer calls a bin with no power a peak: in a silent spectrum every bin is "not lower than its neighbours", so two bins at the bottom of the range came back as peaks | `behaviorprobe.odin` (`two_peaks`, `peak_pair_text`) |
 
@@ -660,13 +660,28 @@ All of it local and git-ignored under `build/behavior/`, run against
   and in `tuningcheck` at note 60, which uses its own render timing and so
   gives different numbers (confidence −0.032 and 0.171). On 119 the binary
   from before this change printed `reported: -156.9 cents at confidence -0.03`
-  and now prints `withheld: confidence -0.032 is below the 0.250 gate, ...`
-  (`after-lowconf-tuningcheck-119.txt`, `-003.txt`). Patches 001 (0.60) and 091
-  (0.52) are over the gate and still print `reported: +0.2 cents at confidence
-  0.60` and `reported: +0.1 cents at confidence 0.52`
-  (`after-lowconf-tuningcheck-001.txt`, `-091.txt`). Patch 113, whose CSV row is
-  confidence 0.0000, prints `withheld: confidence 0.000 ...`
-  (`-113.txt`).
+  and now prints `withheld: confidence -0.032 is below the 0.250 gate, so no
+  tuning is reported (confidence is the smaller of the best shift's
+  correlation and its lead over the best rival at least half an octave away)`
+  (`after-lowconf-r2-tuningcheck-119.txt`; `-003.txt` prints the same with
+  0.171, `-113.txt` with 0.000). Patches 001 (0.60) and 091 (0.52) are over
+  the gate and still print `reported: +0.2 cents at confidence 0.60` and
+  `reported: +0.1 cents at confidence 0.52`, byte for byte as before
+  (`after-lowconf-r2-tuningcheck-001.txt`, `-091.txt`, against
+  `after-lowconf-tuningcheck-001.txt`, `-091.txt`).
+- **A, why the line names no cause.** Patch 003 prints `tuning correlation at
+  ... +0:0.648 ... +1200:0.447` and then a confidence of 0.171. The zero-shift
+  correlation is well over the gate, and the confidence is lower than it, so
+  the margin over a rival more than half an octave away was the limiting term
+  (the +1200 value is one such rival). The first version of the withheld line
+  called that "a timbre difference", which this reading does not support.
+  Patch 113 has no valid correlation at all (`tuning correlation at ` is
+  empty), and silent input gives the same 0 at confidence 0, so there is no
+  alignment to describe there either. A synthetic spectrum of octave-spaced
+  partials (200 Hz to 6.4 kHz) against itself reproduces the margin-limited
+  case: zero-shift score 1.0000, ±1200 cents 0.8365, confidence 0.1635.
+  The earlier `after-lowconf-tuningcheck-*.txt` files carry the first wording
+  and are superseded for the withheld patches.
 - **A, `compare` unchanged.** `s1probe-pre-lowconf.exe` (built from HEAD
   97385a5 before the change) and the rebuilt `s1probe.exe` both ran `summarise
   build/behavior/bank-after-fd6a0d7.csv`. The 47 lines are byte-identical
@@ -688,14 +703,37 @@ boundary, unmeasurable input, the `tuningcheck` line, undefined and defined
 correlation) and five in the new `tools/s1probe/behaviorprobe_test.odin`
 (`two_peaks` with one peak, two peaks 20 dB apart, and no power; the
 second-peak text; the correlation text). They use synthetic spectra and
-channels whose answers are known in advance. Red run, with the new tests
-against stubs that keep the old behaviour: `odin test tools/s1probe` finished
-60 tests with 8 failed (`red-lowconf.txt`). Green: 60/60 (`green-lowconf.txt`),
-from 50/50 before.
+channels whose answers are known in advance.
+
+Red run of that first change, stated precisely. The new tests against stubs
+that keep the old behaviour (`tuning_reading_text` always printing `reported:`,
+`correlation_of` always defined, the old `two_peaks`, and old-format `corr_text`
+and `peak_pair_text`) finished 60 tests with 8 failed when `pitch_reading_trusted`
+is also stubbed always true, which is the old `tuningcheck` (`red-lowconf.txt`;
+recreated in `red-lowconf-r1-stub-trusted-always-true.txt`). With
+`pitch_reading_trusted` as the old compare gate (`>=`, which is what the new one
+is), 7 of 60 fail (`red-lowconf-r1-stub-old-compare-gate.txt`): the boundary
+test cannot fail there. The first commit message and this section said 8
+without naming the stub. Green: 60/60 (`green-lowconf.txt`), from 50/50 before.
+
+Repair round after review. Two tests were added to `analysis_test.odin`
+(`test_withheld_reading_does_not_blame_timbre_when_an_octave_rival_limits_the_margin`
+and `test_withheld_confidence_never_prints_as_the_gate_it_is_under`), and two
+existing ones now also assert that the withheld line names no cause. The first
+builds the margin-limited case from octave-spaced partials and checks the
+zero-shift score is above 0.9, the confidence is under the gate, and the line
+is withheld without `timbre`, `do not align` or `under any shift`. The second
+checks 0.2496, 0.2499 and 0.24999999 print exactly and never as `0.250`, that
+0.171, −0.032 and 0 keep three decimals, and that NaN terminates and prints.
+Red run against the production code of the first change: 62 tests, 3 failed
+(`test_pitch_shift_of_unmeasurable_input_is_withheld`,
+`test_withheld_confidence_never_prints_as_the_gate_it_is_under`,
+`test_withheld_reading_does_not_blame_timbre_when_an_octave_rival_limits_the_margin`;
+`red-lowconf-r2.txt`). Green: 62/62 (`green-lowconf-r2.txt`).
 
 | check | result |
 |---|---|
-| `odin test tools/s1probe` | 60/60 (was 50/50) |
+| `odin test tools/s1probe` | 62/62 (was 60/60 after the first change, 50/50 before) |
 | `odin build tools/s1probe -out:build/s1probe.exe` | ok |
 | `odin test tests/dsp` | 131/131 (`src/` is untouched; run once to confirm) |
 | `git diff --check` | clean |
@@ -706,6 +744,13 @@ from 50/50 before.
 - **No gate on the second peak.** `osc2track` prints the level and leaves the
   call to the reader. The tool does not decide what a second peak is, and no
   cutoff was chosen.
+- **The bank summary's exclusion line** in `compare.odin` (`more excluded: the
+  two spectra do not align under any shift, which is a timbre difference and not
+  a tuning one`) still gives the cause that `tuningcheck` no longer gives, and
+  so does the comment where the gate is applied. It predates this work and was
+  left unchanged so `summarise` output stays byte-identical. The same claim is
+  in comments in `analysis.odin`: the confidence note above `pitch_shift_cents`,
+  the patch 091 note inside it, and the one above `PITCH_CONFIDENCE_MIN`.
 - **`lfoshape`.** The stored-1 verdict, sine against triangle (0.993 against
   0.993), is still an unresolved tie, and the row label is unchanged. Both stay
   in the deferred list below.

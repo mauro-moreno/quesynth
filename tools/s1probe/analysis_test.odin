@@ -870,7 +870,7 @@ test_pitch_reading_gate_is_inclusive_at_the_minimum :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
 		!pitch_reading_trusted(PITCH_CONFIDENCE_MIN - 1.0e-9),
-		"a reading just under the gate is a timbre difference, not a tuning",
+		"a reading just under the gate is reported as a tuning",
 	)
 	testing.expect(t, !pitch_reading_trusted(0), "zero confidence is never reported")
 }
@@ -885,11 +885,9 @@ test_pitch_shift_of_unmeasurable_input_is_withheld :: proc(t: ^testing.T) {
 	testing.expect_value(t, cents, 0.0)
 	testing.expect_value(t, confidence, 0.0)
 	testing.expect(t, !pitch_reading_trusted(confidence), "an unmeasurable pair was treated as a reading")
-	testing.expect(
-		t,
-		!strings.contains(tuning_reading_text(cents, confidence), "reported:"),
-		"tuningcheck reported a tuning for input with no spectrum",
-	)
+	text := tuning_reading_text(cents, confidence)
+	testing.expectf(t, !strings.contains(text, "reported:"), "tuningcheck reported a tuning for input with no spectrum: %q", text)
+	testing.expectf(t, !withheld_text_names_a_cause(text), "the withheld line names a cause for input with no spectrum: %q", text)
 }
 
 @(test)
@@ -900,15 +898,77 @@ test_tuning_reading_text_reports_only_trusted_readings :: proc(t: ^testing.T) {
 		"reported: -12.3 cents at confidence 0.87",
 	)
 
-	// Patch 091 scored 0.72 at +700 cents and still is not a tuning measurement;
-	// the confidence that gets it excluded is the smaller of two tests, so a low
-	// value can sit beside a large shift.
+	// A synthetic low reading, not a bank patch: the cents figure is large beside a
+	// confidence under the gate, and must not be printed.
 	low := tuning_reading_text(700.0, 0.10)
 	testing.expectf(t, !strings.contains(low, "reported:"), "low confidence was reported as a tuning: %q", low)
 	testing.expectf(t, strings.contains(low, "withheld"), "low confidence did not say it was withheld: %q", low)
 	testing.expectf(t, strings.contains(low, "0.100"), "the confidence is missing: %q", low)
 	testing.expectf(t, strings.contains(low, "0.250"), "the gate is missing: %q", low)
 	testing.expectf(t, !strings.contains(low, "700"), "a cents figure was printed for a withheld reading: %q", low)
+}
+
+// What the withheld line must not claim. Below the gate the confidence is the
+// smaller of two tests, so the number alone cannot say whether the spectra fail to
+// align or whether a close octave rival limited an alignment that is good.
+withheld_text_names_a_cause :: proc(text: string) -> bool {
+	return strings.contains(text, "timbre") || strings.contains(text, "do not align") || strings.contains(text, "under any shift")
+}
+
+@(test)
+test_withheld_reading_does_not_blame_timbre_when_an_octave_rival_limits_the_margin :: proc(t: ^testing.T) {
+	// Octave-spaced partials (200 Hz, 400 Hz, ... 6.4 kHz) against themselves. They
+	// line up exactly at zero shift, but each partial also lands on its neighbour
+	// when shifted by an octave, so the rival at +-1200 cents is nearly as good and
+	// the margin over it is small. That is the case patch 003 produced on the
+	// reference: a zero-shift correlation of 0.648 and a confidence of 0.171.
+	bin_hz := f64(SAMPLE_RATE) / f64(FFT_SIZE)
+	power := make([]f64, FFT_SIZE / 2 + 1)
+	defer delete(power)
+	for hz := 200.0; hz < PITCH_HI_HZ; hz *= 2.0 {
+		power[int(hz / bin_hz + 0.5)] = 1.0
+	}
+
+	scores := pitch_shift_scores(power, power, bin_hz)
+	defer delete(scores)
+	zero := scores[PITCH_MAX_SHIFT]
+	testing.expectf(t, zero > 0.9, "identical spectra scored %.4f at zero shift, want a good alignment", zero)
+
+	cents, confidence := pitch_shift_cents(power, power, bin_hz)
+	testing.expectf(t, abs(cents) < 1.0, "identical spectra read %.2f cents, want 0", cents)
+	testing.expectf(
+		t,
+		confidence < PITCH_CONFIDENCE_MIN,
+		"an octave rival should hold the confidence under the gate; it was %.4f",
+		confidence,
+	)
+
+	text := tuning_reading_text(cents, confidence)
+	testing.expectf(t, strings.contains(text, "withheld"), "the reading was not withheld: %q", text)
+	testing.expectf(t, !withheld_text_names_a_cause(text), "the withheld line blames the spectra for a reading they did not cause: %q", text)
+}
+
+@(test)
+test_withheld_confidence_never_prints_as_the_gate_it_is_under :: proc(t: ^testing.T) {
+	// Three decimals would round these up to "0.250".
+	for confidence in ([]f64{0.2496, 0.2499, 0.24999999}) {
+		text := tuning_reading_text(0.0, confidence)
+		testing.expectf(t, strings.contains(text, "withheld"), "%v was not withheld: %q", confidence, text)
+		testing.expectf(t, !strings.contains(text, "confidence 0.250 "), "%v printed as the gate: %q", confidence, text)
+		testing.expectf(t, strings.contains(text, fmt.tprintf("confidence %v is below", confidence)), "%v is not printed exactly: %q", confidence, text)
+	}
+
+	// Ordinary values keep three decimals.
+	for c in ([]struct{value: f64, want: string}{{0.171, "0.171"}, {-0.032, "-0.032"}, {0.0, "0.000"}}) {
+		text := tuning_reading_text(0.0, c.value)
+		testing.expectf(t, strings.contains(text, fmt.tprintf("confidence %v is below", c.want)), "%v printed unexpectedly: %q", c.value, text)
+	}
+
+	// NaN is withheld; it has to terminate and print something.
+	nan := math.nan_f64()
+	text := tuning_reading_text(0.0, nan)
+	testing.expectf(t, strings.contains(text, "withheld"), "NaN was not withheld: %q", text)
+	testing.expectf(t, !strings.contains(text, "reported:"), "NaN was reported: %q", text)
 }
 
 @(test)

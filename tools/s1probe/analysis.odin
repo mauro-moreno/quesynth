@@ -1355,14 +1355,26 @@ pitch_reading_trusted :: proc(confidence: f64) -> bool {
 }
 
 // The line `tuningcheck` prints for a reading. Below the gate the cents figure is
-// left out: it is the position of the best of many bad alignments, and printed
-// beside "reported" it reads as a measurement of the tuning.
+// left out, because printed beside "reported" it reads as a measurement of the
+// tuning. No cause is named: the confidence is the smaller of the best shift's
+// correlation and its lead over the best rival at least half an octave away, so a
+// well-aligned pair with a close octave rival is withheld as much as a pair with
+// no partial structure in common, and the number cannot say which this is.
+//
+// The confidence gets more decimals when three would round it up to the gate, so a
+// withheld reading never prints as equal to the gate it is below.
 tuning_reading_text :: proc(cents, confidence: f64) -> string {
 	if pitch_reading_trusted(confidence) {
 		return fmt.tprintf("reported: %+.1f cents at confidence %.2f", cents, confidence)
 	}
+	decimals := 3
+	for ; decimals < 12; decimals += 1 {
+		scale := math.pow(10.0, f64(decimals))
+		if math.round(confidence * scale) / scale < PITCH_CONFIDENCE_MIN {break}
+	}
 	return fmt.tprintf(
-		"withheld: confidence %.3f is below the %.3f gate, so the spectra do not align under any shift (a timbre difference, not a tuning one)",
+		"withheld: confidence %.*f is below the %.3f gate, so no tuning is reported (confidence is the smaller of the best shift's correlation and its lead over the best rival at least half an octave away)",
+		decimals,
 		confidence,
 		PITCH_CONFIDENCE_MIN,
 	)
