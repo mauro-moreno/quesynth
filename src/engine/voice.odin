@@ -310,6 +310,21 @@ unison_stack_scale :: proc(count: int) -> f32 {
 	return 1.0
 }
 
+// Point every oscillator in every layer at the engine's table bank. Done once per
+// voice when the pool is built; `oscillator_init` keeps it across notes.
+voice_set_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) {
+	for i in 0 ..< MAX_UNISON {
+		u := &v.unison[i]
+		dsp.oscillator_set_bank(&u.osc1, bank)
+		dsp.oscillator_set_bank(&u.osc2, bank)
+		dsp.oscillator_set_bank(&u.sub, bank)
+		for satellite in 0 ..< OSC1_SATELLITE_COUNT {
+			dsp.oscillator_set_bank(&u.osc1_satellites[satellite], bank)
+			dsp.oscillator_set_bank(&u.sub_satellites[satellite], bank)
+		}
+	}
+}
+
 voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_phase: bool) {
 	count := clamp_int(p.unison_voices, 1, MAX_UNISON)
 	old_count := v.unison_count

@@ -56,10 +56,30 @@ Oscillator :: struct {
 	// Held between samples so the noise waveform keeps one value per sample
 	// instead of one per read.
 	noise:        f32,
+	// The reference's band-limited tables, shared and read-only. With none
+	// attached the oscillator falls back to PolyBLEP; see `oscillator_value`.
+	bank:         ^Wavetable_Bank,
+	// The band `oscillator_set_frequency` picked for the current pitch, and the
+	// pitch it was picked for. The voice sets the frequency every sample, and
+	// without modulation it is the same every sample, so the search only runs
+	// when the pitch has actually moved.
+	band:         int,
+	band_hz:      f32,
+}
+
+// Attach a table bank. Survives `oscillator_init`, which resets everything that
+// belongs to a note but not what the oscillator plays from.
+oscillator_set_bank :: proc "contextless" (o: ^Oscillator, bank: ^Wavetable_Bank) {
+	o.bank = bank != nil && bank.ready ? bank : nil
+	o.band = 0
+	o.band_hz = -1
 }
 
 oscillator_init :: proc "contextless" (o: ^Oscillator, seed: u32) {
+	bank := o.bank
 	o^ = {}
+	o.bank = bank
+	o.band_hz = -1
 	rng_init(&o.rng, seed)
 	// The next draw is the first sample of the first cycle, so the anchor is the
 	// seeded state itself. A note-on re-inits, which is what gives each note its
@@ -90,6 +110,12 @@ oscillator_set_frequency :: proc "contextless" (o: ^Oscillator, hz, sample_rate:
 	}
 	f := clamp32(abs(hz), 0.0, sample_rate * 0.49)
 	o.increment = f / sample_rate
+	if o.bank != nil && f != o.band_hz {
+		// By the oscillator's own unmodulated pitch, as the reference picks: FM
+		// moves the phase, not the table.
+		o.band = wavetable_band(o.bank, f)
+		o.band_hz = f
+	}
 }
 
 // The PolyBLEP residual: the difference between an ideal band-limited step and
@@ -219,6 +245,10 @@ oscillator_sync :: proc "contextless" (o: ^Oscillator, wrap_frac: f32) {
 // which is exactly `1 - 2*phase`. The sub oscillator relies on that phase
 // relationship, so getting the sign right here matters beyond politeness.
 oscillator_value :: proc "contextless" (o: ^Oscillator, shape: Waveform, pulse_width: f32) -> f32 {
+	if o.bank != nil && shape != .Noise {
+		return oscillator_table_value(o, shape, pulse_width)
+	}
+
 	t := o.phase
 	dt := o.increment
 
@@ -310,6 +340,43 @@ oscillator_value :: proc "contextless" (o: ^Oscillator, shape: Waveform, pulse_w
 		// half the saw's. Undoing this scaling makes every pulse patch 6 dB hot.
 		return 0.5 * (leading - trailing)
 
+	case .Noise:
+		return o.noise
+	}
+	return 0
+}
+
+// The waveform value read from the reference's tables.
+//
+// The same shapes and phase conventions as the PolyBLEP path above, because the
+// tables carry them already: the saw series descends from +1 at phase 0+, the
+// triangle series crosses zero rising at phase 0, and the sine is sin(2*pi*t).
+// What changes is the band-limiting, which is now the reference's own -- an
+// unwindowed Fourier sum per band, picked by `wavetable_band`.
+//
+// The pulse is still two saws differenced, now two reads of one saw table,
+// which is how the reference builds it: its table set has no pulse, and the
+// shift and the halving are the measured ones documented on the PolyBLEP branch.
+oscillator_table_value :: proc "contextless" (o: ^Oscillator, shape: Waveform, pulse_width: f32) -> f32 {
+	b := o.bank
+	t := o.phase
+	band := clamp(o.band, 0, max(b.band_count - 1, 0))
+
+	switch shape {
+	case .Sine:
+		return wavetable_read(&b.sine, t)
+	case .Triangle:
+		return wavetable_read(&b.triangle[band], t)
+	case .Saw:
+		return wavetable_read(&b.saw[band], t)
+	case .Pulse:
+		pw := clamp32(pulse_width, 0.01, 0.99)
+		t2 := t - (1.0 - pw)
+		if t2 < 0 {
+			t2 += 1.0
+		}
+		table := &b.saw[band]
+		return 0.5 * (wavetable_read(table, t) - wavetable_read(table, t2))
 	case .Noise:
 		return o.noise
 	}

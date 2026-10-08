@@ -97,12 +97,24 @@ Engine :: struct {
 	// a held key makes it the newest. Meaningless for a key not in `held_keys`.
 	key_order:   [128]u64,
 	key_clock:   u64,
+
+	// The reference's band-limited oscillator tables; see `dsp.Wavetable_Bank`.
+	// About 650 KB, built once on the first `engine_init` and kept across every
+	// later one -- a re-init can happen on the audio thread when the voice pool
+	// resizes, and building there would be both an allocation and a few
+	// milliseconds of work. Freed only by `engine_destroy`.
+	wavetables:  ^dsp.Wavetable_Bank,
 }
 
 // Allocate and configure the engine. This is the only procedure here that
 // allocates.
 engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
-	engine_destroy(e)
+	engine_release_buffers(e)
+
+	if e.wavetables == nil {
+		e.wavetables = new(dsp.Wavetable_Bank)
+		dsp.wavetable_build(e.wavetables)
+	}
 
 	e.sample_rate = sample_rate > 0 ? sample_rate : DEFAULT_SAMPLE_RATE
 	e.params = params
@@ -136,6 +148,7 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
 		v^ = {}
+		voice_set_wavetables(v, e.wavetables)
 		for j in 0 ..< 2 {
 			dsp.lfo_init(&v.lfo[j], 0x51F0_0001 + u32(i) * 2654435761 + u32(j))
 			v.lfo[j].shape = params.lfo[j].shape
@@ -155,6 +168,16 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 }
 
 engine_destroy :: proc(e: ^Engine) {
+	engine_release_buffers(e)
+	if e.wavetables != nil {
+		free(e.wavetables)
+		e.wavetables = nil
+	}
+}
+
+// Everything `engine_init` reallocates. The wavetables are not among it: they do
+// not depend on the patch, the pool size or the sample rate.
+engine_release_buffers :: proc(e: ^Engine) {
 	if e.voices != nil {
 		delete(e.voices)
 		e.voices = nil
