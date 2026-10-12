@@ -101,35 +101,63 @@ composed cell within 0.003 of the reference.
 
 Done: `src/engine/pan.odin`.
 
-## LFO ownership
+## LFO
 
 Two LFOs, held by the engine and shared by every voice. A key-synced one restarts
-when the key just pressed is the only key held, not when a voice starts.
+when the key just pressed is the only key held, not when a voice starts. Free
+running the rate is `1500^(s/127) / 12` Hz (0.083 to 125 Hz); the table it
+replaced was a staircase of crossing counts and sat up to 1.7% low, which was the
+free-running drift the phase probe could not explain. Tempo sync picks from thirty
+divisions, `(s * 30) >> 7`, each a whole number of 24ths of a beat. The period is
+a whole number of samples (`sr / hz`), the output is refreshed every 64 samples
+from the cycle's start (32 above 10 Hz) and held, and the amplitude destination
+alone hears it ramped linearly across each step. Smoothed random ramps linearly
+between its last two draws across a cycle. `arch lfophase`: free-running phase
+differences within 0.01 turns; `arch rate`: spikes at spacing 64 in both.
 
-Done: `src/engine/engine.odin`.
+Done: `src/dsp/lfo.odin`, `src/engine/engine.odin`, `src/engine/binding.odin`.
+
+## Voice pool
+
+The pool is counted in layers: polyphony is the number of voices and a note takes
+one per unison layer. When none is free the oldest voice is taken, from the oldest
+note, lowest layer first, and a voice in release before a key still held. A note
+wanting more layers than the pool has keeps only its last ones. `arch voices`:
+layers per note equal to the reference in all 14 readable cases.
+
+Not copied: which free slot a new voice lands on. The reference scans round-robin
+from the last voice it started and treats a voice in release as free, so a release
+tail is cut as soon as the scan reaches it; here a tail is cut only when the pool
+is full. The measurement has no release in it.
+
+Done: `src/engine/engine.odin`, `src/engine/voice.odin`.
+
+## Removed
+
+The measured corner, damping, output-gain and ladder tables, the interpolation and
+blends that sampled them, the state variable section and ladder they were fitted to,
+and the probes that generated them. Every filter takes the cutoff position and the
+resonance knob as they are.
 
 ## Results
 
 Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row
 means: 4.28 at the start of the series, 3.61 after the cutoff axis, 3.53 after the
-two-pole section, 3.31 after the 24 dB ladder, 3.27 after the equaliser; the
-level, null and envelope means move by smaller amounts either way. 26 factory
-patches switched to type 4: 7.36 -> 5.05 dB. The patches that got further are small
-moves on patches that carry large unrelated error; patch 113's envelope contour
-(1.31 -> 3.58 dB across the series) is not explained.
+two-pole section, 3.31 after the 24 dB ladder, 3.27 after the equaliser, 3.15 after
+the LFO; the pan, voice pool and clean-up commits do not move it, because the bank
+plays one note at a time and uses few pan LFOs. The null depth went from -8.58 to
+-9.27 dB over the same commits. 26 factory patches switched to type 4: 7.36 ->
+5.05 dB. Patch 113's envelope contour (1.31 -> 3.58 dB across the series) is
+probably an artefact of how that short hat is measured and was not pursued.
 
 ## Not yet done
 
-- **Voice allocation**: whether layers or notes count against polyphony, and the
-  order voices are taken in. Note-on only records key state; the allocator is a
-  layer below it and has not been read.
-- **LFO rate**: the free-running LFO period in the reference is about 1.5% off the
-  rate table (`arch lfophase`, free-running B - A against the prediction), and the
-  LFO's period is a whole number of samples. The table has not been re-derived.
-- **Block structure**: the reference renders in blocks of at most 256 frames, 32 in
-  some modes, with modulation held per block and a 64-sample candidate grid for the
-  LFO. This engine updates modulation per sample.
-- **Dead code**: the measured surfaces, tables and parameters that fed the old
-  filters (`filter_cutoff_at_state`, the 24 dB surfaces, the ladder pole, feedback
-  and gain, the damping and output-gain tables) are no longer reached by any voice.
-  They remain because probes and binding tests still read them.
+- **Amplitude envelope block structure**: the reference reads the amplitude fade in
+  whole 1/2048ths every 256 samples and ramps between, which the engine does not
+  copy; the phase of those knots against the note's start has not been pinned down
+  (`arch rate`, envelope row: 171 spikes against 738, with 39% flat steps).
+- **Render blocks**: the reference renders in blocks of at most 256 frames (32 in
+  some modes) and holds cutoff, pitch and similar modulation within a block. The
+  LFO's own grid and the amplifier's ramp are copied; the rest of the per-block
+  holding is not.
+- **Release tails and slot choice**: see the voice pool above.
