@@ -91,3 +91,73 @@ test_one_layer_per_note_is_one_voice_per_note :: proc(t: ^testing.T) {
 	got = layers_after_three_notes(t, 3, 1)
 	testing.expect_value(t, got, [3]int{1, 1, 1})
 }
+
+// Which notes are still sounding after a sequence of presses and releases, with
+// one voice per note.
+notes_sounding :: proc(polyphony: int, script: []int) -> [dynamic]int {
+	p := default_patch()
+	p.values[94] = polyphony
+	p.values[28] = 127 // a release long enough to outlast the script
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+
+	left := make([]f32, 480)
+	right := make([]f32, 480)
+	defer delete(left)
+	defer delete(right)
+	// A positive entry presses that key, a negative one releases it.
+	for step in script {
+		if step > 0 {
+			engine.engine_note_on(&e, step, 1.0)
+		} else {
+			engine.engine_note_off(&e, -step)
+		}
+		engine.engine_process(&e, left, right)
+	}
+	sounding: [dynamic]int
+	for i in 0 ..< len(e.voices) {
+		if e.voices[i].active {
+			append(&sounding, e.voices[i].note)
+		}
+	}
+	return sounding
+}
+
+contains :: proc(notes: [dynamic]int, note: int) -> bool {
+	for n in notes {
+		if n == note {return true}
+	}
+	return false
+}
+
+// A note in release is free as soon as the round-robin scan reaches its slot: the
+// fifth note of four slots takes the released first note, not a held one.
+@(test)
+test_a_released_note_is_taken_before_a_held_one :: proc(t: ^testing.T) {
+	sounding := notes_sounding(4, {60, 62, 64, 65, -60, 67})
+	defer delete(sounding)
+	testing.expect(t, !contains(sounding, 60), "the released note kept its voice")
+	for held in ([]int{62, 64, 65, 67}) {
+		testing.expectf(t, contains(sounding, held), "held note %v lost its voice", held)
+	}
+}
+
+// With every slot held, the oldest is taken, and the scan carries on from there.
+@(test)
+test_with_every_slot_held_the_oldest_is_taken :: proc(t: ^testing.T) {
+	sounding := notes_sounding(4, {60, 62, 64, 65, 67, 69})
+	defer delete(sounding)
+	testing.expect(t, !contains(sounding, 60) && !contains(sounding, 62), "the two oldest notes kept their voices")
+	for held in ([]int{64, 65, 67, 69}) {
+		testing.expectf(t, contains(sounding, held), "note %v lost its voice", held)
+	}
+}
+
+// A released note nobody has needed the slot of yet keeps ringing.
+@(test)
+test_a_released_note_rings_on_while_slots_remain :: proc(t: ^testing.T) {
+	sounding := notes_sounding(6, {60, -60, 62, 64})
+	defer delete(sounding)
+	testing.expect(t, contains(sounding, 60), "a release tail was cut with slots to spare")
+}

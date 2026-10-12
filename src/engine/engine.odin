@@ -85,6 +85,13 @@ Engine :: struct {
 	// voice gate state: mono and legato mode may release a voice while its key is
 	// still down, and repeated note-on must not double-count that key.
 	held_notes:  int,
+	// The voice pool as the reference keeps it: `polyphony` slots, each holding one
+	// layer of one note, handed out round-robin from the one after the last. See
+	// `engine_acquire_voice`.
+	slots:         [MAX_POLYPHONY]Pool_Slot,
+	slot_next:     int,
+	slot_stamp:    u64,
+	pending_slots: [MAX_UNISON]int,
 
 	// The arpeggiator step clock and what it currently has sounding. Idle,
 	// and costing one branch a sample, when parameter 59 is off.
@@ -144,6 +151,9 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	dsp.delay_init(&e.delay, e.delay_left, e.delay_right)
 	dsp.chorus_init(&e.chorus, e.chorus_left, e.chorus_right)
 
+	e.slots = {}
+	e.slot_next = 0
+	e.slot_stamp = 0
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
 		v^ = {}
@@ -552,79 +562,136 @@ engine_find_gated_voice :: proc(e: ^Engine) -> ^Voice {
 	return nil
 }
 
+// One voice of the pool: a layer of a note, and when it was handed out.
+Pool_Slot :: struct {
+	used:  bool,
+	// Index into `Engine.voices`, or -1 while the slot is being filled.
+	voice: int,
+	layer: int,
+	// The note's `age`, so a slot whose voice has since been reused by another
+	// note is recognised as stale.
+	age:   u64,
+	stamp: u64,
+}
+
+engine_slot_live :: proc(e: ^Engine, index: int) -> bool {
+	s := &e.slots[index]
+	if !s.used {
+		return false
+	}
+	if s.voice < 0 {
+		return true
+	}
+	v := &e.voices[s.voice]
+	return v.active && v.age == s.age && v.live_layers & (u32(1) << u32(s.layer)) != 0
+}
+
+// A slot is free when nothing in it is held by a key: empty, stale, or a note
+// that has been released and is only ringing out.
+engine_slot_free :: proc(e: ^Engine, index: int) -> bool {
+	if !engine_slot_live(e, index) {
+		return true
+	}
+	s := &e.slots[index]
+	return s.voice >= 0 && !e.voices[s.voice].gate
+}
+
+engine_take_slot :: proc(e: ^Engine, index: int) {
+	if engine_slot_live(e, index) && e.slots[index].voice >= 0 {
+		s := &e.slots[index]
+		v := &e.voices[s.voice]
+		v.live_layers &= ~(u32(1) << u32(s.layer))
+		if v.live_layers == 0 {
+			v.active = false
+		}
+	}
+	e.slots[index].used = false
+}
+
 // The reference's pool is counted in layers, not notes: polyphony is the number
-// of voices, and a note takes one per unison layer. With 3 voices and 2 layers a
-// third note finds one voice free, steals the oldest voice for its second layer,
-// and ends with two layers while the first note keeps none (`s1probe arch
-// voices`: poly 3 x unison 2 reads 0 / 1 / 2 layers for three notes, poly 7 x 4
-// reads 0 / 3 / 4). A voice is taken from the oldest note first and from its
-// lowest layer first, and a note in release is taken before a key still held.
-engine_layers_in_use :: proc(e: ^Engine, except: ^Voice) -> int {
-	used := 0
-	for i in 0 ..< len(e.voices) {
-		v := &e.voices[i]
-		if v.active && v != except {
-			for bit in 0 ..< MAX_UNISON {
-				if v.live_layers & (u32(1) << u32(bit)) != 0 {
-					used += 1
-				}
+// of voices, and a note takes one per unison layer. A layer takes the first slot
+// not held by a key, scanning round-robin from the slot after the last one handed
+// out, so a note in release is free the moment the scan reaches it; when every
+// slot is held, it takes the oldest. With 3 voices and 2 layers a third note finds
+// one voice free, steals the oldest voice for its second layer, and ends with two
+// layers while the first keeps none (`s1probe arch voices`: poly 3 x unison 2 reads
+// 0 / 1 / 2 layers for three notes, poly 7 x 4 reads 0 / 3 / 4). A note wanting
+// more layers than there are voices keeps only its last ones.
+engine_acquire_voice :: proc(e: ^Engine, note: int, same: ^Voice) -> ^Voice {
+	poly := len(e.voices)
+	wanted := clamp_int(e.params.unison_voices, 1, MAX_UNISON)
+	keep := min(wanted, poly)
+
+	if same != nil {
+		for i in 0 ..< poly {
+			s := &e.slots[i]
+			if s.used && s.voice >= 0 && e.voices[s.voice].age == s.age && &e.voices[s.voice] == same {
+				s.used = false
 			}
 		}
 	}
-	return used
-}
 
-engine_oldest_with_layers :: proc(e: ^Engine, except: ^Voice, gated: bool) -> ^Voice {
-	oldest: ^Voice
-	for i in 0 ..< len(e.voices) {
-		v := &e.voices[i]
-		if v.active && v != except && v.gate == gated && v.live_layers != 0 {
-			if oldest == nil || v.age < oldest.age {
-				oldest = v
-			}
-		}
-	}
-	return oldest
-}
-
-engine_free_layers :: proc(e: ^Engine, wanted: int, except: ^Voice) {
-	keep := min(wanted, len(e.voices))
-	for engine_layers_in_use(e, except) + keep > len(e.voices) {
-		victim := engine_oldest_with_layers(e, except, false)
-		if victim == nil {
-			victim = engine_oldest_with_layers(e, except, true)
-		}
-		if victim == nil {
-			return
-		}
-		for bit in 0 ..< MAX_UNISON {
-			mask := u32(1) << u32(bit)
-			if victim.live_layers & mask != 0 {
-				victim.live_layers &= ~mask
+	for k in 0 ..< keep {
+		chosen := -1
+		for step in 0 ..< poly {
+			index := (e.slot_next + step) % poly
+			if engine_slot_free(e, index) {
+				chosen = index
 				break
 			}
 		}
-		if victim.live_layers == 0 {
-			victim.active = false
+		if chosen < 0 {
+			for index in 0 ..< poly {
+				s := &e.slots[index]
+				if s.voice >= 0 && (chosen < 0 || s.stamp < e.slots[chosen].stamp) {
+					chosen = index
+				}
+			}
+		}
+		engine_take_slot(e, chosen)
+		e.slot_stamp += 1
+		e.slots[chosen] = {used = true, voice = -1, stamp = e.slot_stamp}
+		e.pending_slots[k] = chosen
+		e.slot_next = (chosen + 1) % poly
+	}
+
+	if same != nil {
+		return same
+	}
+	for i in 0 ..< poly {
+		if !e.voices[i].active {
+			return &e.voices[i]
 		}
 	}
+	return nil
 }
 
-// A note that wanted more layers than there are voices keeps only the last ones:
-// each layer past the pool's size steals the voice of one before it.
+// Seat the note in the slots `engine_acquire_voice` picked.
 engine_settle_layers :: proc(e: ^Engine, v: ^Voice) {
 	wanted := v.unison_count
 	keep := min(wanted, len(e.voices))
-	all := (u32(1) << u32(wanted)) - 1
-	dropped := (u32(1) << u32(wanted - keep)) - 1
-	v.live_layers = all & ~dropped
+	index := -1
+	for i in 0 ..< len(e.voices) {
+		if &e.voices[i] == v {
+			index = i
+		}
+	}
+	v.live_layers = 0
+	for k in 0 ..< keep {
+		layer := wanted - keep + k
+		slot := &e.slots[e.pending_slots[k]]
+		slot.voice = index
+		slot.layer = layer
+		slot.age = v.age
+		v.live_layers |= u32(1) << u32(layer)
+	}
 }
 
 // Find a voice for a new note.
 //
-// Order: the voice already holding this note, then any idle voice, then the
-// oldest sounding one. Stealing the oldest is the conventional choice and the
-// only one that keeps a held chord intact while a melody plays over it.
+// The voice already holding this note is reused, and the layers it needs are
+// taken from the pool as above. If the pool somehow has no entry free the oldest
+// sounding voice is taken.
 engine_allocate_voice :: proc(e: ^Engine, note: int) -> ^Voice {
 	if len(e.voices) == 0 {
 		return nil
@@ -638,15 +705,8 @@ engine_allocate_voice :: proc(e: ^Engine, note: int) -> ^Voice {
 			break
 		}
 	}
-	engine_free_layers(e, clamp_int(e.params.unison_voices, 1, MAX_UNISON), same)
-	if same != nil {
-		return same
-	}
-	for i in 0 ..< len(e.voices) {
-		v := &e.voices[i]
-		if !v.active {
-			return v
-		}
+	if v := engine_acquire_voice(e, note, same); v != nil {
+		return v
 	}
 
 	oldest := &e.voices[0]
