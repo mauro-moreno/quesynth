@@ -658,3 +658,79 @@ json_number_forms :: proc(t: ^testing.T) {
 	_, fraction_err := patch.parse_patch_json(transmute([]u8)fraction_text)
 	testing.expect_value(t, fraction_err, patch.Json_Error.Bad_Value)
 }
+
+// Which state a stored integer sounds as, for the parameters whose displays do not
+// start at zero. The reference's renders (one note, the same patch, only that
+// parameter changed) are identical for these groups of stored values, and the
+// groups are the tests' answer:
+//
+//   osc2 shape (1)         {-1, 0, 1}  {2}  {3}  {4, 5, 9}
+//   lfo1 destination (41)  {-1, 0, 1}  {2}  {6}  {7, 8, 12}   (and 46, the same)
+//   chorus type (64)       {-1, 0, 1}  {2, 3}  {4, 5, 9}
+//   unison voices (93)     {-1, 0, 1, 2}  {3}  {8, 9, 12}
+//   polyphony (94)         {-1, 0, 1}  {2}  {3}  {4}
+//
+// A value below the first display is the first state, a value above the last is
+// the last, and a value that falls in a gap takes the state just below it. The
+// reference's own read-back (`getParameter`) reports stored 0 as the *top* state
+// for all of these, which is what `parameter_norm` models; the sound does not
+// follow it.
+expect_positions :: proc(t: ^testing.T, index: int, groups: []struct{position: int, stored: []int}) {
+	for g in groups {
+		for stored in g.stored {
+			got, ok := patch.parameter_position(index, stored)
+			testing.expect(t, ok)
+			testing.expectf(t, got == g.position, "parameter %v stored %v: position %v, reference %v", index, stored, got, g.position)
+		}
+	}
+}
+
+@(test)
+test_osc2_shape_below_its_first_display_is_its_first_state :: proc(t: ^testing.T) {
+	expect_positions(t, 1, {
+		{0, {-1, 0, 1}}, {1, {2}}, {2, {3}}, {3, {4, 5, 9}},
+	})
+}
+
+@(test)
+test_lfo_destination_clamps_into_its_range :: proc(t: ^testing.T) {
+	for index in ([]int{41, 46}) {
+		expect_positions(t, index, {
+			{0, {-1, 0, 1}}, {1, {2}}, {5, {6}}, {6, {7, 8, 12}},
+		})
+	}
+}
+
+@(test)
+test_chorus_type_gap_takes_the_state_below :: proc(t: ^testing.T) {
+	expect_positions(t, 64, {
+		{0, {-1, 0, 1}}, {1, {2, 3}}, {2, {4, 5, 9}},
+	})
+}
+
+@(test)
+test_unison_voices_and_polyphony_clamp_into_their_ranges :: proc(t: ^testing.T) {
+	expect_positions(t, 93, {
+		{0, {-1, 0, 1, 2}}, {1, {3}}, {6, {8, 9, 12}},
+	})
+	expect_positions(t, 94, {
+		{0, {-1, 0, 1}}, {1, {2}}, {2, {3}}, {3, {4}}, {31, {32, 33, 40}},
+	})
+}
+
+// The LFO type's displays (0, 1, 5, 2, 3, 4) are not ascending, so none of the
+// above applies to it. Its out-of-range behaviour is unchanged and was not
+// measured: a value past the last display still resolves to the last state.
+@(test)
+test_lfo_type_out_of_range_is_unchanged :: proc(t: ^testing.T) {
+	for index in ([]int{42, 47}) {
+		positions := [6]int{0, 1, 3, 4, 5, 2}
+		for stored in 0 ..< 6 {
+			got, _ := patch.parameter_position(index, stored)
+			expected := positions[stored]
+			testing.expectf(t, got == expected, "parameter %v stored %v: %v", index, stored, got)
+		}
+		got, _ := patch.parameter_position(index, 9)
+		testing.expect_value(t, got, 5)
+	}
+}

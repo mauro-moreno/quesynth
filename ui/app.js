@@ -71,10 +71,26 @@
   // The position a stored integer selects. Mirrors `resolved_position` in
   // src/engine/binding.odin, including its clamping, so what the interface shows
   // is what the engine will do with the same number.
+  //
+  // For a parameter whose stored integers are its displays (`s`), an integer that
+  // matches none is below the first, above the last, or in a gap, and the reference
+  // sounds those as the first state, the last, and the state just below the gap.
+  // See `display_state_below` in src/patch/value.odin, which has the evidence.
   function positionOf(param, stored) {
     if (param.s) {
       var exact = param.s.indexOf(stored);
       if (exact >= 0) return exact;
+      var ascending = true;
+      for (var i = 1; i < param.s.length; i++) {
+        if (param.s[i] <= param.s[i - 1]) { ascending = false; break; }
+      }
+      if (ascending) {
+        if (stored < param.s[0]) return 0;
+        for (var j = param.s.length - 1; j >= 0; j--) {
+          if (param.s[j] < stored) return j;
+        }
+        return 0;
+      }
       return stored < 0 ? 0 : param.s.length - 1;
     }
     if (stored < 0) return 0;
