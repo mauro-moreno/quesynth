@@ -98,29 +98,18 @@ lfo_pitch_depth_curve :: proc(unit: f32) -> f32 {
 	u := dsp.clamp32(unit, 0, 1)
 	return (math.exp(LFO_DEPTH_CURVE_K * u) - 1.0) / (math.exp(LFO_DEPTH_CURVE_K) - 1.0)
 }
-// The filter cutoff, measured the same way and **unipolar**.
+// The filter cutoff is **unipolar** too, and its depth is a fraction of the
+// travel left above the knob rather than a number of octaves. The measurement
+// and the law are in `filter_modulate_index`.
 //
 // `s1probe lfosquare --dest 3` reads the corner in each half of a square, through
-// a centroid calibrated against the reference's own static cutoff sweep -- the
-// -3 dB crossing every other filter measurement here uses turned out far too noisy
-// to survive being split into two levels.
+// a centroid calibrated against the reference's own static cutoff sweep. The low
+// half sits at exactly the unmodulated corner at every depth and from every base
+// cutoff, which a bipolar modulation could not do, and the opening is linear in
+// the knob and in the room above it:
 //
-// The finding that matters is not the number. The low half of the square sits at
-// **exactly the unmodulated corner** at every depth, and still does with the base
-// moved from 585 Hz to 7 kHz, so this destination never closes the filter -- it
-// only opens it. That also explains an old observation in
-// `docs/reference-notes.md` which had no explanation at the time: with the cutoff
-// wide open the LFO produces a bit-identical render, which a bipolar modulation
-// could not do because its downward half would still have somewhere to go.
-//
-//   depth              8      32      64      96
-//   octaves up     0.317   1.262   2.553   3.881
-//   / (depth/127)   5.03    5.01    5.07    5.13
-//
-// Linear in the knob, to about 2%. The full-depth figure is the slope of that
-// line rather than a reading, because at full depth the corner is pushed past the
-// top of the filter's own range and cannot be observed.
-LFO_CUTOFF_OCTAVES :: f32(5.06)
+//   base 32: 11.7 / 23.8 / 35.8 states against depth/127 * (127 - base) = 12.0 / 23.9 / 35.9
+//   base 88:  4.8 /  9.8 / 14.8 states against                           4.9 /  9.8 / 14.7
 
 // The volume duck, which is **linear in amplitude and reaches silence**.
 //

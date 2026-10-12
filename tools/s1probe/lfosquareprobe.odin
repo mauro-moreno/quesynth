@@ -18,7 +18,7 @@
 // The answer is that there is no shared curve: all four destinations differ, and
 // the cutoff and the volume are not even bipolar. Each reports in its own unit:
 //
-//   cutoff   octaves above the unmodulated corner   LFO_CUTOFF_OCTAVES
+//   cutoff   states above the unmodulated corner    a fraction of the room above the knob
 //   volume   decibels removed at the trough         no constant; linear in amplitude
 //   pan      peak deviation, -1..1                  LFO_PAN_DEPTH_VALUES
 package s1probe

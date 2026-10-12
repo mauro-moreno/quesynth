@@ -5,7 +5,7 @@ import "../dsp"
 // Parameter smoothing.
 //
 // A one-pole toward a target. Only the parameters that are audible as a step
-// are smoothed -- filter cutoff, gains, pan, the oscillator mix and the pulse
+// are smoothed -- gains, pan, the oscillator mix and the pulse
 // width -- because smoothing a switch such as filter type or a waveform would
 // mean interpolating between two things that have no midpoint.
 //

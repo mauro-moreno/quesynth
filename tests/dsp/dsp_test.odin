@@ -1798,18 +1798,16 @@ test_filter_tracking_is_measured_from_c3 :: proc(t: ^testing.T) {
 	bound := engine.bind_patch(p)
 	testing.expectf(t, abs(bound.filter_key_track - 1.0) < 0.01,
 		"full tracking should read as one octave per octave, got %v", bound.filter_key_track)
-
-	// The reference note itself: the offset the engine applies is
-	// key_track * (note - 48) / 12, so a note at 48 gets nothing and middle C
-	// gets a whole octave.
 	testing.expect_value(t, engine.FILTER_TRACK_REFERENCE_NOTE, 48.0)
 
-	offset_at_48 := bound.filter_key_track * (48.0 - engine.FILTER_TRACK_REFERENCE_NOTE) / 12.0
-	offset_at_60 := bound.filter_key_track * (60.0 - engine.FILTER_TRACK_REFERENCE_NOTE) / 12.0
-	testing.expectf(t, abs(offset_at_48) < 0.001,
-		"the reference note should get no tracking offset, got %v octaves", offset_at_48)
-	testing.expectf(t, abs(offset_at_60 - 1.0) < 0.02,
-		"middle C should get one octave at full tracking, got %v", offset_at_60)
+	knob := engine.filter_knob_index(bound.filter_cutoff_state)
+	at_48 := engine.filter_track_shift(knob, bound.filter_key_track, 48.0)
+	at_60 := engine.filter_track_shift(knob, bound.filter_key_track, 60.0)
+	testing.expectf(t, abs(at_48) < 0.001,
+		"the reference note should get no tracking offset, got %v steps", at_48)
+	octave := math.log2(engine.filter_index_hz(knob + at_60) / engine.filter_index_hz(knob))
+	testing.expectf(t, abs(octave - 1.0) < 0.01,
+		"middle C should get one octave at full tracking, got %v", octave)
 }
 
 // ---------------------------------------------------------------------------
@@ -4897,16 +4895,15 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 			return
 		}
 		testing.expect(t, e.effect != fresh.effect, "the effect unit held no state")
-		smoothed := [3]f32{e.cutoff_smooth.value, e.gain_smooth.value, e.pan_smooth.value}
+		smoothed := [2]f32{e.gain_smooth.value, e.pan_smooth.value}
 
 		engine.engine_apply_patch(&e, to, snap)
 
 		if !snap {
 			// An edit keeps its tails and glides; that is what a knob needs.
 			testing.expect(t, !all_zero(e.delay_left), "an edit cleared the delay")
-			testing.expect_value(t, e.cutoff_smooth.value, smoothed[0])
-			testing.expect_value(t, e.gain_smooth.value, smoothed[1])
-			testing.expect_value(t, e.pan_smooth.value, smoothed[2])
+			testing.expect_value(t, e.gain_smooth.value, smoothed[0])
+			testing.expect_value(t, e.pan_smooth.value, smoothed[1])
 			continue
 		}
 		for buffer in ([?][]f32{e.delay_left, e.delay_right, e.chorus_left, e.chorus_right}) {
@@ -4916,7 +4913,6 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 		testing.expect(t, e.equalizer == fresh.equalizer, "the equaliser kept the previous patch's state")
 		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
 		testing.expect_value(t, e.chorus.phase, fresh.chorus.phase)
-		testing.expect_value(t, e.cutoff_smooth.value, fresh.cutoff_smooth.value)
 		testing.expect_value(t, e.gain_smooth.value, fresh.gain_smooth.value)
 		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)
 	}
@@ -5031,5 +5027,5 @@ test_patch_change_snaps_to_where_a_kept_controller_puts_the_target :: proc(t: ^t
 	engine.engine_apply_patch(&e, to, snap = true, keep_voice_pool = true)
 	want := to
 	want.values[19] = 127
-	testing.expect_value(t, e.cutoff_smooth.value, engine.bind_patch(want).filter_cutoff_state)
+	testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
 }

@@ -53,6 +53,7 @@ Voice :: struct {
 	filter_env:   dsp.Envelope,
 	mod_env:      dsp.Envelope,
 	lfo:          [2]dsp.Lfo,
+	cutoff_ramp:  Cutoff_Ramp,
 
 	unison:       [MAX_UNISON]Unison_Voice,
 	unison_count: int,
@@ -545,6 +546,7 @@ voice_note_on :: proc(
 
 	switch start {
 	case .Fresh:
+		cutoff_ramp_reset(&v.cutoff_ramp)
 		dsp.envelope_gate_on(&v.amp_env, true)
 		dsp.envelope_gate_on(&v.filter_env, true)
 	case .Retrigger:
@@ -646,7 +648,7 @@ voice_process :: proc(
 	// destination selected by two sources adds rather than the later winning.
 	mod_osc2_semitones: f32 = 0
 	mod_osc1_semitones: f32 = 0
-	mod_cutoff_octaves: f32 = 0
+	mod_cutoff_steps: f32 = 0
 	mod_amplitude: f32 = 1
 	mod_pulse_width: f32 = 0
 	mod_fm: f32 = 0
@@ -703,13 +705,12 @@ voice_process :: proc(
 			mod_osc1_semitones += pitch_amount * LFO_PITCH_SEMITONES
 			mod_osc2_semitones += pitch_amount * LFO_PITCH_SEMITONES
 		case .Filter_Cutoff:
-			// Unipolar, and measured. `(1 + value)/2` is 1 at the top of the cycle
-			// and 0 at the bottom, so this only ever opens the filter -- the corner
-			// at the bottom of the cycle is the patch's own, not below it. See
-			// LFO_CUTOFF_OCTAVES, where the evidence is set out; the short version
-			// is that the low half of a square sits on the unmodulated corner at
-			// every depth and at every base cutoff tried.
-			mod_cutoff_octaves += (1.0 + value) * 0.5 * lp.depth * LFO_CUTOFF_OCTAVES
+			// Unipolar: `(1 + value)/2` is 1 at the top of the cycle and 0 at the
+			// bottom, so this only ever opens the filter and the low half of a
+			// square sits on the unmodulated corner. The depth is a fraction of the
+			// travel left above the knob rather than a fixed number of octaves; see
+			// `filter_modulate_index`.
+			mod_cutoff_steps += (1.0 + value) * 0.5 * lp.depth * FILTER_INDEX_STEPS
 		case .Amplitude:
 			// Unipolar too, and linear in amplitude rather than in decibels: the
 			// knob position is the fraction of the level removed at the bottom of
@@ -799,32 +800,38 @@ voice_process :: proc(
 	// it is why several patches with tracking at maximum rendered near silence
 	// here while the reference sounded.
 	//
-	// The tracking *amount* is left linear, which is right at both ends -- 0 and
-	// 1.01 octaves per octave at the extremes -- but measures slightly convex in
-	// between: 0.589 octaves at stored 64 against the 0.504 a linear reading
-	// gives. Around a semitone, and not yet modelled.
-	track_octaves := p.filter_key_track * (base_note - FILTER_TRACK_REFERENCE_NOTE) / 12.0
+	// The tracking amount is not linear: see `filter_track_shift`.
+	knob_index := filter_knob_index(p.filter_cutoff_state)
+	track_shift := filter_track_shift(knob_index, p.filter_key_track, base_note)
 
-	env_cutoff_states := p.filter_env_cutoff_states
+	// Each step of parameter 21 moves the envelope's endpoint by two stored
+	// states of the cutoff knob.
+	env_amount := p.filter_env_cutoff_states * FILTER_INDEX_STEPS / f32(FILTER_TABLE_SIZE)
 	if p.filter_velocity {
 		// Parameter 24: "Select whether the amount of envelope variation
 		// changes according to the velocity of the note played."
-		env_cutoff_states *= v.velocity
+		env_amount *= v.velocity
 	}
-	// Clamp the full envelope destination in controller-state space first, then
-	// take the envelope fraction of the achievable state travel. This ordering
-	// is observable near either end of the cutoff knob. For example, cutoff 44
-	// and amount 31 request -64 states: the endpoint stops at state 0, sustain
-	// 73 takes 57.5% of the surviving 44-state trip, and lands near state 19.
-	full_env_state := dsp.clamp32(
-		p.filter_cutoff_state + env_cutoff_states,
-		0,
-		f32(FILTER_TABLE_SIZE - 1),
+	// The amount is held to the room left on the axis first, then the envelope
+	// level takes its fraction of what survives. The order is observable near
+	// either end of the knob: cutoff 44 with amount 31 asks for -64 states, the
+	// endpoint stops at the bottom, and a sustain of 73 takes 57.5% of the
+	// surviving 44-state trip.
+	env_shift := filter_env_shift(knob_index + track_shift, env_amount, filter_env)
+	target_index := filter_modulate_index(
+		knob_index + track_shift + env_shift,
+		mod_cutoff_steps,
 	)
-	achievable_env_states := full_env_state - p.filter_cutoff_state
-	cutoff_state := p.filter_cutoff_state + achievable_env_states * filter_env
+	cutoff_index := cutoff_ramp_step(
+		&v.cutoff_ramp,
+		target_index,
+		p.filter_cutoff_state,
+		p.filter_env_cutoff_states,
+		p.filter_key_track,
+		cutoff_ramp_samples(sample_rate),
+	)
+	cutoff_state := filter_state_of_index(cutoff_index)
 	cutoff := filter_cutoff_at_state(p, cutoff_state)
-	cutoff *= math.pow(f32(2.0), track_octaves + mod_cutoff_octaves)
 	cutoff = dsp.clamp32(cutoff, dsp.MIN_CUTOFF_HZ, sample_rate * dsp.MAX_CUTOFF_RATIO)
 
 	// -- amplitude -----------------------------------------------------------

@@ -345,7 +345,7 @@ test_every_patch_load_replaces_the_patch_on_the_audio_thread :: proc(t: ^testing
 		want := expected
 		if c.kept {want.values[19] = 127}
 		bound := engine.bind_patch(want)
-		testing.expectf(t, e.cutoff_smooth.value == bound.filter_cutoff_state, "%v: cutoff glides from %v to %v", c.entry, e.cutoff_smooth.value, bound.filter_cutoff_state)
+		testing.expectf(t, e.params.filter_cutoff_state == bound.filter_cutoff_state, "%v: cutoff target %v, want %v", c.entry, e.params.filter_cutoff_state, bound.filter_cutoff_state)
 		testing.expectf(t, e.gain_smooth.value == bound.amp_gain, "%v: gain glides from %v to %v", c.entry, e.gain_smooth.value, bound.amp_gain)
 		testing.expectf(t, e.pan_smooth.value == bound.pan, "%v: pan glides from %v to %v", c.entry, e.pan_smooth.value, bound.pan)
 
@@ -424,15 +424,14 @@ test_ordinary_edits_keep_the_tails_and_the_glide :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(cmds), count + 1)
 	testing.expect_value(t, cmds[len(cmds) - 1].kind, standalone.Param_Command_Kind.Commit)
 
-	smoothed := [3]f32{e.cutoff_smooth.value, e.gain_smooth.value, e.pan_smooth.value}
+	smoothed := [2]f32{e.gain_smooth.value, e.pan_smooth.value}
 	apply(r)
 	testing.expect_value(t, standalone.snapshot_read(&r.live.snapshot).revision, revision + 1)
 	testing.expect_value(t, standalone.snapshot_read(&r.live.snapshot).values[19], i32(to.values[19]))
 	testing.expect(t, !silent(e.delay_left), "an edit cleared the delay")
 	testing.expect(t, !silent(e.chorus_left), "an edit cleared the chorus")
-	testing.expect_value(t, e.cutoff_smooth.value, smoothed[0])
-	testing.expect_value(t, e.gain_smooth.value, smoothed[1])
-	testing.expect_value(t, e.pan_smooth.value, smoothed[2])
+	testing.expect_value(t, e.gain_smooth.value, smoothed[0])
+	testing.expect_value(t, e.pan_smooth.value, smoothed[1])
 	testing.expect_value(t, e.ctrl_value[0], f32(1))
 	testing.expect(t, render(r) > 0, "the previous patch's tail stopped under an edit")
 
