@@ -25,7 +25,7 @@ Unison_Voice :: struct {
 	osc2:            dsp.Oscillator,
 	sub:             dsp.Oscillator,
 	sub_satellites:  [8]dsp.Oscillator,
-	filter:          dsp.Filter,
+	chamberlin:      dsp.Chamberlin,
 	ladder:          dsp.Ladder,
 	// Parameter 75's offset in cents from the outer voice's pitch.
 	detune:          f32,
@@ -372,7 +372,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 					voice_seed ~ u32(0x201 + satellite),
 				)
 			}
-			dsp.filter_init(&u.filter)
+			dsp.chamberlin_reset(&u.chamberlin)
 			dsp.ladder_reset(&u.ladder)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
@@ -830,9 +830,17 @@ voice_process :: proc(
 		p.filter_key_track,
 		cutoff_ramp_samples(sample_rate),
 	)
+	// The ladder is still fitted to measured surfaces indexed by state; the
+	// two-pole types run on the position itself.
 	cutoff_state := filter_state_of_index(cutoff_index)
-	cutoff := filter_cutoff_at_state(p, cutoff_state)
-	cutoff = dsp.clamp32(cutoff, dsp.MIN_CUTOFF_HZ, sample_rate * dsp.MAX_CUTOFF_RATIO)
+	cutoff: f32
+	if p.filter_slope == .Slope_24 {
+		cutoff = dsp.clamp32(
+			filter_cutoff_at_state(p, cutoff_state),
+			dsp.MIN_CUTOFF_HZ,
+			sample_rate * dsp.MAX_CUTOFF_RATIO,
+		)
+	}
 
 	// -- amplitude -----------------------------------------------------------
 
@@ -1030,7 +1038,7 @@ voice_process :: proc(
 		// measured surface -- `filter_ladder_gain` -- rather than the table that
 		// exists to undo two biquads' resonance gain.
 		filtered: f32
-		output_gain := p.filter_output_gain
+		output_gain := f32(1.0)
 		if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
 			dsp.ladder_set(
 				&u.ladder,
@@ -1055,19 +1063,19 @@ voice_process :: proc(
 				dsp.clamp32((cutoff_state - 80.0) / 47.0, 0, 1),
 			)
 		} else {
-			dsp.filter_set_damping(
-				&u.filter,
-				cutoff,
-				p.filter_damping,
+			// The two-pole types are the reference's own section at the reference's
+			// own corner, so there is no measured table or level correction in the
+			// way: see `dsp.Chamberlin`.
+			dsp.chamberlin_set_cutoff(
+				&u.chamberlin,
+				filter_index_hz(math.floor(cutoff_index)),
 				sample_rate,
-				p.filter_slope,
 			)
-			filtered = dsp.filter_process(
-				&u.filter,
-				mixed,
-				p.filter_mode,
-				p.filter_slope,
-				p.filter_saturation_drive,
+			filtered = dsp.sanitize(
+				dsp.filter_saturate(
+					dsp.chamberlin_process(&u.chamberlin, mixed, p.filter_resonance, p.filter_mode),
+					p.filter_saturation_drive,
+				),
 			)
 		}
 

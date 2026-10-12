@@ -15,7 +15,7 @@ package s1probe
 //   s1probe arch osc                   oscillator purity and aliasing
 //   s1probe arch voices                polyphony and unison accounting
 //   s1probe arch eq                    equaliser peak response
-//   s1probe arch filtertype            parameter 14's five responses
+//   s1probe arch filtertype            parameter 14's five responses; --values cutoff,resonance
 //
 // Common options: --wav <dir> writes every render pair; --values <list>
 // overrides a subcommand's sweep where it has one.
@@ -1886,9 +1886,11 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	N :: 16384
 	bin_hz := f64(SAMPLE_RATE) / f64(N)
 	cutoff := 64
+	resonance := 0
 	if len(o.values) > 0 {cutoff = o.values[0]}
-	fmt.printfln("arch filtertype: noise, cutoff %v (table %v Hz), resonance 0; transfer against the 12 dB low pass at 127",
-		cutoff, dec1(f64(sengine.FILTER_CUTOFF_HZ[cutoff])))
+	if len(o.values) > 1 {resonance = o.values[1]}
+	fmt.printfln("arch filtertype: noise, cutoff %v (table %v Hz), resonance %v; transfer against the 12 dB low pass at 127",
+		cutoff, dec1(f64(sengine.FILTER_CUTOFF_HZ[cutoff])), resonance)
 	fmt.println("  dB at octaves around the table corner, then the slope over the two octaves below and above it")
 	fmt.println()
 	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
@@ -1907,7 +1909,7 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 		p := arch_noise_patch()
 		set_param(&p, 14, arch_stored_for_id(14, t))
 		set_param(&p, 19, cutoff)
-		set_param(&p, 20, 0)
+		set_param(&p, 20, resonance)
 		ref, ours := arch_render(dll, &p, c, ev, 3.1)
 		write_pair(o.wav, fmt.tprintf("filtertype-%v", t), ref, ours)
 		for audio, side in ([2][]f32{ref, ours}) {

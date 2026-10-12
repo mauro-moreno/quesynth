@@ -411,10 +411,6 @@ Engine_Params :: struct {
 	// not move while a note is sounding.
 	filter_resonance:   f32,
 	filter_damping:     f32,
-	// The output gain that goes with that damping. Resonance adds energy, and the
-	// reference does not simply pass it through; measured, and the same curve for
-	// every response and both slopes.
-	filter_output_gain: f32,
 	// Parameter 21 as signed cutoff-controller states at full envelope level.
 	// Each amount step moves two cutoff states. The full endpoint is clamped in
 	// state space before the envelope fraction is applied.

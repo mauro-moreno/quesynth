@@ -174,38 +174,6 @@ FILTER_SATURATION_DRIVE := [?]f32{
 	4.5439, 7.3086, 11.5249, 17.8173, 28.6600, 37.6000,
 	44.0800, 67.5000, 75.3000, 83.8000, 96.9000,
 }
-// What the saturation control does to the level once the filter is resonant.
-//
-// The corner-opening tables above were fitted at resonance 0 and are exact
-// there. They are not the whole control. Through a *fully open* filter, where no
-// corner is in play at all, the reference gains 10.5 dB from the saturation knob
-// at resonance 115 and 1.7 dB at resonance 0, while this engine gains about 2 dB
-// either way -- 8.4 dB short at the corner of the surface. Open filter and one
-// note means the resonant peak is far above what is being measured, so this is a
-// broadband gain and not a peak height, which is what makes it separable from
-// everything else here and correctable as a gain.
-//
-// Each row is referenced to its own saturation-0 value, so this table is what
-// the saturation control does and nothing else. The raw surface also showed the
-// 24 dB path short by up to 3.8 dB at saturation 0, which is its resonance output
-// gain rather than saturation, and correcting that from an open-filter reading
-// was wrong: those patches play closed, where the deficit is not there, and four
-// factory patches at saturation 0 went about 3.5 dB loud when it was included.
-// It is a real error and it is left for a measurement taken where it applies.
-//
-// Measured at the knots below, as decibels the reference has over this engine.
-FILTER_OUTPUT_CORRECTION_RESONANCE := [?]int{0, 32, 64, 96, 115, 127}
-FILTER_OUTPUT_CORRECTION_SATURATION := [?]int{0, 32, 64, 96, 127}
-
-FILTER_OUTPUT_CORRECTION_DB_12 := [6][5]f32 {
-	{+0.0, +0.0, -0.2, -0.1, +0.0},
-	{+0.0, +0.3, +1.0, +1.5, +1.7},
-	{+0.0, +0.7, +2.3, +3.4, +3.7},
-	{+0.0, +1.0, +3.8, +5.7, +6.4},
-	{+0.0, +1.2, +4.8, +7.6, +8.4},
-	{+0.0, +1.3, +5.5, +9.0, +10.1},
-}
-
 // The ladder's own level, which replaces the surface the two biquads needed.
 //
 // A ladder loses gain at DC as its feedback rises. The reference loses less than
@@ -267,17 +235,6 @@ correction_axis :: proc(knots: []int, state: int) -> (index: int, t: f32) {
 		}
 	}
 	return last - 1, 1
-}
-
-filter_output_correction :: proc(resonance, saturation: int) -> f32 {
-	r := resolved_position(20, resonance)
-	s := resolved_position(23, saturation)
-	ri, rt := correction_axis(FILTER_OUTPUT_CORRECTION_RESONANCE[:], r)
-	si, stt := correction_axis(FILTER_OUTPUT_CORRECTION_SATURATION[:], s)
-	table := &FILTER_OUTPUT_CORRECTION_DB_12
-	lo := dsp.lerp32(table[ri][si], table[ri][si + 1], stt)
-	hi := dsp.lerp32(table[ri + 1][si], table[ri + 1][si + 1], stt)
-	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
 }
 
 // The ladder's feedback, which is what parameter 20 actually controls.
@@ -1093,12 +1050,6 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		state := clamp_int(resolved_position(20, p.values[20]), 0, FILTER_RESONANCE_TABLE_SIZE - 1)
 		e.filter_resonance = unit_position(20, p.values[20])
 		e.filter_damping = e.filter_slope == .Slope_24 ? FILTER_DAMPING_24[state] : FILTER_DAMPING[state]
-		e.filter_output_gain =
-			e.filter_slope == .Slope_24 ? FILTER_OUTPUT_GAIN_24[state] : FILTER_OUTPUT_GAIN[state]
-		// See `filter_output_correction`: what the saturation control does to the
-		// level once the filter is resonant, plus the 24 dB path's own resonance
-		// gain error, which is that surface's saturation-0 column.
-		e.filter_output_gain *= filter_output_correction(p.values[20], p.values[23])
 	}
 
 	// Parameter 21 displays -63..64, with stored 63 as zero. Controlled sweeps
