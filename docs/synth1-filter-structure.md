@@ -119,16 +119,30 @@ Done: `src/dsp/lfo.odin`, `src/engine/engine.odin`, `src/engine/binding.odin`.
 
 ## Voice pool
 
-The pool is counted in layers: polyphony is the number of voices and a note takes
-one per unison layer. When none is free the oldest voice is taken, from the oldest
-note, lowest layer first, and a voice in release before a key still held. A note
-wanting more layers than the pool has keeps only its last ones. `arch voices`:
-layers per note equal to the reference in all 14 readable cases.
+The pool is counted in layers: polyphony is the number of voices, held as slots, and
+a note takes one per unison layer. A layer takes the first slot not held by a key,
+scanning round-robin from the slot after the last one handed out, so a note in
+release (or a voice that has finished) is free the moment the scan reaches it; when
+every slot is held the oldest is taken. A note wanting more layers than there are
+slots keeps only its last ones. `arch voices`: layers per note equal to the
+reference in all 15 readable cases. That probe has no release in it; the release
+behaviour is read from the allocator, which returns the first voice whose key flag
+is clear, and is held by tests.
 
-Not copied: which free slot a new voice lands on. The reference scans round-robin
-from the last voice it started and treats a voice in release as free, so a release
-tail is cut as soon as the scan reaches it; here a tail is cut only when the pool
-is full. The measurement has no release in it.
+Done: `src/engine/engine.odin`, `src/engine/voice.odin`.
+
+## Amplitude envelope
+
+The reference renders in chunks of at most 256 frames, restarting at every host
+block and note event, and its amplitude envelope is a whole number of 1/2048ths
+joined by straight lines with the chunk's edges as the joins. The engine keeps a
+chunk clock (restarting at every call and at every arpeggiator step that starts a
+note); each voice steps a copy of its amplitude envelope to the chunk's last sample,
+floors it to a whole step and ramps to it. A note's first chunk follows the
+envelope exactly. The filter and modulation envelopes are read per sample: reading
+them per chunk (end value or start value) made the deepest nulls up to 6 dB worse.
+`arch rate`, envelope row: 117 spikes against the reference's 171, was 738. Patches
+114, 107 and 013 went from 9-15 dB out on spectrum to 1.3-2.2 dB.
 
 Done: `src/engine/engine.odin`, `src/engine/voice.odin`.
 
@@ -144,20 +158,19 @@ resonance knob as they are.
 Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row
 means: 4.28 at the start of the series, 3.61 after the cutoff axis, 3.53 after the
 two-pole section, 3.31 after the 24 dB ladder, 3.27 after the equaliser, 3.15 after
-the LFO; the pan, voice pool and clean-up commits do not move it, because the bank
-plays one note at a time and uses few pan LFOs. The null depth went from -8.58 to
--9.27 dB over the same commits. 26 factory patches switched to type 4: 7.36 ->
-5.05 dB. Patch 113's envelope contour (1.31 -> 3.58 dB across the series) is
-probably an artefact of how that short hat is measured and was not pursued.
+the LFO, 2.89 after the envelope chunks; the pan, voice pool and clean-up commits do
+not move it, because the bank plays one note at a time and uses few pan LFOs. The
+null depth went from -8.58 to -9.27 dB over the same commits. 26 factory patches
+switched to type 4: 7.36 -> 5.05 dB. Patch 113 is a very short hat, so its envelope
+error is read over few samples; it went 3.58 -> 3.25 dB and is not pursued further.
 
 ## Not yet done
 
-- **Amplitude envelope block structure**: the reference reads the amplitude fade in
-  whole 1/2048ths every 256 samples and ramps between, which the engine does not
-  copy; the phase of those knots against the note's start has not been pinned down
-  (`arch rate`, envelope row: 171 spikes against 738, with 39% flat steps).
-- **Render blocks**: the reference renders in blocks of at most 256 frames (32 in
-  some modes) and holds cutoff, pitch and similar modulation within a block. The
-  LFO's own grid and the amplifier's ramp are copied; the rest of the per-block
-  holding is not.
-- **Release tails and slot choice**: see the voice pool above.
+- **Modulation held per render block**: the amplitude envelope, the LFOs' grid and
+  the amplifier's ramp are copied. The filter and modulation envelopes, read per
+  chunk, made the deepest nulls worse, so they stay per sample; what the reference
+  does with them inside a chunk is not settled, and the probes read it only through
+  those nulls.
+- **Release in the voice-count probe**: `arch voices` holds every note until the end,
+  so the slot rule for a note in release rests on the allocator's logic and the
+  tests, not on a measurement of the reference.
