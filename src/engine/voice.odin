@@ -27,7 +27,7 @@ Unison_Voice :: struct {
 	sub_satellites:  [8]dsp.Oscillator,
 	chamberlin:      dsp.Chamberlin,
 	diode:           dsp.Diode_Ladder,
-	ladder:          dsp.Ladder,
+	ladder:          dsp.Moog_Ladder,
 	// Parameter 75's offset in cents from the outer voice's pitch.
 	detune:          f32,
 	// -1..1.
@@ -375,7 +375,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			}
 			dsp.chamberlin_reset(&u.chamberlin)
 			dsp.diode_ladder_reset(&u.diode)
-			dsp.ladder_reset(&u.ladder)
+			dsp.moog_ladder_reset(&u.ladder)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
 			// at note on, and turned fully down it does not fix anything at all.
@@ -832,17 +832,9 @@ voice_process :: proc(
 		p.filter_key_track,
 		cutoff_ramp_samples(sample_rate),
 	)
-	// The ladder is still fitted to measured surfaces indexed by state; the
-	// two-pole types run on the position itself.
-	cutoff_state := filter_state_of_index(cutoff_index)
-	cutoff: f32
-	if p.filter_slope == .Slope_24 {
-		cutoff = dsp.clamp32(
-			filter_cutoff_at_state(p, cutoff_state),
-			dsp.MIN_CUTOFF_HZ,
-			sample_rate * dsp.MAX_CUTOFF_RATIO,
-		)
-	}
+	// Every filter type runs on the position itself, one step of the axis at a
+	// time.
+	axis_hz := filter_index_hz(math.floor(cutoff_index))
 
 	// -- amplitude -----------------------------------------------------------
 
@@ -1036,65 +1028,28 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		// The 24 dB low pass is a ladder; see `dsp.Ladder`. Its level is its own
-		// measured surface -- `filter_ladder_gain` -- rather than the table that
-		// exists to undo two biquads' resonance gain.
+		// Each type is the reference's own section at the reference's own corner,
+		// so no measured table or level correction sits in front of any of them:
+		// see `dsp.Chamberlin`, `dsp.Moog_Ladder` and `dsp.Diode_Ladder`.
 		filtered: f32
-		output_gain := f32(1.0)
 		if p.filter_diode {
-			dsp.diode_ladder_set(
-				&u.diode,
-				filter_index_hz(math.floor(cutoff_index)),
-				p.filter_resonance,
-				sample_rate,
-			)
-			filtered = dsp.sanitize(
-				dsp.filter_saturate(
-					dsp.diode_ladder_process(&u.diode, mixed),
-					p.filter_saturation_drive,
-				),
-			)
+			dsp.diode_ladder_set(&u.diode, axis_hz, p.filter_resonance, sample_rate)
+			filtered = dsp.diode_ladder_process(&u.diode, mixed)
 		} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
-			dsp.ladder_set(
-				&u.ladder,
-				cutoff,
-				p.filter_ladder_feedback,
-				sample_rate,
-			)
-			filtered = dsp.sanitize(
-				dsp.filter_saturate(
-					dsp.ladder_process(&u.ladder, mixed),
-					p.filter_saturation_drive,
-				),
-			)
-			// Only as far as the filter is open; see `FILTER_LADDER_GAIN_DB`. The
-			// raw ladder is already right at cutoff 64 and below -- within 0.4 dB
-			// across the whole resonance knob -- and falls behind only as the pole
-			// climbs past state 80, by 0.9, 2.1, 3.0, 4.2, 5.5 and 6.4 dB at states
-			// 80, 96, 104, 112, 120 and 127. That is a straight line in the state,
-			// so the correction is the surface raised to it.
-			output_gain = math.pow(
-				p.filter_ladder_gain,
-				dsp.clamp32((cutoff_state - 80.0) / 47.0, 0, 1),
-			)
+			dsp.moog_ladder_set(&u.ladder, axis_hz, p.filter_resonance, sample_rate)
+			filtered = dsp.moog_ladder_process(&u.ladder, mixed)
 		} else {
-			// The two-pole types are the reference's own section at the reference's
-			// own corner, so there is no measured table or level correction in the
-			// way: see `dsp.Chamberlin`.
-			dsp.chamberlin_set_cutoff(
+			dsp.chamberlin_set_cutoff(&u.chamberlin, axis_hz, sample_rate)
+			filtered = dsp.chamberlin_process(
 				&u.chamberlin,
-				filter_index_hz(math.floor(cutoff_index)),
-				sample_rate,
-			)
-			filtered = dsp.sanitize(
-				dsp.filter_saturate(
-					dsp.chamberlin_process(&u.chamberlin, mixed, p.filter_resonance, p.filter_mode),
-					p.filter_saturation_drive,
-				),
+				mixed,
+				p.filter_resonance,
+				p.filter_mode,
 			)
 		}
+		filtered = dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
 
-		sample := filtered * output_gain * gain * stack_scale
+		sample := filtered * gain * stack_scale
 
 		// The reference's pan law: full level in both channels at the centre, and
 		// panning attenuates the channel you are moving away from.
