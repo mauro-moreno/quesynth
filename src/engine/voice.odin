@@ -26,6 +26,7 @@ Unison_Voice :: struct {
 	sub:             dsp.Oscillator,
 	sub_satellites:  [8]dsp.Oscillator,
 	chamberlin:      dsp.Chamberlin,
+	diode:           dsp.Diode_Ladder,
 	ladder:          dsp.Ladder,
 	// Parameter 75's offset in cents from the outer voice's pitch.
 	detune:          f32,
@@ -373,6 +374,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 				)
 			}
 			dsp.chamberlin_reset(&u.chamberlin)
+			dsp.diode_ladder_reset(&u.diode)
 			dsp.ladder_reset(&u.ladder)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
@@ -1039,7 +1041,20 @@ voice_process :: proc(
 		// exists to undo two biquads' resonance gain.
 		filtered: f32
 		output_gain := f32(1.0)
-		if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
+		if p.filter_diode {
+			dsp.diode_ladder_set(
+				&u.diode,
+				filter_index_hz(math.floor(cutoff_index)),
+				p.filter_resonance,
+				sample_rate,
+			)
+			filtered = dsp.sanitize(
+				dsp.filter_saturate(
+					dsp.diode_ladder_process(&u.diode, mixed),
+					p.filter_saturation_drive,
+				),
+			)
+		} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
 			dsp.ladder_set(
 				&u.ladder,
 				cutoff,

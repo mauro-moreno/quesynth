@@ -394,6 +394,8 @@ Engine_Params :: struct {
 	// -- filter --------------------------------------------------------------
 	filter_mode:        dsp.Filter_Mode,
 	filter_slope:       dsp.Filter_Slope,
+	// Parameter 14's fifth state, which is a filter of its own and not a slope.
+	filter_diode:       bool,
 	filter_cutoff_hz:   f32,
 	// Parameter 19's resolved controller state. The filter envelope moves this
 	// state, rather than multiplying the already-resolved frequency by a fixed

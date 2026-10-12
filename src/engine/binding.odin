@@ -932,15 +932,14 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// (12 dB), low-pass (24 dB), high-pass (12 dB) or high-pass (24 dB)" -- and
 	// the v1.13 beta 2 entry in the version history adds the fifth: "A new
 	// filter 'LPDL' has been added", a fourth-order diode ladder described as
-	// "close to 'LP24'". This slice has no diode ladder model, so LPDL is bound
-	// to the 24 dB low pass, which is the response the changelog itself calls
-	// it close to.
+	// "close to 'LP24'".
 	//
-	// Band pass and notch are implemented in src/dsp and reachable through
-	// `Engine_Params.filter_mode`, as the contract for this slice requires, but
-	// no Synth1 filter-type state selects them: the reference plugin has no
-	// band pass or notch. Inventing a mapping to reach them would corrupt every
-	// patch that uses a real state.
+	// "Close" is the changelog's word and the measurement does not agree: at
+	// resonance 0 it is 20.8 dB down at the corner against the 24 dB ladder's
+	// 12, with 5.7 dB per octave below and 15.6 above. It is its own filter,
+	// `dsp.Diode_Ladder`, and its mode and slope here only keep it out of the
+	// other branches.
+	e.filter_diode = false
 	switch resolved_display_id(14, p.values[14]) {
 	case 0:
 		e.filter_mode, e.filter_slope = .Low_Pass, .Slope_12
@@ -964,12 +963,8 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		// this measurement are the same filter described two ways.
 		e.filter_mode, e.filter_slope = .Band_Pass, .Slope_12
 	case:
-		// LPDL, the diode ladder added in v1.13 beta 2. Measured at 12 to 14 dB
-		// per octave with a corner well below the other types' for the same knob
-		// setting, so it is neither of the slopes this filter has; the changelog
-		// calls it close to LP24 and that is what it is bound to, pending a
-		// ladder model. Its measured slope is closer to the 12 dB section.
-		e.filter_mode, e.filter_slope = .Low_Pass, .Slope_24
+		e.filter_mode, e.filter_slope = .Low_Pass, .Slope_12
+		e.filter_diode = true
 	}
 
 	e.filter_attack = envelope_attack_time(15, p.values[15])

@@ -960,7 +960,7 @@ test_pre_107_lfo_destinations_bind_to_their_measured_mechanisms :: proc(t: ^test
 }
 
 // The five measured filter states map onto the four documented responses plus
-// LPDL, which this slice binds to the 24 dB low pass.
+// LPDL, which is a filter of its own and is flagged rather than given a slope.
 @(test)
 test_filter_type_binding :: proc(t: ^testing.T) {
 	// Measured with `s1probe filterprobe`, which drives noise through each state
@@ -969,7 +969,7 @@ test_filter_type_binding :: proc(t: ^testing.T) {
 	// the same version says and as the measured pass band -- bounded at both
 	// ends, and tracking the cutoff knob -- confirms.
 	modes := []dsp.Filter_Mode{.Low_Pass, .Low_Pass, .High_Pass, .Band_Pass, .Low_Pass}
-	slopes := []dsp.Filter_Slope{.Slope_12, .Slope_24, .Slope_12, .Slope_12, .Slope_24}
+	slopes := []dsp.Filter_Slope{.Slope_12, .Slope_24, .Slope_12, .Slope_12, .Slope_12}
 
 	for stored in 0 ..< 5 {
 		p := default_patch()
@@ -983,6 +983,7 @@ test_filter_type_binding :: proc(t: ^testing.T) {
 			bound.filter_mode,
 		)
 		testing.expect_value(t, bound.filter_slope, slopes[stored])
+		testing.expect_value(t, bound.filter_diode, stored == 4)
 	}
 }
 
