@@ -112,7 +112,15 @@ note_to_hz :: proc "contextless" (note: f32) -> f32 {
 // contract survives: an output that approaches 64 rather than 2 is still bounded,
 // which is all "a stack of unison voices summing in phase must not produce
 // something unbounded" ever asked for.
-SOFT_CLIP_KNEE :: f32(32.0)
+//
+// It moved again. 32 was set from peaks of +30 dBFS, and `s1probe arch clip`
+// later found the reference passing +41.2 dBFS untouched (eight in-phase unison
+// layers with an equaliser peak of +24.8 dB), 8 dB past the knee, where this
+// engine returned +36.1 and put its third harmonic at -14.9 dB where the
+// reference has -117. At 256, +48.2 dBFS, the limiter is transparent across
+// everything the reference has been measured producing, and an output that
+// approaches 512 is still a bounded one.
+SOFT_CLIP_KNEE :: f32(256.0)
 
 soft_clip :: proc "contextless" (x: f32) -> f32 {
 	if !is_finite(x) {return 0}
