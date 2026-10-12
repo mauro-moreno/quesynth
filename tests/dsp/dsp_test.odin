@@ -1336,9 +1336,12 @@ test_release_follows_the_fade_law_over_its_length :: proc(t: ^testing.T) {
 	one_length_later := peak_at(left[:], hold + int(length * f32(SR)) + 8, window)
 	testing.expect(t, at_off > 0.001, "the note was not sounding at note off")
 
+	// The law gives 2048 * exp(-4) * 0.5 = 18.76 steps at the half way point, a
+	// factor of 109; the envelope is whole 1/2048ths, so the 18 it floors to reads
+	// 113.8, and a 5 ms window catches a little of the step above it.
 	ratio := at_off / max(halfway, 1.0e-9)
-	testing.expectf(t, ratio > 105.0 && ratio < 115.0,
-		"half way through the release (%v s long) the level fell by a factor of %v, expected about 109",
+	testing.expectf(t, ratio > 105.0 && ratio < 120.0,
+		"half way through the release (%v s long) the level fell by a factor of %v, expected about 109 to 114",
 		length, ratio)
 	testing.expectf(t, one_length_later == 0.0, "the release was still sounding after its length: %v", one_length_later)
 }

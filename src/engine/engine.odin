@@ -962,7 +962,11 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	// rewriting per sample are the three smoothed ones below.
 	params := e.params
 
+	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	for i in 0 ..< n {
+		if chunk.position >= chunk.length {
+			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+		}
 		// The free-running LFOs advance once per sample for the whole engine,
 		// so every non-key-synced voice reads the same value.
 		lfo_value, lfo_ramped: [2]f32
@@ -978,7 +982,12 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// to the block would land a 1/24-beat step up to a whole step late at
 		// 512 frames, which is heard as swing the patch does not have.
 		if params.arp_on {
+			age_before := e.age
 			arp_process(e, &params)
+			// A step that starts a note starts a chunk, as a note event does.
+			if e.age != age_before {
+				chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+			}
 		}
 
 		sum_l: f32 = 0
@@ -989,7 +998,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			if !v.active {
 				continue
 			}
-			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend, lfo_value, lfo_ramped)
+			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend, lfo_value, lfo_ramped, chunk)
 			sum_l += l
 			sum_r += r
 		}
@@ -1045,5 +1054,6 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// stable output, not a truncated one.
 		left[i] = dsp.soft_clip(out_l)
 		right[i] = dsp.soft_clip(out_r)
+		chunk.position += 1
 	}
 }

@@ -57,6 +57,14 @@ Voice :: struct {
 	// The two channel gains an LFO on pan has reached; both are one when it is not
 	// driving pan.
 	pan_lfo_gain: [2]f32,
+	// The amplitude envelope as the render chunk sees it: it ramps linearly across
+	// the chunk to the whole 1/2048th it reaches at the chunk's last sample.
+	// `knots_valid` is false until the chunk this voice is in has been read, and
+	// `first_chunk` is true until the note's first chunk is over.
+	amp_now:          f32,
+	amp_step:         f32,
+	knots_valid:      bool,
+	first_chunk:      bool,
 
 	unison:       [MAX_UNISON]Unison_Voice,
 	unison_count: int,
@@ -481,11 +489,15 @@ voice_note_on :: proc(
 	// can never enter the audio path with unison_count == 0.
 	voice_configure_unison(v, p, seed, start != .Legato)
 	v.live_layers = (u32(1) << u32(v.unison_count)) - 1
+	v.knots_valid = false
+	v.first_chunk = start == .Fresh
 	voice_apply_params(v, p, sample_rate)
 
 	switch start {
 	case .Fresh:
 		cutoff_ramp_reset(&v.cutoff_ramp)
+		v.amp_now = 0
+		v.amp_step = 0
 		v.pan_lfo_gain = {1, 1}
 		dsp.envelope_gate_on(&v.amp_env, true)
 		dsp.envelope_gate_on(&v.filter_env, true)
@@ -529,6 +541,19 @@ voice_is_finished :: proc(v: ^Voice) -> bool {
 
 CENTS_PER_SEMITONE :: f32(100.0)
 
+// Where a sample sits in the render chunk. The reference renders in chunks of at
+// most 256 frames that restart at every host block and at every note event, and
+// reads its envelopes once per chunk; see `voice_process`.
+Chunk :: struct {
+	position: int,
+	length:   int,
+}
+
+CHUNK_FRAMES :: 256
+
+// The amplitude envelope is a whole number of 1/2048ths.
+AMP_ENVELOPE_STEPS :: f32(2048.0)
+
 // Render one sample of this voice into a stereo pair.
 //
 // `lfo_value` carries the two free-running LFO values the engine advanced once
@@ -540,6 +565,7 @@ voice_process :: proc(
 	pitch_bend: f32,
 	global_lfo_value: [2]f32,
 	global_lfo_ramped: [2]f32,
+	chunk: Chunk,
 ) -> (
 	left: f32,
 	right: f32,
@@ -558,12 +584,48 @@ voice_process :: proc(
 		}
 	}
 
-	amp_env := dsp.envelope_process(&v.amp_env)
+	// The amplitude envelope is read a chunk at a time. At the start of a chunk it
+	// is stepped ahead on a copy to where it will be at the chunk's last sample, and
+	// the output ramps to that value floored to a whole 1/2048th: the reference's
+	// envelope is those integers joined by straight lines, with the chunk's edges as
+	// the joins. Holding the same value for the whole chunk does not fit it, which is
+	// how the spectrum of a short decay is wrong by up to 15 dB; reading the *filter*
+	// and modulation envelopes this way made the deepest nulls worse by 6 dB, so they
+	// stay per sample.
+	//
+	// A note's first chunk follows the envelope exactly. The reference reaches full
+	// level in about 3.3 ms from a fresh note; a ramp across a whole 256-sample chunk
+	// would take 5.3. The real envelope still advances every sample, so a note-off or
+	// retrigger between chunks finds it where it should be.
+	if chunk.position == 0 && v.knots_valid {
+		v.first_chunk = false
+	}
+	if chunk.position == 0 || !v.knots_valid {
+		ahead := v.amp_env
+		last_amp: f32
+		remaining := max(chunk.length - chunk.position, 1)
+		for _ in 0 ..< remaining {
+			last_amp = dsp.envelope_process(&ahead)
+		}
+		target := math.floor(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
+		v.amp_step = (target - v.amp_now) / f32(remaining)
+		v.knots_valid = true
+	}
+	exact_amp := dsp.envelope_process(&v.amp_env)
 	filter_env := dsp.envelope_process(&v.filter_env)
 	mod_env: f32 = 0
 	if p.mod_env_on {
 		mod_env = dsp.envelope_process(&v.mod_env) * p.mod_env_amount
 	}
+	if dsp.envelope_is_active(&v.amp_env) {
+		v.amp_now += v.amp_step
+	} else {
+		v.amp_now = 0
+	}
+	if v.first_chunk {
+		v.amp_now = exact_amp
+	}
+	amp_env := v.amp_now
 	// A one-shot is a complete ADSR gesture initiated by one event: it traverses
 	// attack and decay normally, then enters release as soon as sustain is
 	// reached. This avoids a timer in the UI and cannot leak a permanently gated
