@@ -20,7 +20,7 @@
 //
 //   cutoff   states above the unmodulated corner    a fraction of the room above the knob
 //   volume   decibels removed at the trough         no constant; linear in amplitude
-//   pan      peak deviation, -1..1                  LFO_PAN_DEPTH_VALUES
+//   pan      peak deviation, -1..1                  linear in the knob; see pan_lfo_gain
 package s1probe
 
 import "core:fmt"

@@ -55,6 +55,9 @@ Voice :: struct {
 	mod_env:      dsp.Envelope,
 	lfo:          [2]dsp.Lfo,
 	cutoff_ramp:  Cutoff_Ramp,
+	// The two channel gains an LFO on pan has reached; both are one when it is not
+	// driving pan.
+	pan_lfo_gain: [2]f32,
 
 	unison:       [MAX_UNISON]Unison_Voice,
 	unison_count: int,
@@ -549,6 +552,7 @@ voice_note_on :: proc(
 	switch start {
 	case .Fresh:
 		cutoff_ramp_reset(&v.cutoff_ramp)
+		v.pan_lfo_gain = {1, 1}
 		dsp.envelope_gate_on(&v.amp_env, true)
 		dsp.envelope_gate_on(&v.filter_env, true)
 	case .Retrigger:
@@ -654,7 +658,8 @@ voice_process :: proc(
 	mod_amplitude: f32 = 1
 	mod_pulse_width: f32 = 0
 	mod_fm: f32 = 0
-	mod_pan: f32 = 0
+	pan_lfo: f32 = 0
+	pan_lfo_active := false
 
 	switch p.mod_env_dest {
 	case .Osc2_Pitch:
@@ -716,9 +721,9 @@ voice_process :: proc(
 		case .Amplitude:
 			// Unipolar too, and linear in amplitude rather than in decibels: the
 			// knob position is the fraction of the level removed at the bottom of
-			// the cycle, so full depth reaches silence there. Measured; see the
-			// note above LFO_PAN_DEPTH_STEPS for why the decibel constant this
-			// replaces was an artefact of the instrument that produced it.
+			// the cycle, so full depth reaches silence there. Measured; the
+			// decibel constant this replaces was an artefact of the instrument that
+			// produced it.
 			mod_amplitude *= 1.0 - lp.depth * 0.5 * (1.0 - value)
 		case .Inert:
 			// State 5 does nothing in the reference, and neither does this.
@@ -749,29 +754,25 @@ voice_process :: proc(
 			// this destination does not have.
 			mod_fm += (1.0 + value) * 0.5 * lp.depth * (1.0 - p.osc1_fm)
 		case .Pan:
-			// Negated, and that sign is measured rather than chosen.
-			//
-			// A sign flip of the LFO cannot be distinguished from a sign flip of
-			// the destination it drives, so matching the reference on pan alone
-			// would only prove the two conventions compose the same way. Volume
-			// breaks the tie, because loud is loud under any convention: driven
-			// through destination 4 with a saw, both engines' loudness ramps down
-			// and jumps back up, folding to cycles that agree within a decibel. So
-			// our saw runs the right way and the LFO itself is right.
-			//
-			// Watched on pan, though, the same saw moved the reference's image
-			// left to right and ours right to left. With the LFO ruled out, that
-			// is this destination's own sign -- and the static pan control is not
-			// the culprit either, since parameter 90 hard left reads positive on
-			// both. See `s1probe lfoshape --dest 4`.
-			//
-			// The depth is its own measured curve rather than the linear reading,
-			// and it reaches a fully hard image at the top of the knob where this
-			// used to stop at 0.927. Unlike the two destinations above, this one
-			// really is bipolar and symmetric: the two halves of a square land at
-			// plus and minus the same value at every depth measured.
-			mod_pan -= value * lp.pan_depth
+			// Bipolar and symmetric: the two halves of a square land at plus and
+			// minus the same value at every depth. The sign is measured, not chosen:
+			// a positive LFO value moves the image left, which matches the reference
+			// watched with a saw, where flipping the LFO and flipping the
+			// destination cannot be told apart on pan alone and volume breaks the
+			// tie. The depth is the knob's own position, and what it does to the two
+			// channels is `pan_lfo_gain`.
+			pan_lfo += value * lp.depth
+			pan_lfo_active = true
 		}
+	}
+
+	static_left, static_right := static_pan_gains(p.pan)
+	if pan_lfo_active {
+		smoothing := pan_lfo_smoothing(sample_rate)
+		v.pan_lfo_gain[0] += (pan_lfo_gain(pan_lfo) - v.pan_lfo_gain[0]) * smoothing
+		v.pan_lfo_gain[1] += (pan_lfo_gain(-pan_lfo) - v.pan_lfo_gain[1]) * smoothing
+	} else {
+		v.pan_lfo_gain = {1, 1}
 	}
 
 	// -- pitch ---------------------------------------------------------------
@@ -1051,30 +1052,15 @@ voice_process :: proc(
 
 		sample := filtered * gain * stack_scale
 
-		// The reference's pan law: full level in both channels at the centre, and
-		// panning attenuates the channel you are moving away from.
-		//
-		// Measured, and it replaces an equal-power law that cost 3 dB on every patch
-		// in the bank. Sweeping parameter 90 through the reference and reading the
-		// mid level gives 6.0 dB from hard left to centre; an equal-power law gives
-		// 3.0 and that is what ours gave. The half-panned point settles which of the
-		// two laws produces the 6 dB, since they disagree there too:
-		//
-		//   pan             -1.0    -0.5     0.0
-		//   this law, mid    0.50    0.75    1.00
-		//   predicted dB    -6.0    -2.5     0.0
-		//   measured        -6.0    -2.5     0.0
-		//
-		// This was the larger half of the level error -- our peak sat 4.35 dB under
-		// the reference's across the bank, and 3 dB of it was here, on every patch at
-		// once, including a bare sine with the filter open and every effect off.
-		//
-		// It does mean the total power rises by 3 dB as a voice moves to the centre,
-		// which is what an equal-power law exists to avoid. That is the reference's
-		// behaviour and the point of this engine is to reproduce it.
-		pan := dsp.clamp32(u.pan + p.pan + mod_pan, -1, 1)
-		left += sample * min(f32(1.0), 1.0 - pan)
-		right += sample * min(f32(1.0), 1.0 + pan)
+		// Full level in both channels at the centre, and the channel being moved
+		// away from falls linearly: measured, and it replaced an equal-power law that
+		// cost 3 dB on every patch in the bank (6.0 dB from hard left to the centre
+		// in the reference, 3.0 in an equal-power law, -2.5 dB at half pan). It does
+		// mean the power rises by 3 dB as a voice moves to the centre, which is the
+		// reference's behaviour. The three controls multiply: see `static_pan_gains`.
+		layer_left, layer_right := static_pan_gains(u.pan)
+		left += sample * layer_left * static_left * v.pan_lfo_gain[0]
+		right += sample * layer_right * static_right * v.pan_lfo_gain[1]
 	}
 
 	if voice_is_finished(v) {

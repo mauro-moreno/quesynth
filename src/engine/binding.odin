@@ -1580,7 +1580,6 @@ bind_lfo :: proc(
 	// has been sound about shape and wrong about what to do with it.
 	l.depth = unit_position(depth_index, p.values[depth_index])
 	l.pitch_depth = lfo_pitch_depth_curve(l.depth)
-	l.pan_depth = lfo_pan_depth_curve(l.depth)
 	l.tempo_sync = resolved_position(tempo_index, p.values[tempo_index]) != 0
 	l.key_sync = resolved_position(key_index, p.values[key_index]) != 0
 }

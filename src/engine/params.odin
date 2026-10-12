@@ -131,48 +131,12 @@ lfo_pitch_depth_curve :: proc(unit: f32) -> f32 {
 // the bottom of the LFO's cycle, which is why this needs no scaling factor and why
 // the one it had was wrong.
 
-// The stereo position, bipolar and symmetric -- unlike the two above -- and
-// reaching a hard-panned image at full depth rather than the 0.927 measured
-// before.
-//
-// The curve is strongly concave, which is the opposite of the pitch destination's,
-// and it is the reason this is a table. Measured as the pan value our own law
-// needs in order to reproduce the reference's channel ratio, which makes it
-// independent of what the reference does internally:
-//
-//   depth   8    16    24    32    48    64    80    96   112   127
-//   pan  .243  .425  .565  .673  .823  .913  .964  .990  .999 1.000
-//
-// The last two are against the rails -- an image cannot be panned harder than hard
-// -- so they are bounds. Everything from 96 up is within a hundredth of full.
-LFO_PAN_DEPTH_STEPS := [10]int{8, 16, 24, 32, 48, 64, 80, 96, 112, 127}
-LFO_PAN_DEPTH_VALUES := [10]f32{0.243, 0.425, 0.565, 0.673, 0.823, 0.913, 0.964, 0.990, 0.999, 1.000}
-
-// The pan depth for a knob position on 0..1, interpolated between the measured
-// points and running to zero at the bottom.
-lfo_pan_depth_curve :: proc(unit: f32) -> f32 {
-	u := dsp.clamp32(unit, 0, 1) * 127.0
-	if u <= 0 {
-		return 0
-	}
-	prev_step := f32(0)
-	prev_value := f32(0)
-	for i in 0 ..< len(LFO_PAN_DEPTH_STEPS) {
-		step := f32(LFO_PAN_DEPTH_STEPS[i])
-		value := LFO_PAN_DEPTH_VALUES[i]
-		if u <= step {
-			span := step - prev_step
-			if span <= 0 {
-				return value
-			}
-			t := (u - prev_step) / span
-			return prev_value + t * (value - prev_value)
-		}
-		prev_step = step
-		prev_value = value
-	}
-	return 1.0
-}
+// The stereo position is bipolar and symmetric, unlike the two above, and its
+// depth is the knob's own position with no curve of its own. What it does to the
+// two channels is the cubic in `pan_lfo_gain`: the table that stood here was the
+// pan value a straight-line law would need to reproduce the reference's channel
+// ratio, which is steeply concave because the law it was fitted to is the wrong
+// shape.
 
 // The note the filter's keyboard tracking is measured from: C3, an octave below
 // middle C. Measured -- see the use site in `voice_process`.
@@ -332,10 +296,10 @@ Lfo_Params :: struct {
 	// measurement rather than an assumption. Driven with a square, the four
 	// destinations disagree completely: the pitch is exponential in the knob, the
 	// cutoff is linear in octaves, the volume is linear in amplitude, and the pan
-	// is steeply concave. `depth` itself stays as the raw linear reading, which is
-	// what the cutoff, volume and FM destinations use directly.
+	// is linear in the knob but cubic in what it does to the channels. `depth` itself
+	// stays as the raw linear reading, which is what the cutoff, volume, FM and pan
+	// destinations use directly.
 	pitch_depth: f32,
-	pan_depth:   f32,
 	key_sync:    bool,
 	tempo_sync:  bool,
 }
