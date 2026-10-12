@@ -148,10 +148,6 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 		v := &e.voices[i]
 		v^ = {}
 		voice_set_wavetables(v, e.wavetables)
-		for j in 0 ..< 2 {
-			dsp.lfo_init(&v.lfo[j], 0x51F0_0001 + u32(i) * 2654435761 + u32(j))
-			v.lfo[j].shape = params.lfo[j].shape
-		}
 	}
 
 	for j in 0 ..< 2 {
@@ -477,9 +473,6 @@ engine_update_lfo_rates :: proc(e: ^Engine) {
 			hz = (bpm / 60.0) / lp.sync_beats
 		}
 		dsp.lfo_set_frequency(&e.global_lfo[j], hz, e.sample_rate)
-		for i in 0 ..< len(e.voices) {
-			dsp.lfo_set_frequency(&e.voices[i].lfo[j], hz, e.sample_rate)
-		}
 	}
 }
 
@@ -509,6 +502,16 @@ engine_mark_key_down :: proc(e: ^Engine, note: int) {
 	if !e.held_keys[note] {
 		e.held_keys[note] = true
 		e.held_notes += 1
+		// The two LFOs are shared by every voice, and a key-synced one restarts only
+		// when the key just pressed is the only one held: a key pressed over another
+		// leaves it running, whatever is sounding.
+		if e.held_notes == 1 {
+			for j in 0 ..< 2 {
+				if e.params.lfo[j].key_sync {
+					dsp.lfo_retrigger(&e.global_lfo[j])
+				}
+			}
+		}
 	}
 	e.key_clock += 1
 	e.key_order[note] = e.key_clock
@@ -638,7 +641,6 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.last_note,
 		.Fresh,
 		false,
-		&e.global_lfo,
 	)
 
 	e.last_note = f32(note)
@@ -675,7 +677,6 @@ engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32) {
 		e.last_note,
 		legato ? .Legato : .Retrigger,
 		true,
-		&e.global_lfo,
 	)
 	e.last_note = f32(note)
 }
@@ -713,7 +714,6 @@ engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.last_note,
 		.Fresh,
 		false,
-		&e.global_lfo,
 	)
 	e.last_note = f32(note)
 }

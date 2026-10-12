@@ -53,7 +53,6 @@ Voice :: struct {
 	amp_env:      dsp.Envelope,
 	filter_env:   dsp.Envelope,
 	mod_env:      dsp.Envelope,
-	lfo:          [2]dsp.Lfo,
 	cutoff_ramp:  Cutoff_Ramp,
 	// The two channel gains an LFO on pan has reached; both are one when it is not
 	// driving pan.
@@ -479,9 +478,6 @@ voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	// after the attack and a key release cannot make it rise again.
 	dsp.envelope_set(&v.mod_env, p.mod_env_attack, p.mod_env_decay, 0, p.mod_env_decay, sample_rate)
 
-	for i in 0 ..< 2 {
-		v.lfo[i].shape = p.lfo[i].shape
-	}
 }
 
 // How a note-on treats the voice it is given.
@@ -515,7 +511,6 @@ voice_note_on :: proc(
 	// Another key was down when this one arrived. Parameter 74 ("portament
 	// auto mode") restricts the glide to exactly that case.
 	overlap: bool,
-	global_lfo: ^[2]dsp.Lfo,
 ) {
 	v.active = true
 	v.gate = true
@@ -576,19 +571,6 @@ voice_note_on :: proc(
 		dsp.envelope_reset(&v.mod_env)
 	} else if start != .Legato {
 		dsp.envelope_gate_on(&v.mod_env, start == .Fresh)
-	}
-
-	for i in 0 ..< 2 {
-		if p.lfo[i].key_sync {
-			dsp.lfo_retrigger(&v.lfo[i])
-		} else {
-			// Not key synced: adopt the free-running phase so every voice
-			// hears the same LFO position regardless of when it started.
-			v.lfo[i].phase = global_lfo[i].phase
-			v.lfo[i].held = global_lfo[i].held
-			v.lfo[i].current = global_lfo[i].current
-		}
-		v.lfo[i].shape = p.lfo[i].shape
 	}
 }
 
@@ -694,7 +676,7 @@ voice_process :: proc(
 		if !lp.enabled || lp.depth <= 0 {
 			continue
 		}
-		value := lp.key_sync ? dsp.lfo_process(&v.lfo[i]) : global_lfo_value[i]
+		value := global_lfo_value[i]
 		amount := value * lp.depth
 
 		// The pitch destinations take the depth knob through its measured curve
