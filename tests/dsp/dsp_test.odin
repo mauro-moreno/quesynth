@@ -1849,9 +1849,15 @@ test_equalizer_is_flat_at_its_centre :: proc(t: ^testing.T) {
 	p := default_patch()
 	p.values[62] = 64
 	testing.expect_value(t, engine.bind_patch(p).eq_gain_db, 0.0)
+	// The equaliser's own tone is not off at its centre: it is a low pass at 22 kHz,
+	// which is flat in the audible band at 48 kHz to about a decibel. The delay's
+	// tone is the one that is bypassed there.
 	p.values[60] = 64
-	testing.expectf(t, abs(engine.bind_patch(p).eq_tone) < 0.01,
-		"the tone knob's centre should be flat, got %v", engine.bind_patch(p).eq_tone)
+	tone := engine.bind_patch(p).eq_tone
+	testing.expect_value(t, tone.mode, dsp.Tone_Mode.Low_Pass)
+	testing.expectf(t, abs(tone.hz - 22000.0) < 1.0, "the tone knob's centre should be 22 kHz, got %v", tone.hz)
+	p.values[98] = 64
+	testing.expect_value(t, engine.bind_patch(p).delay_tone.mode, dsp.Tone_Mode.Off)
 
 	// Both ends carry real decibels, read rather than mapped.
 	p.values[62] = 0

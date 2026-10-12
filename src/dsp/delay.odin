@@ -30,8 +30,8 @@ Delay_Params :: struct {
 	feedback:      f32,
 	// 0..1, the share of the output that is delayed rather than dry.
 	dry_wet:       f32,
-	// -1..1. Negative darkens the repeats, positive thins them; zero is flat.
-	tone:          f32,
+	// Darkens the repeats one way and thins them the other; off at the centre.
+	tone:          Tone_Setting,
 	mode:          Delay_Mode,
 }
 

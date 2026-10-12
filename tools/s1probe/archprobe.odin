@@ -16,6 +16,7 @@ package s1probe
 //   s1probe arch voices                polyphony and unison accounting
 //   s1probe arch eq                    equaliser peak response
 //   s1probe arch filtertype            parameter 14's five responses; --values cutoff,resonance
+//   s1probe arch tone                  the equaliser's tone, each state against stored 65; --values states
 //
 // Common options: --wav <dir> writes every render pair; --values <list>
 // overrides a subcommand's sweep where it has one.
@@ -1748,17 +1749,20 @@ cmd_arch_voices :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 
 // ------------------------------------------------------------------ eq
 
-// The magnitude of the bilinear peaking biquad this engine uses
-// (`sdsp.peaking_coefficients`), at `hz`.
+// The magnitude of the cookbook peaking biquad, at `hz`, written out here and not
+// taken from the engine: the engine's peak is the reference's own design, and a
+// fit to "the nearest cookbook Q" is only a way of putting one number on a width.
 rbj_peak_db :: proc(f0, gain_db, q, hz: f64) -> f64 {
-	k := sdsp.peaking_coefficients(f32(f0), f32(gain_db), f32(q), f32(SAMPLE_RATE))
+	a := math.pow(10.0, gain_db / 40)
+	w0 := 2 * math.PI * f0 / f64(SAMPLE_RATE)
+	alpha := math.sin(w0) / (2 * q)
+	b0, b1, b2 := 1 + alpha * a, -2 * math.cos(w0), 1 - alpha * a
+	a0, a1, a2 := 1 + alpha / a, -2 * math.cos(w0), 1 - alpha / a
 	w := 2.0 * math.PI * hz / f64(SAMPLE_RATE)
-	c1, s1 := math.cos(w), -math.sin(w)
-	c2, s2 := math.cos(2 * w), -math.sin(2 * w)
-	nr := f64(k.b0) + f64(k.b1) * c1 + f64(k.b2) * c2
-	ni := f64(k.b1) * s1 + f64(k.b2) * s2
-	dr := 1.0 + f64(k.a1) * c1 + f64(k.a2) * c2
-	di := f64(k.a1) * s1 + f64(k.a2) * s2
+	nr := b0 + b1 * math.cos(w) + b2 * math.cos(2 * w)
+	ni := -b1 * math.sin(w) - b2 * math.sin(2 * w)
+	dr := a0 + a1 * math.cos(w) + a2 * math.cos(2 * w)
+	di := -a1 * math.sin(w) - a2 * math.sin(2 * w)
 	return 10.0 * math.log10((nr * nr + ni * ni) / (dr * dr + di * di))
 }
 
@@ -1820,7 +1824,7 @@ cmd_arch_eq :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	fmt.println("arch eq: oscillator 2 noise, filter open; transfer = EQ render against the flat render (same noise)")
 	fmt.printfln("  EQ frequency stored %v (%q); level stored 127 (%q) and %v (%q)", freq, sengine.resolved_display(61, freq),
 		sengine.resolved_display(62, 127), cut, sengine.resolved_display(62, cut))
-	fmt.println("  Q fit: the bilinear peaking biquad (this engine's form) with centre and gain fixed at the measured peak")
+	fmt.println("  Q fit: the cookbook peaking biquad with centre and gain fixed at the measured peak")
 	fmt.println()
 	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
 	flat := arch_noise_patch()
@@ -1931,6 +1935,55 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	}
 }
 
+// ------------------------------------------------------------------ tone
+
+// The equaliser's tone control against its own next step up. Stored 65 is a high
+// pass at 10 Hz, which is flat across the audible band, so the render at 65 is the
+// baseline and every other setting's transfer against it is that setting's own
+// section: a low pass up to the centre (22 kHz at 64, so a little under a decibel
+// down at 10 kHz) and a high pass above it.
+cmd_arch_tone :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	N :: 16384
+	bin_hz := f64(SAMPLE_RATE) / f64(N)
+	states := o.values[:]
+	if len(states) == 0 {
+		states = []int{64, 48, 32, 16, 0, 80, 96, 112, 127}
+	}
+	fmt.println("arch tone: noise, equaliser tone at each stored state against stored 65 (a 10 Hz high pass)")
+	fmt.println()
+	freqs := []f64{100, 500, 1000, 2000, 4000, 7000, 10000, 14000, 18000}
+	header := strings.builder_make(context.temp_allocator)
+	for hz in freqs {fmt.sbprintf(&header, " %v", pad_left(fmt.tprintf("%.0f", hz), 6))}
+	fmt.printfln("  %-6v %-4v |%v", "state", "", strings.to_string(header))
+
+	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
+	base := arch_noise_patch()
+	set_param(&base, 60, 65)
+	bref, bours := arch_render(dll, &base, c, ev, 3.1)
+	defer arch_free_pair(bref, bours)
+	bmids := [2][]f32{script_channel(bref, -1), script_channel(bours, -1)}
+	defer for m in bmids {delete(m)}
+
+	for state in states {
+		p := arch_noise_patch()
+		set_param(&p, 60, state)
+		ref, ours := arch_render(dll, &p, c, ev, 3.1)
+		for audio, side in ([2][]f32{ref, ours}) {
+			x := script_channel(audio, -1)
+			h := arch_transfer(bmids[side], x, ms_to_frame(300), ms_to_frame(2900), N)
+			row := strings.builder_make(context.temp_allocator)
+			for hz in freqs {
+				fmt.sbprintf(&row, " %v", sdec1(arch_transfer_db_at(h, bin_hz, hz), 6))
+			}
+			fmt.printfln("  %-6v %-4v |%v", side == 0 ? fmt.tprintf("%v", state) : "", side == 0 ? "ref" : "ours", strings.to_string(row))
+			delete(h)
+			delete(x)
+		}
+		arch_free_pair(ref, ours)
+		free_all(context.temp_allocator)
+	}
+}
+
 // ------------------------------------------------------------------ entry
 
 cmd_arch :: proc(dll: string, args: []string) {
@@ -1984,6 +2037,7 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "voices": cmd_arch_voices(dll, &c, &o)
 	case "eq": cmd_arch_eq(dll, &c, &o)
 	case "filtertype": cmd_arch_filtertype(dll, &c, &o)
+	case "tone": cmd_arch_tone(dll, &c, &o)
 	case: usage()
 	}
 }

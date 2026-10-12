@@ -21,93 +21,74 @@ import "core:math"
 // Extracted rather than written twice. It is the same control in the reference --
 // the manual describes parameter 60 and parameter 98 in the same words -- and two
 // copies of one law is how they drift apart.
-// A first-order section, bilinear rather than the shared one-pole coefficient.
+// The tone control: one first-order section, a low pass one way and a high pass
+// the other.
 //
-// `one_pole_coef` is the linear approximation to 1 - exp(-2*pi*f/fs), which its
-// own comment calls accurate well below Nyquist. The top of this knob is not well
-// below Nyquist: at 7.2 kHz the coefficient comes out 0.94, which is very nearly
-// no filter at all, and taking that away from the input leaves a high pass far
-// steeper than the one asked for -- 22.6 dB too much on a patch with the sub up.
-// Pre-warping the corner with a tangent instead puts the -3 dB point where the
-// measurement says, at any fraction of the sample rate.
+// Both are bilinear sections with the corner entered as `2 pi f` and the sample
+// rate as `2 sr`, *not* pre-warped, so the corner the knob names is where the
+// analogue prototype has its -3 dB point and the digital one sits below it by
+// the usual tangent: 6.7 kHz where the knob says 7.2 at 48 kHz. That is what the
+// reference does and this does the same; a tangent that put the -3 dB point
+// where the knob says would be a better filter and a different one.
+//
+// Neither end is flat on its own. The equaliser's tone at its centre is a low
+// pass at 22 kHz, which at 48 kHz is 1.1 dB down at 10 kHz, and it stays in
+// circuit as long as that corner is under half the sample rate; the high pass is
+// in circuit above 1 Hz. The delay's tone is bypassed at its centre.
+Tone_Mode :: enum u8 {
+	Off,
+	Low_Pass,
+	High_Pass,
+}
+
+Tone_Setting :: struct {
+	mode: Tone_Mode,
+	hz:   f32,
+}
+
 Tone :: struct {
 	x_prev:   f32,
 	y_prev:   f32,
-	a0:       f32,
-	a1:       f32,
-	b1:       f32,
-	coef_for: f32,
-	coef_sr:  f32,
+	b:        f32,
+	a:        f32,
+	for_mode: Tone_Mode,
+	for_hz:   f32,
+	for_rate: f32,
 }
-
-// The tilt is one pole whose corner sweeps, and both halves are measured.
-//
-// It used to be one fixed corner per side with the knob mixing dry against it,
-// which is the wrong shape as well as the wrong size: at the top of the knob a
-// mix can only reach the corner it was given, and ours reached 900 Hz where the
-// reference reaches seven kilohertz. On a patch with the sub oscillator up -- all
-// of its energy an octave down, exactly what this control is there to remove --
-// that read as 12.1 dB too loud.
-//
-// Measured by sweeping a sine across seven octaves at each setting and reading
-// the gain against the knob's own centre. Every setting is a single pole to
-// within 0.05 dB across the whole sweep, so the shape is not in doubt:
-//
-//   tone  96   high pass at   283.6 Hz      tone   0   low pass at   200.3 Hz
-//   tone 112   high pass at  1503.6 Hz      tone  16   low pass at   643.3 Hz
-//   tone 127   high pass at  7198.2 Hz      tone  32   low pass at  2091.4 Hz
-//
-// The corner is exponential in the knob and the two halves do not share a rate:
-// upward it moves 9.482 octaves across the half-knob, downward 6.663. At the
-// centre both are past the audible band -- 10 Hz one way, 22 kHz the other --
-// which is what makes the centre flat.
-TONE_HIGHPASS_BASE_HZ :: f32(10.06)
-TONE_HIGHPASS_OCTAVES :: f32(9.482)
-TONE_LOWPASS_TOP_HZ :: f32(21798.0)
-TONE_LOWPASS_OCTAVES :: f32(6.663)
 
 tone_reset :: proc "contextless" (t: ^Tone) {
-	t.x_prev = 0
-	t.y_prev = 0
-	t.a0 = 1
-	t.a1 = 0
-	t.b1 = 0
-	t.coef_for = 0
-	t.coef_sr = 0
+	t^ = {}
 }
 
-// The corner for one setting of the knob, in hertz.
-tone_corner_hz :: proc "contextless" (amount: f32) -> f32 {
-	a := clamp32(amount, -1, 1)
-	if a >= 0 {
-		return TONE_HIGHPASS_BASE_HZ * math.pow(f32(2.0), TONE_HIGHPASS_OCTAVES * a)
+tone_is_active :: proc "contextless" (s: Tone_Setting, sample_rate: f32) -> bool {
+	switch s.mode {
+	case .Off:
+		return false
+	case .Low_Pass:
+		return s.hz < sample_rate * 0.5
+	case .High_Pass:
+		return s.hz > 1.0
 	}
-	return TONE_LOWPASS_TOP_HZ * math.pow(f32(2.0), TONE_LOWPASS_OCTAVES * a)
+	return false
 }
 
-// `amount` is -1..1: negative cuts the highs, positive cuts the lows, zero is
-// flat and costs one comparison.
-tone_process :: proc "contextless" (t: ^Tone, x, amount, sample_rate: f32) -> f32 {
-	a := clamp32(amount, -1, 1)
-	if a == 0 {
+tone_process :: proc "contextless" (t: ^Tone, x: f32, s: Tone_Setting, sample_rate: f32) -> f32 {
+	if !tone_is_active(s, sample_rate) {
 		return x
 	}
-	if t.coef_for != a || t.coef_sr != sample_rate {
-		hz := clamp32(tone_corner_hz(a), 1.0, sample_rate * 0.49)
-		k := math.tan(0.5 * TAU * hz / sample_rate)
-		t.b1 = (1.0 - k) / (1.0 + k)
-		if a < 0 {
-			t.a0 = k / (1.0 + k)
-			t.a1 = t.a0
-		} else {
-			t.a0 = 1.0 / (1.0 + k)
-			t.a1 = -t.a0
-		}
-		t.coef_for = a
-		t.coef_sr = sample_rate
+	if t.for_mode != s.mode || t.for_hz != s.hz || t.for_rate != sample_rate {
+		two_sr := f64(sample_rate) * 2.0
+		corner := f64(s.hz * 2.0) * math.PI
+		inv := 1.0 / (corner + two_sr)
+		t.b = f32(s.mode == .Low_Pass ? corner * inv : two_sr * inv)
+		t.a = f32((two_sr - corner) * inv)
+		t.for_mode = s.mode
+		t.for_hz = s.hz
+		t.for_rate = sample_rate
 	}
 
-	y := t.a0 * x + t.a1 * t.x_prev + t.b1 * t.y_prev
+	edge := s.mode == .Low_Pass ? x + t.x_prev : x - t.x_prev
+	y := edge * t.b + t.y_prev * t.a
 	t.x_prev = x
 	t.y_prev = flush_denormal(y)
 	return y
@@ -133,11 +114,23 @@ biquad_reset :: proc "contextless" (b: ^Biquad) {
 	b^ = {}
 }
 
-// The RBJ peaking-EQ coefficients.
+// The reference's peaking filter, which is not the cookbook one.
 //
-// Clamped rather than trusted: the centre frequency is held below Nyquist because
-// the tangent in `tan(w0/2)` -- and `sin(w0)` here -- stops being meaningful past
-// it, and Q is held above zero because a zero would divide by it.
+// It is a matched pole-zero design. The analogue prototype has a numerator and a
+// denominator damping, `1/2Q` and `G/2Q` with `G` the gain at the centre as an
+// amplitude ratio, swapped for a cut; each is mapped to the z plane by
+// `z = exp(sT)`, which gives a pole pair at radius `exp(-w0 T zeta)` and angle
+// `w0 T sqrt(1 - zeta^2)`, or a pair on the real axis with a hyperbolic cosine
+// once the damping is past one. The numerator is then scaled so that the gain at
+// `w0` is exactly `G`.
+//
+// Two consequences. The shape is not symmetric between boost and cut the way a
+// cookbook peak is, and `q` here is the reference's own `10^(state/127)`, which
+// runs from 1 to 10, not the 0.3-to-8 this took before: the fitted Q that stood
+// in for it ranged over 0.23 to 2.28 and left 0.3 dB of residual that no Q
+// could remove.
+//
+// The centre is held below Nyquist because the section is not meaningful past it.
 peaking_coefficients :: proc "contextless" (
 	freq_hz, gain_db, q, sample_rate: f32,
 ) -> Biquad_Coefficients {
@@ -149,7 +142,7 @@ peaking_coefficients :: proc "contextless" (
 	if !is_finite(f) {
 		f = 1000.0
 	}
-	f = clamp32(f, 10.0, sr * 0.45)
+	f = clamp32(f, 1.0, sr * 0.49)
 
 	quality := q
 	if !is_finite(quality) || quality < 0.05 {
@@ -161,25 +154,47 @@ peaking_coefficients :: proc "contextless" (
 		gain = 0
 	}
 
-	// A is the square root of the linear gain: the cookbook's peaking form uses
-	// it on both sides so the skirt gain stays unity.
-	a := math.pow(f32(10.0), gain / 40.0)
-	w0 := TAU * f / sr
-	cos_w0 := math.cos(w0)
-	alpha := math.sin(w0) / (2.0 * quality)
-
-	a0 := 1.0 + alpha / a
-	if abs(a0) < 1.0e-12 {
-		return {b0 = 1}
+	step := 1.0 / f64(sr)
+	w0 := f64(f) * 2.0 * math.PI
+	amplitude := math.pow(f64(10.0), f64(gain) * 0.05)
+	half_over_q := 1.0 / (f64(quality) * 2.0)
+	numerator_damping, denominator_damping: f64
+	if amplitude >= 1.0 {
+		denominator_damping = half_over_q
+		numerator_damping = half_over_q * amplitude
+	} else {
+		numerator_damping = half_over_q
+		denominator_damping = half_over_q / amplitude
 	}
-	inv := 1.0 / a0
+
+	pair :: proc "contextless" (damping, w0, step: f64) -> (c1, c2: f64) {
+		radius := math.exp(-(w0 * step * damping))
+		angle: f64
+		if abs(damping) <= 1.0 {
+			angle = math.cos(math.sqrt(1.0 - damping * damping) * step * w0)
+		} else {
+			angle = math.cosh(math.sqrt(damping * damping - 1.0) * step * w0)
+		}
+		return angle * radius * -2.0, radius * radius
+	}
+	n1, n2 := pair(numerator_damping, w0, step)
+	d1, d2 := pair(denominator_damping, w0, step)
+
+	x := w0 * step
+	cx, sx := math.cos(x), math.sin(x)
+	magnitude :: proc "contextless" (c1, c2, cx, sx: f64) -> f64 {
+		real := (c2 + 1.0) * cx + c1
+		imag := (c2 - 1.0) * sx
+		return math.sqrt(real * real + imag * imag)
+	}
+	scale := magnitude(d1, d2, cx, sx) * amplitude / magnitude(n1, n2, cx, sx)
 
 	return Biquad_Coefficients {
-		b0 = (1.0 + alpha * a) * inv,
-		b1 = (-2.0 * cos_w0) * inv,
-		b2 = (1.0 - alpha * a) * inv,
-		a1 = (-2.0 * cos_w0) * inv,
-		a2 = (1.0 - alpha / a) * inv,
+		b0 = f32(scale),
+		b1 = f32(scale * n1),
+		b2 = f32(scale * n2),
+		a1 = f32(d1),
+		a2 = f32(d2),
 	}
 }
 
@@ -212,8 +227,8 @@ Equalizer_Params :: struct {
 	gain_db: f32,
 	// Parameter 63, as a Q.
 	q:       f32,
-	// Parameter 60, -1..1.
-	tone:    f32,
+	// Parameter 60, as the corner and side it names.
+	tone:    Tone_Setting,
 }
 
 Equalizer :: struct {

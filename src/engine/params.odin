@@ -452,7 +452,7 @@ Engine_Params :: struct {
 	eq_gain_db:         f32,
 	eq_q:               f32,
 	// Parameter 60, signed on -1..1.
-	eq_tone:            f32,
+	eq_tone:            dsp.Tone_Setting,
 
 	// -- effect unit ---------------------------------------------------------
 	//
@@ -486,7 +486,7 @@ Engine_Params :: struct {
 	delay_feedback:     f32,
 	delay_dry_wet:      f32,
 	// Parameter 98, signed on -1..1.
-	delay_tone:         f32,
+	delay_tone:         dsp.Tone_Setting,
 	// Parameter 82: normal stereo, cross feedback, or ping-pong.
 	delay_mode:         dsp.Delay_Mode,
 

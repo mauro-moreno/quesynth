@@ -628,6 +628,47 @@ centred_position :: proc(index, stored: int) -> f32 {
 	return f32(state - centre) / f32(len(states) - 1 - centre)
 }
 
+// The equaliser's controls, as the reference computes them from the stored state.
+EQ_FREQUENCY_LOW_HZ :: f32(50)
+EQ_FREQUENCY_SPAN :: f32(320)
+EQ_GAIN_RANGE_DB :: f32(50)
+EQ_Q_SPAN :: f32(10)
+
+eq_frequency_hz :: proc "contextless" (state: int) -> f32 {
+	return EQ_FREQUENCY_LOW_HZ * math.pow(EQ_FREQUENCY_SPAN, f32(state) / 127.0)
+}
+
+eq_gain_db :: proc "contextless" (state: int) -> f32 {
+	return f32(state - 64) / 127.0 * EQ_GAIN_RANGE_DB
+}
+
+eq_q :: proc "contextless" (state: int) -> f32 {
+	return math.pow(EQ_Q_SPAN, f32(state) / 127.0)
+}
+
+// The tone control's corner. Up to the centre it is a low pass at
+// 200 Hz * 110^(s/64), which at the centre is 22 kHz; above it a high pass at
+// 10 Hz * 800^((s - 64)/64), reaching 7.2 kHz at the top.
+eq_tone_setting :: proc "contextless" (state: int) -> dsp.Tone_Setting {
+	if state <= 64 {
+		return {.Low_Pass, 200.0 * math.pow(f32(110), f32(state) / 64.0)}
+	}
+	return {.High_Pass, 10.0 * math.pow(f32(800), f32(state - 64) / 64.0)}
+}
+
+// The delay's tone is the same pair of corners on slightly different travel, and
+// is bypassed at the centre: 200 Hz * 110^(s/63) below it and
+// 10 Hz * 800^((s - 65)/62) above.
+delay_tone_setting :: proc "contextless" (state: int) -> dsp.Tone_Setting {
+	if state == 64 {
+		return {}
+	}
+	if state < 64 {
+		return {.Low_Pass, 200.0 * math.pow(f32(110), f32(state) / 63.0)}
+	}
+	return {.High_Pass, 10.0 * math.pow(f32(800), f32(state - 65) / 62.0)}
+}
+
 // Read a frequency display in hertz, honouring the kilohertz suffix.
 //
 // Parameter 61 switches units partway up its range: "50.0 Hz", "213.9 Hz",
@@ -1218,17 +1259,17 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// A parametric peak plus a tone tilt, which is what the manual describes and
 	// what the parameters confirm. Two of the four carry real units.
 	//
-	// There is no on/off switch for this section and it does not need one: the
-	// level display reads exactly "0.0 db" at stored 64 and the tone is flat at its
-	// own centre, so a patch that leaves both alone passes through untouched.
-	e.eq_freq_hz = display_frequency_hz(resolved_display(61, p.values[61]))
-	e.eq_gain_db = display_number(62, p.values[62], 0)
-	// Parameter 63 is a bare 0..127, described only as "flat turning left, steep
-	// turning right". 0.3 to 8 spans a broad shelf-like lift through to a narrow
-	// notch, which is the useful span for a single band; the curve is chosen.
-	e.eq_q = exp_map(unit_position(63, p.values[63]), 0.3, 8.0)
-	// Parameter 60, centred flat, same reading as the delay's tone.
-	e.eq_tone = centred_position(60, p.values[60])
+	// There is no on/off switch for this section. A level of exactly 0 dB is the
+	// centre of the level knob and the peak is skipped there; the tone is a
+	// first-order section at every setting.
+	//
+	// All four are the reference's own formulas in the stored state, not readings
+	// of the display, which rounds: the frequency is 50 Hz * 320^(s/127), the level
+	// (s - 64)/127 * 50 dB, the Q 10^(s/127), and the tone is `eq_tone_setting`.
+	e.eq_freq_hz = eq_frequency_hz(resolved_position(61, p.values[61]))
+	e.eq_gain_db = eq_gain_db(resolved_position(62, p.values[62]))
+	e.eq_q = eq_q(resolved_position(63, p.values[63]))
+	e.eq_tone = eq_tone_setting(resolved_position(60, p.values[60]))
 
 	// -- effect unit ---------------------------------------------------------
 	//
@@ -1281,9 +1322,9 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	e.delay_feedback = unit_position(36, p.values[36])
 	// Parameter 37 displays a percentage, so it is read, not mapped.
 	e.delay_dry_wet = dsp.clamp32(display_number(37, p.values[37], 0) / 100.0, 0, 1)
-	// Parameter 98 is a bare 0..127 with the centre flat, per the manual's
-	// description of a knob that cuts highs one way and lows the other.
-	e.delay_tone = centred_position(98, p.values[98])
+	// Parameter 98 is a bare 0..127, a knob that cuts highs one way and lows the
+	// other and is bypassed at its centre.
+	e.delay_tone = delay_tone_setting(resolved_position(98, p.values[98]))
 	// Parameter 82's three states are named in the changelog rather than the
 	// manual: v1.07 alpha lists them as "ノーマルステレオ(ST)、クロスフィードバック(X)、
 	// ピンポン(PP)", so in order they are normal stereo, cross feedback and
