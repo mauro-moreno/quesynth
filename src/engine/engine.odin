@@ -552,6 +552,74 @@ engine_find_gated_voice :: proc(e: ^Engine) -> ^Voice {
 	return nil
 }
 
+// The reference's pool is counted in layers, not notes: polyphony is the number
+// of voices, and a note takes one per unison layer. With 3 voices and 2 layers a
+// third note finds one voice free, steals the oldest voice for its second layer,
+// and ends with two layers while the first note keeps none (`s1probe arch
+// voices`: poly 3 x unison 2 reads 0 / 1 / 2 layers for three notes, poly 7 x 4
+// reads 0 / 3 / 4). A voice is taken from the oldest note first and from its
+// lowest layer first, and a note in release is taken before a key still held.
+engine_layers_in_use :: proc(e: ^Engine, except: ^Voice) -> int {
+	used := 0
+	for i in 0 ..< len(e.voices) {
+		v := &e.voices[i]
+		if v.active && v != except {
+			for bit in 0 ..< MAX_UNISON {
+				if v.live_layers & (u32(1) << u32(bit)) != 0 {
+					used += 1
+				}
+			}
+		}
+	}
+	return used
+}
+
+engine_oldest_with_layers :: proc(e: ^Engine, except: ^Voice, gated: bool) -> ^Voice {
+	oldest: ^Voice
+	for i in 0 ..< len(e.voices) {
+		v := &e.voices[i]
+		if v.active && v != except && v.gate == gated && v.live_layers != 0 {
+			if oldest == nil || v.age < oldest.age {
+				oldest = v
+			}
+		}
+	}
+	return oldest
+}
+
+engine_free_layers :: proc(e: ^Engine, wanted: int, except: ^Voice) {
+	keep := min(wanted, len(e.voices))
+	for engine_layers_in_use(e, except) + keep > len(e.voices) {
+		victim := engine_oldest_with_layers(e, except, false)
+		if victim == nil {
+			victim = engine_oldest_with_layers(e, except, true)
+		}
+		if victim == nil {
+			return
+		}
+		for bit in 0 ..< MAX_UNISON {
+			mask := u32(1) << u32(bit)
+			if victim.live_layers & mask != 0 {
+				victim.live_layers &= ~mask
+				break
+			}
+		}
+		if victim.live_layers == 0 {
+			victim.active = false
+		}
+	}
+}
+
+// A note that wanted more layers than there are voices keeps only the last ones:
+// each layer past the pool's size steals the voice of one before it.
+engine_settle_layers :: proc(e: ^Engine, v: ^Voice) {
+	wanted := v.unison_count
+	keep := min(wanted, len(e.voices))
+	all := (u32(1) << u32(wanted)) - 1
+	dropped := (u32(1) << u32(wanted - keep)) - 1
+	v.live_layers = all & ~dropped
+}
+
 // Find a voice for a new note.
 //
 // Order: the voice already holding this note, then any idle voice, then the
@@ -562,11 +630,17 @@ engine_allocate_voice :: proc(e: ^Engine, note: int) -> ^Voice {
 		return nil
 	}
 
+	same: ^Voice
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
 		if v.active && v.note == note {
-			return v
+			same = v
+			break
 		}
+	}
+	engine_free_layers(e, clamp_int(e.params.unison_voices, 1, MAX_UNISON), same)
+	if same != nil {
+		return same
 	}
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
@@ -642,6 +716,7 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		.Fresh,
 		false,
 	)
+	engine_settle_layers(e, v)
 
 	e.last_note = f32(note)
 	engine_mark_key_down(e, note)
@@ -715,6 +790,7 @@ engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
 		.Fresh,
 		false,
 	)
+	engine_settle_layers(e, v)
 	e.last_note = f32(note)
 }
 

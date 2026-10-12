@@ -60,6 +60,10 @@ Voice :: struct {
 
 	unison:       [MAX_UNISON]Unison_Voice,
 	unison_count: int,
+	// Which of the stack's layers are still sounding, one bit each. A note starts
+	// with all of them; a later note that needs voices can take them from it one
+	// at a time, which is how the reference's pool, counted in layers, behaves.
+	live_layers:  u32,
 
 	// Monotonic stamp used to pick the oldest voice when all are busy.
 	age:          u64,
@@ -542,6 +546,7 @@ voice_note_on :: proc(
 	// layout is still refreshed on every note-on so a fresh or resized voice
 	// can never enter the audio path with unison_count == 0.
 	voice_configure_unison(v, p, seed, start != .Legato)
+	v.live_layers = (u32(1) << u32(v.unison_count)) - 1
 	voice_apply_params(v, p, sample_rate)
 
 	switch start {
@@ -866,6 +871,9 @@ voice_process :: proc(
 	// -- audio rate ----------------------------------------------------------
 
 	for i in 0 ..< v.unison_count {
+		if v.live_layers & (u32(1) << u32(i)) == 0 {
+			continue
+		}
 		u := &v.unison[i]
 
 		layer_pitch := unison_layer_pitch(i, p.unison_pitch)
