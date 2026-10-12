@@ -16,6 +16,7 @@ package s1probe
 //   s1probe arch voices                polyphony and unison accounting
 //   s1probe arch eq                    equaliser peak response
 //   s1probe arch filtertype            parameter 14's five responses; --values cutoff,resonance
+//   s1probe arch hits                  a short patch averaged over many hits; --what <patch.sy1> --values <hits>
 //   s1probe arch tone                  the equaliser's tone, each state against stored 65; --values states
 //
 // Common options: --wav <dir> writes every render pair; --values <list>
@@ -1979,6 +1980,84 @@ cmd_arch_tone :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	}
 }
 
+// ------------------------------------------------------------------ hits
+
+// A short sound, read properly. The envelope of a hat or a click is a few
+// milliseconds of band-limited noise, and the two engines' noise is not the same
+// noise, so the level in any one window of one note is a sample of a distribution
+// several decibels wide and the difference between engines is mostly that. This
+// plays the patch `--values <n>` times (60 by default) in one render, a hit every
+// 250 ms, and averages the power in each bin across the hits, which is the
+// quantity the engines are supposed to agree on. `--what <file.sy1>` names the
+// patch.
+// Mean power of x over the frames [onset + from, onset + to) of every onset.
+mean_power_across_hits :: proc(x: []f32, onsets: []int, from, to: int) -> f64 {
+	total := 0.0
+	count := 0
+	for onset in onsets {
+		for k in max(onset + from, 0) ..< min(onset + to, len(x)) {
+			total += f64(x[k]) * f64(x[k])
+			count += 1
+		}
+	}
+	return total / f64(max(count, 1))
+}
+
+cmd_arch_hits :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	if len(o.what) == 0 {
+		fmt.eprintln("arch hits: --what <patch.sy1> names the patch")
+		os.exit(1)
+	}
+	data, read_err := os.read_entire_file(o.what, context.allocator)
+	if read_err != nil {
+		fmt.eprintfln("arch hits: cannot read %v", o.what)
+		os.exit(1)
+	}
+	defer delete(data)
+	patch, parse_err := cpatch.parse_sy1(data)
+	if parse_err != .None {
+		fmt.eprintfln("arch hits: %v is not a patch", o.what)
+		os.exit(1)
+	}
+
+	hits := 60
+	if len(o.values) > 0 {hits = o.values[0]}
+	PERIOD :: 0.25
+	HOLD :: 0.12
+	events: [dynamic]Script_Event
+	defer delete(events)
+	for h in 0 ..< hits {
+		t := 0.1 + f64(h) * PERIOD
+		append(&events, script_on(t, 60))
+		append(&events, script_off(t + HOLD, 60))
+	}
+	seconds := 0.1 + f64(hits) * PERIOD + 0.2
+	ref, ours := arch_render(dll, &patch, c, events[:], seconds)
+	defer arch_free_pair(ref, ours)
+	mids := [2][]f32{script_channel(ref, -1), script_channel(ours, -1)}
+	defer for m in mids {delete(m)}
+
+	onsets: [dynamic]int
+	defer delete(onsets)
+	for i := 0; i < len(events); i += 2 {
+		append(&onsets, events[i].frame)
+	}
+
+	fmt.printfln("arch hits: %v, %v hits of note 60, a hit every %v ms; power averaged across hits", o.what, hits, int(PERIOD * 1000))
+	fmt.println()
+	fmt.println("   window ms      ref dB    ours dB    ours-ref")
+	edges := [?]f64{0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30, 40, 60, 80, 100}
+	for b in 0 ..< len(edges) - 1 {
+		power: [2]f64
+		for side in 0 ..< 2 {
+			power[side] = mean_power_across_hits(mids[side], onsets[:], ms_to_frame(edges[b]), ms_to_frame(edges[b + 1]))
+		}
+		r_db := 10.0 * math.log10(max(power[0], 1.0e-20))
+		o_db := 10.0 * math.log10(max(power[1], 1.0e-20))
+		fmt.printfln("  %4v - %-4v   %8v   %8v   %8v", edges[b], edges[b + 1], sdec1(r_db, 8), sdec1(o_db, 8), sdec1(o_db - r_db, 8))
+	}
+}
+
 // ------------------------------------------------------------------ entry
 
 cmd_arch :: proc(dll: string, args: []string) {
@@ -2033,6 +2112,7 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "eq": cmd_arch_eq(dll, &c, &o)
 	case "filtertype": cmd_arch_filtertype(dll, &c, &o)
 	case "tone": cmd_arch_tone(dll, &c, &o)
+	case "hits": cmd_arch_hits(dll, &c, &o)
 	case: usage()
 	}
 }

@@ -321,3 +321,23 @@ test_rise_times_places_an_amplitude_jump :: proc(t: ^testing.T) {
 			"rises at %v, want 10000 and 30000 within a hop", rises[:])
 	}
 }
+
+// The average across hits, from a signal whose answer is known: every hit is a
+// constant 0.5 for its first 100 frames and 0.1 after, with a different silent gap
+// between hits, so only reading each window at its own onset gives the right power.
+@(test)
+test_mean_power_across_hits_reads_each_window_at_its_own_onset :: proc(t: ^testing.T) {
+	x := make([]f32, 6000)
+	defer delete(x)
+	onsets := []int{300, 1700, 3100, 4000}
+	for onset in onsets {
+		for k in 0 ..< 400 {
+			x[onset + k] = k < 100 ? 0.5 : 0.1
+		}
+	}
+	early := mean_power_across_hits(x, onsets, 0, 100)
+	late := mean_power_across_hits(x, onsets, 100, 400)
+	testing.expectf(t, abs(early - 0.25) < 1e-6, "the first window read %v, want 0.25", early)
+	testing.expectf(t, abs(late - 0.01) < 1e-6, "the second window read %v, want 0.01", late)
+	testing.expect_value(t, mean_power_across_hits(x, onsets, 5000, 5100), 0.0)
+}
