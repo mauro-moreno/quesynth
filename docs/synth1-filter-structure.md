@@ -49,30 +49,87 @@ Within 0.3 to 0.8 dB of the reference across the resonance knob.
 
 Done: `src/dsp/diodeladder.odin`.
 
+## 24 dB low pass (type 1)
+
+A four-stage cascade of one-poles with the held output fed back:
+`newest = x - r*y4; y1 = (newest + previous newest)*p - y1*k`, and likewise down
+the stages, with `f = 2 fc / sr`, `k = 3.6 f - 1.6 f^2 - 1`, `p = (k + 1)/2` and
+`r = resonance * exp((1 - 0.5 (4.3 f - 2.5 f^2)) * 1.386249)`. The three
+coefficients are smoothed per sample, 98% of a step in a millisecond, and the
+output is held to +/-20 above a resonance of 0.9. Identical to the reference to
+0.1 dB at every octave at resonance 0, 64 and 107. No resonance, corner or level
+table is involved.
+
+Done: `src/dsp/moogladder.odin`.
+
 ## Resonance saturator
 
 `x(1 + d)/(1 + d|x|)`, after the filter, for every type. This was already what
 `filter_saturate` does.
 
+## Equaliser
+
+- **Peak**: a matched pole-zero design. Damping `1/2Q` (denominator) and `G/2Q`
+  (numerator), swapped for a cut, each mapped through `z = exp(sT)`; the numerator
+  scaled so the gain at the centre is exactly `G`. The controls are the stored-state
+  formulas: frequency `50 Hz * 320^(s/127)`, level `(s - 64)/127 * 50` dB, `Q =
+  10^(s/127)` (1 to 10).
+- **Tone**: a first-order low pass up to the centre at `200 Hz * 110^(s/64)` and a
+  high pass above at `10 Hz * 800^((s - 64)/64)`, bilinear with the corner entered
+  as `2 pi f` and not pre-warped. The equaliser's tone is a 22 kHz low pass at its
+  centre (1.1 dB down at 10 kHz at 48 kHz), not a bypass. The delay's tone is the
+  same pair on `/63` and `(s - 65)/62` travel and is bypassed at 64.
+
+`s1probe arch tone`: all nine states at all nine frequencies identical to the
+reference. `s1probe arch eq`: peak level, frequency and width identical at every Q.
+
+Done: `src/dsp/equalizer.odin`, `src/engine/binding.odin`.
+
+## Output
+
+The reference has no output limiter. The engine's soft clip stays as a bound for
+hosts but its knee is now 256 (+48.2 dBFS), above everything the reference has been
+measured producing (+41.2 dBFS), so `arch clip` agrees with it on every case.
+
+## Stereo position
+
+Three sources, each with its own pair of gains, **multiplied**: the unison stack's,
+the static knob's, and an LFO's. The first two are `min(1, 1 -/+ p)`; the LFO's is a
+cubic of `x = value * depth` (near channel `1.5 + 0.5 (x - 1)^3`, far channel
+`(1 + x)^3`) with a 2 ms half-life smoothing. `arch pan`: every static, LFO and
+composed cell within 0.003 of the reference.
+
+Done: `src/engine/pan.odin`.
+
+## LFO ownership
+
+Two LFOs, held by the engine and shared by every voice. A key-synced one restarts
+when the key just pressed is the only key held, not when a voice starts.
+
+Done: `src/engine/engine.odin`.
+
 ## Results
 
-Factory bank, 128 patches, spectral error mean (dB), by the bank's own per-row
-means: 4.28 -> 3.61 (cutoff axis) -> 3.53 (two-pole section); 91 patches
-closer and 23 further over the two. 26 factory patches switched to type 4:
-7.36 -> 5.05 dB. The patches that got further are small moves on patches that
-carry large unrelated error; patch 113's envelope contour (1.31 -> 3.08 dB) is
-not explained.
+Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row
+means: 4.28 at the start of the series, 3.61 after the cutoff axis, 3.53 after the
+two-pole section, 3.31 after the 24 dB ladder, 3.27 after the equaliser; the
+level, null and envelope means move by smaller amounts either way. 26 factory
+patches switched to type 4: 7.36 -> 5.05 dB. The patches that got further are small
+moves on patches that carry large unrelated error; patch 113's envelope contour
+(1.31 -> 3.58 dB across the series) is not explained.
 
 ## Not yet done
 
-- **24 dB ladder** (type 1): the reference's is a four-stage ladder with the
-  stage coefficient `3.6 f - 1.6 f^2 - 1` and the same +/-20 clamp. The engine's
-  ladder agrees with it to 0.2 dB at resonance 0 but still runs on measured
-  surfaces indexed by state.
-- **Output**: the reference has no output limiter and renders in blocks of at
-  most 256 frames, 32 in some modes; this engine soft-clips above +30 dBFS by
-  design.
-- **Equaliser peak**: not the plain bilinear peaking form, which is why a fitted
-  Q left 0.31 dB of residual; the exact law is not extracted.
-- **Pan composition, LFO ownership, the 64-sample LFO grid, voice allocation**:
-  not traced.
+- **Voice allocation**: whether layers or notes count against polyphony, and the
+  order voices are taken in. Note-on only records key state; the allocator is a
+  layer below it and has not been read.
+- **LFO rate**: the free-running LFO period in the reference is about 1.5% off the
+  rate table (`arch lfophase`, free-running B - A against the prediction), and the
+  LFO's period is a whole number of samples. The table has not been re-derived.
+- **Block structure**: the reference renders in blocks of at most 256 frames, 32 in
+  some modes, with modulation held per block and a 64-sample candidate grid for the
+  LFO. This engine updates modulation per sample.
+- **Dead code**: the measured surfaces, tables and parameters that fed the old
+  filters (`filter_cutoff_at_state`, the 24 dB surfaces, the ladder pole, feedback
+  and gain, the damping and output-gain tables) are no longer reached by any voice.
+  They remain because probes and binding tests still read them.
