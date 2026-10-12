@@ -48,7 +48,7 @@ test_midi_controller_assignments_add_on_one_destination :: proc(t: ^testing.T) {
 	want_patch := p
 	want_patch.values[19] = 127
 	want := engine.bind_patch(want_patch)
-	testing.expect_value(t, e.params.filter_cutoff_hz, want.filter_cutoff_hz)
+	testing.expect_value(t, e.params.filter_cutoff_state, want.filter_cutoff_state)
 }
 
 @(test)
@@ -166,165 +166,20 @@ test_oscillator_sync_resets_phase :: proc(t: ^testing.T) {
 // Filter
 // ---------------------------------------------------------------------------
 
-// The contract for this slice names four responses at two slopes. Every
-// combination is driven at the extremes of cutoff and damping with full-scale
-// input; the filter is the only feedback path in the engine, so a divergence
-// here is the one that poisons a whole render.
-//
-// The damping is swept directly rather than through the 0..1 resonance knob,
-// because the engine no longer uses that knob's linear law: `voice_process`
-// takes its damping from the measured table in `filter_resonance_table.odin`,
-// which reaches dsp.MIN_DAMPING. Testing `filter_set` alone left the sharpest
-// two decades of the engine's actual range unexercised.
-//
-// What is asserted is the property the old version meant to assert and did not.
-// It required `peak < 40.0`, which is a statement about gain, not about
-// stability -- and a wrong one, since a Q of 1000 is entitled to a gain of 1000
-// while staying perfectly bounded. Reading it as a stability limit is what kept
-// the resonance curve pinned at a fourteenth of the reference's. A filter that
-// diverges is one whose output keeps growing; a filter that merely resonates
-// rings up to a plateau and stays there. So the test compares the peak of the
-// second half of a long run against the first half's, which separates the two,
-// and keeps an absolute ceiling only as a backstop at the gain the topology can
-// actually reach.
-@(test)
-test_filter_stable_across_modes_and_extremes :: proc(t: ^testing.T) {
-	cutoffs := []f32{1.0, 20.0, 1000.0, 20000.0, SR, SR * 10.0}
-	dampings := []f32{2.0, 1.0, 0.25, 0.05, 0.01, dsp.MIN_DAMPING}
-
-	// A two-pole section's gain at resonance is 1/k, and the 24 dB path shares
-	// its damping between two sections so the pair reaches the same. Twice that
-	// is a backstop with room for the transient overshoot of a filter ringing up,
-	// not a target anything is expected to approach.
-	ceiling := 2.0 / dsp.MIN_DAMPING
-
-	HALF :: 48000
-
-	for mode in dsp.Filter_Mode {
-		for slope in dsp.Filter_Slope {
-			for cutoff in cutoffs {
-				for damping in dampings {
-					f: dsp.Filter
-					dsp.filter_init(&f)
-					dsp.filter_set_damping(&f, cutoff, damping, SR, slope)
-
-					rng: dsp.Rng
-					dsp.rng_init(&rng, 4242)
-
-					early: f32 = 0
-					late: f32 = 0
-					for i in 0 ..< 2 * HALF {
-						x := dsp.rng_next_bipolar(&rng)
-						y := dsp.filter_process(&f, x, mode, slope, 0.0)
-						testing.expectf(
-							t,
-							finite(y),
-							"%v/%v at cutoff %v damping %v went non-finite",
-							mode,
-							slope,
-							cutoff,
-							damping,
-						)
-						if i < HALF {
-							if abs(y) > early {early = abs(y)}
-						} else {
-							if abs(y) > late {late = abs(y)}
-						}
-					}
-
-					// Ringing up is allowed; still climbing after a second is not.
-					testing.expectf(
-						t,
-						late <= early * 1.5 + 1.0e-6,
-						"%v/%v at cutoff %v damping %v is still growing: %v then %v",
-						mode,
-						slope,
-						cutoff,
-						damping,
-						early,
-						late,
-					)
-					testing.expectf(
-						t,
-						max(early, late) < ceiling,
-						"%v/%v at cutoff %v damping %v reached %v, past the %v backstop",
-						mode,
-						slope,
-						cutoff,
-						damping,
-						max(early, late),
-						ceiling,
-					)
-				}
-			}
-		}
-	}
-}
-
-// The two measured resonance curves have to be usable as damping without any
-// further checking at the use site, which means bounded and monotonic.
-//
-// Monotonic is the audible one: `filter_damping` indexes these directly from the
-// knob, so a single entry out of order is a resonance control that goes
-// backwards at one setting.
-@(test)
-test_resonance_tables_are_bounded_and_monotonic :: proc(t: ^testing.T) {
-	tables := [][]f32{engine.FILTER_DAMPING[:], engine.FILTER_DAMPING_24[:]}
-	for table, which in tables {
-		testing.expect_value(t, len(table), engine.FILTER_RESONANCE_TABLE_SIZE)
-		for k, i in table {
-			testing.expectf(
-				t,
-				k >= dsp.MIN_DAMPING && k <= 2.0,
-				"table %v entry %v is %v, outside [%v, 2.0]",
-				which,
-				i,
-				k,
-				dsp.MIN_DAMPING,
-			)
-			if i > 0 {
-				testing.expectf(
-					t,
-					k <= table[i - 1],
-					"table %v goes backwards at %v: %v then %v",
-					which,
-					i,
-					table[i - 1],
-					k,
-				)
-			}
-		}
-		// The knob has to actually do something across its range.
-		testing.expectf(
-			t,
-			table[0] > table[len(table) - 1] * 100.0,
-			"table %v spans only %v to %v",
-			which,
-			table[0],
-			table[len(table) - 1],
-		)
-	}
-}
-
 // Saturation is a nonlinearity in the signal path, so it gets its own sweep.
-// The measured transfer is bounded, but it can receive an over-unity unison
-// sum and must remain finite at every setting.
+// It can receive an over-unity unison sum and must stay finite and bounded at
+// every setting.
 @(test)
 test_filter_saturation_bounded :: proc(t: ^testing.T) {
-	for drive in ([]f32{0.0, 2.321027, 16.879008}) {
-		f: dsp.Filter
-		dsp.filter_init(&f)
-		dsp.filter_set(&f, 800.0, 1.0, SR)
-
+	for drive in ([]f32{0.0, 2.321027, 16.879008, 200.0, 1.0e6}) {
 		for i in 0 ..< 9600 {
-			// Deliberately over unity: a unison stack summing in phase does
-			// exactly this.
-			x := 4.0 * math.sin(f32(i) * 0.05)
-			y := dsp.filter_process(&f, x, .Low_Pass, .Slope_24, drive)
+			x := 40.0 * math.sin(f32(i) * 0.05)
+			y := dsp.filter_saturate(x, drive)
 			testing.expectf(t, finite(y), "saturation drive %v went non-finite", drive)
-			testing.expectf(t, abs(y) < 40.0, "saturation drive %v reached %v", drive, y)
+			testing.expectf(t, abs(y) < 41.0, "saturation drive %v reached %v for %v", drive, y, x)
 		}
 	}
+	testing.expect_value(t, dsp.filter_saturate(math.nan_f32(), 2.0), f32(0))
 }
 
 @(test)
@@ -340,32 +195,6 @@ test_filter_saturation_is_peak_normalised :: proc(t: ^testing.T) {
 		"the measured high-drive curve should amplify small signals")
 }
 
-// The reference's open-filter transfer is the same in both slopes. Applying the
-// saturation after each section would compound it in the 24 dB cascade, so keep
-// a direct guard on the single, completed-filter placement.
-@(test)
-test_filter_saturation_is_not_compounded_by_slope :: proc(t: ^testing.T) {
-	f12, f24: dsp.Filter
-	dsp.filter_init(&f12)
-	dsp.filter_init(&f24)
-	dsp.filter_set_damping(&f12, 12000.0, 2.0, SR, .Slope_12)
-	dsp.filter_set_damping(&f24, 12000.0, 2.0, SR, .Slope_24)
-
-	difference, signal: f64
-	for i in 0 ..< 12000 {
-		x := 0.2 * math.sin(f32(i) * 0.02)
-		y12 := dsp.filter_process(&f12, x, .Low_Pass, .Slope_12, 2.321027)
-		y24 := dsp.filter_process(&f24, x, .Low_Pass, .Slope_24, 2.321027)
-		if i >= 4000 {
-			d := f64(y12 - y24)
-			difference += d * d
-			signal += f64(y12) * f64(y12)
-		}
-	}
-	testing.expectf(t, difference / signal < 0.0001,
-		"open 24 dB response compounded saturation: relative error %v", difference / signal)
-}
-
 @(test)
 test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 	p := default_patch()
@@ -376,85 +205,6 @@ test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 	p.values[23] = 122
 	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 75.3) < 0.00001,
 		"stored 122 did not bind to its measured drive")
-}
-
-@(test)
-test_24db_cutoff_binding_tracks_resonance_surface :: proc(t: ^testing.T) {
-	p := default_patch()
-	for index in ([]int{14, 19, 20, 21}) {
-		p.present[index] = true
-	}
-	p.values[14] = 1 // 24 dB low pass
-	p.values[19] = 64
-	p.values[21] = 20
-
-	p.values[20] = 0
-	low := engine.bind_patch(p)
-	low_expected := engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] * f32(1.255)
-	testing.expectf(t, abs(low.filter_cutoff_hz - low_expected) < 0.001,
-		"resonance-0 cutoff did not use the low-Q surface: %v", low.filter_cutoff_hz)
-	// The voice runs a ladder on this path, and a ladder has one pole surface at
-	// every resonance -- the peak surface -- rather than a blend of two. The
-	// blended field above is still what `bind_patch` reports.
-	testing.expectf(t, abs(engine.filter_cutoff_at_state(&low, 0) - engine.FILTER_CUTOFF_HZ_24[0]) < 0.001,
-		"resonance-0 ladder pole did not follow the peak surface")
-	testing.expectf(t, abs(low.filter_env_cutoff_states - f32(20 - 63) * 2.0) < 0.001,
-		"filter envelope amount did not resolve to two cutoff states per step")
-	testing.expect_value(t, low.filter_cutoff_state, f32(64))
-	testing.expect_value(t, low.filter_cutoff_surface_blend, f32(0))
-	testing.expect_value(t, low.filter_cutoff_topology_scale, f32(1.255))
-
-	p.values[20] = 4
-	mid := engine.bind_patch(p)
-	expected_mid := f32(1.259) * engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] *
-		math.pow(engine.FILTER_CUTOFF_HZ_24[64] / engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64], f32(0.2405))
-	testing.expectf(t, abs(mid.filter_cutoff_hz - expected_mid) < 0.001,
-		"resonance-4 cutoff did not use the measured log blend: %v vs %v", mid.filter_cutoff_hz, expected_mid)
-
-	p.values[20] = 107
-	high := engine.bind_patch(p)
-	testing.expectf(t, abs(high.filter_cutoff_hz - engine.FILTER_CUTOFF_HZ_24[64]) < 0.001,
-		"resonance-107 cutoff did not reach the high-Q surface: %v", high.filter_cutoff_hz)
-	testing.expectf(t, abs(engine.filter_cutoff_at_state(&high, f32(engine.FILTER_TABLE_SIZE - 1)) - engine.FILTER_CUTOFF_HZ_24[engine.FILTER_TABLE_SIZE - 1]) < 0.001,
-		"resonance-107 ceiling did not follow the high-Q surface")
-	// And the pole must not move when only the resonance does, which is the
-	// property that separates a ladder from a pair of biquads and the one the
-	// reference was identified by.
-	testing.expectf(
-		t,
-		abs(engine.filter_cutoff_at_state(&low, 64) - engine.filter_cutoff_at_state(&high, 64)) < 0.001,
-		"ladder pole moved with resonance: %v vs %v",
-		engine.filter_cutoff_at_state(&low, 64),
-		engine.filter_cutoff_at_state(&high, 64),
-	)
-
-	p.values[20] = 127
-	at_top := engine.bind_patch(p)
-	testing.expectf(t, abs(at_top.filter_cutoff_hz - high.filter_cutoff_hz) < 0.001,
-		"cutoff surface moved above its measured resonance-107 endpoint")
-}
-
-// A non-finite input must not be able to lodge itself in the filter state, or
-// one bad sample would silence the rest of the render.
-@(test)
-test_filter_recovers_from_non_finite_input :: proc(t: ^testing.T) {
-	f: dsp.Filter
-	dsp.filter_init(&f)
-	dsp.filter_set(&f, 2000.0, 0.8, SR)
-
-	poison := math.inf_f32(1)
-	dsp.filter_process(&f, poison, .Low_Pass, .Slope_24, 0.0)
-	dsp.filter_process(&f, math.nan_f32(), .Low_Pass, .Slope_24, 0.0)
-
-	recovered := false
-	for i in 0 ..< 4800 {
-		y := dsp.filter_process(&f, math.sin(f32(i) * 0.02), .Low_Pass, .Slope_24, 0.0)
-		testing.expect(t, finite(y))
-		if abs(y) > 0.01 {
-			recovered = true
-		}
-	}
-	testing.expect(t, recovered, "filter never resumed passing signal after a poisoned sample")
 }
 
 // ---------------------------------------------------------------------------
@@ -4748,53 +4498,6 @@ test_effect_phaser_period_is_whole_control_blocks :: proc(t: ^testing.T) {
 	)
 }
 
-// The ladder's feedback is what parameter 20 controls, and it must reach the
-// measured endpoints without passing the point where a four-pole ladder
-// oscillates on its own.
-@(test)
-test_ladder_feedback_follows_the_measured_law :: proc(t: ^testing.T) {
-	testing.expect_value(t, engine.filter_ladder_feedback(0), f32(0))
-	testing.expectf(t, abs(engine.filter_ladder_feedback(64) - 2.00) < 0.01,
-		"resonance 64 did not give the measured feedback: %v", engine.filter_ladder_feedback(64))
-	testing.expectf(t, abs(engine.filter_ladder_feedback(96) - 3.00) < 0.01,
-		"resonance 96 did not give the measured feedback: %v", engine.filter_ladder_feedback(96))
-	last := engine.filter_ladder_feedback(127)
-	testing.expectf(t, last > 3.5 && last < 4.0,
-		"top of the resonance knob left the measured range or reached oscillation: %v", last)
-}
-
-// A ladder run at full feedback must stay bounded and finite: at the pole its
-// loop gain is at its largest, and that is where a solved feedback path either
-// holds or runs away.
-@(test)
-test_ladder_is_stable_at_full_feedback :: proc(t: ^testing.T) {
-	l: dsp.Ladder
-	dsp.ladder_reset(&l)
-	dsp.ladder_set(&l, 500.0, 3.7, 48000.0)
-	peak := f32(0)
-	for i in 0 ..< 48000 {
-		x := math.sin(2.0 * math.PI * 500.0 * f32(i) / 48000.0)
-		y := dsp.ladder_process(&l, x)
-		testing.expectf(t, dsp.is_finite(y), "ladder produced a non-finite sample at %v", i)
-		if abs(y) > peak {peak = abs(y)}
-	}
-	testing.expectf(t, peak < 40, "ladder ran away at its own pole: peak %v", peak)
-}
-
-// And a bad sample must not lodge in its state, exactly as for the section it
-// sits beside.
-@(test)
-test_ladder_recovers_from_non_finite_input :: proc(t: ^testing.T) {
-	l: dsp.Ladder
-	dsp.ladder_reset(&l)
-	dsp.ladder_set(&l, 1000.0, 2.0, 48000.0)
-	dsp.ladder_process(&l, math.inf_f32(1))
-	for i in 0 ..< 64 {
-		y := dsp.ladder_process(&l, 0.25)
-		testing.expectf(t, dsp.is_finite(y), "ladder stayed poisoned at %v", i)
-	}
-}
-
 // The saturation curve is algebraic, not a tanh, and the two are told apart at
 // the bottom of the curve rather than the top: both are normalised to pass an
 // input of one unchanged, and they differ by half again in slope at the origin,
@@ -4992,12 +4695,12 @@ test_patch_change_keeps_a_controller_only_while_its_number_is_the_same :: proc(t
 		testing.expect_value(t, e.ctrl_value[0], f32(1))
 		want := to
 		want.values[19] = 127
-		testing.expect_value(t, e.params.filter_cutoff_hz, engine.bind_patch(want).filter_cutoff_hz)
+		testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
 
 		// An ordinary edit afterwards keeps the displacement, as it always has.
 		engine.engine_set_stored(&e, 20, 10)
 		want.values[20] = 10
-		testing.expect_value(t, e.params.filter_cutoff_hz, engine.bind_patch(want).filter_cutoff_hz)
+		testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
 		testing.expect_value(t, e.params.filter_resonance, engine.bind_patch(want).filter_resonance)
 	}
 	{

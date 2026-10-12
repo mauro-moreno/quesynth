@@ -676,7 +676,7 @@ test_midi_cc_uses_the_current_automated_patch :: proc(t: ^testing.T) {
 	want_patch := s.eng.patch
 	want_patch.values[19] = 127
 	want := engine.bind_patch(want_patch)
-	testing.expect_value(t, s.eng.params.filter_cutoff_hz, want.filter_cutoff_hz)
+	testing.expect_value(t, s.eng.params.filter_cutoff_state, want.filter_cutoff_state)
 
 	// An unrelated edit keeps the wheel's current displacement.
 	resonance := param_event(0, 20, 32)
@@ -685,7 +685,7 @@ test_midi_cc_uses_the_current_automated_patch :: proc(t: ^testing.T) {
 	want_after_resonance_patch := s.eng.patch
 	want_after_resonance_patch.values[19] = 127
 	want_after_resonance := engine.bind_patch(want_after_resonance_patch)
-	testing.expect_value(t, s.eng.params.filter_cutoff_hz, want_after_resonance.filter_cutoff_hz)
+	testing.expect_value(t, s.eng.params.filter_cutoff_state, want_after_resonance.filter_cutoff_state)
 
 	// Reassigning the slot to another source cannot reuse CC1's stale value as
 	// though it had already arrived from CC2.
@@ -694,7 +694,7 @@ test_midi_cc_uses_the_current_automated_patch :: proc(t: ^testing.T) {
 	run_block(plugin, &render, &input, &output)
 	testing.expect_value(t, s.eng.ctrl_value[0], f32(0))
 	base := engine.bind_patch(s.eng.patch)
-	testing.expect_value(t, s.eng.params.filter_cutoff_hz, base.filter_cutoff_hz)
+	testing.expect_value(t, s.eng.params.filter_cutoff_state, base.filter_cutoff_state)
 }
 
 // A Program Change selects a patch by number out of the bank compiled into

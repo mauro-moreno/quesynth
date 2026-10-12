@@ -397,7 +397,7 @@ test_a_patch_load_keeps_a_controller_only_while_its_slot_listens_to_it :: proc(t
 		bound := engine.bind_patch(want)
 		bound.polyphony = len(e.voices)
 		testing.expectf(t, e.params == bound, "%v %x: the engine does not play the loaded patch", c.entry, c.source)
-		testing.expectf(t, e.params.filter_cutoff_hz == bound.filter_cutoff_hz, "%v %x: cutoff %v, the patch says %v", c.entry, c.source, e.params.filter_cutoff_hz, bound.filter_cutoff_hz)
+		testing.expectf(t, e.params.filter_cutoff_state == bound.filter_cutoff_state, "%v %x: cutoff %v, the patch says %v", c.entry, c.source, e.params.filter_cutoff_state, bound.filter_cutoff_state)
 	}
 }
 

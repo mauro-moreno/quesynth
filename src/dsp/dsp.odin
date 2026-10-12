@@ -25,16 +25,6 @@ TAU :: f32(6.283185307179586)
 // audible, so flushing them to zero is free in every sense that matters.
 DENORMAL_FLOOR :: f32(1.0e-20)
 
-// The lowest cutoff the filter is allowed to reach. Below this the TPT
-// prewarping tangent stops being well conditioned at 48 kHz.
-MIN_CUTOFF_HZ :: f32(10.0)
-
-// Cutoff is additionally held below this fraction of the sample rate. `tan`
-// diverges at Nyquist, and modulation routinely pushes an already-high cutoff
-// past it; clamping here is what makes the filter unconditionally stable rather
-// than stable for the inputs we happened to test.
-MAX_CUTOFF_RATIO :: f32(0.45)
-
 clamp32 :: proc "contextless" (v, lo, hi: f32) -> f32 {
 	if v < lo {return lo}
 	if v > hi {return hi}

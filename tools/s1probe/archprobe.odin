@@ -582,15 +582,10 @@ match_state :: proc(profile: []f64, states: []f64, profiles: [][]f64) -> (state,
 	return
 }
 
-// The cutoff table, geometrically interpolated at a fractional state.
+// The cutoff axis's frequency at a fractional state.
 cutoff_hz_at :: proc(state: f64) -> f64 {
 	s := clamp(state, 0, f64(sengine.FILTER_TABLE_SIZE - 1))
-	lo := int(math.floor(s))
-	hi := min(lo + 1, sengine.FILTER_TABLE_SIZE - 1)
-	t := s - f64(lo)
-	a := f64(sengine.FILTER_CUTOFF_HZ[lo])
-	b := f64(sengine.FILTER_CUTOFF_HZ[hi])
-	return a * math.pow(b / a, t)
+	return f64(sengine.filter_index_hz(f32(s) * sengine.FILTER_INDEX_MAX / f32(sengine.FILTER_TABLE_SIZE - 1)))
 }
 
 // ================================================================== commands
@@ -1893,8 +1888,8 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	resonance := 0
 	if len(o.values) > 0 {cutoff = o.values[0]}
 	if len(o.values) > 1 {resonance = o.values[1]}
-	fmt.printfln("arch filtertype: noise, cutoff %v (table %v Hz), resonance %v; transfer against the 12 dB low pass at 127",
-		cutoff, dec1(f64(sengine.FILTER_CUTOFF_HZ[cutoff])), resonance)
+	fmt.printfln("arch filtertype: noise, cutoff %v (%v Hz on the axis), resonance %v; transfer against the 12 dB low pass at 127",
+		cutoff, dec1(f64(sengine.filter_index_hz(sengine.filter_knob_index(f32(cutoff))))), resonance)
 	fmt.println("  dB at octaves around the table corner, then the slope over the two octaves below and above it")
 	fmt.println()
 	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
@@ -1904,7 +1899,7 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	defer arch_free_pair(oref, oours)
 	omids := [2][]f32{script_channel(oref, -1), script_channel(oours, -1)}
 	defer for m in omids {delete(m)}
-	fc := f64(sengine.FILTER_CUTOFF_HZ[cutoff])
+	fc := f64(sengine.filter_index_hz(sengine.filter_knob_index(f32(cutoff))))
 	octaves := []f64{-3, -2, -1, 0, 1, 2, 3, 4}
 	header := strings.builder_make(context.temp_allocator)
 	for oc in octaves {fmt.sbprintf(&header, " %v", pad_left(fmt.tprintf("%+.0f", oc), 6))}

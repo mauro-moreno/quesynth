@@ -162,9 +162,11 @@ value_text :: proc(index, position: int) -> string {
 	case .Seconds_Release:
 		return format_seconds(f64(engine.ENVELOPE_RELEASE_SECONDS[min(pos, 127)]))
 	case .Cutoff_Hz:
-		return format_hz(f64(engine.FILTER_CUTOFF_HZ[min(pos, 127)]))
+		return format_hz(f64(engine.filter_index_hz(engine.filter_knob_index(f32(min(pos, 127))))))
 	case .Resonance_Q:
-		k := f64(engine.FILTER_DAMPING[min(pos, 127)])
+		// The damping is one minus the resonance knob, so Q is its reciprocal, and
+		// the top of the knob has none.
+		k := 1.0 - f64(min(pos, 127)) / 127.0
 		if k <= 0 {
 			return "max"
 		}

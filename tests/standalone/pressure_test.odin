@@ -22,13 +22,13 @@ test_channel_pressure_reaches_an_aftertouch_assignment :: proc(t: ^testing.T) {
 	live: standalone.Live
 	engine.engine_load_patch(&live.eng, p, 48000)
 	defer engine.engine_destroy(&live.eng)
-	before := live.eng.params.filter_cutoff_hz
+	before := live.eng.params.filter_cutoff_state
 
 	standalone.live_handle_midi(&live, standalone.midi_pack(0xD0, 127, 0))
 	testing.expect_value(t, live.eng.ctrl_value[0], f32(1))
-	testing.expect(t, live.eng.params.filter_cutoff_hz > before,
+	testing.expect(t, live.eng.params.filter_cutoff_state > before,
 		"full aftertouch did not open the filter it is assigned to")
 
 	standalone.live_handle_midi(&live, standalone.midi_pack(0xD0, 0, 0))
-	testing.expect_value(t, live.eng.params.filter_cutoff_hz, before)
+	testing.expect_value(t, live.eng.params.filter_cutoff_state, before)
 }

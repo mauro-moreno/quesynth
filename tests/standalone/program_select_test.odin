@@ -228,7 +228,7 @@ test_native_program_forwarding_preserves_performance_messages :: proc(t: ^testin
 	}
 	program_audio(r)
 	testing.expect_value(t, r.live.eng.ctrl_value, [2]f32{1, 64.0 / 127})
-	testing.expect(t, r.live.eng.params.filter_cutoff_hz != before.filter_cutoff_hz)
+	testing.expect(t, r.live.eng.params.filter_cutoff_state != before.filter_cutoff_state)
 	testing.expect_value(t, r.live.eng.held_notes, 1)
 	testing.expect_value(t, r.live.eng.pitch_bend, f32(0.5))
 	_, extra := standalone.midi_queue_pop(&r.live.select_queue)

@@ -15,6 +15,12 @@ import "core:math"
 //
 // Position 0 is 15 Hz and position 1024 is 16 kHz, so one step is
 // ln(16000/15)/1024 of a natural-log unit, about 12 cents.
+// Parameter 19 has 128 states, and parameter 21 moves the envelope's endpoint by
+// two of them per step: 16 steps of the axis, 0.157 octaves.
+FILTER_TABLE_SIZE :: 128
+FILTER_ENV_CENTRE_STATE :: 63
+FILTER_ENV_OCTAVES_PER_STEP :: f32(0.157170)
+
 FILTER_INDEX_STEPS :: f32(1024)
 FILTER_INDEX_MAX :: f32(1023)
 FILTER_INDEX_LOW_HZ :: f32(15)

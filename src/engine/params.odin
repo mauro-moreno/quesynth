@@ -142,28 +142,6 @@ lfo_pitch_depth_curve :: proc(unit: f32) -> f32 {
 // middle C. Measured -- see the use site in `voice_process`.
 FILTER_TRACK_REFERENCE_NOTE :: f32(48.0)
 
-// Where the band pass centres, against the corner `FILTER_CUTOFF_HZ` records.
-//
-// That table was measured on the 12 dB *low pass*, as its own header says, and
-// the reference's band pass does not centre on the same frequency for the same
-// knob setting -- it sits about a minor third below. Ours centred exactly on the
-// table, so every band-pass patch was two and a half semitones sharp.
-//
-// Measured at five cutoff settings spanning five octaves, with the resonance at
-// maximum so the peak is unmistakable, as the reference's peak over ours:
-//
-//   stored      17      32      48      64      80
-//   ratio    0.868   0.868   0.860   0.855   0.844
-//
-// One constant rather than a table, because the drift across the five is 2.8%
-// and in one direction -- real, but a twentieth of what it is correcting, and
-// small enough that a table would be fitting the last decimal of a corner
-// estimate. The drift is recorded rather than modelled. Stored 96 was measured
-// and thrown out: the tracker returned 1242 Hz where the peak is near 2400, which
-// is a lock on the wrong feature and not a filter that moved.
-BAND_PASS_CENTRE_RATIO :: f32(0.859)
-
-
 // Parameter 38. The measured table has three states and the readme's voice
 // display lists poly, mono and legato behaviour, so the three map in order.
 Play_Mode :: enum u8 {
@@ -360,23 +338,12 @@ Engine_Params :: struct {
 	filter_slope:       dsp.Filter_Slope,
 	// Parameter 14's fifth state, which is a filter of its own and not a slope.
 	filter_diode:       bool,
-	filter_cutoff_hz:   f32,
 	// Parameter 19's resolved controller state. The filter envelope moves this
 	// state, rather than multiplying the already-resolved frequency by a fixed
-	// octave amount; the cutoff tables are deliberately not uniform in octaves.
+	// octave amount.
 	filter_cutoff_state: f32,
-	// The two controls needed to sample that same 24 dB surface at fractional
-	// controller states while the filter envelope is moving. They are neutral
-	// (0 and 1) for the 12 dB path.
-	filter_cutoff_surface_blend: f32,
-	filter_cutoff_topology_scale: f32,
-	// Parameter 20 on 0..1, kept because it is the knob's own position and
-	// several things want to know it, and the same knob resolved to the filter's
-	// damping k = 1/Q, which is what the audio path consumes. Resolved once at
-	// patch load rather than per sample: it is a table lookup and the table does
-	// not move while a note is sounding.
+	// Parameter 20 on 0..1: the resonance, which every filter takes as it is.
 	filter_resonance:   f32,
-	filter_damping:     f32,
 	// Parameter 21 as signed cutoff-controller states at full envelope level.
 	// Each amount step moves two cutoff states. The full endpoint is clamped in
 	// state space before the envelope fraction is applied.
@@ -385,8 +352,6 @@ Engine_Params :: struct {
 	filter_key_track:   f32,
 	// Parameter 23 resolved to the measured peak-normalised tanh drive.
 	filter_saturation_drive: f32,
-	filter_ladder_feedback:   f32,
-	filter_ladder_gain:       f32,
 	filter_velocity:    bool,
 	filter_attack:      f32,
 	filter_decay:       f32,
