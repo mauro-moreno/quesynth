@@ -1053,13 +1053,13 @@ cmd_arch_lfophase :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	rate := 0
 	best := 1.0e9
 	for s in 0 ..< 128 {
-		hz := f64(sengine.LFO_RATE_HZ[clamp(sengine.resolved_position(43, s), 0, sengine.LFO_RATE_TABLE_SIZE - 1)])
+		hz := f64(sengine.lfo_rate_hz(sengine.resolved_position(43, s)))
 		if abs(hz - 2.5) < best {
 			best = abs(hz - 2.5)
 			rate = s
 		}
 	}
-	table_hz := f64(sengine.LFO_RATE_HZ[sengine.resolved_position(43, rate)])
+	table_hz := f64(sengine.lfo_rate_hz(sengine.resolved_position(43, rate)))
 	period := f64(SAMPLE_RATE) / table_hz
 	FRAME :: 96
 	fmt.println("arch lfophase: mono, sine note 84, LFO 1 saw on volume at depth 127; the saw's jump marks its cycle")
@@ -1465,7 +1465,7 @@ cmd_arch_rate :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	lfo_rate := 0
 	best := 1.0e9
 	for s in 0 ..< 128 {
-		hz := f64(sengine.LFO_RATE_HZ[clamp(sengine.resolved_position(43, s), 0, sengine.LFO_RATE_TABLE_SIZE - 1)])
+		hz := f64(sengine.lfo_rate_hz(sengine.resolved_position(43, s)))
 		if abs(hz - 8) < best {
 			best = abs(hz - 8)
 			lfo_rate = s

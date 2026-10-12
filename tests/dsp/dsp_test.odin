@@ -535,7 +535,7 @@ test_envelope_idle_is_silent :: proc(t: ^testing.T) {
 @(test)
 test_lfo_bounded_and_moving :: proc(t: ^testing.T) {
 	for shape in dsp.Lfo_Waveform {
-		for rate in ([]f32{0.05, 5.0, 40.0, SR}) {
+		for rate in ([]f32{0.05, 5.0, 40.0, 125.0}) {
 			l: dsp.Lfo
 			dsp.lfo_init(&l, 8181)
 			l.shape = shape

@@ -669,6 +669,17 @@ delay_tone_setting :: proc "contextless" (state: int) -> dsp.Tone_Setting {
 	return {.High_Pass, 10.0 * math.pow(f32(800), f32(state - 65) / 62.0)}
 }
 
+// The LFO's free-running rate, in hertz, from its stored state.
+lfo_rate_hz :: proc(state: int) -> f32 {
+	return math.pow(f32(1500), f32(clamp_int(state, 0, 127)) / 127.0) / 12.0
+}
+
+// Tempo sync's divisions, in 24ths of a beat per cycle.
+LFO_SYNC_TICKS := [30]int {
+	1536, 1152, 864, 768, 576, 432, 384, 288, 216, 192, 144, 96, 84, 72, 48,
+	42, 36, 32, 24, 21, 18, 16, 12, 9, 8, 6, 4, 3, 2, 1,
+}
+
 // Read a frequency display in hertz, honouring the kilohertz suffix.
 //
 // Parameter 61 switches units partway up its range: "50.0 Hz", "213.9 Hz",
@@ -1535,28 +1546,19 @@ bind_lfo :: proc(
 	dest = clamp_int(dest, 0, int(max(Lfo_Destination)))
 	l.destination = Lfo_Destination(dest)
 
-	// Parameter 43/48, measured rather than chosen.
-	//
-	// The curve this replaces spanned 0.05 Hz to 40 Hz. `s1probe lforatetable`
-	// points the LFO at the stereo position and counts how often that crosses its
-	// own mean, growing the render until enough cycles fit, and the real curve
-	// runs 0.078 Hz to **125 Hz** -- so the engine was 1.6 times too slow at the
-	// bottom of the range and 3.1 times too slow at the top. The version history's
-	// "LFO maximum speed up" entry is not an exaggeration; the top of this knob is
-	// an audio-rate oscillator.
-	//
-	// Like the filter cutoff, it moves in steps of close to one semitone: 0.083
-	// octaves per step across ten and a half octaves.
-	speed_unit := unit_position(speed_index, p.values[speed_index])
-	l.rate_hz = LFO_RATE_HZ[clamp_int(resolved_position(speed_index, p.values[speed_index]), 0, LFO_RATE_TABLE_SIZE - 1)]
+	// Parameter 43/48. Free running it is `1500^(s/127) / 12` Hz, from 0.083 Hz to
+	// 125 Hz: the top of this knob is an audio-rate oscillator, and the version
+	// history's "LFO maximum speed up" entry is not an exaggeration. The curve moves
+	// in steps of close to one semitone, 0.083 octaves per step across ten and a
+	// half octaves. The table this replaces was read off crossing counts, so it was
+	// a staircase of that formula and sat up to 1.7% low between its steps.
+	speed_state := resolved_position(speed_index, p.values[speed_index])
+	l.rate_hz = lfo_rate_hz(speed_state)
 
-	// Tempo sync reuses the same knob to pick a musical division. No state
-	// display gives the division table -- parameter 43's displays are a bare
-	// 0..127 -- so this ladder is a chosen mapping, spanning four beats per
-	// cycle down to a sixteenth.
-	sync_divisions := [8]f32{4.0, 3.0, 2.0, 1.5, 1.0, 0.75, 0.5, 0.25}
-	division := clamp_int(int(speed_unit * f32(len(sync_divisions))), 0, len(sync_divisions) - 1)
-	l.sync_beats = sync_divisions[division]
+	// Tempo sync reuses the same knob to pick a division from a table of thirty:
+	// the state indexes it as `(s * 30) >> 7`, and an entry is the cycle's length in
+	// 24ths of a beat, so the slowest is 64 beats and the fastest a twenty-fourth.
+	l.sync_beats = f32(LFO_SYNC_TICKS[clamp_int((speed_state * 30) >> 7, 0, len(LFO_SYNC_TICKS) - 1)]) / 24.0
 
 	// The depth knob, twice: its linear travel, and its measured curve.
 	//

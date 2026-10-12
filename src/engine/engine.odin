@@ -889,9 +889,10 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	for i in 0 ..< n {
 		// The free-running LFOs advance once per sample for the whole engine,
 		// so every non-key-synced voice reads the same value.
-		lfo_value: [2]f32
+		lfo_value, lfo_ramped: [2]f32
 		for j in 0 ..< 2 {
 			lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
+			lfo_ramped[j] = e.global_lfo[j].ramped
 		}
 
 		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
@@ -912,7 +913,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			if !v.active {
 				continue
 			}
-			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend, lfo_value)
+			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend, lfo_value, lfo_ramped)
 			sum_l += l
 			sum_r += r
 		}

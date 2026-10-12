@@ -600,6 +600,7 @@ voice_process :: proc(
 	sample_rate: f32,
 	pitch_bend: f32,
 	global_lfo_value: [2]f32,
+	global_lfo_ramped: [2]f32,
 ) -> (
 	left: f32,
 	right: f32,
@@ -706,7 +707,9 @@ voice_process :: proc(
 			// the cycle, so full depth reaches silence there. Measured; the
 			// decibel constant this replaces was an artefact of the instrument that
 			// produced it.
-			mod_amplitude *= 1.0 - lp.depth * 0.5 * (1.0 - value)
+			// The amplifier hears the ramped output, not the held one: see
+			// `dsp.Lfo.ramped`.
+			mod_amplitude *= 1.0 - lp.depth * 0.5 * (1.0 - global_lfo_ramped[i])
 		case .Inert:
 			// State 5 does nothing in the reference, and neither does this.
 		case .Fm:

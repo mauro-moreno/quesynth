@@ -190,7 +190,7 @@ value_text :: proc(index, position: int) -> string {
 	case .Linear_Percent:
 		return fmt.tprintf("%.0f", 100.0 * unit_pos)
 	case .Lfo_Rate_Hz:
-		return format_hz(f64(engine.LFO_RATE_HZ[min(pos, 127)]))
+		return format_hz(f64(engine.lfo_rate_hz(pos)))
 	case .Pulse_Width_Percent:
 		return fmt.tprintf("%.1f", 100.0 * unit_pos * 0.5)
 	case .Track_Octaves:
