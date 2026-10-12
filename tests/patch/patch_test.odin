@@ -665,13 +665,15 @@ json_number_forms :: proc(t: ^testing.T) {
 // groups are the tests' answer:
 //
 //   osc2 shape (1)         {-1, 0, 1}  {2}  {3}  {4, 5, 9}
+//   arpeggiator type (31)  {-1, 0, 1}  {2}  {3}  {4, 5, 9}
 //   lfo1 destination (41)  {-1, 0, 1}  {2}  {6}  {7, 8, 12}   (and 46, the same)
 //   chorus type (64)       {-1, 0, 1}  {2, 3}  {4, 5, 9}
 //   unison voices (93)     {-1, 0, 1, 2}  {3}  {8, 9, 12}
 //   polyphony (94)         {-1, 0, 1}  {2}  {3}  {4}
 //
-// A value below the first display is the first state, a value above the last is
-// the last, and a value that falls in a gap takes the state just below it. The
+// The integer is clamped into the displays' range and looked up: below it is the
+// state with the smallest display, above it the state with the largest, and a value in
+// a gap takes the state with the largest display under it. The
 // reference's own read-back (`getParameter`) reports stored 0 as the *top* state
 // for all of these, which is what `parameter_norm` models; the sound does not
 // follow it.
@@ -718,19 +720,22 @@ test_unison_voices_and_polyphony_clamp_into_their_ranges :: proc(t: ^testing.T) 
 	})
 }
 
-// The LFO type's displays (0, 1, 5, 2, 3, 4) are not ascending, so none of the
-// above applies to it. Its out-of-range behaviour is unchanged and was not
-// measured: a value past the last display still resolves to the last state.
+// The LFO types' displays run 0, 1, 5, 2, 3, 4, so the clamp is by display value
+// and not by position. `s1probe lfoshape`, stored 0 to 9 on both LFOs: the reference
+// renders {-1, 0} alike, each of 1 to 4 on its own, and stored 5, 6, 7, 9 and 12 as
+// the same sine; display 5 is the third state, not the last.
 @(test)
-test_lfo_type_out_of_range_is_unchanged :: proc(t: ^testing.T) {
+test_lfo_type_clamps_by_display_value :: proc(t: ^testing.T) {
 	for index in ([]int{42, 47}) {
-		positions := [6]int{0, 1, 3, 4, 5, 2}
-		for stored in 0 ..< 6 {
-			got, _ := patch.parameter_position(index, stored)
-			expected := positions[stored]
-			testing.expectf(t, got == expected, "parameter %v stored %v: %v", index, stored, got)
-		}
-		got, _ := patch.parameter_position(index, 9)
-		testing.expect_value(t, got, 5)
+		expect_positions(t, index, {
+			{0, {-1, 0}}, {1, {1}}, {3, {2}}, {4, {3}}, {5, {4}}, {2, {5, 6, 7, 9, 12}},
+		})
 	}
+}
+
+@(test)
+test_arpeggiator_type_clamps_like_oscillator_2_shape :: proc(t: ^testing.T) {
+	expect_positions(t, 31, {
+		{0, {-1, 0, 1}}, {1, {2}}, {2, {3}}, {3, {4, 5, 9}},
+	})
 }

@@ -173,3 +173,22 @@ test("a stored value below a parameter's first display shows its first state", (
     assert.equal(checkedPosition(window, "Oscillator 2 Waveform"), want, `oscillator 2 waveform, stored ${stored}`);
   }
 });
+
+// The LFO types' displays run 0, 1, 5, 2, 3, 4, so a stored value past the range is
+// display 5, which is the third state, and not the last one.
+test("a stored LFO type past its range shows display 5, the third state", () => {
+  const window = bootPanel();
+  const base = window.SynthPatch.values();
+  const slot = window.SYNTH1_PARAMS.findIndex(p => p.i === 42);
+  const labels = Array.from(window.document.querySelectorAll(".radio")).map(g => g.getAttribute("aria-label"));
+  const radio = Array.from(window.document.querySelectorAll(".radio")).find(g => /LFO 1.*(Type|Waveform|Shape)/i.test(g.getAttribute("aria-label") || ""));
+  assert.ok(radio, `an LFO 1 type radio group among ${labels.join(", ")}`);
+  const checked = () => radio.children.filter(el => el.localName === "button")
+    .findIndex(button => button.getAttribute("aria-checked") === "true");
+  for (const [stored, want] of [[-1, 0], [0, 0], [1, 1], [5, 2], [2, 3], [4, 5], [6, 2], [9, 2], [12, 2]]) {
+    const list = base.slice();
+    list[slot] = stored;
+    window.SynthPatch.apply(list, "edge");
+    assert.equal(checked(), want, `LFO 1 type, stored ${stored}`);
+  }
+});

@@ -75,3 +75,21 @@ test_lfo_destination_and_chorus_type_clamp_into_their_displays :: proc(t: ^testi
 	p.values[64] = 1
 	testing.expect_value(t, engine.bind_patch(p).chorus_stages, zero)
 }
+
+// Stored 6 and above on an LFO type sounds as display 5 (a sine), not as the last
+// state (a smoothed random): the reference's renders for 5, 6, 7, 9 and 12 are one.
+@(test)
+test_lfo_type_past_its_range_is_a_sine :: proc(t: ^testing.T) {
+	for stored in ([]int{5, 6, 7, 9, 12}) {
+		p := default_patch()
+		p.values[42] = stored
+		p.values[47] = stored
+		b := engine.bind_patch(p)
+		testing.expectf(t, b.lfo[0].shape == .Sine && b.lfo[1].shape == .Sine, "stored %v: %v / %v", stored, b.lfo[0].shape, b.lfo[1].shape)
+	}
+	for stored in ([]int{-1, 0}) {
+		p := default_patch()
+		p.values[42] = stored
+		testing.expect_value(t, engine.bind_patch(p).lfo[0].shape, dsp.Lfo_Waveform.Saw)
+	}
+}

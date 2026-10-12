@@ -73,25 +73,21 @@
   // is what the engine will do with the same number.
   //
   // For a parameter whose stored integers are its displays (`s`), an integer that
-  // matches none is below the first, above the last, or in a gap, and the reference
-  // sounds those as the first state, the last, and the state just below the gap.
-  // See `display_state_below` in src/patch/value.odin, which has the evidence.
+  // matches none is clamped into the range the displays span and then looked up: the
+  // state with the smallest display below the range, otherwise the state with the
+  // largest display under it. By value and not by position, because the LFO types'
+  // displays run 0, 1, 5, 2, 3, 4 and a stored 6 sounds as display 5, the third state.
+  // See `display_state_clamped` in src/patch/value.odin, which has the evidence.
   function positionOf(param, stored) {
     if (param.s) {
       var exact = param.s.indexOf(stored);
       if (exact >= 0) return exact;
-      var ascending = true;
-      for (var i = 1; i < param.s.length; i++) {
-        if (param.s[i] <= param.s[i - 1]) { ascending = false; break; }
+      var atOrBelow = -1, lowest = 0;
+      for (var i = 0; i < param.s.length; i++) {
+        if (param.s[i] < param.s[lowest]) lowest = i;
+        if (param.s[i] <= stored && (atOrBelow < 0 || param.s[i] > param.s[atOrBelow])) atOrBelow = i;
       }
-      if (ascending) {
-        if (stored < param.s[0]) return 0;
-        for (var j = param.s.length - 1; j >= 0; j--) {
-          if (param.s[j] < stored) return j;
-        }
-        return 0;
-      }
-      return stored < 0 ? 0 : param.s.length - 1;
+      return atOrBelow >= 0 ? atOrBelow : lowest;
     }
     if (stored < 0) return 0;
     if (stored >= param.n) return param.n - 1;

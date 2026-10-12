@@ -1,6 +1,7 @@
 package s1probe
 
 import "core:math"
+import "core:slice"
 import "core:testing"
 
 import sengine "../../src/engine"
@@ -340,4 +341,20 @@ test_mean_power_across_hits_reads_each_window_at_its_own_onset :: proc(t: ^testi
 	testing.expectf(t, abs(early - 0.25) < 1e-6, "the first window read %v, want 0.25", early)
 	testing.expectf(t, abs(late - 0.01) < 1e-6, "the second window read %v, want 0.01", late)
 	testing.expect_value(t, mean_power_across_hits(x, onsets, 5000, 5100), 0.0)
+}
+
+// Stored values are grouped by equal render hash, in order, with the groups ordered by
+// their first member and a hash that comes back later joining its group.
+@(test)
+test_identical_groups_collects_equal_hashes_in_order :: proc(t: ^testing.T) {
+	groups := identical_groups([]u64{7, 7, 9, 5, 7, 5, 11})
+	defer {
+		for g in groups {delete(g)}
+		delete(groups)
+	}
+	want := [][]int{{0, 1, 4}, {2}, {3, 5}, {6}}
+	testing.expect_value(t, len(groups), len(want))
+	for g, i in groups {
+		testing.expectf(t, slice.equal(g[:], want[i]), "group %v is %v, want %v", i, g[:], want[i])
+	}
 }

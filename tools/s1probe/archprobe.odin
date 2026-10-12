@@ -2058,6 +2058,97 @@ cmd_arch_hits :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	}
 }
 
+// ------------------------------------------------------------------ arp
+
+// Which stored arpeggiator types play the same thing, in both engines. A chord is
+// held (60, 64, 67) with the arpeggiator on, each stored value is rendered, and
+// the values whose renders are bit-identical are grouped. The step pitches are
+// not read: they come back as octaves and harmonics of the chord and the detector's
+// scatter is larger than the difference being looked for. `--what <patch.sy1>` is
+// the base (a patch the reference renders under every arpeggiator setting, such
+// as factory 110), `--values` the stored types to try.
+cmd_arch_arp :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	if len(o.what) == 0 {
+		fmt.eprintln("arch arp: --what <patch.sy1> names the base patch")
+		os.exit(1)
+	}
+	data, read_err := os.read_entire_file(o.what, context.allocator)
+	if read_err != nil {
+		fmt.eprintfln("arch arp: cannot read %v", o.what)
+		os.exit(1)
+	}
+	defer delete(data)
+	base, parse_err := cpatch.parse_sy1(data)
+	if parse_err != .None {
+		fmt.eprintfln("arch arp: %v is not a patch", o.what)
+		os.exit(1)
+	}
+	values := o.values[:]
+	if len(values) == 0 {
+		values = []int{-1, 0, 1, 2, 3, 4, 5, 9}
+	}
+
+	fmt.printfln("arch arp: %v, chord 60 64 67 held, arpeggiator on, beat division 9, range 0", o.what)
+	fmt.println("  stored values whose renders are bit-identical")
+	fmt.println()
+	notes := []int{60, 64, 67}
+	hashes: [2][dynamic]u64
+	defer {for h in hashes {delete(h)}}
+	for stored in values {
+		patch := base
+		for pair in ([][2]int{{59, 1}, {31, stored}, {32, 0}, {33, 9}, {34, 64}}) {
+			patch.values[pair[0]] = pair[1]
+			patch.present[pair[0]] = true
+		}
+		events: [dynamic]Script_Event
+		for n in notes {append(&events, script_on(0, n))}
+		ref, ours := arch_render(dll, &patch, c, events[:], 4.0)
+		for audio, side in ([2][]f32{ref, ours}) {
+			hash := u64(14695981039346656037)
+			for sample in audio {
+				hash = (hash ~ u64(transmute(u32)sample)) * 1099511628211
+			}
+			append(&hashes[side], hash)
+		}
+		delete(events)
+		arch_free_pair(ref, ours)
+	}
+	for side in 0 ..< 2 {
+		fmt.printf("  %-4v", side == 0 ? "ref" : "ours")
+		groups := identical_groups(hashes[side][:])
+		for group in groups {
+			fmt.print(" {")
+			for index, k in group {
+				fmt.printf("%v%v", k == 0 ? "" : ",", values[index])
+			}
+			fmt.print("}")
+			delete(group)
+		}
+		delete(groups)
+		fmt.println()
+	}
+}
+
+// The indices of equal hashes, grouped, each group in order and the groups in order
+// of their first member.
+identical_groups :: proc(hashes: []u64) -> [dynamic][dynamic]int {
+	groups: [dynamic][dynamic]int
+	done := make([]bool, len(hashes))
+	defer delete(done)
+	for i in 0 ..< len(hashes) {
+		if done[i] {continue}
+		group: [dynamic]int
+		for j in i ..< len(hashes) {
+			if !done[j] && hashes[j] == hashes[i] {
+				append(&group, j)
+				done[j] = true
+			}
+		}
+		append(&groups, group)
+	}
+	return groups
+}
+
 // ------------------------------------------------------------------ entry
 
 cmd_arch :: proc(dll: string, args: []string) {
@@ -2113,6 +2204,7 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "filtertype": cmd_arch_filtertype(dll, &c, &o)
 	case "tone": cmd_arch_tone(dll, &c, &o)
 	case "hits": cmd_arch_hits(dll, &c, &o)
+	case "arp": cmd_arch_arp(dll, &c, &o)
 	case: usage()
 	}
 }
