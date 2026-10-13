@@ -2180,8 +2180,13 @@ chorus_source_patch :: proc() -> cpatch.Patch {
 	case 2: // two unison sines, different content in each channel and nothing broadband
 		set_param(&p, 0, 0)
 	}
+	for pair in g_chorus_overrides {
+		if pair[0] < 200 {set_param(&p, pair[0], pair[1])}
+	}
 	return p
 }
+
+g_chorus_overrides: [dynamic][2]int
 
 // Which source the chorus probe plays: 0 two detuned saws, 1 one panned saw, 2 two
 // unison sines. Set by `--what`.
@@ -2199,6 +2204,42 @@ null_and_level :: proc(a, b: []f32, from, to: int) -> (null_db, level_db: f64) {
 	}
 	null_db = 10.0 * math.log10(max(residual, 1.0e-30) / max(power_a, 1.0e-30))
 	level_db = 10.0 * math.log10(max(power_b, 1.0e-30) / max(power_a, 1.0e-30))
+	return
+}
+
+// How `b` differs from `a` once the simplest differences are removed: the integer
+// lag (within +-64 samples) and gain that cancel best, and what is left. A lag near
+// zero with a gain near one and a deep null is a match; a deep null only at a lag is
+// a timing offset; a shallow one everywhere is a different shape.
+dry_alignment :: proc(a, b: []f32, from, to: int) -> (lag: f64, gain_db, null_db: f64) {
+	residuals: [129]f64
+	gains: [129]f64
+	for l in -64 ..= 64 {
+		ab, bb, aa := 0.0, 0.0, 0.0
+		for i in max(from, 64) ..< min(to, min(len(a), len(b))) - 64 {
+			x, y := f64(a[i]), f64(b[i + l])
+			ab += x * y
+			bb += y * y
+			aa += x * x
+		}
+		residuals[l + 64] = 1.0e30
+		if bb <= 0 || aa <= 0 {continue}
+		g := ab / bb
+		gains[l + 64] = g
+		residuals[l + 64] = (aa - 2 * g * ab + g * g * bb) / aa
+	}
+	best := 0
+	for i in 1 ..< 129 {
+		if residuals[i] < residuals[best] {best = i}
+	}
+	lag = f64(best - 64)
+	if best > 0 && best < 128 {
+		r0, rm, rp := residuals[best], residuals[best - 1], residuals[best + 1]
+		den := rm - 2 * r0 + rp
+		if den > 0 {lag += 0.5 * (rm - rp) / den}
+	}
+	null_db = 10.0 * math.log10(max(residuals[best], 1.0e-30))
+	gain_db = 20.0 * math.log10(max(abs(gains[best]), 1.0e-30))
 	return
 }
 
@@ -2259,9 +2300,33 @@ cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 		{"type 1, delay 20", 1, 20, 127, 40, 64, 127},
 		{"type 2, delay 60", 2, 60, 80, 40, 64, 127},
 	}
-	events := []Script_Event{script_on(0, 60), script_off(2.5, 60)}
+	// `--what` is a source name, then any `index=value` overrides: `sine,14=4`.
+	parts := strings.split(o.what, ",", context.temp_allocator)
+	g_chorus_source = 0
+	g_chorus_overrides = {}
+	for part, i in parts {
+		if i == 0 {
+			g_chorus_source = part == "pan" ? 1 : (part == "sine" ? 2 : 0)
+			continue
+		}
+		if eq := strings.index_byte(part, '='); eq > 0 {
+			index, _ := strconv.parse_int(part[:eq])
+			value, _ := strconv.parse_int(part[eq + 1:])
+			append(&g_chorus_overrides, [2]int{index, value})
+		}
+	}
+	note := 60
+	for pair in g_chorus_overrides {
+		if pair[0] == 999 {note = pair[1]}
+	}
+	events := []Script_Event{script_on(0, note), script_off(2.5, note)}
+	for pair in g_chorus_overrides {
+		if pair[0] == 998 {
+			// Two notes on the same voice: the second starts at one second.
+			events = []Script_Event{script_on(0, note), script_off(0.5, note), script_on(1.0, note), script_off(1.5, note)}
+		}
+	}
 	from, to := ms_to_frame(500), ms_to_frame(2400)
-	g_chorus_source = o.what == "pan" ? 1 : (o.what == "sine" ? 2 : 0)
 
 	fmt.println("arch chorus: note 60 through a source chosen by --what (default two detuned saws, `pan` one panned saw, `sine` two unison sines); wet = chorus on minus off")
 	fmt.println("  null: how deeply the two engines' wets cancel (dB, lower is closer); level: ours over reference (dB)")
@@ -2281,6 +2346,29 @@ cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 		delete(b)
 	}
 	fmt.printfln("  %-26v | %7v  %7v |", "(dry source, no chorus)", sdec1(floor[0], 7), sdec1(floor[1], 7))
+	{
+		a := script_channel(dref, 0)
+		b := script_channel(dours, 0)
+		lag, gain, null := dry_alignment(a, b, from, to)
+		fmt.printfln("  (dry source, left, best lag %.3f samples, gain %v dB: null %v dB)", lag, sdec1(gain), sdec1(null))
+		if len(o.values) > 0 && o.values[0] == 97 {
+			for i in 0 ..< 3000 {
+				fmt.printfln("S %v %.9f %.9f", i, a[48000 + i], b[48000 + i])
+			}
+		}
+		if len(o.values) > 0 && o.values[0] == 98 {
+			for i in 0 ..< 30000 {
+				fmt.printfln("S %v %.9f %.9f", i, a[i], b[i])
+			}
+		}
+		for w in 0 ..< 4 {
+			wa, wb := ms_to_frame(300 + f64(w) * 500), ms_to_frame(700 + f64(w) * 500)
+			wl, wg, wn := dry_alignment(a, b, wa, wb)
+			fmt.printfln("    window %.1f-%.1f s: lag %.3f samples, gain %v dB, null %v dB", 0.3 + f64(w) * 0.5, 0.7 + f64(w) * 0.5, wl, sdec1(wg), sdec1(wn))
+		}
+		delete(a)
+		delete(b)
+	}
 
 	for cs, index in cases {
 		if len(o.values) > 0 {

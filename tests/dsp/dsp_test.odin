@@ -2652,15 +2652,15 @@ test_oscillator_phase_law_is_the_measured_one :: proc(t: ^testing.T) {
 		"stored 1 should fix the phase")
 }
 
-// The engaged start is a signed position, not only a relationship.
+// The engaged start is a position, not only a relationship: oscillator 1 starts
+// at phase zero and oscillator 2 at the relationship's own offset, and the first
+// sample of a note is the value *at* that phase (see `voice_process`).
 //
-// The same `s1probe phaseabsolute` command reads oscillator 1 at -0.00125
-// turns for every engaged setting at notes 36, 48, 60, 72 and 84. It projects
-// one oscillator at a time against note-on and fits phase against frequency, so
-// output latency is the slope and start phase is the intercept. Cancellation
-// depth could not see this common shift at all. Oscillator 2's separately read
-// signed starts pin the direction of the relationship. The free-running sub's
-// zero is a separate invariant, checked below.
+// An earlier version of this test pinned oscillator 1 at -0.00125 turns, which was
+// a sample of latency read at 60 Hz and recorded as a start phase. A sine through
+// the whole engine against the reference at nine notes from 65 Hz to 2 kHz is one
+// sample late at every pitch with that constant, and cancels to -82 dB at 1 kHz
+// without it. The free-running sub's zero is a separate invariant, checked below.
 @(test)
 test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^testing.T) {
 	read := proc(stored, note: int) -> (osc1, osc2, sub: f32) {
@@ -2700,8 +2700,8 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 
 	for stored in 1 ..= 127 {
 		osc1, _, _ := read(stored, 60)
-		testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
-			"stored %d put oscillator 1 at %.7f turns; the reference reads -0.00125",
+		testing.expectf(t, abs(signed(osc1)) < 1.0e-7,
+			"stored %d put oscillator 1 at %.7f turns; the reference starts it at zero",
 			stored, signed(osc1))
 	}
 
@@ -2710,25 +2710,25 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 	// this wiring check independent from the binding law tested above, while the
 	// start still distinguishes +base_phase from the phase-even alternative.
 	for reading in ([][3]f32{
-		{1, 0.000000, -0.00125},
-		{16, 0.059524, 0.05827},
-		{32, 0.123016, 0.12177},
-		{48, 0.186508, 0.18526},
-		{64, 0.250000, 0.24875},
-		{96, 0.376984, 0.37573},
-		{127, 0.500000, 0.49875},
+		{1, 0.000000, 0.000000},
+		{16, 0.059524, 0.059524},
+		{32, 0.123016, 0.123016},
+		{48, 0.186508, 0.186508},
+		{64, 0.250000, 0.250000},
+		{96, 0.376984, 0.376984},
+		{127, 0.500000, -0.500000},
 	}) {
 		_, osc2 := read_shift(reading[1], 60)
 		testing.expectf(t, abs(signed(osc2) - reading[2]) < 5.0e-6,
-			"stored %.0f put oscillator 2 at %.5f turns; the reference reads %.5f",
+			"stored %.0f put oscillator 2 at %.5f turns; expected %.5f",
 			reading[0], signed(osc2), reading[2])
 	}
 
 	for note in ([]int{36, 48, 72, 84}) {
 		for stored in ([]int{1, 64, 127}) {
 			osc1, _, _ := read(stored, note)
-			testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
-				"note %d stored %d put oscillator 1 at %.7f turns, not -0.00125",
+			testing.expectf(t, abs(signed(osc1)) < 1.0e-7,
+				"note %d stored %d put oscillator 1 at %.7f turns, not zero",
 				note, stored, signed(osc1))
 		}
 	}
@@ -4741,4 +4741,30 @@ test_patch_change_snaps_to_where_a_kept_controller_puts_the_target :: proc(t: ^t
 	want := to
 	want.values[19] = 127
 	testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
+}
+
+// A sine's first sample is exactly zero and the second is the sine one increment
+// along: the oscillator is read, then advanced. Advancing first put every note one
+// sample ahead of the reference, at every pitch.
+@(test)
+test_a_sine_notes_first_sample_is_zero :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[0] = 0 // oscillator 1 sine
+	p.values[5] = 0 // oscillator 1 alone
+	p.values[73] = 0
+	p.values[91] = 1
+	p.values[65] = 0 // delay off
+	p.values[66] = 0 // chorus off
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_note_on(&e, 69, 1.0)
+	left := make([]f32, 64)
+	right := make([]f32, 64)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, left[0], f32(0))
+	testing.expect(t, left[1] != 0, "the second sample did not move")
+	testing.expect(t, abs(left[1]) < abs(left[8]), "the note did not rise from zero")
 }

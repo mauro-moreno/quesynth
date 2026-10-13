@@ -93,7 +93,7 @@ FM_FREQUENCY_DEPTH_EXPONENT :: f32(5.5)
 // cancellation depth cannot see this common signed shift. This origin is
 // deliberately separate from the free-running OSC_PHASE_FREE_TURNS
 // relationship.
-OSC_PHASE_FIXED_START_TURNS :: f32(-0.00125)
+OSC_PHASE_FIXED_START_TURNS :: f32(0)
 
 fm_frequency_depth :: proc(position: f32) -> f32 {
 	u := dsp.clamp32(position, 0, 1)
@@ -951,15 +951,24 @@ voice_process :: proc(
 		// into the phase. The panel position is converted to its measured frequency
 		// depth below; it is not itself a phase offset. One value drives every OSC1
 		// component at that component's own increment.
-		dsp.oscillator_advance(&u.osc2)
-		// Read before oscillator 1 is advanced, and before hard sync can reset
-		// this oscillator below: the modulator's contribution to this sample is
-		// its state at the top of the sample.
+		//
+		// Every oscillator is read first and advanced afterwards: a note's first
+		// sample is its start phase's value, and a sine starts at exactly zero. The
+		// reference's output is one sample behind an oscillator that advances before
+		// it is read, at every pitch; the earlier fixed start phase of -0.00125 turns
+		// was that sample measured at 60 Hz and written down as a constant, which is
+		// right at 60 Hz and wrong everywhere else.
+		//
+		// Oscillator 2 is read before oscillator 1 moves and before hard sync can
+		// reset it below: the modulator's contribution to this sample is its state
+		// at the top of the sample.
 		osc2_value := dsp.oscillator_value(&u.osc2, p.osc2_shape, pulse_width)
+		dsp.oscillator_advance(&u.osc2)
 
 		// Ring takes precedence: the readme and the manual agree that "FM
 		// modulation is only possible when ring modulation is off".
 		osc1_value: f32 = 0
+		sub_value: f32 = 0
 		centre_wrapped := false
 		centre_wrap_frac: f32 = 0
 		for component in first_component ..< component_limit {
@@ -972,13 +981,16 @@ voice_process :: proc(
 				fm_offset = depth * osc1.increment
 				sub_fm_offset = depth * sub_oscillator.increment
 			}
+			osc1_value += dsp.oscillator_value(osc1, p.osc1_shape, pulse_width)
+			if p.sub_gain > 0 {
+				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
+			}
 			dsp.oscillator_advance_modulated(sub_oscillator, sub_fm_offset)
 			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset)
 			if component == OSC1_COMPONENT_CENTRE {
 				centre_wrapped = wrapped
 				centre_wrap_frac = wrap_frac
 			}
-			osc1_value += dsp.oscillator_value(osc1, p.osc1_shape, pulse_width)
 		}
 		osc1_value *= component_gain
 
@@ -1000,11 +1012,6 @@ voice_process :: proc(
 		mixed := osc1_value * (1.0 - p.osc_mix) + osc2_value * p.osc_mix
 
 		if p.sub_gain > 0 {
-			sub_value: f32 = 0
-			for component in first_component ..< component_limit {
-				sub_oscillator := sub_component(u, component)
-				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
-			}
 			sub_value *= component_gain
 			// The version history: "When the amount of the suboscillator is
 			// raised, the entire volume is automatically adjusted not to grow."
