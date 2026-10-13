@@ -1018,135 +1018,54 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 
 	// -- chorus --------------------------------------------------------------
 	e.chorus_on = resolved_position(66, p.values[66]) != 0
-	// Parameter 64's three states display "1", "2" and "4", read here as the
-	// number of stages.
+	// Parameter 64: 1, 2 or 4, how the taps are arranged. See `dsp.Chorus`.
 	e.chorus_stages = clamp_int(resolved_display_id(64, p.values[64]), 1, dsp.CHORUS_MAX_STAGES)
-	// Parameter 52 displays milliseconds, 54 hertz, 55 a signed percentage.
-	e.chorus_delay_ms = max(display_number(52, p.values[52], 1.0), 0.01)
-	e.chorus_rate_hz = max(display_number(54, p.values[54], 0.5), 0.0)
-	e.chorus_feedback = dsp.clamp32(display_number(55, p.values[55], 0) / 100.0, -1, 1)
-	// Parameter 53's depth stays a linear reading, and stays a guess.
-	//
-	// The measurement says the shape is nothing like linear. `chorusprobe --sweep
-	// depth` isolates the chorus in the side signal and reads the pitch wobble a
-	// swept tap produces, which converts back to a delay swing in closed form.
-	// Normalised against full depth:
-	//
-	//   stored      16      32      64      96     127
-	//   measured  0.004   0.012   0.050   0.202   1.000
-	//   linear    0.126   0.252   0.504   0.756   1.000
-	//
-	// Steeply exponential. But the measurement does not settle the *scale*, only
-	// the shape: at full depth the swing is 0.50 of the centre delay at a 30 ms
-	// centre, 0.35 at 18.9 ms and 0.25 at 3.8 ms, so the reference is not simply
-	// scaling by the centre and there is no single fraction to apply.
-	//
-	// Fitting the shape with half the centre as its top made the null test worse on
-	// every count that matters here -- stereo width from -0.065 back out to -0.323,
-	// spectral error up 0.4 dB -- which is what a right shape on a wrong scale does.
-	// The shape, now applied. Two things changed since the note above was written.
-	//
-	// First, the rate used to convert a pitch wobble into a delay swing was the
-	// *displayed* one, and that was never checked. It checks out: measuring how fast
-	// the tracked pitch itself oscillates gives 0.95, 1.04 and 1.01 times the display
-	// at the three rates whose period fits the analysis window. So parameter 54 needs
-	// no curve at all -- it is read in hertz and the hertz are real.
-	//
-	// Second, and this is what unblocks the shape: the swing *is* proportional to the
-	// centre delay after all. The earlier reading of 0.50, 0.35 and 0.25 of the centre
-	// suggested otherwise, but the wobble per millisecond of centre delay is constant
-	// -- 58.8, 60.8, 61.9 and 63.3 cents per ms across centres from 14.6 to 29.8 ms --
-	// and a constant ratio is what a multiplicative law looks like. So the DSP's
-	// existing "fraction of the centre delay" is the right form, and only the curve
-	// from the knob to that fraction was wrong.
-	//
-	//   stored      16      32      64      96     127
-	//   measured  0.004   0.012   0.050   0.202   1.000
-	//   fitted    0.005   0.011   0.051   0.232   1.000
-	//
-	// The exponent is bracketed by the measurement rather than read off it, and the
-	// null test picks inside the bracket. Both ends of the sweep are the least
-	// trustworthy points: at full depth the instrument returns a swing larger than the
-	// centre delay, which is impossible and about 1.35 times too big, and at stored 16
-	// the wobble it is reading is 7 cents, near its own noise floor. Correcting the
-	// top for that over-read refits the exponent at about 5.4; an under-read at the
-	// bottom pushes it the other way. So the form is measured -- exponential in the
-	// knob, multiplicative in the centre delay -- and the exponent is not.
-	//
-	// Four curves were tried across the whole bank, medians:
-	//
-	//                        spectral  envelope   width
-	//   linear                 11.69     9.35    -0.060
-	//   exp(3(u-1))             8.84     9.02    -0.072   best, and wrong at u=0
-	//   anchored k=6           10.22    11.32    -0.230   best fit, too steep
-	//   anchored k=2            9.24     9.32    -0.076   ships
-	//
-	// The floored exp(3(u-1)) form scores 0.4 dB better and is not used, because it
-	// never reaches zero: it leaves 5% of depth at the bottom of the knob, where the
-	// reference is measurably and exactly mono. A curve that is wrong at a point which
-	// was verified directly does not get to ship for 0.4 dB.
-	//
-	// Anchored k=6 is the best fit to the measured shape and clearly too steep on the
-	// bank, which says the shape measurement under-reads the middle of the range --
-	// consistent with the wobble at stored 16 being 7 cents, near the instrument's own
-	// noise floor. So k is the part chosen by the oracle; the *form*, and the zero at
-	// the bottom, are measured.
-	//
-	// The *scale* -- whether full depth swings the tap by the whole centre delay or
-	// some fraction -- is still unmeasured. Two instruments failed at it, both for
-	// reasons now recorded in chorusprobe.odin, so the top of the range stays put.
-	// Anchored at both ends: exactly zero at the bottom of the knob and one at the
-	// top. That is not cosmetic. The reference at stored depth 0 is *exactly mono* --
-	// side/mid measures 0.0000 with the channels correlating at +1.000 -- so its depth
-	// there is zero, and a plain exp(k * (u - 1)) never reaches zero. It left 5% of
-	// depth at the bottom, which for a broadband source is enough to decorrelate the
-	// channels completely: our width at stored 0 was 0.545 against the reference's
-	// 0.000.
-	//
-	// The exponent is measured now, and the two paragraphs above are the record of
-	// what it cost to get there rather than a live justification.
-	//
-	// `s1probe chorusdepth` reads the tap excursion off a *tone* instead of noise.
-	// A swept tap Dopplers the tone, so the demodulated phase is exactly
-	// -2*pi*f0*D(t) and the delay is already in it: the peak-to-peak phase swing
-	// over one sweep is 2*pi*f0*(2*swing), with no derivative and no transform, so
-	// a rate of 0.99 Hz costs nothing to resolve. The wet is isolated by rendering
-	// the same patch with parameter 66 on and off and subtracting, which works
-	// because the source is a sine and both renders are deterministic; the
-	// diagnostic that proved it reads wet/dry = 1.00 on both engines.
-	//
-	// It self-checks at both anchors. A static tap (stored 0) reads 0.000 on both
-	// engines, and full depth reads 15.66 ms against the reference's own 15.12 ms
-	// centre delay -- so full depth really does swing the tap by the whole centre
-	// delay, which the paragraph above records as unmeasured. Measured curve:
-	//
-	//   stored      0     16      32      64      96     112     127
-	//   reference  0.000  0.0071  0.0229  0.0957  0.3286  0.5957  1.0357
-	//   k = 4.65   0.000  0.0077  0.0215  0.0909  0.3149  0.5733  1.0000
-	//   k = 2.0    0.000  0.0449  0.1026  0.2723  0.5533  0.7567  1.0000
-	//
-	// k = 4.65 is the least-squares fit in log space, at 0.060 against k = 2.0's
-	// 1.195 and k = 6.0's 0.678. The shipped k = 2.0 was up to **seven times too
-	// deep** at the quiet end of the knob, and the four-point table that used to
-	// sit here described k = 6 rather than the constant beside it -- the constant
-	// had been retuned against the bank and the table left stale, which is how a
-	// 7x error survived in a file that documents everything.
-	//
-	// Re-measured after the change, ours against the reference's, the ratio is
-	// 0.97 to 1.01 across the whole knob. On the bank: spectral 7.65 -> 7.57 mean
-	// and 7.15 -> 6.90 median, level +0.91 -> +0.67, null depth -3.40 -> -3.59.
-	CHORUS_DEPTH_K :: f32(4.65)
-	{
-		u := unit_position(53, p.values[53])
-		e.chorus_depth = (math.exp(CHORUS_DEPTH_K * u) - 1.0) / (math.exp(CHORUS_DEPTH_K) - 1.0)
-	}
-	// Parameter 56's level, on the other hand, is linear -- and that was already
-	// what this read. Measured against a chorus-off render, the wet grows 0.252,
-	// 0.504, 0.756, 1.000 of full across stored 32, 64, 96, 127: linear to three
-	// decimal places.
+	// The delay, rate, depth, feedback and level are the reference's own laws, and
+	// the displays are those laws rounded for reading.
+	e.chorus_delay_seconds = chorus_delay_seconds(resolved_position(52, p.values[52]))
+	e.chorus_rate_hz = chorus_rate_hz(resolved_position(54, p.values[54]))
+	e.chorus_depth = chorus_depth_fraction(resolved_position(53, p.values[53]))
+	e.chorus_feedback = chorus_feedback_gain(resolved_position(55, p.values[55]))
 	e.chorus_level = unit_position(56, p.values[56])
 
 	return e
+}
+
+// The chorus's delay time in seconds, from parameter 52's state: exponential over
+// the lower half of the knob and linear over the upper, meeting at 15 ms. Below the
+// middle it is 0.05 ms * 300 ^ ((2u) ^ 0.6) and from the middle up it is 30 ms * u,
+// with u the state over 127.
+chorus_delay_seconds :: proc(state: int) -> f32 {
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	ms: f64
+	if u < 0.5 {
+		ms = 0.05 * math.pow(300.0, math.pow(2.0 * u, 0.6))
+	} else {
+		ms = u * 30.0
+	}
+	return f32(ms * 0.001)
+}
+
+// Parameter 54's rate in hertz: 0.02 * 20000 ^ u, from 0.02 Hz to 400 Hz. The bottom
+// state plays at its displayed 0.01 Hz, which is not what the law gives there.
+chorus_rate_hz :: proc(state: int) -> f32 {
+	if state <= 0 {
+		return 0.01
+	}
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	return f32(0.02 * math.pow(20000.0, u))
+}
+
+// Parameter 53's depth as a fraction of the centre delay: (100 ^ u - 1) / 99, so the
+// bottom of the knob is exactly still and the top reaches the whole delay.
+chorus_depth_fraction :: proc(state: int) -> f32 {
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	return f32((math.pow(100.0, u) - 1.0) * (1.0 / 99.0))
+}
+
+// Parameter 55's feedback: (state - 64) / 64, scaled to 0.99.
+chorus_feedback_gain :: proc(state: int) -> f32 {
+	return f32(clamp_int(state, 0, 127) - 64) * (1.0 / 64.0) * 0.99
 }
 
 // The seven parameter indices an LFO owns, in the order the two LFOs lay them

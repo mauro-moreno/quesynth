@@ -998,7 +998,7 @@ effect_params :: proc(
 	delay.mode = p.delay_mode
 
 	chorus.stages = p.chorus_stages
-	chorus.delay_samples = to_samples(p.chorus_delay_ms, e.sample_rate, len(e.chorus_left))
+	chorus.delay_samples = dsp.clamp32(p.chorus_delay_seconds * e.sample_rate, 1.0, f32(max(len(e.chorus_left) / 2 - 2, 2)))
 	chorus.depth = p.chorus_depth
 	chorus.rate_hz = p.chorus_rate_hz
 	chorus.feedback = p.chorus_feedback
@@ -1022,6 +1022,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	// rewriting per sample are the three smoothed ones below.
 	params := e.params
 
+	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	for i in 0 ..< n {
 		if chunk.position >= chunk.length {
@@ -1102,11 +1103,10 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			out_l, out_r = wet_l, wet_r
 		}
 
-		chorused_l, chorused_r := dsp.chorus_process(
-			&e.chorus, out_l, out_r, &chorus_params, e.sample_rate,
-		)
 		if params.chorus_on {
-			out_l, out_r = chorused_l, chorused_r
+			out_l, out_r = dsp.chorus_process(
+				&e.chorus, out_l, out_r, &chorus_params, e.sample_rate,
+			)
 		}
 
 		// A soft clip rather than a hard one: a stack of unison voices summing

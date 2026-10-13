@@ -153,6 +153,47 @@ blends that sampled them, the state variable section and ladder they were fitted
 and the probes that generated them. Every filter takes the cutoff position and the
 resonance knob as they are.
 
+## Chorus
+
+Two lines, one per channel, each holding its channel's input times the level; the wet
+that comes out is already at its level and the feedback carries it. One quadrature
+oscillator, stepped `s -= k c; c += k s` with `k = 2 sin(pi f / sr)`, starting at
+(0, 0.9999) and restarted at a block's start if the cosine has risen above 0.9999. A tap
+is read `delay - excursion * osc` behind the newest sample, so the sine side sweeps
+longer first and the cosine side shorter first: the left channel's sweep runs on the
+sine and the right's on the cosine, which is the opposite sign of the right channel the
+engine used to have. The delay is a whole number of samples, the excursion is a whole
+number of samples (the delay times the depth, truncated) and is cut back to
+`period / 2 pi` so a tap never moves faster than a sample per sample: a 400 Hz sweep at
+full depth on 30 ms is 19 samples wide. Parameter 64 picks the taps:
+
+- 1: each channel reads its *own* line at the sine's position (the engine read the left
+  line into both);
+- 2: left at the sine's position, right at the cosine's;
+- 4: the sine's and cosine's positions and each one's mirror about the centre, four taps
+  mixed into both channels, `L = .9 Ln + .1 Lf + .7 Rn + .3 Rf`, `R = .1 Ln + .9 Lf +
+  .3 Rn + .7 Rf`. Feedback comes from the near taps only.
+
+The laws behind the displays: delay `0.05 * 300 ^ ((2u) ^ 0.6)` ms below the middle of
+the knob and `30 u` ms from it up, rate `0.02 * 20000 ^ u` Hz (stored 0 plays its
+displayed 0.01), depth `(100 ^ u - 1) / 99` of the delay, feedback `(s - 64) / 64 *
+0.99`, level `u`. All 127 delay and rate displays equal them. The engine's fitted depth
+exponent was 4.65 where the law is ln 100 = 4.605.
+
+`s1probe arch chorus` renders a source with the section on and off in both engines and
+cancels the wets against each other. Before: right channel of types 1 and 2 +3 to +4 dB
+(worse than no cancellation), type 4 -1 to -5 dB and 4 to 6 dB too quiet. After, every
+case (three types, depth, rate, delay, level, feedback, flanger, fast and deep) is at the
+floor the two dry sources set (-31 dB on two unison sines) with levels within 0.1 dB.
+The one exception is feedback of -99%, whose first second carries the engines' known
+onset difference round a loop of gain 0.99; it is at the floor from 0.65 s on at -94%.
+
+Factory bank: null depth -9.27 to -13.62 dB (91 patches closer, 5 further; the patches
+that sat near -12 dB went to about -31), envelope error 1.61 to 1.42, spectral 2.87 to
+2.84.
+
+Done: `src/dsp/chorus.odin`, `src/engine/binding.odin`.
+
 ## Results
 
 Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row

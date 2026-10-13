@@ -423,7 +423,7 @@ Engine_Params :: struct {
 	chorus_on:          bool,
 	chorus_stages:      int,
 	// Parameter 52, in milliseconds.
-	chorus_delay_ms:    f32,
+	chorus_delay_seconds: f32,
 	chorus_depth:       f32,
 	chorus_rate_hz:     f32,
 	// Parameter 55, signed on -1..1.

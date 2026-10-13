@@ -2149,6 +2149,169 @@ identical_groups :: proc(hashes: []u64) -> [dynamic][dynamic]int {
 	return groups
 }
 
+// ------------------------------------------------------------------ chorus
+
+Chorus_Case :: struct {
+	name:     string,
+	type:     int,
+	delay:    int,
+	depth:    int,
+	rate:     int,
+	feedback: int,
+	level:    int,
+}
+
+// A stereo source with different content in the two channels: two detuned saw
+// layers panned apart, so a chorus that mixes the channels or reads the wrong one
+// cannot hide behind a mono input.
+chorus_source_patch :: proc() -> cpatch.Patch {
+	p := arch_sine_patch()
+	set_param(&p, 0, arch_stored_for_id(0, 1))
+	set_param(&p, 5, 0)
+	set_param(&p, 73, 1)
+	set_param(&p, 93, 2)
+	set_param(&p, 75, 40)
+	set_param(&p, 84, 127)
+	set_param(&p, 65, 0)
+	switch g_chorus_source {
+	case 1: // one saw, panned off centre: the two channels are scaled copies
+		set_param(&p, 73, 0)
+		set_param(&p, 90, 40)
+	case 2: // two unison sines, different content in each channel and nothing broadband
+		set_param(&p, 0, 0)
+	}
+	return p
+}
+
+// Which source the chorus probe plays: 0 two detuned saws, 1 one panned saw, 2 two
+// unison sines. Set by `--what`.
+g_chorus_source: int
+
+// How deeply `b` cancels against `a` over [from, to), in dB (0 is none, lower is
+// closer), and `b`'s level over `a`'s in dB.
+null_and_level :: proc(a, b: []f32, from, to: int) -> (null_db, level_db: f64) {
+	residual, power_a, power_b := 0.0, 0.0, 0.0
+	for i in max(from, 0) ..< min(to, min(len(a), len(b))) {
+		d := f64(a[i]) - f64(b[i])
+		residual += d * d
+		power_a += f64(a[i]) * f64(a[i])
+		power_b += f64(b[i]) * f64(b[i])
+	}
+	null_db = 10.0 * math.log10(max(residual, 1.0e-30) / max(power_a, 1.0e-30))
+	level_db = 10.0 * math.log10(max(power_b, 1.0e-30) / max(power_a, 1.0e-30))
+	return
+}
+
+// The chorus's wet in both engines, one channel at a time, by rendering the same
+// patch with the section on and off and subtracting.
+chorus_wet :: proc(dll: string, c: ^Arch_Chunk, cs: Chorus_Case, events: []Script_Event) -> (wet: [2][2][]f32) {
+	renders: [2][2][]f32
+	for state in 0 ..< 2 {
+		p := chorus_source_patch()
+		set_param(&p, 66, state)
+		set_param(&p, 64, cs.type)
+		set_param(&p, 52, cs.delay)
+		set_param(&p, 53, cs.depth)
+		set_param(&p, 54, cs.rate)
+		set_param(&p, 55, cs.feedback)
+		set_param(&p, 56, cs.level)
+		ref, ours := arch_render(dll, &p, c, events, 2.6)
+		renders[state] = {ref, ours}
+	}
+	for side in 0 ..< 2 {
+		for ch in 0 ..< 2 {
+			on := script_channel(renders[1][side], ch)
+			off := script_channel(renders[0][side], ch)
+			for i in 0 ..< len(on) {on[i] -= off[i]}
+			delete(off)
+			wet[side][ch] = on
+		}
+	}
+	for state in 0 ..< 2 {
+		arch_free_pair(renders[state][0], renders[state][1])
+	}
+	return
+}
+
+// `s1probe arch chorus [--values <case indices>]`. Reports, per channel, how deeply
+// the two engines' wets cancel (0 dB is no cancellation) and ours over the
+// reference's in level. The first row is the floor: the same measure on the dry
+// source, which is as deep as any wet can cancel.
+cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	cases := [?]Chorus_Case {
+		{"type 1, centre", 1, 64, 64, 64, 64, 127},
+		{"type 2, centre", 2, 64, 64, 64, 64, 127},
+		{"type 4, centre", 4, 64, 64, 64, 64, 127},
+		{"type 1, deep slow", 1, 100, 100, 40, 64, 127},
+		{"type 2, deep slow", 2, 100, 100, 40, 64, 127},
+		{"type 4, deep slow", 4, 100, 100, 40, 64, 127},
+		{"type 2, half level", 2, 64, 64, 64, 64, 64},
+		{"type 2, feedback +50%", 2, 64, 64, 64, 96, 127},
+		{"type 2, feedback -99%", 2, 64, 64, 64, 0, 127},
+		{"type 2, flanger", 2, 8, 90, 80, 100, 127},
+		{"type 4, flanger", 4, 8, 90, 80, 100, 127},
+		{"type 2, fast and deep", 2, 100, 127, 120, 64, 127},
+		{"type 4, fast and deep", 4, 100, 127, 120, 64, 127},
+		{"type 2, no depth", 2, 64, 0, 64, 64, 127},
+		{"type 2, rate 0", 2, 100, 127, 0, 64, 127},
+		{"type 2, rate 1", 2, 100, 127, 1, 64, 127},
+		{"type 2, rate 8", 2, 100, 127, 8, 64, 127},
+		{"type 1, delay 20", 1, 20, 127, 40, 64, 127},
+		{"type 2, delay 60", 2, 60, 80, 40, 64, 127},
+	}
+	events := []Script_Event{script_on(0, 60), script_off(2.5, 60)}
+	from, to := ms_to_frame(500), ms_to_frame(2400)
+	g_chorus_source = o.what == "pan" ? 1 : (o.what == "sine" ? 2 : 0)
+
+	fmt.println("arch chorus: note 60 through a source chosen by --what (default two detuned saws, `pan` one panned saw, `sine` two unison sines); wet = chorus on minus off")
+	fmt.println("  null: how deeply the two engines' wets cancel (dB, lower is closer); level: ours over reference (dB)")
+	fmt.println()
+	fmt.println("  case                       |  null L   null R | level L  level R")
+
+	dry := chorus_source_patch()
+	set_param(&dry, 66, 0)
+	dref, dours := arch_render(dll, &dry, c, events, 2.6)
+	defer arch_free_pair(dref, dours)
+	floor: [2]f64
+	for ch in 0 ..< 2 {
+		a := script_channel(dref, ch)
+		b := script_channel(dours, ch)
+		floor[ch], _ = null_and_level(a, b, from, to)
+		delete(a)
+		delete(b)
+	}
+	fmt.printfln("  %-26v | %7v  %7v |", "(dry source, no chorus)", sdec1(floor[0], 7), sdec1(floor[1], 7))
+
+	for cs, index in cases {
+		if len(o.values) > 0 {
+			listed := false
+			for v in o.values {if v == index {listed = true}}
+			if !listed {continue}
+		}
+		wet := chorus_wet(dll, c, cs, events)
+		nulls, levels: [2]f64
+		for ch in 0 ..< 2 {
+			nulls[ch], levels[ch] = null_and_level(wet[0][ch], wet[1][ch], from, to)
+		}
+		fmt.printfln(
+			"  %-26v | %7v  %7v | %7v  %7v",
+			cs.name, sdec1(nulls[0], 7), sdec1(nulls[1], 7), sdec1(levels[0], 7), sdec1(levels[1], 7),
+		)
+		if len(o.values) > 0 {
+			fmt.printf("      left null by window (s):")
+			for w in 0 ..< 6 {
+				a, b := ms_to_frame(300 + f64(w) * 350), ms_to_frame(650 + f64(w) * 350)
+				n, _ := null_and_level(wet[0][0], wet[1][0], a, b)
+				fmt.printf("  %.2f-%.2f %v", 0.3 + f64(w) * 0.35, 0.65 + f64(w) * 0.35, sdec1(n, 6))
+			}
+			fmt.println()
+		}
+		for side in 0 ..< 2 {
+			for ch in 0 ..< 2 {delete(wet[side][ch])}
+		}
+	}
+}
+
 // ------------------------------------------------------------------ entry
 
 cmd_arch :: proc(dll: string, args: []string) {
@@ -2205,6 +2368,7 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "tone": cmd_arch_tone(dll, &c, &o)
 	case "hits": cmd_arch_hits(dll, &c, &o)
 	case "arp": cmd_arch_arp(dll, &c, &o)
+	case "chorus": cmd_arch_chorus(dll, &c, &o)
 	case: usage()
 	}
 }

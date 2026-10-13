@@ -4625,7 +4625,7 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 		testing.expect(t, e.effect == fresh.effect, "the effect unit kept the previous patch's state")
 		testing.expect(t, e.equalizer == fresh.equalizer, "the equaliser kept the previous patch's state")
 		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
-		testing.expect_value(t, e.chorus.phase, fresh.chorus.phase)
+		testing.expect_value(t, e.chorus.cosine, fresh.chorus.cosine)
 		testing.expect_value(t, e.gain_smooth.value, fresh.gain_smooth.value)
 		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)
 	}
