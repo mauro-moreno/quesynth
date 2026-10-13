@@ -541,6 +541,22 @@ voice_is_finished :: proc(v: ^Voice) -> bool {
 
 CENTS_PER_SEMITONE :: f32(100.0)
 
+// The modulation envelope moves the duty a fraction of the way to the end it is
+// heading for: a positive amount a share of the way to one, a negative a share of the
+// way to zero. It is not an offset. Measured as the static knob setting that cancels
+// against the modulated render (`s1probe arch modenvscale --what pw`): from a base of
+// 32 the equivalent is 58, 72, 98 and 112 at amounts 72, 76, 84 and 88, a constant 213
+// stored steps per unit amount; from a base of 96 it is 85, 73 and 50 at amounts 56, 48
+// and 32 (91 steps per unit, shrinking with the base); and the two directions from a base
+// of 64 differ by a factor of three. A share of the room left gives all of them within
+// a step.
+modulated_pulse_width :: proc "contextless" (duty, amount: f32) -> f32 {
+	if amount > 0 {
+		return duty + amount * (1.0 - duty)
+	}
+	return duty + amount * duty
+}
+
 // The modulation envelope's reach on oscillator 2's pitch at full amount.
 MOD_ENV_PITCH_SEMITONES :: f32(60.0)
 
@@ -659,7 +675,7 @@ voice_process :: proc(
 	case .Fm:
 		mod_fm += mod_env
 	case .Pulse_Width:
-		mod_pulse_width += mod_env * 0.45
+		mod_pulse_width += mod_env
 	}
 
 	// The destinations below are measured; the *depths* they are scaled by are
@@ -776,7 +792,7 @@ voice_process :: proc(
 		p.key_shift +
 		pitch_bend * p.pitch_bend_range +
 		p.fine_tune_cents / CENTS_PER_SEMITONE
-	pulse_width := dsp.clamp32(p.pulse_width + mod_pulse_width, 0.02, 0.98)
+	pulse_width := dsp.clamp32(modulated_pulse_width(p.pulse_width, mod_pulse_width), 0.02, 0.98)
 
 	// -- filter cutoff -------------------------------------------------------
 

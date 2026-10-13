@@ -2505,8 +2505,18 @@ cmd_arch_filterenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	if len(o.values) > 2 {amount = o.values[2]}
 	if len(o.values) > 3 {sustain = o.values[3]}
 	note := 108
+	cutoff := 30
+	if len(o.values) > 4 {cutoff = o.values[4]}
+	if len(o.values) > 5 {note = o.values[5]}
 	times := []f64{10, 25, 50, 100, 150, 200, 300, 400, 600, 800, 1000, 1300, 1700, 2200, 2800, 3400}
-	fmt.printfln("arch filterenv: sine note %v through the 12 dB low pass at cutoff 30; attack %v, decay %v, amount %v, sustain %v", note, attack, decay, amount, sustain)
+	if o.what == "fine" {
+		times = []f64{2, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30, 36, 44, 54, 66, 80}
+	}
+	if o.what == "ms" {
+		times = make([]f64, 40, context.temp_allocator)
+		for i in 0 ..< 40 {times[i] = f64(i * 2 + 2)}
+	}
+	fmt.printfln("arch filterenv: sine note %v through the 12 dB low pass at cutoff %v; attack %v, decay %v, amount %v, sustain %v", note, cutoff, attack, decay, amount, sustain)
 	fmt.println("  dB above the envelope-off render at each time after note on (ms)")
 	head := strings.builder_make(context.temp_allocator)
 	for t in times {fmt.sbprintf(&head, " %v", pad_left(fmt.tprintf("%.0f", t), 6))}
@@ -2515,7 +2525,7 @@ cmd_arch_filterenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	for on in 0 ..< 2 {
 		p := arch_sine_patch()
 		set_param(&p, 14, arch_stored_for_id(14, 0))
-		set_param(&p, 19, 30)
+		set_param(&p, 19, cutoff)
 		set_param(&p, 20, 0)
 		set_param(&p, 21, on == 1 ? amount : 63)
 		set_param(&p, 15, attack)
@@ -2532,14 +2542,153 @@ cmd_arch_filterenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 		row := strings.builder_make(context.temp_allocator)
 		for t in times {
 			centre := ms_to_frame(t)
-			half := ms_to_frame(2)
-			fmt.sbprintf(&row, " %v", dec2(window_db(on, centre - half, centre + half) - window_db(off, centre - half, centre + half), 6))
+			half := ms_to_frame(o.what == "fine" || o.what == "ms" ? 1 : 2)
+			if o.what == "abs" {
+				fmt.sbprintf(&row, " %v", dec2(window_db(on, centre - half, centre + half), 6))
+			} else {
+				fmt.sbprintf(&row, " %v", dec2(window_db(on, centre - half, centre + half) - window_db(off, centre - half, centre + half), 6))
+			}
 		}
 		fmt.printfln("  %-5v |%v", side == 0 ? "ref" : "ours", strings.to_string(row))
 		delete(off)
 		delete(on)
 	}
 	for on in 0 ..< 2 {arch_free_pair(renders[on][0], renders[on][1])}
+}
+
+// The filter envelope's path through the first milliseconds, from noise through the 12 dB
+// low pass averaged over many identical hits: the power in each 1 ms window rises with the
+// cutoff, so the two engines' noises can differ and the averages still agree.
+// `--values attack,decay,amount,sustain,cutoff`; the first hit is left out, since the
+// first note after a load rises under the gain smoother.
+cmd_arch_filterhits :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, decay, amount, sustain, cutoff := 56, 90, 79, 0, 60
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {decay = o.values[1]}
+	if len(o.values) > 2 {amount = o.values[2]}
+	if len(o.values) > 3 {sustain = o.values[3]}
+	if len(o.values) > 4 {cutoff = o.values[4]}
+	HITS :: 80
+	p := arch_noise_patch()
+	set_param(&p, 14, arch_stored_for_id(14, 0))
+	set_param(&p, 19, cutoff)
+	set_param(&p, 20, 0)
+	set_param(&p, 21, amount)
+	set_param(&p, 15, attack)
+	set_param(&p, 16, decay)
+	set_param(&p, 17, sustain)
+	set_param(&p, 18, 0)
+	set_param(&p, 29, 127)
+	events: [dynamic]Script_Event
+	defer delete(events)
+	for h in 0 ..< HITS {
+		t := 0.1 + f64(h) * 0.25
+		append(&events, script_on(t, 60))
+		append(&events, script_off(t + 0.15, 60))
+	}
+	ref, ours := arch_render(dll, &p, c, events[:], 0.1 + f64(HITS) * 0.25 + 0.2)
+	defer arch_free_pair(ref, ours)
+	mids := [2][]f32{script_channel(ref, -1), script_channel(ours, -1)}
+	defer for m in mids {delete(m)}
+	onsets: [dynamic]int
+	defer delete(onsets)
+	for i := 2; i < len(events); i += 2 {append(&onsets, events[i].frame)}
+
+	fmt.printfln("arch filterhits: noise through the 12 dB low pass at cutoff %v; attack %v, decay %v, amount %v, sustain %v; %v hits", cutoff, attack, decay, amount, sustain, HITS - 1)
+	fmt.println("  power per 1 ms window, dB relative to the 40-60 ms window of the same engine")
+	fmt.println("  window ms     ref     ours    diff")
+	base: [2]f64
+	for side in 0 ..< 2 {
+		base[side] = mean_power_across_hits(mids[side], onsets[:], ms_to_frame(40), ms_to_frame(60))
+	}
+	for w in 0 ..< 40 {
+		pw: [2]f64
+		for side in 0 ..< 2 {
+			pw[side] = 10.0 * math.log10(max(mean_power_across_hits(mids[side], onsets[:], ms_to_frame(f64(w)), ms_to_frame(f64(w + 1))), 1.0e-20) / max(base[side], 1.0e-20))
+		}
+		fmt.printfln("  %4v-%-4v  %8v %8v %8v", w, w + 1, sdec1(pw[0], 7), sdec1(pw[1], 7), sdec1(pw[1] - pw[0], 7))
+	}
+}
+
+// The modulation envelope's reach on FM and on pulse width, read as the static setting
+// that cancels against it. The envelope is held near its peak (instant attack, the
+// longest decay) so over 150 to 250 ms it is within 2.5% of one; the same patch is then
+// rendered with the envelope off and the destination's own parameter at each stored
+// value, and the value whose render nulls deepest against the envelope's is the one it
+// is equivalent to. Done in each engine against itself, so the oscillators' own offsets
+// cancel. `--what fm|pw`, `--values amount[,base]`.
+cmd_arch_modenvscale :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	pw := o.what == "pw"
+	amount, base := 96, pw ? 32 : 0
+	if len(o.values) > 0 {amount = o.values[0]}
+	if len(o.values) > 1 {base = o.values[1]}
+	param := pw ? 8 : 45
+	from, to := ms_to_frame(150), ms_to_frame(250)
+	events := []Script_Event{script_on(0, 60), script_off(0.4, 60)}
+
+	patch_for :: proc(pw: bool, on: bool, amount, value: int) -> cpatch.Patch {
+		p := arch_sine_patch()
+		set_param(&p, 5, 0)
+		set_param(&p, 71, pw ? 2 : 1)
+		set_param(&p, 4, 1)
+		set_param(&p, 2, arch_stored_for_number(2, 0))
+		set_param(&p, 3, 64)
+		set_param(&p, 12, 0)
+		set_param(&p, 13, 127)
+		set_param(&p, 11, amount)
+		if pw {
+			set_param(&p, 0, arch_stored_for_id(0, 2))
+			set_param(&p, 8, value)
+		} else {
+			set_param(&p, 0, 0)
+			set_param(&p, 1, 3)
+			set_param(&p, 45, value)
+		}
+		set_param(&p, 10, on ? 1 : 0)
+		return p
+	}
+
+	on_patch := patch_for(pw, true, amount, base)
+	on_ref, on_ours := arch_render(dll, &on_patch, c, events, 0.5)
+	defer arch_free_pair(on_ref, on_ours)
+	on_mid := [2][]f32{script_channel(on_ref, -1), script_channel(on_ours, -1)}
+	defer for m in on_mid {delete(m)}
+
+	best_null: [2]f64 = {1.0e9, 1.0e9}
+	best_value: [2]int
+	try :: proc(dll: string, c: ^Arch_Chunk, pw: bool, value: int, events: []Script_Event, on_mid: [2][]f32, from, to: int, best_null: ^[2]f64, best_value: ^[2]int) {
+		p := patch_for(pw, false, 64, value)
+		ref, ours := arch_render(dll, &p, c, events, 0.5)
+		defer arch_free_pair(ref, ours)
+		for side in 0 ..< 2 {
+			audio := side == 0 ? ref : ours
+			x := script_channel(audio, -1)
+			defer delete(x)
+			n, _ := null_and_level(on_mid[side], x, from, to)
+			if n < best_null[side] {
+				best_null[side] = n
+				best_value[side] = value
+			}
+		}
+	}
+	limit := 127
+	for v := 0; v <= limit; v += 4 {
+		try(dll, c, pw, v, events, on_mid, from, to, &best_null, &best_value)
+	}
+	coarse := best_value
+	for side in 0 ..< 2 {
+		for d in -3 ..= 3 {
+			if d == 0 {continue}
+			v := coarse[side] + d
+			if v < 0 || v > limit {continue}
+			// Only the side being refined needs the render; both sides are scored.
+			try(dll, c, pw, v, events, on_mid, from, to, &best_null, &best_value)
+		}
+	}
+	fmt.printfln("arch modenvscale: %v, mod envelope amount %v (stored 11), parameter %v base %v", pw ? "pulse width" : "FM", amount, param, base)
+	fmt.printfln("  equivalent static value of parameter %v at the envelope's peak:", param)
+	fmt.printfln("  ref  %v (null %v dB)", best_value[0], sdec1(best_null[0]))
+	fmt.printfln("  ours %v (null %v dB)", best_value[1], sdec1(best_null[1]))
 }
 
 // ------------------------------------------------------------------ entry
@@ -2601,6 +2750,8 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "chorus": cmd_arch_chorus(dll, &c, &o)
 	case "modenv": cmd_arch_modenv(dll, &c, &o)
 	case "filterenv": cmd_arch_filterenv(dll, &c, &o)
+	case "filterhits": cmd_arch_filterhits(dll, &c, &o)
+	case "modenvscale": cmd_arch_modenvscale(dll, &c, &o)
 	case: usage()
 	}
 }

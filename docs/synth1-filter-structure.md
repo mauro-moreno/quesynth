@@ -254,6 +254,41 @@ Factory bank, 128 patches, from the pitch slides: null depth -14.34 -> -16.72 dB
 (65 patches closer, 24 further), envelope error 1.37 -> 1.21 dB, spectral 2.75 -> 2.56
 dB. Patches 033, 108, 016 and 027 go from about -5 dB to between -25 and -32 dB.
 
+### The filter envelope's early milliseconds
+
+The first milliseconds of the filter envelope agree where they can be read. A cutoff held
+constant from the first sample, an instant attack and full sustain, nulls to 0.00 dB at
+every time (the filter's own startup is exact). A sine near the corner follows the
+cutoff's rise to within 0.1 dB from 2 ms onward in both engines. The one place they
+differ is a sine six octaves above the corner, where the level is a residual about 60
+dB under the passband and a 6 dB difference at 10 ms is the startup transient beating
+against it. Reading the envelope the way the amplitude is read (knots of 1/2048 with
+straight lines between chunk ends) was the closest candidate and made the bank worse
+(null depth -16.72 to -15.26 dB, 66 patches further), and reading it once per chunk, at
+the chunk's start or its end, was worse on the traces; the filter envelope stays per
+sample.
+
+### Its other two destinations
+
+`s1probe arch modenvscale` reads FM and pulse width as the static setting of the same
+parameter that cancels against the enveloped render, in each engine against itself,
+with the envelope held near its peak (instant attack, longest decay).
+
+FM: the scale of 1.0 was right. At amounts 80 and 96 the equivalent static values are 31
+and 62 in the reference and 31 and 61 in the engine, a quarter and a half of the
+knob's 127. At full amount FM stops being monotonic and nothing nulls in either engine.
+
+Pulse width was wrong, and was not an offset. The envelope moves the duty a share of the
+way to the end it is heading for: `d' = d + m (1 - d)` for a positive amount `m` and
+`d' = d + m d` for a negative one, `d` the knob's duty (0 to 0.5) and `m` the amount
+times the envelope. From a base of 32 the reference's equivalent is 58, 72, 98 and 112
+at amounts 72, 76, 84 and 88 (a constant 213 steps per unit); from 96 it is 85, 73 and 50
+at 56, 48 and 32 (91 per unit, shrinking with the base); from 64 the two directions
+differ threefold. The engine added a constant 0.45 and read 60 and 54 where the reference
+read 85 and 61. The law reproduces all thirteen readings within two steps of the knob.
+Four of them are bit-identical renders in the reference (-324 dB null), so the match is
+exact where the knob can resolve it.
+
 ## Results
 
 Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row
@@ -271,10 +306,6 @@ error is read over few samples; it went 3.58 -> 3.25 dB and is not pursued furth
   the amplifier's ramp are copied. The filter and modulation envelopes, read per
   chunk, made the deepest nulls worse, so they stay per sample; what the reference
   does with them inside a chunk is not settled.
-- **The modulation envelope's other destinations.** Its reach on oscillator 2's pitch
-  is measured (60 semitones at full amount); the scales on FM (1.0) and pulse width
-  (0.45) are still chosen, and the rendered pitch is the only thing the probes can
-  read cleanly.
 - **Release in the voice-count probe**: `arch voices` holds every note until the end,
   so the slot rule for a note in release rests on the allocator's logic and the
   tests, not on a measurement of the reference.

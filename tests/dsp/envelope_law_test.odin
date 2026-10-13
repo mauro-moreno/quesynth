@@ -161,3 +161,26 @@ test_modulation_envelope_depth_is_sixty_semitones :: proc(t: ^testing.T) {
 	pitch = engine.MOD_ENV_PITCH_SEMITONES * 0.5 * level
 	testing.expectf(t, abs(pitch - 5.59) < 0.15, "pitch at 1 s: %v semitones, want 5.59", pitch)
 }
+
+// The modulation envelope's pulse width is a share of the way to the end it heads for,
+// not an offset. Each row is a reference reading: the static knob setting (of 127, duty
+// = setting / 254) that cancels against the modulated render, for a base setting and an
+// amount of the envelope at its peak (0.976 of full over the measured window). The
+// readings are whole steps of a knob and the engine's own are one step high on positive
+// amounts and one low on negative, so the tolerance is two steps.
+@(test)
+test_modulation_envelope_pulse_width_is_a_share_of_the_room_left :: proc(t: ^testing.T) {
+	rows := [?][3]f32 {
+		{32, 72, 58}, {32, 76, 72}, {32, 84, 98}, {32, 88, 112},
+		{64, 72, 86}, {64, 80, 110},
+		{96, 56, 85}, {96, 48, 73}, {96, 32, 50},
+		{64, 56, 56}, {64, 48, 49}, {64, 40, 41}, {64, 16, 18},
+	}
+	for row in rows {
+		duty := row[0] / 254.0
+		amount := (row[1] - 64.0) / 64.0 * 0.976
+		got := engine.modulated_pulse_width(duty, amount) * 254.0
+		testing.expectf(t, abs(got - row[2]) <= 2.0, "base %v amount %v: the engine reaches %v, the reference %v", row[0], row[1], got, row[2])
+	}
+	testing.expect_value(t, engine.modulated_pulse_width(0.25, 0), f32(0.25))
+}
