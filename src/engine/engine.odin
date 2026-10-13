@@ -165,7 +165,12 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 		e.global_lfo[j].shape = params.lfo[j].shape
 	}
 
-	smoother_init(&e.gain_smooth, params.amp_gain, SMOOTHING_SECONDS, e.sample_rate)
+	// The gain starts at zero and rises to the patch's, as the reference's does when it
+	// is loaded: the first note after a load comes in under a one-pole of about 70
+	// samples, which a note on a settled engine does not. That is the whole of what
+	// looked like a per-note onset factor of 1 - exp(-n / 69): a second note, on the
+	// same voice or another, reaches full level at once.
+	smoother_init(&e.gain_smooth, 0, SMOOTHING_SECONDS, e.sample_rate)
 	smoother_init(&e.pan_smooth, params.pan, SMOOTHING_SECONDS, e.sample_rate)
 
 	engine_update_lfo_rates(e)
@@ -284,7 +289,6 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false, keep_voice
 		// After the controllers, not before: a controller kept across the
 		// change displaces the target, and snapping to the patch's undisplaced
 		// value would sweep the new sound from there to where the wheel sits.
-		smoother_reset(&e.gain_smooth, e.params.amp_gain)
 		smoother_reset(&e.pan_smooth, e.params.pan)
 
 		// And the effects' own memory, which is the part that is audible if it is

@@ -743,7 +743,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		e.filter_diode = true
 	}
 
-	e.filter_attack = envelope_attack_time(15, p.values[15])
+	e.filter_attack = amp_attack_seconds(resolved_position(15, p.values[15]))
 	e.filter_decay = envelope_decay_time(16, p.values[16])
 	// Parameter 17 is a linear reading of the knob, and for once that is not a
 	// guess -- it is a guess that measurement confirmed.
@@ -784,7 +784,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 
 	// -- amplifier -----------------------------------------------------------
 
-	e.amp_attack = envelope_attack_time(25, p.values[25])
+	e.amp_attack = amp_attack_seconds(resolved_position(25, p.values[25]))
 	e.amp_decay = envelope_segment_length(26, p.values[26])
 	e.amp_sustain = AMP_SUSTAIN_LEVEL[clamp_int(resolved_position(27, p.values[27]), 0, AMP_TABLE_SIZE - 1)]
 	e.amp_release = envelope_segment_length(28, p.values[28])
@@ -1029,6 +1029,16 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	e.chorus_level = unit_position(56, p.values[56])
 
 	return e
+}
+
+// The amplitude envelope's attack length in seconds, from parameter 25's state:
+// 0.0005 * 56000 ^ (v / 127), from half a millisecond to 28 seconds. The reference's
+// attack is a linear ramp of this length. The table the filter and modulation
+// envelopes still use floors at 3.5 ms, which is the engine's gain smoother settling
+// on a first note after a load (see `engine_init`) read as the shortest attack.
+amp_attack_seconds :: proc(state: int) -> f32 {
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	return f32(0.0005 * math.pow(56000.0, u))
 }
 
 // The chorus's delay time in seconds, from parameter 52's state: exponential over

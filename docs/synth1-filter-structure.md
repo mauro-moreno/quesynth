@@ -194,6 +194,33 @@ that sat near -12 dB went to about -31), envelope error 1.61 to 1.42, spectral 2
 
 Done: `src/dsp/chorus.odin`, `src/engine/binding.odin`.
 
+## Oscillator timing and note start
+
+Every oscillator is read and then advanced, so a note's first sample is its start
+phase's value and a sine begins at exactly zero. The engine advanced first and so ran
+one sample ahead at every pitch; it also carried a start phase of -0.00125 turns that
+an earlier probe had read as a constant, which is one sample at 60 Hz (60 / 48000).
+Across nine notes the reference trails the old engine by `1 - 59.1 / f` samples,
+which is one sample less that constant's phase. Dry sine against the reference now
+nulls to -56 dB at note 60 and -82 dB at note 84 (-44 and -57 before); two detuned
+saws to -41 dB (-17), one panned saw to -31 dB (-16).
+
+A note's level on its first sample is not an envelope shape. The amplitude attack is
+`0.0005 * 56000 ^ (v / 127)` seconds, a linear ramp, from half a millisecond at stored
+0, and the filter envelope's attack is the same law. The table both used before floors
+at 3.5 ms because of the next point, so it was reading the engine's gain smoother and
+not an attack. The engine's gain smoother (half-life 1 ms, `tau` 69 samples) starts at
+zero on a fresh engine and takes the first note after a load up with it, as the
+reference's does; a second note, on the same voice or another, reaches full level on
+its own ramp alone. Measured as a sine's envelope: the first note's 10 / 50 / 90 %
+times at stored 0 are 9 / 48 / 162 samples in both engines, and a second note is the
+same sample for sample. A per-note factor of `1 - exp(-n / 69)`, which the older
+evidence tried and set aside, made later notes 60% quiet at sample 160 for exactly
+this reason.
+
+The modulation envelope's attack was tried on the same law and came out worse (bank
+envelope error 1.389 to 1.454 dB), so it keeps the table.
+
 ## Results
 
 Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row
@@ -210,8 +237,16 @@ error is read over few samples; it went 3.58 -> 3.25 dB and is not pursued furth
 - **Modulation held per render block**: the amplitude envelope, the LFOs' grid and
   the amplifier's ramp are copied. The filter and modulation envelopes, read per
   chunk, made the deepest nulls worse, so they stay per sample; what the reference
-  does with them inside a chunk is not settled, and the probes read it only through
-  those nulls.
+  does with them inside a chunk is not settled.
+- **Modulation envelope's attack**: not the amplitude law, and not the table's floor
+  explained; what it is has not been read.
+- **Pitch edits and bends are instant here.** `arch ramp` shows the reference taking
+  about 40 ms (a linear 50 ms slide in steps of 1/128 semitone) to move to a new
+  oscillator 2 pitch, and about 34 ms for a bend, where the engine jumps.
 - **Release in the voice-count probe**: `arch voices` holds every note until the end,
   so the slot rule for a note in release rests on the allocator's logic and the
   tests, not on a measurement of the reference.
+- **Chorus at feedback -99% and at the fastest, deepest sweeps** agrees with the
+  reference to -25 and -42 dB where the dry source nulls to -56: the loop's gain of
+  0.99 amplifies any difference a hundredfold, and no cause has been found for the
+  rest.

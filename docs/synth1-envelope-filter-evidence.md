@@ -347,7 +347,11 @@ on the machine's dev-2026-09 build.
 
 ## Deferred list
 
-- **D1. The amplitude attack law and its onset factor.** Supported (E1), not in
+- **D1 (adopted for the amplitude and filter attacks; see
+  `docs/synth1-filter-structure.md`, "Oscillator timing and note start").** The
+  onset factor is the engine's gain smoother on the first note after a load, not a
+  per-note factor, which is why applying it per note made later notes too quiet. The
+  rest of this entry is the record as it stood. **D1. The amplitude attack law and its onset factor.** Supported (E1), not in
   the engine. The table stays. Two bank runs from this commit's engine: the
   law in place of the table for every setting made the envelope mean 1.6534 ->
   1.7642 dB, 19 patches worse and 13 better by more than 0.05 dB, 117 +5.5, 033

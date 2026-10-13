@@ -4626,7 +4626,11 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 		testing.expect(t, e.equalizer == fresh.equalizer, "the equaliser kept the previous patch's state")
 		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
 		testing.expect_value(t, e.chorus.cosine, fresh.chorus.cosine)
-		testing.expect_value(t, e.gain_smooth.value, fresh.gain_smooth.value)
+		// The gain is not snapped: it glides from where it was to the new patch's, in
+		// about a millisecond, as the reference's does, and it starts at zero on a
+		// fresh engine. Only the first note after a load comes in under that glide.
+		testing.expect_value(t, e.gain_smooth.value, smoothed[0])
+		testing.expect_value(t, fresh.gain_smooth.value, f32(0))
 		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)
 	}
 }
@@ -4767,4 +4771,45 @@ test_a_sine_notes_first_sample_is_zero :: proc(t: ^testing.T) {
 	testing.expect_value(t, left[0], f32(0))
 	testing.expect(t, left[1] != 0, "the second sample did not move")
 	testing.expect(t, abs(left[1]) < abs(left[8]), "the note did not rise from zero")
+}
+
+// A note's level comes in under the engine's gain smoother only on the first note after
+// a load. The second note reaches full level on its own ramp alone, on the same voice
+// or on another: the reference's second note is identical sample for sample to ours in
+// its first 100 samples, where a per-note factor made ours 60% quiet at sample 160.
+@(test)
+test_only_the_first_note_after_a_load_rises_under_the_gain_smoother :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[0] = 0
+	p.values[5] = 0
+	p.values[73] = 0
+	p.values[91] = 1
+	p.values[25] = 0 // the shortest attack
+	p.values[65] = 0
+	p.values[66] = 0
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 1024)
+	right := make([]f32, 1024)
+	defer delete(left)
+	defer delete(right)
+
+	peak_of :: proc(x: []f32, from, count: int) -> f32 {
+		peak: f32
+		for i in from ..< from + count {peak = max(peak, abs(x[i]))}
+		return peak
+	}
+
+	engine.engine_note_on(&e, 84, 1.0)
+	engine.engine_process(&e, left, right)
+	first := peak_of(left, 40, 24)
+	engine.engine_note_off(&e, 84)
+	engine.engine_process(&e, left, right)
+	engine.engine_process(&e, left, right)
+
+	engine.engine_note_on(&e, 84, 1.0)
+	engine.engine_process(&e, left, right)
+	second := peak_of(left, 40, 24)
+	testing.expectf(t, second > first * 1.3, "the second note's early peak %v is not above the first's %v", second, first)
 }
