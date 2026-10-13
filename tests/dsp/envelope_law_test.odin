@@ -133,10 +133,31 @@ test_amp_decay_and_release_lengths_follow_the_measured_law :: proc(t: ^testing.T
 		testing.expectf(t, abs(bound.amp_decay - want) <= 1.0e-6 * want, "decay %v gave %v s, want %v", stored, bound.amp_decay, want)
 		testing.expectf(t, abs(bound.amp_release - want) <= 1.0e-6 * want, "release %v gave %v s, want %v", stored, bound.amp_release, want)
 	}
-	// The filter and modulation envelopes have not been read this way.
+	// The filter and modulation envelopes follow the same law, read from the cutoff's
+	// and the pitch's own traces (`s1probe arch filterenv`, `arch modenv`).
+	p.values[13] = 90
 	p.values[16] = 64
 	p.values[18] = 64
 	bound := engine.bind_patch(p)
-	testing.expect_value(t, bound.filter_decay, engine.ENVELOPE_DECAY_SECONDS[64])
-	testing.expect_value(t, bound.filter_release, engine.ENVELOPE_RELEASE_SECONDS[64])
+	testing.expect_value(t, bound.filter_decay, amp_length(64))
+	testing.expect_value(t, bound.filter_release, amp_length(64))
+	testing.expect_value(t, bound.mod_env_decay, amp_length(90))
+}
+
+// The modulation envelope on oscillator 2's pitch reaches 60 semitones at full amount
+// and follows the fade law: predicted from the attack and decay lengths alone, the
+// reference reads 28.97 against 28.5 at 150 ms and 5.59 against 5.59 at 1 s for an
+// amount of 96, attack 64, decay 90.
+@(test)
+test_modulation_envelope_depth_is_sixty_semitones :: proc(t: ^testing.T) {
+	e: dsp.Envelope
+	dsp.envelope_set_fade(&e, 0.1235, 4.75, 0, 4.75, 48000)
+	dsp.envelope_gate_on(&e, true)
+	level: f32
+	for _ in 0 ..< 7200 {level = dsp.envelope_process(&e)} // 150 ms
+	pitch := engine.MOD_ENV_PITCH_SEMITONES * 0.5 * level
+	testing.expectf(t, abs(pitch - 28.5) < 0.6, "pitch at 150 ms: %v semitones, want about 28.5", pitch)
+	for _ in 0 ..< 40800 {level = dsp.envelope_process(&e)} // 1 s
+	pitch = engine.MOD_ENV_PITCH_SEMITONES * 0.5 * level
+	testing.expectf(t, abs(pitch - 5.59) < 0.15, "pitch at 1 s: %v semitones, want 5.59", pitch)
 }

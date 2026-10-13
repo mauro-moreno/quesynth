@@ -2432,6 +2432,116 @@ cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	}
 }
 
+// ------------------------------------------------------------------ modenv
+
+// The modulation envelope on oscillator 2's pitch, read as semitones above the same
+// patch with the envelope off, at chosen times after the note starts, in both engines.
+// `--values attack,decay,amount` (stored 12, 13, 11); the defaults are a slow attack
+// and decay at full amount so a pitch window of a few milliseconds can follow it.
+cmd_arch_modenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, decay, amount := 64, 90, 127
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {decay = o.values[1]}
+	if len(o.values) > 2 {amount = o.values[2]}
+	note := 60
+	if o.what != "" {
+		n, _ := strconv.parse_int(o.what)
+		note = n
+	}
+	times := []f64{10, 25, 50, 100, 150, 200, 300, 400, 600, 800, 1000, 1300, 1700, 2200, 2800, 3400}
+	fmt.printfln("arch modenv: oscillator 2 triangle alone, note %v, mod envelope on pitch; attack %v, decay %v, amount %v", note, attack, decay, amount)
+	fmt.println("  semitones above the envelope-off render, at each time after note on (ms)")
+	head := strings.builder_make(context.temp_allocator)
+	for t in times {fmt.sbprintf(&head, " %v", pad_left(fmt.tprintf("%.0f", t), 6))}
+	fmt.printfln("  side  |%v", strings.to_string(head))
+
+	renders: [2][2][]f32
+	for on in 0 ..< 2 {
+		p := arch_sine_patch()
+		set_param(&p, 1, 3)
+		set_param(&p, 5, 127)
+		set_param(&p, 4, 1)
+		set_param(&p, 2, arch_stored_for_number(2, 0))
+		set_param(&p, 3, 64)
+		set_param(&p, 71, 0)
+		set_param(&p, 10, on)
+		set_param(&p, 11, amount)
+		set_param(&p, 12, attack)
+		set_param(&p, 13, decay)
+		events := []Script_Event{script_on(0, note), script_off(3.8, note)}
+		ref, ours := arch_render(dll, &p, c, events, 4.0)
+		renders[on] = {ref, ours}
+	}
+	for side in 0 ..< 2 {
+		off := script_channel(renders[0][side], -1)
+		on := script_channel(renders[1][side], -1)
+		row := strings.builder_make(context.temp_allocator)
+		for t in times {
+			centre := ms_to_frame(t)
+			half := ms_to_frame(3)
+			diffs: [7]f64
+			for k in 0 ..< 7 {
+				at := centre + (k - 3) * ms_to_frame(0.9)
+				diffs[k] = hz_to_midi(zc_frequency(on, at - half, at + half)) - hz_to_midi(zc_frequency(off, at - half, at + half))
+			}
+			slice.sort(diffs[:])
+			fmt.sbprintf(&row, " %v", dec2(diffs[3], 6))
+		}
+		fmt.printfln("  %-5v |%v", side == 0 ? "ref" : "ours", strings.to_string(row))
+		delete(off)
+		delete(on)
+	}
+	for on in 0 ..< 2 {arch_free_pair(renders[on][0], renders[on][1])}
+}
+
+// The filter envelope on the cutoff, read as the level of a sine two octaves above the
+// 12 dB low pass's corner, in dB relative to the envelope-off level, at times after the
+// note starts, in both engines. `--values attack,decay,amount,sustain` (stored 15, 16,
+// 21, 17).
+cmd_arch_filterenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, decay, amount, sustain := 64, 90, 79, 0
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {decay = o.values[1]}
+	if len(o.values) > 2 {amount = o.values[2]}
+	if len(o.values) > 3 {sustain = o.values[3]}
+	note := 108
+	times := []f64{10, 25, 50, 100, 150, 200, 300, 400, 600, 800, 1000, 1300, 1700, 2200, 2800, 3400}
+	fmt.printfln("arch filterenv: sine note %v through the 12 dB low pass at cutoff 30; attack %v, decay %v, amount %v, sustain %v", note, attack, decay, amount, sustain)
+	fmt.println("  dB above the envelope-off render at each time after note on (ms)")
+	head := strings.builder_make(context.temp_allocator)
+	for t in times {fmt.sbprintf(&head, " %v", pad_left(fmt.tprintf("%.0f", t), 6))}
+	fmt.printfln("  side  |%v", strings.to_string(head))
+	renders: [2][2][]f32
+	for on in 0 ..< 2 {
+		p := arch_sine_patch()
+		set_param(&p, 14, arch_stored_for_id(14, 0))
+		set_param(&p, 19, 30)
+		set_param(&p, 20, 0)
+		set_param(&p, 21, on == 1 ? amount : 63)
+		set_param(&p, 15, attack)
+		set_param(&p, 16, decay)
+		set_param(&p, 17, sustain)
+		set_param(&p, 18, 0)
+		events := []Script_Event{script_on(0, note), script_off(3.8, note)}
+		ref, ours := arch_render(dll, &p, c, events, 4.0)
+		renders[on] = {ref, ours}
+	}
+	for side in 0 ..< 2 {
+		off := script_channel(renders[0][side], -1)
+		on := script_channel(renders[1][side], -1)
+		row := strings.builder_make(context.temp_allocator)
+		for t in times {
+			centre := ms_to_frame(t)
+			half := ms_to_frame(2)
+			fmt.sbprintf(&row, " %v", dec2(window_db(on, centre - half, centre + half) - window_db(off, centre - half, centre + half), 6))
+		}
+		fmt.printfln("  %-5v |%v", side == 0 ? "ref" : "ours", strings.to_string(row))
+		delete(off)
+		delete(on)
+	}
+	for on in 0 ..< 2 {arch_free_pair(renders[on][0], renders[on][1])}
+}
+
 // ------------------------------------------------------------------ entry
 
 cmd_arch :: proc(dll: string, args: []string) {
@@ -2489,6 +2599,8 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "hits": cmd_arch_hits(dll, &c, &o)
 	case "arp": cmd_arch_arp(dll, &c, &o)
 	case "chorus": cmd_arch_chorus(dll, &c, &o)
+	case "modenv": cmd_arch_modenv(dll, &c, &o)
+	case "filterenv": cmd_arch_filterenv(dll, &c, &o)
 	case: usage()
 	}
 }

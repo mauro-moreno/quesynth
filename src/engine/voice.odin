@@ -409,7 +409,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 // Push the current parameter block into the voice's envelopes.
 voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	dsp.envelope_set_fade(&v.amp_env, p.amp_attack, p.amp_decay, p.amp_sustain, p.amp_release, sample_rate)
-	dsp.envelope_set(
+	dsp.envelope_set_fade(
 		&v.filter_env,
 		p.filter_attack,
 		p.filter_decay,
@@ -422,7 +422,7 @@ voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	// therefore driven as an ADSR with sustain pinned to 0 and release equal to
 	// its decay, which is the standard AD reading: the segment falls to silence
 	// after the attack and a key release cannot make it rise again.
-	dsp.envelope_set(&v.mod_env, p.mod_env_attack, p.mod_env_decay, 0, p.mod_env_decay, sample_rate)
+	dsp.envelope_set_fade(&v.mod_env, p.mod_env_attack, p.mod_env_decay, 0, p.mod_env_decay, sample_rate)
 
 }
 
@@ -541,6 +541,9 @@ voice_is_finished :: proc(v: ^Voice) -> bool {
 
 CENTS_PER_SEMITONE :: f32(100.0)
 
+// The modulation envelope's reach on oscillator 2's pitch at full amount.
+MOD_ENV_PITCH_SEMITONES :: f32(60.0)
+
 // Where a sample sits in the render chunk. The reference renders in chunks of at
 // most 256 frames that restart at every host block and at every note event, and
 // reads its envelopes once per chunk; see `voice_process`.
@@ -647,9 +650,12 @@ voice_process :: proc(
 
 	switch p.mod_env_dest {
 	case .Osc2_Pitch:
-		// The full amount is a wide sweep; 24 semitones is two octaves, which
-		// is the range this kind of pitch envelope is normally asked for.
-		mod_osc2_semitones += mod_env * 24.0
+		// Sixty semitones at full amount: the pitch above the envelope-off render
+		// is 60 * amount * envelope, linear in the amount (0.94 semitones a step of
+		// parameter 11 at the envelope's peak) and following the same fade law as
+		// the amplitude. This was 24, "two octaves", a guess; the reference reads
+		// 2.5 times that at every amount from 66 to 96, within a few per cent.
+		mod_osc2_semitones += mod_env * MOD_ENV_PITCH_SEMITONES
 	case .Fm:
 		mod_fm += mod_env
 	case .Pulse_Width:

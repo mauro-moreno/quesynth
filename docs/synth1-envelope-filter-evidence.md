@@ -366,7 +366,9 @@ on the machine's dev-2026-09 build.
 - **D2. The integer staircase and the 256-sample tick.** Not copied; the engine
   keeps a smooth float. What it costs is measured above (three spectral rows).
   The finer breaks below stored 48 are unresolved.
-- **D3. Filter and modulation envelope laws.** Not read. They share the type,
+- **D3 (done; see `docs/synth1-filter-structure.md`, "Modulation and filter
+  envelopes").** Both follow the amplitude's laws, read from the pitch and cutoff
+  traces. The entry below is the record as it stood. **D3. Filter and modulation envelope laws.** Not read. They share the type,
   and stay exponential with the table times. Applying the law to them without
   a reading moved the bank both ways (all envelopes: envelope mean 1.7389 ->
   1.6801 but 033 +1.8 and 031 +0.9, null worse than 0.5 dB on two) and was

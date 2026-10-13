@@ -218,9 +218,6 @@ same sample for sample. A per-note factor of `1 - exp(-n / 69)`, which the older
 evidence tried and set aside, made later notes 60% quiet at sample 160 for exactly
 this reason.
 
-The modulation envelope's attack was tried on the same law and came out worse (bank
-envelope error 1.389 to 1.454 dB), so it keeps the table.
-
 ## Pitch edits and the wheel
 
 Oscillator 2's pitch (parameter 2) slides linearly to a new value over fifty
@@ -231,6 +228,31 @@ travel in 42 ms), so the time to bend is the same 33.6 ms from 10 to 90% at a ra
 2, 12 and 24 semitones and scales with the distance the wheel moves (17.4 ms for half a
 travel, 8.6 for a quarter). `s1probe arch ramp` against the reference, up and down:
 profiles within 0.02 at every 5 ms offset, 10 to 90% times within 0.5 ms.
+
+## Modulation and filter envelopes
+
+Both follow the amplitude envelope's laws, read from their own traces and not assumed:
+a linear attack of `0.0005 * 56000 ^ (v / 127)` seconds, a decay and release that are
+`exp(-8u) * (1 - u)` over `0.01 * 6000 ^ (v / 127)` seconds, and a sustain level for
+the filter envelope that is linear in the knob.
+
+`s1probe arch modenv` reads oscillator 2's pitch above an envelope-off render, with
+the modulation envelope on pitch. Given only the attack and decay lengths the law
+predicts 28.5 semitones at 150 ms and 5.59 at one second for attack 64, decay 90 and
+amount 96, and the reference reads 28.97 and 5.59. The reach is **60 semitones** at full
+amount and linear in the amount: 0.94 semitones a step of parameter 11 at the
+envelope's peak, 7.20, 14.42 and 28.97 semitones at amounts 72, 80 and 96. The engine
+had 24, "two octaves", and an exponential decay, so it was 2.5 times too shallow and fell
+away slightly too fast. Now within 1% at attack 0, 20, 40, 64 and 90 and decay 50 to 110.
+
+`s1probe arch filterenv` reads a sine two octaves above the low pass's corner in dB
+over time. Attack 64, decay 90: reference and engine agree to 0.1 dB from 100 ms to
+3.4 s (the one-pole decay was 0.5 dB low by 600 ms); with sustain 40 and with a
+110 decay and sustain 60 the same.
+
+Factory bank, 128 patches, from the pitch slides: null depth -14.34 -> -16.72 dB
+(65 patches closer, 24 further), envelope error 1.37 -> 1.21 dB, spectral 2.75 -> 2.56
+dB. Patches 033, 108, 016 and 027 go from about -5 dB to between -25 and -32 dB.
 
 ## Results
 
@@ -249,8 +271,10 @@ error is read over few samples; it went 3.58 -> 3.25 dB and is not pursued furth
   the amplifier's ramp are copied. The filter and modulation envelopes, read per
   chunk, made the deepest nulls worse, so they stay per sample; what the reference
   does with them inside a chunk is not settled.
-- **Modulation envelope's attack**: not the amplitude law, and not the table's floor
-  explained; what it is has not been read.
+- **The modulation envelope's other destinations.** Its reach on oscillator 2's pitch
+  is measured (60 semitones at full amount); the scales on FM (1.0) and pulse width
+  (0.45) are still chosen, and the rendered pitch is the only thing the probes can
+  read cleanly.
 - **Release in the voice-count probe**: `arch voices` holds every note until the end,
   so the slot rule for a note in release rests on the allocator's logic and the
   tests, not on a measurement of the reference.

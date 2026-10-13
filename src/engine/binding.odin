@@ -699,8 +699,8 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// Displays "-64".."+63". Normalised by 64 so the centre state is exactly
 	// zero modulation, which is what the readme promises.
 	e.mod_env_amount = dsp.clamp32(display_number(11, p.values[11], 0) / 64.0, -1, 1)
-	e.mod_env_attack = envelope_attack_time(12, p.values[12])
-	e.mod_env_decay = envelope_decay_time(13, p.values[13])
+	e.mod_env_attack = amp_attack_seconds(resolved_position(12, p.values[12]))
+	e.mod_env_decay = envelope_segment_length(13, p.values[13])
 
 	// -- filter --------------------------------------------------------------
 
@@ -744,7 +744,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	}
 
 	e.filter_attack = amp_attack_seconds(resolved_position(15, p.values[15]))
-	e.filter_decay = envelope_decay_time(16, p.values[16])
+	e.filter_decay = envelope_segment_length(16, p.values[16])
 	// Parameter 17 is a linear reading of the knob, and for once that is not a
 	// guess -- it is a guess that measurement confirmed.
 	//
@@ -759,7 +759,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// Within 0.005 the whole way. Unlike the amplitude sustain, which shares the
 	// gain knob's curve, this one really is linear.
 	e.filter_sustain = unit_position(17, p.values[17])
-	e.filter_release = envelope_release_time(18, p.values[18])
+	e.filter_release = envelope_segment_length(18, p.values[18])
 
 	// Parameter 19 is a position on the cutoff axis (`filter_knob_index`), and
 	// parameter 20 is the resonance, `state/127`: every filter turns those two
