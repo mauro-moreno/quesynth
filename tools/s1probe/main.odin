@@ -629,7 +629,7 @@ usage :: proc() {
 	fmt.eprintln("  s1probe behavior [dll] <keys|ctrl|delaytone|chorus1|osc2track|arp> [options]")
 	fmt.eprintln("                        -- timed MIDI scripts through both engines; see")
 	fmt.eprintln("                           behaviorprobe.odin and docs/synth1-behavior-errors.md")
-	fmt.eprintln("  s1probe arch [dll] <fxorder|pan|lfocutoff|lfophase|envshape|envlaw|ramp|clip|rate|osc|voices|eq|filtertype|tone|hits|arp|chorus|modenv|filterenv|filterhits|modenvscale>")
+	fmt.eprintln("  s1probe arch [dll] <fxorder|pan|lfocutoff|lfophase|envshape|envlaw|ramp|clip|rate|osc|voices|eq|filtertype|tone|hits|arp|chorus|modenv|filterenv|filterhits|modenvscale|onset|chorusreplay|fadein|fadedump|delaygrid|fxgrid|gainstep|ad1sweep|ad1fit>")
 	fmt.eprintln("                        [--wav <dir>] [--values <list>] [--what cutoff|pitch|bend|knots]")
 	fmt.eprintln("                        -- the architecture theories; see archprobe.odin and")
 	fmt.eprintln("                           docs/synth1-architecture-evidence.md")
