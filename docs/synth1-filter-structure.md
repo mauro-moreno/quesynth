@@ -221,6 +221,17 @@ this reason.
 The modulation envelope's attack was tried on the same law and came out worse (bank
 envelope error 1.389 to 1.454 dB), so it keeps the table.
 
+## Pitch edits and the wheel
+
+Oscillator 2's pitch (parameter 2) slides linearly to a new value over fifty
+milliseconds whatever the size of the edit: 39.9 ms from 10 to 90% for twelve semitones,
+39.7 for three. Key shift, fine tune and master tune do not slide; they move at once.
+The wheel moves at a fixed rate in wheel units, about 23.75 full scales a second (a full
+travel in 42 ms), so the time to bend is the same 33.6 ms from 10 to 90% at a range of
+2, 12 and 24 semitones and scales with the distance the wheel moves (17.4 ms for half a
+travel, 8.6 for a quarter). `s1probe arch ramp` against the reference, up and down:
+profiles within 0.02 at every 5 ms offset, 10 to 90% times within 0.5 ms.
+
 ## Results
 
 Factory bank, 128 patches, spectral error mean in dB, by the bank's own per-row
@@ -240,9 +251,6 @@ error is read over few samples; it went 3.58 -> 3.25 dB and is not pursued furth
   does with them inside a chunk is not settled.
 - **Modulation envelope's attack**: not the amplitude law, and not the table's floor
   explained; what it is has not been read.
-- **Pitch edits and bends are instant here.** `arch ramp` shows the reference taking
-  about 40 ms (a linear 50 ms slide in steps of 1/128 semitone) to move to a new
-  oscillator 2 pitch, and about 34 ms for a bend, where the engine jumps.
 - **Release in the voice-count probe**: `arch voices` holds every note until the end,
   so the slot rule for a note in release rests on the allocator's logic and the
   tests, not on a measurement of the reference.

@@ -4813,3 +4813,78 @@ test_only_the_first_note_after_a_load_rises_under_the_gain_smoother :: proc(t: ^
 	second := peak_of(left, 40, 24)
 	testing.expectf(t, second > first * 1.3, "the second note's early peak %v is not above the first's %v", second, first)
 }
+
+// Oscillator 2's pitch edit slides linearly over fifty milliseconds, whatever its
+// size, and the wheel moves at a fixed rate in wheel units, whatever the bend range.
+// `s1probe arch ramp`: the reference's pitch edit takes 39.9 ms from 10 to 90% for
+// twelve semitones and 39.7 for three; its bend 33.6 ms at a range of 2, 12 and 24.
+slide_probe_engine :: proc(patch_values: [][2]int) -> engine.Engine {
+	p := default_patch()
+	p.values[73] = 0
+	p.values[66] = 0
+	p.values[65] = 0
+	for pair in patch_values {p.values[pair[0]] = pair[1]}
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	return e
+}
+
+@(test)
+test_oscillator_2_pitch_edit_slides_over_fifty_milliseconds :: proc(t: ^testing.T) {
+	e := slide_probe_engine({{1, 3}, {5, 127}})
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 4800)
+	right := make([]f32, 4800)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_note_on(&e, 60, 1.0)
+	engine.engine_process(&e, left, right)
+	before := e.osc2_pitch.value
+
+	p := e.patch
+	p.values[2] += 12
+	engine.engine_apply_patch(&e, p)
+	distance := e.params.osc2_semitones - before
+	testing.expect(t, distance > 5, "the edit did not move the target")
+	engine.engine_process(&e, left[:1200], right[:1200]) // 25 ms
+	halfway := (e.osc2_pitch.value - before) / distance
+	testing.expectf(t, abs(halfway - 0.5) < 0.02, "half way through the slide the pitch had moved %v of the way", halfway)
+	engine.engine_process(&e, left[:1300], right[:1300])
+	testing.expectf(t, abs(e.osc2_pitch.value - e.params.osc2_semitones) < 0.001, "after 52 ms the pitch was %v from its target", e.osc2_pitch.value - e.params.osc2_semitones)
+}
+
+@(test)
+test_pitch_wheel_moves_at_a_fixed_rate_in_wheel_units :: proc(t: ^testing.T) {
+	e := slide_probe_engine({})
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 960)
+	right := make([]f32, 960)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_set_pitch_bend(&e, 1)
+	testing.expect_value(t, e.pitch_bend, f32(1))
+	testing.expect_value(t, e.pitch_bend_applied, f32(0))
+	engine.engine_process(&e, left[:480], right[:480]) // 10 ms
+	testing.expectf(t, abs(e.pitch_bend_applied - 0.2375) < 0.002, "after 10 ms the bend was %v, want 0.2375", e.pitch_bend_applied)
+	engine.engine_process(&e, left, right) // 20 ms more: 30 ms in total, less than the 42 ms travel
+	engine.engine_process(&e, left, right)
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, e.pitch_bend_applied, f32(1))
+}
+
+// Key shift, fine tune and master tune move at once, in both engines.
+@(test)
+test_other_pitch_controls_are_not_slid :: proc(t: ^testing.T) {
+	e := slide_probe_engine({})
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 64)
+	right := make([]f32, 64)
+	defer delete(left)
+	defer delete(right)
+	p := e.patch
+	p.values[9] += 12
+	engine.engine_apply_patch(&e, p)
+	testing.expect_value(t, e.params.key_shift, f32(12))
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, e.params.key_shift, f32(12))
+}

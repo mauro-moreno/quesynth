@@ -1307,7 +1307,7 @@ cmd_arch_ramp :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	fmt.println("  u(t): progress of the step at t ms after the event's block boundary; t10/t90: when it crosses 10%")
 	fmt.println("  and 90%; mid: u halfway between t10 and t90, 0.50 for a linear ramp, 0.70 for a one-pole")
 	fmt.println()
-	whats := []string{"cutoff", "cc", "pitch", "bend", "cutoff-small", "bend-half"}
+	whats := []string{"cutoff", "cc", "pitch", "bend", "cutoff-small", "bend-half", "pitch-small", "keyshift", "finetune", "master", "bend-quarter", "bend-range2", "bend-range24"}
 	if o.what != "" {whats = []string{o.what}}
 	offsets := []f64{0, 5, 10, 20, 30, 40, 50, 60}
 	head := strings.builder_make(context.temp_allocator)
@@ -1347,10 +1347,42 @@ cmd_arch_ramp :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 			set_param(&p, 2, zero)
 			set_param(&p, 3, 64)
 			append(&ev, script_on(0, note), script_set(0.5, 2, arch_stored_for_number(2, 12)), script_set(1.0, 2, zero), script_off(1.5, note))
-		case "bend", "bend-half":
+		case "pitch-small":
 			note = 96
-			set_param(&p, 40, arch_stored_for_number(40, 12))
-			append(&ev, script_on(0, note), script_bend(0.5, what == "bend" ? 16383 : 12288), script_bend(1.0, 8192), script_off(1.5, note))
+			set_param(&p, 1, 3)
+			set_param(&p, 5, 127)
+			set_param(&p, 4, 1)
+			zero := arch_stored_for_number(2, 0)
+			set_param(&p, 2, zero)
+			set_param(&p, 3, 64)
+			append(&ev, script_on(0, note), script_set(0.5, 2, arch_stored_for_number(2, 3)), script_set(1.0, 2, zero), script_off(1.5, note))
+		case "keyshift":
+			note = 84
+			zero := arch_stored_for_number(9, 0)
+			set_param(&p, 9, zero)
+			append(&ev, script_on(0, note), script_set(0.5, 9, arch_stored_for_number(9, 12)), script_set(1.0, 9, zero), script_off(1.5, note))
+		case "finetune":
+			note = 96
+			set_param(&p, 1, 3)
+			set_param(&p, 5, 127)
+			set_param(&p, 4, 1)
+			set_param(&p, 2, arch_stored_for_number(2, 0))
+			set_param(&p, 3, 0)
+			append(&ev, script_on(0, note), script_set(0.5, 3, 127), script_set(1.0, 3, 0), script_off(1.5, note))
+		case "master":
+			note = 96
+			set_param(&p, 72, 0)
+			append(&ev, script_on(0, note), script_set(0.5, 72, 127), script_set(1.0, 72, 0), script_off(1.5, note))
+		case "bend", "bend-half", "bend-quarter", "bend-range2", "bend-range24":
+			note = 96
+			range_semitones := f32(12)
+			if what == "bend-range2" {range_semitones = 2}
+			if what == "bend-range24" {range_semitones = 24}
+			set_param(&p, 40, arch_stored_for_number(40, range_semitones))
+			target := 16383
+			if what == "bend-half" {target = 12288}
+			if what == "bend-quarter" {target = 10240}
+			append(&ev, script_on(0, note), script_bend(0.5, target), script_bend(1.0, 8192), script_off(1.5, note))
 		case:
 			usage()
 		}

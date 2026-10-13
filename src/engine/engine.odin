@@ -18,6 +18,49 @@ DEFAULT_SAMPLE_RATE :: f32(48000.0)
 // cutoff would otherwise produce.
 SMOOTHING_SECONDS :: f32(0.01)
 
+// A full wheel travel, from the rest position to the top, takes about 42 ms: the
+// reference moves the bend about four 14-bit units a sample, 23.75 full scales a
+// second as measured. The rate is in wheel units, so the time to bend a given number of
+// semitones depends on the wheel's travel and not on parameter 40's range: the same
+// 33.6 ms from 10 to 90% at a range of 2, 12 and 24.
+PITCH_BEND_SLEW_PER_SECOND :: f32(23.75)
+
+// Oscillator 2's pitch edit slides linearly over fifty milliseconds whatever its size
+// (39.7 ms from 10 to 90% for three semitones as for twelve). The other pitch controls,
+// key shift, fine tune and master tune, move at once.
+PITCH_SLIDE_SECONDS :: f32(0.05)
+
+Pitch_Slide :: struct {
+	value:   f32,
+	start:   f32,
+	target:  f32,
+	counter: int,
+}
+
+pitch_slide_set :: proc(s: ^Pitch_Slide, value: f32, sample_rate: f32) {
+	s^ = {value = value, start = value, target = value, counter = int(PITCH_SLIDE_SECONDS * sample_rate)}
+}
+
+// Aim at a new target: from wherever it has got to, over the full time.
+pitch_slide_aim :: proc(s: ^Pitch_Slide, target: f32) {
+	if target != s.target {
+		s.start = s.value
+		s.target = target
+		s.counter = 0
+	}
+}
+
+pitch_slide_step :: proc(s: ^Pitch_Slide, sample_rate: f32) -> f32 {
+	total := max(int(PITCH_SLIDE_SECONDS * sample_rate), 1)
+	if s.counter < total {
+		s.counter += 1
+		s.value = s.start + (s.target - s.start) * f32(s.counter) / f32(total)
+	} else {
+		s.value = s.target
+	}
+	return s.value
+}
+
 // The slowest tempo the delay will size its buffers for.
 //
 // The longest musical division parameter 35 offers is a whole note, four beats,
@@ -73,8 +116,14 @@ Engine :: struct {
 	chorus_left:   []f32,
 	chorus_right:  []f32,
 
-	// -1..1, in units of `Engine_Params.pitch_bend_range`.
+	// -1..1, in units of `Engine_Params.pitch_bend_range`: where the wheel is. The
+	// pitch follows it at a fixed rate in wheel units, whatever the bend range, and
+	// `pitch_bend_applied` is where it has got to.
 	pitch_bend:  f32,
+	pitch_bend_applied: f32,
+	// Oscillator 2's pitch, which slides to a new value over fifty milliseconds when
+	// it is edited.
+	osc2_pitch:  Pitch_Slide,
 	tempo_bpm:   f32,
 
 	// Monotonic, used for voice stealing and for seeding each voice's noise.
@@ -126,6 +175,8 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	e.params = params
 	e.tempo_bpm = 120.0
 	e.pitch_bend = 0
+	e.pitch_bend_applied = 0
+	pitch_slide_set(&e.osc2_pitch, params.osc2_semitones, e.sample_rate)
 	e.age = 0
 	e.last_note = 60.0
 	e.held_notes = 0
@@ -290,6 +341,7 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false, keep_voice
 		// change displaces the target, and snapping to the patch's undisplaced
 		// value would sweep the new sound from there to where the wheel sits.
 		smoother_reset(&e.pan_smooth, e.params.pan)
+		pitch_slide_set(&e.osc2_pitch, e.params.osc2_semitones, e.sample_rate)
 
 		// And the effects' own memory, which is the part that is audible if it is
 		// forgotten.
@@ -1027,6 +1079,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	params := e.params
 
 	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
+	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	for i in 0 ..< n {
 		if chunk.position >= chunk.length {
@@ -1042,6 +1095,13 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 
 		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
 		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
+		params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
+		bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
+		if abs(e.pitch_bend - e.pitch_bend_applied) <= bend_step {
+			e.pitch_bend_applied = e.pitch_bend
+		} else {
+			e.pitch_bend_applied += e.pitch_bend > e.pitch_bend_applied ? bend_step : -bend_step
+		}
 
 		// Per sample, and only when it is switched on. A step boundary rounded
 		// to the block would land a 1/24-beat step up to a whole step late at
@@ -1063,7 +1123,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			if !v.active {
 				continue
 			}
-			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend, lfo_value, lfo_ramped, chunk)
+			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend_applied, lfo_value, lfo_ramped, chunk)
 			sum_l += l
 			sum_r += r
 		}
