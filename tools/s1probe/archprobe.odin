@@ -2326,6 +2326,19 @@ cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 		{"type 2, fast and deep", 2, 100, 127, 120, 64, 127},
 		{"type 4, fast and deep", 4, 100, 127, 120, 64, 127},
 		{"type 2, no depth", 2, 64, 0, 64, 64, 127},
+		{"comb fb 0", 1, 64, 0, 64, 0, 127},
+		{"comb fb 1", 1, 64, 0, 64, 1, 127},
+		{"comb fb 2", 1, 64, 0, 64, 2, 127},
+		{"comb fb 3", 1, 64, 0, 64, 3, 127},
+		{"comb fb 4", 1, 64, 0, 64, 4, 127},
+		{"comb fb 8", 1, 64, 0, 64, 8, 127},
+		{"comb fb 127", 1, 64, 0, 64, 127, 127},
+		{"sweep rate 90", 2, 100, 127, 90, 64, 127},
+		{"sweep rate 100", 2, 100, 127, 100, 64, 127},
+		{"sweep rate 110", 2, 100, 127, 110, 64, 127},
+		{"sweep rate 127", 2, 100, 127, 127, 64, 127},
+		{"sweep rate 120 depth 64", 2, 100, 64, 120, 64, 127},
+		{"sweep rate 120 depth 100", 2, 100, 100, 120, 64, 127},
 		{"type 2, rate 0", 2, 100, 127, 0, 64, 127},
 		{"type 2, rate 1", 2, 100, 127, 1, 64, 127},
 		{"type 2, rate 8", 2, 100, 127, 8, 64, 127},
@@ -2389,7 +2402,7 @@ cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 			}
 		}
 		if len(o.values) > 0 && o.values[0] == 98 {
-			for i in 0 ..< 30000 {
+			for i in 0 ..< 6000 {
 				fmt.printfln("S %v %.9f %.9f", i, a[i], b[i])
 			}
 		}
@@ -2417,7 +2430,7 @@ cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 			"  %-26v | %7v  %7v | %7v  %7v",
 			cs.name, sdec1(nulls[0], 7), sdec1(nulls[1], 7), sdec1(levels[0], 7), sdec1(levels[1], 7),
 		)
-		if len(o.values) > 0 {
+		if len(o.values) > 0 && o.values[0] < 90 {
 			fmt.printf("      left null by window (s):")
 			for w in 0 ..< 6 {
 				a, b := ms_to_frame(300 + f64(w) * 350), ms_to_frame(650 + f64(w) * 350)

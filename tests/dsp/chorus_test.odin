@@ -127,3 +127,43 @@ test_chorus_parameter_laws :: proc(t: ^testing.T) {
 	near(t, engine.chorus_feedback_gain(64), 0, 1e-7, "feedback at 64")
 	near(t, engine.chorus_feedback_gain(127), 0.9745, 1e-4, "feedback at 127")
 }
+
+// The sweep oscillator is put back at (0, 0.9999) at the start of a render chunk if its
+// cosine has risen above 0.9999, and not otherwise. The check belongs to the chunk and not
+// the host block: `s1probe arch chorus` at sweep rates of 100 and 120 nulled to -39 and
+// -42 dB against the reference with it once per block and to -56 dB, the floor of the dry
+// source, with it per chunk.
+@(test)
+test_chorus_oscillator_restarts_at_a_chunk_start_only_when_it_has_grown :: proc(t: ^testing.T) {
+	c, _, buffers := chorus_fixture(2, 400, 0.5, 100, 0)
+	defer delete(buffers[0])
+	defer delete(buffers[1])
+	c.sine = 0.3
+	c.cosine = 0.9998
+	dsp.chorus_begin_chunk(&c)
+	testing.expect_value(t, c.sine, f32(0.3))
+	testing.expect_value(t, c.cosine, f32(0.9998))
+	c.cosine = 1.0005
+	dsp.chorus_begin_chunk(&c)
+	testing.expect_value(t, c.sine, f32(0))
+	testing.expect_value(t, c.cosine, dsp.CHORUS_OSCILLATOR_PEAK)
+}
+
+// Several chunks in one call restart the oscillator at each of their starts: a block of
+// 600 frames has chunks of 256, 256 and 88.
+@(test)
+test_chorus_checks_its_oscillator_at_every_chunk_of_a_block :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[66] = 1
+	p.values[54] = 100
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	e.chorus.cosine = 1.5
+	left := make([]f32, 600)
+	right := make([]f32, 600)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_process(&e, left, right)
+	testing.expectf(t, e.chorus.cosine < 1.01, "the oscillator was left at %v", e.chorus.cosine)
+}

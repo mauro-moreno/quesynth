@@ -229,6 +229,36 @@ travel in 42 ms), so the time to bend is the same 33.6 ms from 10 to 90% at a ra
 travel, 8.6 for a quarter). `s1probe arch ramp` against the reference, up and down:
 profiles within 0.02 at every 5 ms offset, 10 to 90% times within 0.5 ms.
 
+### Chorus residuals
+
+Two residuals were open: feedback near -99% (-25 dB against a dry source that nulls to -56)
+and the fast, deep sweeps (-42 dB). They have different causes.
+
+**Fast sweeps: the oscillator's restart.** The residual depended on the sweep rate and not on
+the depth: rates 90, 110 and 127 were at the floor, 100 and 120 were 14 to 17 dB worse, and
+rate 120 gave the same -42.5 dB at depths 64, 100 and 127. The oscillator is put back at
+(0, 0.9999) when its cosine has crept above 0.9999, and that check runs at the start of every
+render chunk (at most 256 frames, restarting at every host block and note event), not once per
+host block. The magic-circle recurrence gains amplitude slowly, so how often it fires depends
+on whether the cosine's peak lands on a chunk start; at 100 Hz and up it differs between a
+per-block and a per-chunk check. Per chunk, every rate is at the floor: fast and deep -42.5 to
+-56.3 dB, type 4 -43.7 to -55.9, rate 100 -39.2 to -56.3, on three different sources.
+
+**Feedback: nothing in the chorus.** At depth zero the residual fell 6 dB per knob step
+(stored 0 to 4: -16.5, -24.1, -30.6, -36.6, -42.3 dB, the floor by stored 8). The loop delay
+is right (an offset of +-0.1 sample is worse; the optimum is 0.00) and so is the loop gain (a
+factor of 0.9995 to 1.001 changes the null by 0.1 dB). It is the same with a single sine and
+with two unison sines although their dry floors differ by 10 dB. The residual decays at the
+loop's own rate, 5.1 dB a second where a gain of 0.99 round 15 ms predicts 5.7, and with a
+slow attack the same comb nulls to -52.7 dB (123 ms) and -55.3 dB (2 s). So the loop, with a
+memory of about a second and a gain of 100 at resonance, keeps whatever differs in the first
+milliseconds of the note: the amplifier envelope is 0.7e-3 low around sample 100 and 0.7e-3
+high before sample 30 against the reference, which becomes -20 dB after the loop. The
+onset is not a one-pole with another time constant: a half-life of exactly 1 ms
+(tau 69.25 against 69.48) fits sample 100 and makes sample 32 worse, +1.24e-3 from +0.17e-3.
+A steady gain difference of 9e-5 (ours / reference 0.99991) adds about -41 dB on its own.
+Making the first 200 samples exact needs the amplifier's own structure, not a constant.
+
 ## Modulation and filter envelopes
 
 Both follow the amplitude envelope's laws, read from their own traces and not assumed:
@@ -309,7 +339,6 @@ error is read over few samples; it went 3.58 -> 3.25 dB and is not pursued furth
 - **Release in the voice-count probe**: `arch voices` holds every note until the end,
   so the slot rule for a note in release rests on the allocator's logic and the
   tests, not on a measurement of the reference.
-- **Chorus at feedback -99% and at the fastest, deepest sweeps** agrees with the
-  reference to -25 and -42 dB where the dry source nulls to -56: the loop's gain of
-  0.99 amplifies any difference a hundredfold, and no cause has been found for the
-  rest.
+- **Chorus feedback near -99%** agrees to the onset of the dry source, not to the chorus:
+  see "Chorus residuals". The remaining difference is the first few hundred samples of a
+  note, an amplifier envelope that is within 0.1% of the reference but not exact.

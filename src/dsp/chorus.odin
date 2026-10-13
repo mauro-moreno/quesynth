@@ -92,6 +92,15 @@ chorus_begin_block :: proc "contextless" (c: ^Chorus, enabled: bool) {
 		delay_line_clear(&c.line[1])
 	}
 	c.enabled = enabled
+}
+
+// Called at the start of every render chunk, which is at most 256 frames and restarts at
+// every host block and every note event, not once per block: the oscillator is put back
+// at (0, 0.9999) there if its cosine has crept above 0.9999. The magic-circle recurrence
+// gains amplitude slowly, so how often this fires depends on how many chunk starts the
+// cosine's peak lands on, and at a sweep of a hundred hertz and more that is a different
+// set of moments from a once-per-block check.
+chorus_begin_chunk :: proc "contextless" (c: ^Chorus) {
 	if c.cosine > CHORUS_OSCILLATOR_PEAK {
 		c.sine = 0
 		c.cosine = CHORUS_OSCILLATOR_PEAK

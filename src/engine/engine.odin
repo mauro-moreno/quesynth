@@ -1081,9 +1081,11 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
 	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
+	dsp.chorus_begin_chunk(&e.chorus)
 	for i in 0 ..< n {
 		if chunk.position >= chunk.length {
 			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+			dsp.chorus_begin_chunk(&e.chorus)
 		}
 		// The free-running LFOs advance once per sample for the whole engine,
 		// so every non-key-synced voice reads the same value.
@@ -1112,6 +1114,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			// A step that starts a note starts a chunk, as a note event does.
 			if e.age != age_before {
 				chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+				dsp.chorus_begin_chunk(&e.chorus)
 			}
 		}
 
