@@ -1806,17 +1806,21 @@ test_delay_division_table_matches_the_measured_reference :: proc(t: ^testing.T) 
 	}
 }
 
-// Parameter 83 reads out both channel times at once.
+// Parameter 83 is centred at 64, the left channel's offset grows above it and the right's
+// below, and the offset is 0.1 ms * 10^(steps/21) up to 100 ms.
 @(test)
-test_delay_spread_display_parses_both_channels :: proc(t: ^testing.T) {
-	l, r := engine.delay_spread_ms("0.0 : 100.0 msec")
-	testing.expectf(t, abs(l) < 0.01 && abs(r - 100.0) < 0.01, "got %v : %v", l, r)
+test_delay_spread_follows_its_position :: proc(t: ^testing.T) {
+	l, r := engine.delay_spread_ms(127)
+	testing.expectf(t, abs(l - 100.0) < 0.01 && r == 0, "got %v : %v", l, r)
 
-	l, r = engine.delay_spread_ms("100.0 : 0.0 msec")
-	testing.expectf(t, abs(l - 100.0) < 0.01 && abs(r) < 0.01, "got %v : %v", l, r)
+	l, r = engine.delay_spread_ms(0)
+	testing.expectf(t, l == 0 && abs(r - 100.0) < 0.01, "got %v : %v", l, r)
 
-	l, r = engine.delay_spread_ms("0.0 : 0.0 msec")
-	testing.expectf(t, abs(l) < 0.01 && abs(r) < 0.01, "centre should be no spread, got %v : %v", l, r)
+	l, r = engine.delay_spread_ms(64)
+	testing.expectf(t, l == 0 && r == 0, "centre should be no spread, got %v : %v", l, r)
+
+	l, r = engine.delay_spread_ms(66)
+	testing.expectf(t, abs(l - 0.1245) < 0.001 && r == 0, "two steps above the centre, got %v : %v", l, r)
 }
 
 // The delay line has to return what was put into it, a chosen number of samples
@@ -1862,7 +1866,8 @@ test_delay_modes_route_repeats_independently :: proc(t: ^testing.T) {
 			left_samples  = 2,
 			right_samples = 2,
 			feedback      = 0.5,
-			dry_wet       = 1,
+			dry_gain      = 0,
+			wet_gain      = 1,
 			mode          = mode,
 		}
 		left, right: [9]f32
@@ -1887,15 +1892,15 @@ test_delay_modes_route_repeats_independently :: proc(t: ^testing.T) {
 	testing.expect_value(t, right[4], 0.5)
 	testing.expect_value(t, left[6], 0.25)
 
-	// Ping-pong sums both inputs into the left line and alternates from there.
+	// Ping-pong averages both inputs into the left line and alternates from there.
 	left, right = render(.Ping_Pong, 0.25, 0.75)
-	testing.expect_value(t, left[2], 1.0)
+	testing.expect_value(t, left[2], 0.5)
 	testing.expect_value(t, right[2], 0.0)
 	// Feedback is applied once per round trip, so the right echo matches the
 	// first left echo and the next pair is down by the feedback amount.
-	testing.expect_value(t, right[4], 1.0)
-	testing.expect_value(t, left[6], 0.5)
-	testing.expect_value(t, right[8], 0.5)
+	testing.expect_value(t, right[4], 0.5)
+	testing.expect_value(t, left[6], 0.25)
+	testing.expect_value(t, right[8], 0.25)
 }
 
 // A delay with the mix up has to still be sounding after the note has gone, and
@@ -3938,20 +3943,28 @@ test_effect_disabled_passes_through :: proc(t: ^testing.T) {
 	}
 }
 
+// The distortions' low-pass is a resonant biquad with a Q of three, measured against the
+// reference's complex transfer function: its corner follows the fitted law, and a step
+// rings past its final value where a one-pole filter never does.
+@(test)
+test_distortion_lowpass_is_a_resonant_biquad :: proc(t: ^testing.T) {
+	testing.expect(t, abs(dsp.effect_lowpass_hz(0) - 399.9) < 0.5, "corner at ctl2 0 drifted from the fit")
+	testing.expect(t, abs(dsp.effect_lowpass_hz(64.0 / 127.0) - 2567.0) < 5.0, "corner at ctl2 64 drifted from the fit")
+	testing.expect(t, abs(dsp.effect_lowpass_hz(1.0) - 16004.0) < 20.0, "corner at ctl2 127 drifted from the fit")
+
+	fx: dsp.Effect
+	peak: f32
+	for _ in 0 ..< 400 {
+		out, _ := dsp.effect_lowpass(&fx, 1, 1, 2567.0, SR)
+		peak = max(peak, out)
+	}
+	testing.expectf(t, peak > 1.3, "a step through the low-pass peaked at %v, which is no ring", peak)
+}
+
 @(test)
 test_effect_measured_curves_hit_their_measured_values :: proc(t: ^testing.T) {
 	// The four curves that were read out of the reference in real units. If any of
 	// these drifts, the measurement recorded in src/dsp/effect.odin has been lost.
-
-	// The shared low-pass corner: 452 Hz at the bottom, 2901 Hz measured at
-	// stored 64, and about 17.6 kHz at the top.
-	testing.expect(t, abs(dsp.effect_lowpass_hz(0) - 451.9) < 1.0)
-	mid_corner := dsp.effect_lowpass_hz(64.0 / 127.0)
-	testing.expect(
-		t,
-		abs(mid_corner - 2901.0) < 90.0,
-		"the low-pass corner at mid knob drifted from its measured 2901 Hz",
-	)
 
 	// The ring modulator: 92.7 Hz measured at stored 64, 7869 Hz at the top.
 	ring_mid := dsp.effect_ring_hz(64.0 / 127.0)
@@ -4040,8 +4053,8 @@ test_effect_analog1_makes_even_harmonics_and_analog2_does_not :: proc(t: ^testin
 		pos, neg: [2]f32
 		p1, n1: f32
 		for _ in 0 ..< 64 {
-			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01)
-			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01)
+			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01, 3.8, 0.87)
+			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01, 3.8, 0.87)
 		}
 		a2 := dsp.effect_shape_analog2(x, 8, 1) + dsp.effect_shape_analog2(-x, 8, 1)
 		asymmetric_error += abs(p1 + n1)
@@ -4290,15 +4303,15 @@ test_chorus_four_taps_are_narrower_than_two :: proc(t: ^testing.T) {
 @(test)
 test_effect_analog_drive_saturates :: proc(t: ^testing.T) {
 	// The largest error in the old distortions was the drive, which ran
-	// exponentially to 64 while the reference's stops moving: a.d.2's odd
-	// harmonics are identical at ctl1 80, 96, 112 and 127, so whatever drives it
-	// has reached its end well before the knob does.
+	// exponentially to 64 while the reference's stops moving: a.d.2's drive,
+	// refitted against its exact low-pass, climbs to about 57 by ctl1 96 and is
+	// within a hair of 59 from there to the top of the knob.
 	top := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 1.0)
-	at80 := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 80.0 / 127.0)
+	at112 := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 112.0 / 127.0)
 	testing.expect(
 		t,
-		abs(top - at80) < 1.0e-3,
-		fmt.tprintf("a.d.2's drive still moves above ctl1 80: %.3f against %.3f", at80, top),
+		abs(top - at112) < 0.01 * top,
+		fmt.tprintf("a.d.2's drive still moves above ctl1 112: %.3f against %.3f", at112, top),
 	)
 	testing.expect(t, top < 64.0, fmt.tprintf("a.d.2's drive reaches %.1f, the old law's ceiling", top))
 
@@ -4362,12 +4375,14 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	// first sample and stays there, which is correct and shows no settling.
 	mid := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 0)
 	gain := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 0)
+	loop_gain := dsp.effect_ad_table(dsp.EFFECT_AD1_LOOP_GAIN, 0)
+	rest := dsp.effect_ad_table(dsp.EFFECT_AD1_REST, 0)
 
 	state: [2]f32
-	first := dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef)
+	first := dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef, loop_gain, rest)
 	settled := first
 	for _ in 0 ..< 8000 {
-		settled = dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef)
+		settled = dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef, loop_gain, rest)
 	}
 	testing.expect(
 		t,
@@ -4380,7 +4395,7 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	idle: [2]f32
 	quiet := f32(0)
 	for _ in 0 ..< 4000 {
-		quiet = dsp.effect_shape_analog1(&idle, 0, mid, gain, coef)
+		quiet = dsp.effect_shape_analog1(&idle, 0, mid, gain, coef, loop_gain, rest)
 	}
 	testing.expect(t, abs(quiet) < 1.0e-6, fmt.tprintf("a.d.1 idles at %.5f, not silence", quiet))
 
@@ -4389,16 +4404,54 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	// exceed that times the gain.
 	drive := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 1.0)
 	top := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 1.0)
-	bound := top * (1.0 + dsp.EFFECT_ANALOG1_REST) * 1.001
+	top_loop_gain := dsp.effect_ad_table(dsp.EFFECT_AD1_LOOP_GAIN, 1.0)
+	top_rest := dsp.effect_ad_table(dsp.EFFECT_AD1_REST, 1.0)
+	bound := top * (1.0 + math.tanh(top_rest)) * 1.001
 	loud: [2]f32
 	for i in 0 ..< 48000 {
 		x := f32(i % 97) / 48.0 - 1.0
-		v := dsp.effect_shape_analog1(&loud, x, drive, top, coef)
+		v := dsp.effect_shape_analog1(&loud, x, drive, top, coef, top_loop_gain, top_rest)
 		if !(abs(v) <= bound) || v != v {
 			testing.expect(t, false, fmt.tprintf("a.d.1 left its rails at sample %d: %.4f", i, v))
 			break
 		}
 	}
+}
+
+// Past ctl1 80 a.d.1's loop is a square wave with equal halves and no even harmonics of its
+// own; the reference's second harmonic there is about -30 dB at 131 Hz at any level. The weak
+// quadratic behind the shared high pass supplies it from the droop that high pass puts on the
+// wave, so a loud sine at 131 Hz must come out with its second harmonic well above where a
+// clean square wave leaves it.
+@(test)
+test_effect_analog1_saturated_output_has_a_second_harmonic :: proc(t: ^testing.T) {
+	SR_LOCAL :: f32(48000.0)
+	fx := dsp.Effect_Params {
+		enabled = true,
+		type    = .Analog_1,
+		ctl1    = 1.0,
+		ctl2    = 1.0,
+		level   = 1.0,
+	}
+	dsp.effect_derive(&fx)
+	e: dsp.Effect
+	hz := f32(130.81)
+	frames := 24000
+	re1, im1, re2, im2: f64
+	for i in 0 ..< frames {
+		x := 0.8 * math.sin(2.0 * math.PI * hz * f32(i) / SR_LOCAL)
+		l, _ := dsp.effect_process(&e, x, x, &fx, SR_LOCAL)
+		if i < 8000 {continue}
+		a1 := 2.0 * math.PI * f64(hz) * f64(i) / f64(SR_LOCAL)
+		re1 += f64(l) * math.cos(a1)
+		im1 += f64(l) * math.sin(a1)
+		re2 += f64(l) * math.cos(2.0 * a1)
+		im2 += f64(l) * math.sin(2.0 * a1)
+	}
+	h1 := math.sqrt(re1 * re1 + im1 * im1)
+	h2 := math.sqrt(re2 * re2 + im2 * im2)
+	ratio_db := 20.0 * math.log10(h2 / h1)
+	testing.expectf(t, ratio_db > -40.0 && ratio_db < -20.0, "second harmonic at %.1f dB against the first, expected -40 to -20", ratio_db)
 }
 
 @(test)
@@ -4409,7 +4462,16 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	// 0, 64 and 127 -- so it is a fixed filter in front, and this checks the
 	// filter is there and steep.
 	SR_LOCAL :: f32(48000.0)
-	measure :: proc(hz, sr: f32) -> f32 {
+	roots := [7]f32 {
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_ZERO_RE_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_ZERO_IM_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_ZERO_REAL_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_POLE_1_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_POLE_2_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_POLE_3_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_GAIN, 0),
+	}
+	measure :: proc(hz, sr: f32, roots: ^[7]f32) -> f32 {
 		e: dsp.Effect
 		state: [2][2]f32
 		peak := f32(0)
@@ -4424,14 +4486,7 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 				dsp.EFFECT_AD_HIGHPASS_Q,
 				sr,
 			)
-			l2, _ := dsp.effect_ad_highpass(
-				&e.ad1_highpass,
-				l,
-				r,
-				dsp.EFFECT_ANALOG1_HP2_HZ,
-				dsp.EFFECT_ANALOG1_HP2_Q,
-				sr,
-			)
+			l2, _ := dsp.effect_analog1_post(&e.ad1_post, l, r, roots, sr)
 			// The last two thirds, so the filters have settled.
 			if i > n / 3 && abs(l2) > peak {peak = abs(l2)}
 		}
@@ -4439,9 +4494,9 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	}
 	TAU_LOCAL :: f32(6.283185307179586)
 
-	low := measure(32.7, SR_LOCAL)
-	mid := measure(130.8, SR_LOCAL)
-	high := measure(2093.0, SR_LOCAL)
+	low := measure(32.7, SR_LOCAL, &roots)
+	mid := measure(130.8, SR_LOCAL, &roots)
+	high := measure(2093.0, SR_LOCAL, &roots)
 	low_db := 20.0 * math.log10(max(low / high, 1.0e-9))
 	mid_db := 20.0 * math.log10(max(mid / high, 1.0e-9))
 
@@ -4627,10 +4682,12 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
 		testing.expect_value(t, e.chorus.cosine, fresh.chorus.cosine)
 		// The gain is not snapped: it glides from where it was to the new patch's, in
-		// about a millisecond, as the reference's does, and it starts at zero on a
-		// fresh engine. Only the first note after a load comes in under that glide.
+		// about a millisecond, as the reference's does, and it starts at the patch's. The
+		// fade-in behind the effects starts a hair under zero on a fresh engine, and only
+		// the first note after a load comes in under it.
 		testing.expect_value(t, e.gain_smooth.value, smoothed[0])
-		testing.expect_value(t, fresh.gain_smooth.value, f32(0))
+		testing.expect_value(t, fresh.gain_smooth.value, fresh.params.amp_gain)
+		testing.expect_value(t, fresh.load_fade.value, engine.GAIN_SMOOTHER_START)
 		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)
 	}
 }

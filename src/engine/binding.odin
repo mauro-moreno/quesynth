@@ -423,27 +423,19 @@ display_frequency_hz :: proc(display: string) -> f32 {
 	return value
 }
 
-// Parse parameter 83's "L : R msec" display into its two millisecond values.
-delay_spread_ms :: proc(display: string) -> (left, right: f32) {
-	colon := -1
-	for i in 0 ..< len(display) {
-		if display[i] == ':' {
-			colon = i
-			break
-		}
-	}
-	if colon < 0 {
+// Parameter 83's two channel offsets in milliseconds, from its position. The display
+// reads "0.1 : 0.0 msec" and rounds to a tenth of a millisecond, which at 48 kHz is
+// nearly five samples and not the number the reference uses: `s1probe arch fadedump`
+// measured whole-sample offsets that follow 0.1 ms * 10^(k/21) for k steps off the
+// centre at 64, held at 100 ms, left channel above the centre and right below it.
+delay_spread_ms :: proc(position: int) -> (left, right: f32) {
+	steps := position - 64
+	magnitude := steps < 0 ? -steps : steps
+	if magnitude == 0 {
 		return 0, 0
 	}
-	l, l_ok := display_leading_number(display[:colon])
-	r, r_ok := display_leading_number(display[colon + 1:])
-	if !l_ok {
-		l = 0
-	}
-	if !r_ok {
-		r = 0
-	}
-	return l, r
+	ms := min(0.1 * math.pow(f32(10.0), f32(magnitude) / 21.0), 100.0)
+	return steps > 0 ? ms : 0, steps < 0 ? ms : 0
 }
 
 // Bind a parsed patch.
@@ -978,27 +970,23 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 
 	// -- delay ---------------------------------------------------------------
 	//
-	// Unusually for this file, most of this is read rather than chosen. The
-	// displays carry real units: parameter 35 spells out musical divisions,
-	// 83 reads out the two channel times in milliseconds, 37 is a percentage.
+	// Parameter 35 spells out musical divisions in its display, which is read. State 0,
+	// "0.1 msec", is not a division and binds to no beats; the engine gives it the
+	// shortest time.
 	e.delay_on = resolved_position(65, p.values[65]) != 0
-	{
-		display := resolved_display(35, p.values[35])
-		beats, musical := delay_display_beats(display)
-		e.delay_beats = beats
-		if !musical {
-			// State 0 is "0.1 msec", a fixed short time rather than a division.
-			ms, ok := display_leading_number(display)
-			e.delay_fixed_ms = ok ? ms : 0.1
-		}
-	}
-	e.delay_left_ms, e.delay_right_ms = delay_spread_ms(resolved_display(83, p.values[83]))
+	e.delay_beats, _ = delay_display_beats(resolved_display(35, p.values[35]))
+	e.delay_left_ms, e.delay_right_ms = delay_spread_ms(resolved_position(83, p.values[83]))
 	// Parameter 36 is a bare 0..127 and feeds that fraction of each echo back.
 	// A transient at stored 100 decays by 100/127 per repeat, while stored 127
 	// holds at unity, so there is no conventional just-below-one scale here.
 	e.delay_feedback = unit_position(36, p.values[36])
-	// Parameter 37 displays a percentage, so it is read, not mapped.
-	e.delay_dry_wet = dsp.clamp32(display_number(37, p.values[37], 0) / 100.0, 0, 1)
+	// Parameter 37 is not a crossfade. Measured against the reference at every eighth
+	// position, the dry stays at exactly one up to the middle and then falls by 1/63 a
+	// step, and the echo rises by 1/63 a step from position 1 and stays at one from the
+	// middle up. So position 64 has both at full and 127 is echo alone.
+	mix := resolved_position(37, p.values[37])
+	e.delay_dry_gain = dsp.clamp32(f32(127 - mix) / 63.0, 0, 1)
+	e.delay_wet_gain = dsp.clamp32(f32(mix - 1) / 63.0, 0, 1)
 	// Parameter 98 is a bare 0..127, a knob that cuts highs one way and lows the
 	// other and is bypassed at its centre.
 	e.delay_tone = delay_tone_setting(resolved_position(98, p.values[98]))

@@ -405,15 +405,14 @@ Engine_Params :: struct {
 	// has to be recomputed when the tempo moves, not when a note starts.
 	delay_on:           bool,
 	// Parameter 35. Cycle length in beats, or zero when the state selects the
-	// fixed short setting rather than a musical division.
+	// short setting rather than a musical division.
 	delay_beats:        f32,
-	// Parameter 35 state 0, in milliseconds.
-	delay_fixed_ms:     f32,
 	// Parameter 83, the left and right offsets in milliseconds.
 	delay_left_ms:      f32,
 	delay_right_ms:     f32,
 	delay_feedback:     f32,
-	delay_dry_wet:      f32,
+	delay_dry_gain:     f32,
+	delay_wet_gain:     f32,
 	// Parameter 98, signed on -1..1.
 	delay_tone:         dsp.Tone_Setting,
 	// Parameter 82: normal stereo, cross feedback, or ping-pong.

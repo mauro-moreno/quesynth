@@ -28,8 +28,10 @@ Delay_Params :: struct {
 	right_samples: f32,
 	// 0..1. How much of each channel's own output returns to its input.
 	feedback:      f32,
-	// 0..1, the share of the output that is delayed rather than dry.
-	dry_wet:       f32,
+	// 0..1. The gains on the dry input and on the echo. They are independent, not a
+	// crossfade: at the middle of parameter 37 both are at one.
+	dry_gain:      f32,
+	wet_gain:      f32,
 	// Darkens the repeats one way and thins them the other; off at the centre.
 	tone:          Tone_Setting,
 	mode:          Delay_Mode,
@@ -78,7 +80,8 @@ delay_process :: proc "contextless" (
 ) -> (
 	left, right: f32,
 ) {
-	wet := clamp32(p.dry_wet, 0, 1)
+	dry := clamp32(p.dry_gain, 0, 1)
+	wet := clamp32(p.wet_gain, 0, 1)
 	// Nothing to do, but the lines still have to run: a patch that turns the
 	// delay up mid-note should not hear whatever was left in the buffer from
 	// before.
@@ -101,7 +104,7 @@ delay_process :: proc "contextless" (
 		delay_line_write(&d.line[0], left_in + shaped_right * feedback)
 		delay_line_write(&d.line[1], right_in + shaped_left * feedback)
 	case .Ping_Pong:
-		delay_line_write(&d.line[0], left_in + right_in + shaped_right * feedback)
+		delay_line_write(&d.line[0], (left_in + right_in) * 0.5 + shaped_right * feedback)
 		delay_line_write(&d.line[1], shaped_left)
 	case .Stereo:
 		delay_line_write(&d.line[0], left_in + shaped_left * feedback)
@@ -115,8 +118,8 @@ delay_process :: proc "contextless" (
 	// centre. This engine used to output the unshaped read, so the first echo
 	// came out flat at every tone and only the repeats were coloured. At the
 	// centre the tone is an identity and nothing changes.
-	left = lerp32(left_in, shaped_left, wet)
-	right = lerp32(right_in, shaped_right, wet)
+	left = left_in * dry + shaped_left * wet
+	right = right_in * dry + shaped_right * wet
 	return sanitize(left), sanitize(right)
 }
 

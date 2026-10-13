@@ -1,5 +1,7 @@
 package engine
 
+import "core:math"
+
 import "../dsp"
 
 // Parameter smoothing.
@@ -39,4 +41,38 @@ smoother_process :: proc(s: ^Smoother, target: f32) -> f32 {
 	s.value = target + (s.value - target) * s.coef
 	s.value = dsp.sanitize(s.value)
 	return s.value
+}
+
+// A smoother whose distance to the target halves every `seconds`, started at `initial`.
+smoother_init_half_life :: proc(s: ^Smoother, initial, seconds, sample_rate: f32) {
+	s.value = initial
+	s.coef = math.pow(f32(0.5), 1.0 / max(seconds * sample_rate, 1.0))
+}
+
+// A value that moves to a new target in a straight line over a fixed number of samples,
+// started the moment the target is seen to have changed. A target that moves again
+// mid-ramp starts a new ramp from where the value is.
+Ramp :: struct {
+	value:     f32,
+	target:    f32,
+	step:      f32,
+	remaining: int,
+}
+
+ramp_init :: proc(r: ^Ramp, value: f32) {
+	r^ = Ramp{value = value, target = value}
+}
+
+ramp_process :: proc(r: ^Ramp, target: f32, samples: int) -> f32 {
+	if target != r.target {
+		r.target = target
+		r.remaining = max(samples, 1)
+		r.step = (target - r.value) / f32(r.remaining)
+	}
+	if r.remaining > 0 {
+		r.remaining -= 1
+		r.value = r.remaining == 0 ? r.target : r.value + r.step
+	}
+	r.value = dsp.sanitize(r.value)
+	return r.value
 }

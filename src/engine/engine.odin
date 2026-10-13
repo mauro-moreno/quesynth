@@ -18,6 +18,26 @@ DEFAULT_SAMPLE_RATE :: f32(48000.0)
 // cutoff would otherwise produce.
 SMOOTHING_SECONDS :: f32(0.01)
 
+// The output gain moves to a new value in a straight line over one render chunk, 256
+// samples, from the first sample after the change. That ramp sits ahead of the effects: a
+// gain change reaches the echo a delay later, as measured (`s1probe arch gainstep`, where
+// the reference's gain falls linearly across 256 samples).
+//
+// A second stage, behind the effects, is the fade-in of the first note after a load.
+// It halves its distance to full every millisecond, 48 samples at 48 kHz, which is a time
+// constant of 69.25 samples.
+// The effects see the unfaded signal -- the chorus, the equaliser, the effect unit and
+// the delay all take the dry output divided by the fade -- and only the output carries
+// it. It starts at -0.0023 and not at zero: the reference's first note after a load
+// follows 1 - exp(-(n + 0.84) / 69.25) times a linear ramp of exactly 24 samples, where
+// this was 1 - exp(-(n + 1) / 69.48), and the difference is 0.8 parts in a thousand at
+// its worst.
+GAIN_SMOOTHER_HALF_LIFE_SECONDS :: f32(0.001)
+GAIN_SMOOTHER_START :: f32(-0.002311)
+
+// Parameter 35's first state, "0.1 msec", the shortest delay time.
+DELAY_SHORTEST_MS :: f32(0.1)
+
 // A full wheel travel, from the rest position to the top, takes about 42 ms: the
 // reference moves the bend about four 14-bit units a sample, 23.75 full scales a
 // second as measured. The rate is in wheel units, so the time to bend a given number of
@@ -89,7 +109,8 @@ Engine :: struct {
 	// apart stay in phase with each other.
 	global_lfo:  [2]dsp.Lfo,
 
-	gain_smooth:   Smoother,
+	gain_smooth:   Ramp,
+	load_fade:     Smoother,
 	pan_smooth:    Smoother,
 
 	// The effects, and the buffers their delay lines run in.
@@ -216,12 +237,14 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 		e.global_lfo[j].shape = params.lfo[j].shape
 	}
 
-	// The gain starts at zero and rises to the patch's, as the reference's does when it
-	// is loaded: the first note after a load comes in under a one-pole of about 70
+	// The output starts at zero and rises to full, as the reference's does when it is
+	// loaded: the first note after a load comes in under a one-pole of about 70
 	// samples, which a note on a settled engine does not. That is the whole of what
 	// looked like a per-note onset factor of 1 - exp(-n / 69): a second note, on the
-	// same voice or another, reaches full level at once.
-	smoother_init(&e.gain_smooth, 0, SMOOTHING_SECONDS, e.sample_rate)
+	// same voice or another, reaches full level at once. The gain itself starts at the
+	// patch's value, so only the fade is heard.
+	ramp_init(&e.gain_smooth, params.amp_gain)
+	smoother_init_half_life(&e.load_fade, GAIN_SMOOTHER_START, GAIN_SMOOTHER_HALF_LIFE_SECONDS, e.sample_rate)
 	smoother_init(&e.pan_smooth, params.pan, SMOOTHING_SECONDS, e.sample_rate)
 
 	engine_update_lfo_rates(e)
@@ -1031,25 +1054,34 @@ effect_params :: proc(
 	fx.hold_samples = dsp.effect_hold_samples(p.effect_ctl1_steps, e.sample_rate)
 	dsp.effect_derive(&fx)
 
-	base_ms: f32
-	if p.delay_beats > 0 {
-		base_ms = p.delay_beats * 60000.0 / bpm
-	} else {
-		base_ms = p.delay_fixed_ms
+
+	// The reference's delay lengths are whole samples: the beat division's and then
+	// parameter 83's offset, each truncated, and added. At 120 bpm the divisions are
+	// whole already, and the offsets measured as whole numbers at every position. A
+	// length that is a whole number in exact arithmetic must not fall a sample short
+	// to float rounding, so the product is taken in double precision with a margin.
+	// The first state, "0.1 msec", is not a base time that the offset adds to but a
+	// floor under it: four samples with no offset, and the offset itself once that
+	// is longer.
+	to_whole :: proc(samples: f64) -> f32 {
+		return f32(int(samples + 1.0e-3))
+	}
+	whole_length :: proc(beats, tempo_bpm, offset_ms, sample_rate: f32, length: int) -> f32 {
+		offset := to_whole(f64(offset_ms) * 0.001 * f64(sample_rate))
+		samples: f32
+		if beats > 0 {
+			samples = to_whole(f64(beats) * 60.0 * f64(sample_rate) / f64(tempo_bpm)) + offset
+		} else {
+			samples = max(to_whole(f64(DELAY_SHORTEST_MS) * 0.001 * f64(sample_rate)), offset)
+		}
+		return dsp.clamp32(samples, 1.0, f32(max(length - 2, 2)))
 	}
 
-	// Parameter 83 offsets the two channels around that base. The buffer was
-	// sized for the largest offset the parameter can hold, so this only has to
-	// stay non-negative.
-	to_samples :: proc(ms, sample_rate: f32, limit: int) -> f32 {
-		samples := ms * 0.001 * sample_rate
-		return dsp.clamp32(samples, 1.0, f32(max(limit - 2, 2)))
-	}
-
-	delay.left_samples = to_samples(base_ms + p.delay_left_ms, e.sample_rate, len(e.delay_left))
-	delay.right_samples = to_samples(base_ms + p.delay_right_ms, e.sample_rate, len(e.delay_right))
+	delay.left_samples = whole_length(p.delay_beats, bpm, p.delay_left_ms, e.sample_rate, len(e.delay_left))
+	delay.right_samples = whole_length(p.delay_beats, bpm, p.delay_right_ms, e.sample_rate, len(e.delay_right))
 	delay.feedback = p.delay_feedback
-	delay.dry_wet = p.delay_dry_wet
+	delay.dry_gain = p.delay_dry_gain
+	delay.wet_gain = p.delay_wet_gain
 	delay.tone = p.delay_tone
 	delay.mode = p.delay_mode
 
@@ -1095,7 +1127,8 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			lfo_ramped[j] = e.global_lfo[j].ramped
 		}
 
-		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
+		params.amp_gain = ramp_process(&e.gain_smooth, e.params.amp_gain, CHUNK_FRAMES)
+		load_fade := smoother_process(&e.load_fade, 1)
 		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
 		params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
 		bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
@@ -1175,6 +1208,9 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 				&e.chorus, out_l, out_r, &chorus_params, e.sample_rate,
 			)
 		}
+
+		out_l *= load_fade
+		out_r *= load_fade
 
 		// A soft clip rather than a hard one: a stack of unison voices summing
 		// in phase can exceed 1.0 on a loud patch, and the contract asks for a
