@@ -338,7 +338,7 @@ test_every_patch_load_replaces_the_patch_on_the_audio_thread :: proc(t: ^testing
 		testing.expectf(t, e.effect == fresh.effect, "%v: the effect unit kept the previous patch's state", c.entry)
 		testing.expectf(t, e.equalizer == fresh.equalizer, "%v: the equaliser kept the previous patch's state", c.entry)
 		testing.expectf(t, e.delay.tone == fresh.delay.tone, "%v: the delay tone kept its state", c.entry)
-		testing.expectf(t, e.chorus.phase == fresh.chorus.phase, "%v: the chorus kept its phase", c.entry)
+		testing.expectf(t, e.chorus.cosine == fresh.chorus.cosine && e.chorus.sine == fresh.chorus.sine, "%v: the chorus kept its oscillator", c.entry)
 
 		// The smoothers stand at what the new patch plays, with the wheel
 		// where it still is when its slot kept listening to it.

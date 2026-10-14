@@ -27,7 +27,7 @@ AD1_CTL1S := [14]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 96, 112, 127}
 AD1_KNOTS :: 14
 AD1_SHARED :: 0
 AD1_PER_KNOT :: 6
-AD1_FLOOR_DB :: -46.0
+AD1_FLOOR_DB :: f64(-46.0)
 
 Ad1_Config :: struct {
 	ctl1:  int,
@@ -72,7 +72,7 @@ ad1_nl :: proc(v: f64, shape: int, asymmetry := 0.0) -> f64 {
 }
 
 ad1_note_hz :: proc(note: int) -> f64 {
-	return 440.0 * math.pow(2.0, (f64(note) - 69.0) / 12.0)
+	return 440.0 * math.pow(f64(2.0), (f64(note) - 69.0) / 12.0)
 }
 
 ad1_load :: proc() -> (configs: [dynamic]Ad1_Config, ok: bool) {
@@ -264,7 +264,7 @@ ad1_error :: proc(m: Ad1_Model, configs: []Ad1_Config, ctl1: int, phase_weight: 
 		reference_first := abs(c.meas[0])
 		for k in 0 ..< AD1_HARMONICS {
 			if abs(c.hfull[k]) == 0 {continue}
-			if k > 0 && abs(c.meas[k]) < reference_first * math.pow(10.0, AD1_FLOOR_DB / 20.0) {continue}
+			if k > 0 && abs(c.meas[k]) < reference_first * math.pow(f64(10.0), AD1_FLOOR_DB / 20.0) {continue}
 			post := c.hfull[k] / complex(1, 0) / ad1_small_signal(m, c.hz * f64(k + 1))
 			model := h[k] * post
 			measured := c.meas[k] * complex(math.cos(-f64(k + 1) * c.phase), math.sin(-f64(k + 1) * c.phase))
@@ -350,16 +350,16 @@ cmd_arch_ad1fit :: proc(o: ^Arch_Options) {
 			q[base] = math.ln(drives_low[d])
 			q[base + 1] = math.ln(gains_low[d])
 			q[base + 2] = rests_low[d]
-			q[base + 3] = math.ln(118.44)
-			q[base + 4] = math.ln(1.1305)
-			q[base + 5] = math.ln(224.7)
+			q[base + 3] = math.ln(f64(118.44))
+			q[base + 4] = math.ln(f64(1.1305))
+			q[base + 5] = math.ln(f64(224.7))
 		} else {
 			q[base] = math.ln(drives_lin[d])
 			q[base + 1] = math.ln(gains_lin[d])
 			q[base + 2] = rests_lin[d]
-			q[base + 3] = math.ln(77.11)
-			q[base + 4] = math.ln(1.0411)
-			q[base + 5] = math.ln(520.4)
+			q[base + 3] = math.ln(f64(77.11))
+			q[base + 4] = math.ln(f64(1.0411))
+			q[base + 5] = math.ln(f64(520.4))
 		}
 	}
 	_ = start_lg
