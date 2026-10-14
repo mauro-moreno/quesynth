@@ -25,6 +25,9 @@ FILTER_INDEX_STEPS :: f32(1024)
 FILTER_INDEX_MAX :: f32(1023)
 FILTER_INDEX_LOW_HZ :: f32(15)
 FILTER_INDEX_HIGH_HZ :: f32(16000)
+// ln(16000 / 15), the axis's span in natural-log units, as a constant so that the
+// per-sample tracking does not take a logarithm of two constants.
+FILTER_AXIS_SPAN :: f32(6.9722938)
 
 // How long a change of knob, envelope amount or tracking takes to reach the
 // filter: fifty milliseconds, linear in position, whatever the size of the step.
@@ -60,9 +63,17 @@ filter_track_shift :: proc "contextless" (knob, amount, note: f32) -> f32 {
 	if amount <= 0 {
 		return 0
 	}
-	ratio_log := (note - FILTER_TRACK_REFERENCE_NOTE) / 12.0 * math.ln(1.0 + amount)
-	axis_span := math.ln(FILTER_INDEX_HIGH_HZ / FILTER_INDEX_LOW_HZ)
-	moved := math.floor(knob + FILTER_INDEX_STEPS * ratio_log / axis_span)
+	return filter_track_shift_ln(knob, math.ln(1.0 + amount), note)
+}
+
+// The same with `ln(1 + amount)` already taken: it only changes with the knob, so the
+// voices read it from the bound parameters instead of computing it every sample.
+filter_track_shift_ln :: proc "contextless" (knob, ln_amount, note: f32) -> f32 {
+	if ln_amount <= 0 {
+		return 0
+	}
+	ratio_log := (note - FILTER_TRACK_REFERENCE_NOTE) / 12.0 * ln_amount
+	moved := math.floor(knob + FILTER_INDEX_STEPS * ratio_log / FILTER_AXIS_SPAN)
 	return clamp(moved, 0, FILTER_INDEX_STEPS) - knob
 }
 

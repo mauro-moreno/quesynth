@@ -4498,6 +4498,92 @@ test_effect_analog1_has_no_offset_while_held_or_after_release :: proc(t: ^testin
 
 // Two LFOs on pan at full depth sum to 2, and the curve is only defined up to 1: past it the
 // far channel's gain goes negative, which is a polarity flip and not a quieter channel.
+// The level read a chunk ahead is a closed form for the finite decay and release segments and
+// a stepped copy otherwise; either way it has to be what stepping the envelope gives.
+@(test)
+test_envelope_value_ahead_matches_stepping_it :: proc(t: ^testing.T) {
+	SR_LOCAL :: f32(48000.0)
+	for attack in ([?]f32{0.001, 0.05}) {
+		for decay in ([?]f32{0.02, 0.4, 3.0}) {
+			for release in ([?]f32{0.01, 0.3, 4.0}) {
+				for sustain in ([?]f32{0, 0.3, 0.9}) {
+					for gate_off_at in ([?]int{-1, 100, 3000, 20000}) {
+						e: dsp.Envelope
+						dsp.envelope_set_fade(&e, attack, decay, sustain, release, SR_LOCAL)
+						dsp.envelope_gate_on(&e, true)
+						for i in 0 ..< 60000 {
+							if i == gate_off_at {dsp.envelope_gate_off(&e)}
+							if i % 97 == 0 {
+								ahead := dsp.envelope_value_ahead(&e, 256)
+								probe := e
+								stepped: f32
+								for _ in 0 ..< 256 {stepped = dsp.envelope_process(&probe)}
+								if abs(ahead - stepped) > 1.0e-5 {
+									testing.expectf(t, false, "attack %v decay %v release %v sustain %v off %v sample %v: ahead %v, stepped %v", attack, decay, release, sustain, gate_off_at, i, ahead, stepped)
+									return
+								}
+							}
+							dsp.envelope_process(&e)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// Past the end of the cutoff axis the ladder would run with a coefficient above one at a low
+// sample rate and diverge. It is held under 0.45 of the rate, as the diode ladder is.
+@(test)
+test_moog_ladder_is_stable_at_a_low_sample_rate_with_the_cutoff_at_the_top :: proc(t: ^testing.T) {
+	for sr in ([?]f32{22050, 32000, 44100, 48000}) {
+		l: dsp.Moog_Ladder
+		dsp.moog_ladder_set(&l, 16000, 1.0, sr)
+		seed := u32(12345)
+		peak: f32
+		for i in 0 ..< 48000 {
+			seed = seed * 1664525 + 1013904223
+			x := f32(seed >> 8) / f32(1 << 24) * 2 - 1
+			y := dsp.moog_ladder_process(&l, x)
+			peak = max(peak, abs(y))
+			if !(abs(y) < 100) {
+				testing.expectf(t, false, "sample rate %v: output %v at sample %v", sr, y, i)
+				return
+			}
+		}
+	}
+}
+
+// Re-pressing a note that still sounds takes its own slots back before it looks elsewhere. It
+// must not cut off a released note that is only ringing out.
+@(test)
+test_repressing_a_sounding_note_does_not_cut_off_a_ringing_one :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[94] = 3
+	p.values[73] = 0
+	p.values[25] = 0
+	p.values[28] = 127
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	if !testing.expect_value(t, len(e.voices), 3) {return}
+	left := make([]f32, 256)
+	right := make([]f32, 256)
+	defer delete(left)
+	defer delete(right)
+	for note in ([?]int{60, 62, 64}) {engine.engine_note_on(&e, note, 1.0)}
+	engine.engine_process(&e, left, right)
+	engine.engine_note_off(&e, 60)
+	engine.engine_note_on(&e, 65, 1.0)
+	engine.engine_process(&e, left, right)
+	engine.engine_note_off(&e, 62)
+	engine.engine_process(&e, left, right)
+	before := engine.engine_active_voice_count(&e)
+	engine.engine_note_on(&e, 65, 1.0)
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, engine.engine_active_voice_count(&e), before)
+}
+
 @(test)
 test_pan_lfo_gain_never_goes_negative_past_full_depth :: proc(t: ^testing.T) {
 	for x in ([?]f32{1.0, 1.5, 2.0, -1.0, -1.5, -2.0}) {

@@ -705,18 +705,29 @@ engine_acquire_voice :: proc(e: ^Engine, note: int, same: ^Voice) -> ^Voice {
 	wanted := clamp_int(e.params.unison_voices, 1, MAX_UNISON)
 	keep := min(wanted, poly)
 
+	// A note pressed again while it still sounds gives its own slots back first, and takes
+	// them again before looking anywhere else: scanning on from `slot_next` could reach a
+	// released, ringing note before them and cut it off while its own slot sat unused.
+	freed: [MAX_POLYPHONY]int
+	freed_count := 0
 	if same != nil {
 		for i in 0 ..< poly {
 			s := &e.slots[i]
 			if s.used && s.voice >= 0 && e.voices[s.voice].age == s.age && &e.voices[s.voice] == same {
 				s.used = false
+				freed[freed_count] = i
+				freed_count += 1
 			}
 		}
 	}
 
 	for k in 0 ..< keep {
 		chosen := -1
+		if k < freed_count {
+			chosen = freed[k]
+		}
 		for step in 0 ..< poly {
+			if chosen >= 0 {break}
 			index := (e.slot_next + step) % poly
 			if engine_slot_free(e, index) {
 				chosen = index
@@ -1111,7 +1122,8 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	// bytes, and copying it 48000 times a second was costing more than a whole
 	// voice: `e.params` cannot change during a block -- only the host can
 	// change it, and it does so between blocks -- so the only fields that need
-	// rewriting per sample are the three smoothed ones below.
+	// rewriting per sample are the smoothed ones below: the gain, the pan and
+	// oscillator 2's pitch.
 	params := e.params
 
 	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
@@ -1174,12 +1186,14 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// -- effects, on the summed voices ---------------------------------
 		//
 		// Delay before chorus, which is the order the reference's own panel and
-		// manual list them in. Both run whether or not they are switched on: a
+		// manual list them in. The delay runs whether or not it is switched on: a
 		// line that has been idle still holds whatever was last written to it,
-		// and switching an effect on mid-note would otherwise flush that out as
-		// a burst. Their parameter structs are rebuilt per sample from a value
-		// that only changes per block, which costs nothing measurable and keeps
-		// the tempo-dependent times honest when the host moves the tempo.
+		// and switching it on mid-note would otherwise flush that out as a burst.
+		// The chorus runs only while it is on, and clears its lines when it is
+		// switched on (`chorus_begin_block`), so it starts from silence either way.
+		// Their parameter structs are rebuilt per block from values that only change
+		// per block, which keeps the tempo-dependent times honest when the host moves
+		// the tempo.
 		out_l := dsp.sanitize(sum_l)
 		out_r := dsp.sanitize(sum_r)
 

@@ -60,6 +60,10 @@ Voice :: struct {
 	// The pan LFO's per-sample smoothing, derived from the sample rate when the parameters
 	// are pushed into the voice.
 	pan_lfo_smoothing: f32,
+	// The corner frequency of the cutoff position last read: the position moves in whole
+	// steps and holds for many samples, and the frequency is a power.
+	axis_index_cache: f32,
+	axis_hz_cache: f32,
 	// The amplitude envelope as the render chunk sees it: it ramps linearly across
 	// the chunk to the whole 1/2048th it reaches at the chunk's last sample.
 	// `knots_valid` is false until the chunk this voice is in has been read, and
@@ -626,18 +630,15 @@ voice_process :: proc(
 	if chunk.position == 0 || !v.knots_valid {
 		last_amp: f32
 		remaining := max(chunk.length - chunk.position, 1)
-		// A held level and a finished envelope do not move, so there is nothing to step
-		// ahead to; only a segment in progress is run forward on a copy.
+		// A held level and a finished envelope do not move, and the finite decay and release
+		// segments have a closed form, so only an attack is stepped forward on a copy.
 		#partial switch v.amp_env.stage {
 		case .Sustain:
 			last_amp = v.amp_env.sustain
 		case .Idle:
 			last_amp = 0
 		case:
-			ahead := v.amp_env
-			for _ in 0 ..< remaining {
-				last_amp = dsp.envelope_process(&ahead)
-			}
+			last_amp = dsp.envelope_value_ahead(&v.amp_env, remaining)
 		}
 		target := math.floor(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
 		v.amp_step = (target - v.amp_now) / f32(remaining)
@@ -664,6 +665,9 @@ voice_process :: proc(
 	// voice when a percussion patch has a non-zero sustain level.
 	if v.one_shot && v.gate && v.amp_env.stage == .Sustain {
 		voice_note_off(v)
+		// The release starts here, not at the end of the chunk: the amplitude ramp is
+		// heading for the gate-on level and has to be re-aimed from this sample.
+		v.knots_valid = false
 	}
 
 	// The modulation destinations, accumulated before anything uses them so a
@@ -792,8 +796,14 @@ voice_process :: proc(
 		smoothing := v.pan_lfo_smoothing > 0 ? v.pan_lfo_smoothing : pan_lfo_smoothing(sample_rate)
 		v.pan_lfo_gain[0] += (pan_lfo_gain(pan_lfo) - v.pan_lfo_gain[0]) * smoothing
 		v.pan_lfo_gain[1] += (pan_lfo_gain(-pan_lfo) - v.pan_lfo_gain[1]) * smoothing
-	} else {
-		v.pan_lfo_gain = {1, 1}
+	} else if v.pan_lfo_gain != {1, 1} {
+		// Leaving pan LFO control glides back to the static position with the same
+		// smoothing, so a depth set to zero or a changed destination does not click.
+		smoothing := v.pan_lfo_smoothing > 0 ? v.pan_lfo_smoothing : pan_lfo_smoothing(sample_rate)
+		for channel in 0 ..< 2 {
+			v.pan_lfo_gain[channel] += (1 - v.pan_lfo_gain[channel]) * smoothing
+			if abs(1 - v.pan_lfo_gain[channel]) < 1.0e-5 {v.pan_lfo_gain[channel] = 1}
+		}
 	}
 
 	// -- pitch ---------------------------------------------------------------
@@ -826,7 +836,7 @@ voice_process :: proc(
 	//
 	// The tracking amount is not linear: see `filter_track_shift`.
 	knob_index := filter_knob_index(p.filter_cutoff_state)
-	track_shift := filter_track_shift(knob_index, p.filter_key_track, base_note)
+	track_shift := filter_track_shift_ln(knob_index, p.filter_key_track_ln, base_note)
 
 	// Each step of parameter 21 moves the envelope's endpoint by two stored
 	// states of the cutoff knob.
@@ -856,7 +866,12 @@ voice_process :: proc(
 	)
 	// Every filter type runs on the position itself, one step of the axis at a
 	// time.
-	axis_hz := filter_index_hz(math.floor(cutoff_index))
+	axis_index := math.floor(cutoff_index)
+	if v.axis_hz_cache == 0 || axis_index != v.axis_index_cache {
+		v.axis_index_cache = axis_index
+		v.axis_hz_cache = filter_index_hz(axis_index)
+	}
+	axis_hz := v.axis_hz_cache
 
 	// -- amplitude -----------------------------------------------------------
 

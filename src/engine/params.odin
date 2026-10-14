@@ -350,6 +350,8 @@ Engine_Params :: struct {
 	filter_env_cutoff_states: f32,
 	// Parameter 22, 0..1, where 1 is one octave of cutoff per octave of note.
 	filter_key_track:   f32,
+	// ln(1 + filter_key_track), which the cutoff reads every sample.
+	filter_key_track_ln: f32,
 	// Parameter 23 resolved to the measured peak-normalised tanh drive.
 	filter_saturation_drive: f32,
 	filter_velocity:    bool,

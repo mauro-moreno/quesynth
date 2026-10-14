@@ -771,6 +771,7 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// "leave the frequency unchanged", so the linear 0..1 reading is the
 	// documented one.
 	e.filter_key_track = unit_position(22, p.values[22])
+	e.filter_key_track_ln = e.filter_key_track > 0 ? math.ln(1.0 + e.filter_key_track) : 0
 	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 

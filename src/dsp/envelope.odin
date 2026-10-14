@@ -132,6 +132,46 @@ envelope_fade_left :: proc "contextless" (u: f64) -> f32 {
 	return f32(math.exp(-ENVELOPE_FADE_EXPONENT * u) * (1.0 - u))
 }
 
+// The level `steps` samples on, without moving the envelope: what `envelope_process`
+// would return on the last of that many calls.
+//
+// The finite decay and release segments are a closed form of how far through them they
+// are, so those are computed directly. The attack and the exponential law accumulate
+// sample by sample, and a segment boundary can fall inside the span, so those step a copy.
+envelope_value_ahead :: proc "contextless" (e: ^Envelope, steps: int) -> f32 {
+	if steps <= 0 {
+		return e.value
+	}
+	if e.fade {
+		switch e.stage {
+		case .Idle:
+			return 0
+		case .Sustain:
+			return e.sustain
+		case .Decay:
+			progress := e.progress + f64(steps) * e.decay_step
+			if progress >= 1.0 {
+				return e.sustain
+			}
+			return e.sustain + (1.0 - e.sustain) * envelope_fade_left(progress)
+		case .Release:
+			progress := e.progress + f64(steps) * e.release_step
+			if progress >= 1.0 {
+				return 0
+			}
+			value := e.release_from * envelope_fade_left(progress)
+			return value <= ENVELOPE_FLOOR ? 0 : value
+		case .Attack:
+		}
+	}
+	ahead := e^
+	level: f32
+	for _ in 0 ..< steps {
+		level = envelope_process(&ahead)
+	}
+	return level
+}
+
 envelope_reset :: proc "contextless" (e: ^Envelope) {
 	e.stage = .Idle
 	e.value = 0

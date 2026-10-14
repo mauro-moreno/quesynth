@@ -56,6 +56,8 @@ Moog_Ladder :: struct {
 	valid:     bool,
 }
 
+MOOG_LADDER_NYQUIST_FRACTION :: f64(0.45)
+
 moog_ladder_reset :: proc "contextless" (l: ^Moog_Ladder) {
 	l.input_before = 0
 	l.y1 = 0
@@ -63,6 +65,7 @@ moog_ladder_reset :: proc "contextless" (l: ^Moog_Ladder) {
 	l.y3 = 0
 	l.y4 = 0
 	l.primed = false
+	l.valid = false
 }
 
 moog_ladder_set :: proc "contextless" (l: ^Moog_Ladder, hz, resonance, sample_rate: f32) {
@@ -78,7 +81,11 @@ moog_ladder_set :: proc "contextless" (l: ^Moog_Ladder, hz, resonance, sample_ra
 	l.rate = sample_rate
 	l.valid = true
 
-	f := f64(f32(f64(hz) * 2.0 / f64(sr)))
+	// Held under the same fraction of the sample rate as the diode ladder: at 22.05 kHz the
+	// top of the cutoff axis would otherwise put the coefficient past one and the filter
+	// diverges. At 44.1 kHz and above the axis stays below it and nothing changes.
+	held_hz := min(f64(hz), MOOG_LADDER_NYQUIST_FRACTION * f64(sr))
+	f := f64(f32(held_hz * 2.0 / f64(sr)))
 	k := f * MOOG_LADDER_K_LINEAR - f * MOOG_LADDER_K_QUADRATIC * f - 1.0
 	l.k_target = f32(k)
 	l.p_target = (l.k_target + 1.0) * 0.5
