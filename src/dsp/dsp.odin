@@ -25,16 +25,6 @@ TAU :: f32(6.283185307179586)
 // audible, so flushing them to zero is free in every sense that matters.
 DENORMAL_FLOOR :: f32(1.0e-20)
 
-// The lowest cutoff the filter is allowed to reach. Below this the TPT
-// prewarping tangent stops being well conditioned at 48 kHz.
-MIN_CUTOFF_HZ :: f32(10.0)
-
-// Cutoff is additionally held below this fraction of the sample rate. `tan`
-// diverges at Nyquist, and modulation routinely pushes an already-high cutoff
-// past it; clamping here is what makes the filter unconditionally stable rather
-// than stable for the inputs we happened to test.
-MAX_CUTOFF_RATIO :: f32(0.45)
-
 clamp32 :: proc "contextless" (v, lo, hi: f32) -> f32 {
 	if v < lo {return lo}
 	if v > hi {return hi}
@@ -112,7 +102,15 @@ note_to_hz :: proc "contextless" (note: f32) -> f32 {
 // contract survives: an output that approaches 64 rather than 2 is still bounded,
 // which is all "a stack of unison voices summing in phase must not produce
 // something unbounded" ever asked for.
-SOFT_CLIP_KNEE :: f32(32.0)
+//
+// It moved again. 32 was set from peaks of +30 dBFS, and `s1probe arch clip`
+// later found the reference passing +41.2 dBFS untouched (eight in-phase unison
+// layers with an equaliser peak of +24.8 dB), 8 dB past the knee, where this
+// engine returned +36.1 and put its third harmonic at -14.9 dB where the
+// reference has -117. At 256, +48.2 dBFS, the limiter is transparent across
+// everything the reference has been measured producing, and an output that
+// approaches 512 is still a bounded one.
+SOFT_CLIP_KNEE :: f32(256.0)
 
 soft_clip :: proc "contextless" (x: f32) -> f32 {
 	if !is_finite(x) {return 0}

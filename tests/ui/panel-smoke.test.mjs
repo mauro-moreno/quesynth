@@ -144,3 +144,51 @@ test("knob slider bounds match keyboard endpoints, and wheels expose their signe
     assert.equal(Number(wheel.getAttribute("aria-valuenow")), 1);
   }
 });
+
+// A stored integer below a parameter's first display selects its first state, as in
+// the engine (src/patch/value.odin, `display_state_below`): the reference sounds a
+// stored 0 for the oscillator 2 waveform as its first waveform, and the panel has
+// to show what will play. Above the range is the last state, and a value in a gap
+// of the displays (chorus type 3, between 2 and 4) takes the state below it.
+function checkedPosition(window, label) {
+  const groups = window.document.querySelectorAll(".radio")
+    .filter(group => group.getAttribute("aria-label") === label);
+  assert.equal(groups.length, 1, `one "${label}" radio group`);
+  const buttons = groups[0].children.filter(el => el.localName === "button");
+  return buttons.findIndex(button => button.getAttribute("aria-checked") === "true");
+}
+
+test("a stored value below a parameter's first display shows its first state", () => {
+  const window = bootPanel();
+  const base = window.SynthPatch.values();
+  const position = {};
+  for (const p of window.SYNTH1_PARAMS) position[p.i] = window.SYNTH1_PARAMS.indexOf(p);
+  const apply = (index, stored) => {
+    const list = base.slice();
+    list[position[index]] = stored;
+    window.SynthPatch.apply(list, "edge");
+  };
+  for (const [stored, want] of [[-1, 0], [0, 0], [1, 0], [2, 1], [3, 2], [4, 3], [5, 3], [9, 3]]) {
+    apply(1, stored);
+    assert.equal(checkedPosition(window, "Oscillator 2 Waveform"), want, `oscillator 2 waveform, stored ${stored}`);
+  }
+});
+
+// The LFO types' displays run 0, 1, 5, 2, 3, 4, so a stored value past the range is
+// display 5, which is the third state, and not the last one.
+test("a stored LFO type past its range shows display 5, the third state", () => {
+  const window = bootPanel();
+  const base = window.SynthPatch.values();
+  const slot = window.SYNTH1_PARAMS.findIndex(p => p.i === 42);
+  const labels = Array.from(window.document.querySelectorAll(".radio")).map(g => g.getAttribute("aria-label"));
+  const radio = Array.from(window.document.querySelectorAll(".radio")).find(g => /LFO 1.*(Type|Waveform|Shape)/i.test(g.getAttribute("aria-label") || ""));
+  assert.ok(radio, `an LFO 1 type radio group among ${labels.join(", ")}`);
+  const checked = () => radio.children.filter(el => el.localName === "button")
+    .findIndex(button => button.getAttribute("aria-checked") === "true");
+  for (const [stored, want] of [[-1, 0], [0, 0], [1, 1], [5, 2], [2, 3], [4, 5], [6, 2], [9, 2], [12, 2]]) {
+    const list = base.slice();
+    list[slot] = stored;
+    window.SynthPatch.apply(list, "edge");
+    assert.equal(checked(), want, `LFO 1 type, stored ${stored}`);
+  }
+});

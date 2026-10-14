@@ -347,7 +347,11 @@ on the machine's dev-2026-09 build.
 
 ## Deferred list
 
-- **D1. The amplitude attack law and its onset factor.** Supported (E1), not in
+- **D1 (adopted for the amplitude and filter attacks; see
+  `docs/synth1-filter-structure.md`, "Oscillator timing and note start").** The
+  onset factor is the engine's gain smoother on the first note after a load, not a
+  per-note factor, which is why applying it per note made later notes too quiet. The
+  rest of this entry is the record as it stood. **D1. The amplitude attack law and its onset factor.** Supported (E1), not in
   the engine. The table stays. Two bank runs from this commit's engine: the
   law in place of the table for every setting made the envelope mean 1.6534 ->
   1.7642 dB, 19 patches worse and 13 better by more than 0.05 dB, 117 +5.5, 033
@@ -362,7 +366,9 @@ on the machine's dev-2026-09 build.
 - **D2. The integer staircase and the 256-sample tick.** Not copied; the engine
   keeps a smooth float. What it costs is measured above (three spectral rows).
   The finer breaks below stored 48 are unresolved.
-- **D3. Filter and modulation envelope laws.** Not read. They share the type,
+- **D3 (done; see `docs/synth1-filter-structure.md`, "Modulation and filter
+  envelopes").** Both follow the amplitude's laws, read from the pitch and cutoff
+  traces. The entry below is the record as it stood. **D3. Filter and modulation envelope laws.** Not read. They share the type,
   and stay exponential with the table times. Applying the law to them without
   a reading moved the bank both ways (all envelopes: envelope mean 1.7389 ->
   1.6801 but 033 +1.8 and 031 +0.9, null worse than 0.5 dB on two) and was

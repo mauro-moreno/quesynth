@@ -25,8 +25,9 @@ Unison_Voice :: struct {
 	osc2:            dsp.Oscillator,
 	sub:             dsp.Oscillator,
 	sub_satellites:  [8]dsp.Oscillator,
-	filter:          dsp.Filter,
-	ladder:          dsp.Ladder,
+	chamberlin:      dsp.Chamberlin,
+	diode:           dsp.Diode_Ladder,
+	ladder:          dsp.Moog_Ladder,
 	// Parameter 75's offset in cents from the outer voice's pitch.
 	detune:          f32,
 	// -1..1.
@@ -52,10 +53,32 @@ Voice :: struct {
 	amp_env:      dsp.Envelope,
 	filter_env:   dsp.Envelope,
 	mod_env:      dsp.Envelope,
-	lfo:          [2]dsp.Lfo,
+	cutoff_ramp:  Cutoff_Ramp,
+	// The two channel gains an LFO on pan has reached; both are one when it is not
+	// driving pan.
+	pan_lfo_gain: [2]f32,
+	// The pan LFO's per-sample smoothing, derived from the sample rate when the parameters
+	// are pushed into the voice.
+	pan_lfo_smoothing: f32,
+	// The corner frequency of the cutoff position last read: the position moves in whole
+	// steps and holds for many samples, and the frequency is a power.
+	axis_index_cache: f32,
+	axis_hz_cache: f32,
+	// The amplitude envelope as the render chunk sees it: it ramps linearly across
+	// the chunk to the whole 1/2048th it reaches at the chunk's last sample.
+	// `knots_valid` is false until the chunk this voice is in has been read, and
+	// `first_chunk` is true until the note's first chunk is over.
+	amp_now:          f32,
+	amp_step:         f32,
+	knots_valid:      bool,
+	first_chunk:      bool,
 
 	unison:       [MAX_UNISON]Unison_Voice,
 	unison_count: int,
+	// Which of the stack's layers are still sounding, one bit each. A note starts
+	// with all of them; a later note that needs voices can take them from it one
+	// at a time, which is how the reference's pool, counted in layers, behaves.
+	live_layers:  u32,
 
 	// Monotonic stamp used to pick the oldest voice when all are busy.
 	age:          u64,
@@ -77,77 +100,11 @@ FM_FREQUENCY_DEPTH_EXPONENT :: f32(5.5)
 // cancellation depth cannot see this common signed shift. This origin is
 // deliberately separate from the free-running OSC_PHASE_FREE_TURNS
 // relationship.
-OSC_PHASE_FIXED_START_TURNS :: f32(-0.00125)
+OSC_PHASE_FIXED_START_TURNS :: f32(0)
 
 fm_frequency_depth :: proc(position: f32) -> f32 {
 	u := dsp.clamp32(position, 0, 1)
 	return FM_FREQUENCY_DEPTH_MAX * math.pow(u, FM_FREQUENCY_DEPTH_EXPONENT)
-}
-
-// Resolve a possibly fractional parameter-19 state on the same cutoff surface
-// selected at patch binding. Geometric interpolation is the natural operation
-// for frequency, both between adjacent states and between the measured low-Q
-// and high-Q 24 dB curves.
-filter_cutoff_at_state :: proc(p: ^Engine_Params, state: f32) -> f32 {
-	bounded := dsp.clamp32(state, 0, f32(FILTER_TABLE_SIZE - 1))
-	lo := int(math.floor(bounded))
-	hi := clamp_int(lo + 1, 0, FILTER_TABLE_SIZE - 1)
-	fraction := bounded - f32(lo)
-
-	if p.filter_slope == .Slope_24 && p.filter_mode == .Low_Pass {
-		// The ladder's pole is where the reference's resonant peak is, and
-		// `FILTER_CUTOFF_HZ_24` is exactly that, measured from the peak at
-		// resonance 107: 105.3 and 576.1 Hz at states 34 and 64, against 110.4 and
-		// 582.6 fitted from the response. A ladder needs one surface at every
-		// resonance, so none of the blending below applies to it.
-		// See `filter_ladder_pole`: the peak surface is a few per cent low.
-		return exp_map(fraction, FILTER_CUTOFF_HZ_24[lo], FILTER_CUTOFF_HZ_24[hi]) *
-			filter_ladder_pole(bounded)
-	}
-
-	if p.filter_slope == .Slope_24 {
-		// See `filter_cutoff_24_low_correction`: the generated resonance-0 surface
-		// is out by up to a factor of 1.51 in the middle of its range.
-		low_q := exp_map(
-			fraction,
-			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[lo],
-			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[hi],
-		) * filter_cutoff_24_low_correction(bounded)
-		high_q := exp_map(
-			fraction,
-			FILTER_CUTOFF_HZ_24[lo],
-			FILTER_CUTOFF_HZ_24[hi],
-		)
-		cutoff := filter_cutoff_24_effective_topology_scale(
-			p.filter_cutoff_topology_scale,
-			bounded,
-		) * exp_map(
-			p.filter_cutoff_surface_blend,
-			low_q,
-			high_q,
-		)
-		return cutoff
-	}
-
-	cutoff := exp_map(fraction, FILTER_CUTOFF_HZ[lo], FILTER_CUTOFF_HZ[hi])
-	if p.filter_mode == .Band_Pass {
-		cutoff *= BAND_PASS_CENTRE_RATIO
-	}
-	// And the 12 dB low pass needs its own, which it did not have.
-	//
-	// The table is the reference's audible corner; our section's -3 dB point is
-	// not where its coefficient is, exactly as the 24 dB path documents for
-	// itself. Measured as the gain our stopband carries over the reference's:
-	// +2.86 dB at cutoff 40 and +3.00 at 64 with the resonance off, up to +3.69
-	// at resonance 96. On a 12 dB per octave slope that is a quarter of an octave.
-	//
-	// Only this output. The high pass off the same section measures within 0.44
-	// dB across seven octaves and the band pass within 0.5, so scaling the shared
-	// coefficient would fix one and break two.
-	if p.filter_mode == .Low_Pass {
-		cutoff *= FILTER_CUTOFF_12_LOW_PASS_RATIO
-	}
-	return cutoff
 }
 
 // Lay out the unison stack: measured pitch, pan and phase laws. The stack keeps
@@ -371,8 +328,9 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 					voice_seed ~ u32(0x201 + satellite),
 				)
 			}
-			dsp.filter_init(&u.filter)
-			dsp.ladder_reset(&u.ladder)
+			dsp.chamberlin_reset(&u.chamberlin)
+			dsp.diode_ladder_reset(&u.diode)
+			dsp.moog_ladder_reset(&u.ladder)
 
 			// Parameter 91 fixes the phase *relationship between the oscillators*
 			// at note on, and turned fully down it does not fix anything at all.
@@ -458,7 +416,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 // Push the current parameter block into the voice's envelopes.
 voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	dsp.envelope_set_fade(&v.amp_env, p.amp_attack, p.amp_decay, p.amp_sustain, p.amp_release, sample_rate)
-	dsp.envelope_set(
+	dsp.envelope_set_fade(
 		&v.filter_env,
 		p.filter_attack,
 		p.filter_decay,
@@ -471,11 +429,9 @@ voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	// therefore driven as an ADSR with sustain pinned to 0 and release equal to
 	// its decay, which is the standard AD reading: the segment falls to silence
 	// after the attack and a key release cannot make it rise again.
-	dsp.envelope_set(&v.mod_env, p.mod_env_attack, p.mod_env_decay, 0, p.mod_env_decay, sample_rate)
+	dsp.envelope_set_fade(&v.mod_env, p.mod_env_attack, p.mod_env_decay, 0, p.mod_env_decay, sample_rate)
+	v.pan_lfo_smoothing = pan_lfo_smoothing(sample_rate)
 
-	for i in 0 ..< 2 {
-		v.lfo[i].shape = p.lfo[i].shape
-	}
 }
 
 // How a note-on treats the voice it is given.
@@ -509,7 +465,6 @@ voice_note_on :: proc(
 	// Another key was down when this one arrived. Parameter 74 ("portament
 	// auto mode") restricts the glide to exactly that case.
 	overlap: bool,
-	global_lfo: ^[2]dsp.Lfo,
 ) {
 	v.active = true
 	v.gate = true
@@ -541,10 +496,17 @@ voice_note_on :: proc(
 	// layout is still refreshed on every note-on so a fresh or resized voice
 	// can never enter the audio path with unison_count == 0.
 	voice_configure_unison(v, p, seed, start != .Legato)
+	v.live_layers = (u32(1) << u32(v.unison_count)) - 1
+	v.knots_valid = false
+	v.first_chunk = start == .Fresh
 	voice_apply_params(v, p, sample_rate)
 
 	switch start {
 	case .Fresh:
+		cutoff_ramp_reset(&v.cutoff_ramp)
+		v.amp_now = 0
+		v.amp_step = 0
+		v.pan_lfo_gain = {1, 1}
 		dsp.envelope_gate_on(&v.amp_env, true)
 		dsp.envelope_gate_on(&v.filter_env, true)
 	case .Retrigger:
@@ -569,19 +531,6 @@ voice_note_on :: proc(
 	} else if start != .Legato {
 		dsp.envelope_gate_on(&v.mod_env, start == .Fresh)
 	}
-
-	for i in 0 ..< 2 {
-		if p.lfo[i].key_sync {
-			dsp.lfo_retrigger(&v.lfo[i])
-		} else {
-			// Not key synced: adopt the free-running phase so every voice
-			// hears the same LFO position regardless of when it started.
-			v.lfo[i].phase = global_lfo[i].phase
-			v.lfo[i].held = global_lfo[i].held
-			v.lfo[i].current = global_lfo[i].current
-		}
-		v.lfo[i].shape = p.lfo[i].shape
-	}
 }
 
 voice_note_off :: proc(v: ^Voice) {
@@ -600,6 +549,38 @@ voice_is_finished :: proc(v: ^Voice) -> bool {
 
 CENTS_PER_SEMITONE :: f32(100.0)
 
+// The modulation envelope moves the duty a fraction of the way to the end it is
+// heading for: a positive amount a share of the way to one, a negative a share of the
+// way to zero. It is not an offset. Measured as the static knob setting that cancels
+// against the modulated render (`s1probe arch modenvscale --what pw`): from a base of
+// 32 the equivalent is 58, 72, 98 and 112 at amounts 72, 76, 84 and 88, a constant 213
+// stored steps per unit amount; from a base of 96 it is 85, 73 and 50 at amounts 56, 48
+// and 32 (91 steps per unit, shrinking with the base); and the two directions from a base
+// of 64 differ by a factor of three. A share of the room left gives all of them within
+// a step.
+modulated_pulse_width :: proc "contextless" (duty, amount: f32) -> f32 {
+	if amount > 0 {
+		return duty + amount * (1.0 - duty)
+	}
+	return duty + amount * duty
+}
+
+// The modulation envelope's reach on oscillator 2's pitch at full amount.
+MOD_ENV_PITCH_SEMITONES :: f32(60.0)
+
+// Where a sample sits in the render chunk. The reference renders in chunks of at
+// most 256 frames that restart at every host block and at every note event, and
+// reads its envelopes once per chunk; see `voice_process`.
+Chunk :: struct {
+	position: int,
+	length:   int,
+}
+
+CHUNK_FRAMES :: 256
+
+// The amplitude envelope is a whole number of 1/2048ths.
+AMP_ENVELOPE_STEPS :: f32(2048.0)
+
 // Render one sample of this voice into a stereo pair.
 //
 // `lfo_value` carries the two free-running LFO values the engine advanced once
@@ -610,6 +591,8 @@ voice_process :: proc(
 	sample_rate: f32,
 	pitch_bend: f32,
 	global_lfo_value: [2]f32,
+	global_lfo_ramped: [2]f32,
+	chunk: Chunk,
 ) -> (
 	left: f32,
 	right: f32,
@@ -628,39 +611,88 @@ voice_process :: proc(
 		}
 	}
 
-	amp_env := dsp.envelope_process(&v.amp_env)
+	// The amplitude envelope is read a chunk at a time. At the start of a chunk it
+	// is stepped ahead on a copy to where it will be at the chunk's last sample, and
+	// the output ramps to that value floored to a whole 1/2048th: the reference's
+	// envelope is those integers joined by straight lines, with the chunk's edges as
+	// the joins. Holding the same value for the whole chunk does not fit it, which is
+	// how the spectrum of a short decay is wrong by up to 15 dB; reading the *filter*
+	// and modulation envelopes this way made the deepest nulls worse by 6 dB, so they
+	// stay per sample.
+	//
+	// A note's first chunk follows the envelope exactly. The reference reaches full
+	// level in about 3.3 ms from a fresh note; a ramp across a whole 256-sample chunk
+	// would take 5.3. The real envelope still advances every sample, so a note-off or
+	// retrigger between chunks finds it where it should be.
+	if chunk.position == 0 && v.knots_valid {
+		v.first_chunk = false
+	}
+	if chunk.position == 0 || !v.knots_valid {
+		last_amp: f32
+		remaining := max(chunk.length - chunk.position, 1)
+		// A held level and a finished envelope do not move, and the finite decay and release
+		// segments have a closed form, so only an attack is stepped forward on a copy.
+		#partial switch v.amp_env.stage {
+		case .Sustain:
+			last_amp = v.amp_env.sustain
+		case .Idle:
+			last_amp = 0
+		case:
+			last_amp = dsp.envelope_value_ahead(&v.amp_env, remaining)
+		}
+		target := math.floor(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
+		v.amp_step = (target - v.amp_now) / f32(remaining)
+		v.knots_valid = true
+	}
+	exact_amp := dsp.envelope_process(&v.amp_env)
 	filter_env := dsp.envelope_process(&v.filter_env)
 	mod_env: f32 = 0
 	if p.mod_env_on {
 		mod_env = dsp.envelope_process(&v.mod_env) * p.mod_env_amount
 	}
+	if dsp.envelope_is_active(&v.amp_env) {
+		v.amp_now += v.amp_step
+	} else {
+		v.amp_now = 0
+	}
+	if v.first_chunk {
+		v.amp_now = exact_amp
+	}
+	amp_env := v.amp_now
 	// A one-shot is a complete ADSR gesture initiated by one event: it traverses
 	// attack and decay normally, then enters release as soon as sustain is
 	// reached. This avoids a timer in the UI and cannot leak a permanently gated
 	// voice when a percussion patch has a non-zero sustain level.
 	if v.one_shot && v.gate && v.amp_env.stage == .Sustain {
 		voice_note_off(v)
+		// The release starts here, not at the end of the chunk: the amplitude ramp is
+		// heading for the gate-on level and has to be re-aimed from this sample.
+		v.knots_valid = false
 	}
 
 	// The modulation destinations, accumulated before anything uses them so a
 	// destination selected by two sources adds rather than the later winning.
 	mod_osc2_semitones: f32 = 0
 	mod_osc1_semitones: f32 = 0
-	mod_cutoff_octaves: f32 = 0
+	mod_cutoff_steps: f32 = 0
 	mod_amplitude: f32 = 1
 	mod_pulse_width: f32 = 0
 	mod_fm: f32 = 0
-	mod_pan: f32 = 0
+	pan_lfo: f32 = 0
+	pan_lfo_active := false
 
 	switch p.mod_env_dest {
 	case .Osc2_Pitch:
-		// The full amount is a wide sweep; 24 semitones is two octaves, which
-		// is the range this kind of pitch envelope is normally asked for.
-		mod_osc2_semitones += mod_env * 24.0
+		// Sixty semitones at full amount: the pitch above the envelope-off render
+		// is 60 * amount * envelope, linear in the amount (0.94 semitones a step of
+		// parameter 11 at the envelope's peak) and following the same fade law as
+		// the amplitude. This was 24, "two octaves", a guess; the reference reads
+		// 2.5 times that at every amount from 66 to 96, within a few per cent.
+		mod_osc2_semitones += mod_env * MOD_ENV_PITCH_SEMITONES
 	case .Fm:
 		mod_fm += mod_env
 	case .Pulse_Width:
-		mod_pulse_width += mod_env * 0.45
+		mod_pulse_width += mod_env
 	}
 
 	// The destinations below are measured; the *depths* they are scaled by are
@@ -685,7 +717,7 @@ voice_process :: proc(
 		if !lp.enabled || lp.depth <= 0 {
 			continue
 		}
-		value := lp.key_sync ? dsp.lfo_process(&v.lfo[i]) : global_lfo_value[i]
+		value := global_lfo_value[i]
 		amount := value * lp.depth
 
 		// The pitch destinations take the depth knob through its measured curve
@@ -703,20 +735,21 @@ voice_process :: proc(
 			mod_osc1_semitones += pitch_amount * LFO_PITCH_SEMITONES
 			mod_osc2_semitones += pitch_amount * LFO_PITCH_SEMITONES
 		case .Filter_Cutoff:
-			// Unipolar, and measured. `(1 + value)/2` is 1 at the top of the cycle
-			// and 0 at the bottom, so this only ever opens the filter -- the corner
-			// at the bottom of the cycle is the patch's own, not below it. See
-			// LFO_CUTOFF_OCTAVES, where the evidence is set out; the short version
-			// is that the low half of a square sits on the unmodulated corner at
-			// every depth and at every base cutoff tried.
-			mod_cutoff_octaves += (1.0 + value) * 0.5 * lp.depth * LFO_CUTOFF_OCTAVES
+			// Unipolar: `(1 + value)/2` is 1 at the top of the cycle and 0 at the
+			// bottom, so this only ever opens the filter and the low half of a
+			// square sits on the unmodulated corner. The depth is a fraction of the
+			// travel left above the knob rather than a fixed number of octaves; see
+			// `filter_modulate_index`.
+			mod_cutoff_steps += (1.0 + value) * 0.5 * lp.depth * FILTER_INDEX_STEPS
 		case .Amplitude:
 			// Unipolar too, and linear in amplitude rather than in decibels: the
 			// knob position is the fraction of the level removed at the bottom of
-			// the cycle, so full depth reaches silence there. Measured; see the
-			// note above LFO_PAN_DEPTH_STEPS for why the decibel constant this
-			// replaces was an artefact of the instrument that produced it.
-			mod_amplitude *= 1.0 - lp.depth * 0.5 * (1.0 - value)
+			// the cycle, so full depth reaches silence there. Measured; the
+			// decibel constant this replaces was an artefact of the instrument that
+			// produced it.
+			// The amplifier hears the ramped output, not the held one: see
+			// `dsp.Lfo.ramped`.
+			mod_amplitude *= 1.0 - lp.depth * 0.5 * (1.0 - global_lfo_ramped[i])
 		case .Inert:
 			// State 5 does nothing in the reference, and neither does this.
 		case .Fm:
@@ -746,28 +779,30 @@ voice_process :: proc(
 			// this destination does not have.
 			mod_fm += (1.0 + value) * 0.5 * lp.depth * (1.0 - p.osc1_fm)
 		case .Pan:
-			// Negated, and that sign is measured rather than chosen.
-			//
-			// A sign flip of the LFO cannot be distinguished from a sign flip of
-			// the destination it drives, so matching the reference on pan alone
-			// would only prove the two conventions compose the same way. Volume
-			// breaks the tie, because loud is loud under any convention: driven
-			// through destination 4 with a saw, both engines' loudness ramps down
-			// and jumps back up, folding to cycles that agree within a decibel. So
-			// our saw runs the right way and the LFO itself is right.
-			//
-			// Watched on pan, though, the same saw moved the reference's image
-			// left to right and ours right to left. With the LFO ruled out, that
-			// is this destination's own sign -- and the static pan control is not
-			// the culprit either, since parameter 90 hard left reads positive on
-			// both. See `s1probe lfoshape --dest 4`.
-			//
-			// The depth is its own measured curve rather than the linear reading,
-			// and it reaches a fully hard image at the top of the knob where this
-			// used to stop at 0.927. Unlike the two destinations above, this one
-			// really is bipolar and symmetric: the two halves of a square land at
-			// plus and minus the same value at every depth measured.
-			mod_pan -= value * lp.pan_depth
+			// Bipolar and symmetric: the two halves of a square land at plus and
+			// minus the same value at every depth. The sign is measured, not chosen:
+			// a positive LFO value moves the image left, which matches the reference
+			// watched with a saw, where flipping the LFO and flipping the
+			// destination cannot be told apart on pan alone and volume breaks the
+			// tie. The depth is the knob's own position, and what it does to the two
+			// channels is `pan_lfo_gain`.
+			pan_lfo += value * lp.depth
+			pan_lfo_active = true
+		}
+	}
+
+	static_left, static_right := static_pan_gains(p.pan)
+	if pan_lfo_active {
+		smoothing := v.pan_lfo_smoothing > 0 ? v.pan_lfo_smoothing : pan_lfo_smoothing(sample_rate)
+		v.pan_lfo_gain[0] += (pan_lfo_gain(pan_lfo) - v.pan_lfo_gain[0]) * smoothing
+		v.pan_lfo_gain[1] += (pan_lfo_gain(-pan_lfo) - v.pan_lfo_gain[1]) * smoothing
+	} else if v.pan_lfo_gain != {1, 1} {
+		// Leaving pan LFO control glides back to the static position with the same
+		// smoothing, so a depth set to zero or a changed destination does not click.
+		smoothing := v.pan_lfo_smoothing > 0 ? v.pan_lfo_smoothing : pan_lfo_smoothing(sample_rate)
+		for channel in 0 ..< 2 {
+			v.pan_lfo_gain[channel] += (1 - v.pan_lfo_gain[channel]) * smoothing
+			if abs(1 - v.pan_lfo_gain[channel]) < 1.0e-5 {v.pan_lfo_gain[channel] = 1}
 		}
 	}
 
@@ -780,7 +815,7 @@ voice_process :: proc(
 		p.key_shift +
 		pitch_bend * p.pitch_bend_range +
 		p.fine_tune_cents / CENTS_PER_SEMITONE
-	pulse_width := dsp.clamp32(p.pulse_width + mod_pulse_width, 0.02, 0.98)
+	pulse_width := dsp.clamp32(modulated_pulse_width(p.pulse_width, mod_pulse_width), 0.02, 0.98)
 
 	// -- filter cutoff -------------------------------------------------------
 
@@ -799,33 +834,44 @@ voice_process :: proc(
 	// it is why several patches with tracking at maximum rendered near silence
 	// here while the reference sounded.
 	//
-	// The tracking *amount* is left linear, which is right at both ends -- 0 and
-	// 1.01 octaves per octave at the extremes -- but measures slightly convex in
-	// between: 0.589 octaves at stored 64 against the 0.504 a linear reading
-	// gives. Around a semitone, and not yet modelled.
-	track_octaves := p.filter_key_track * (base_note - FILTER_TRACK_REFERENCE_NOTE) / 12.0
+	// The tracking amount is not linear: see `filter_track_shift`.
+	knob_index := filter_knob_index(p.filter_cutoff_state)
+	track_shift := filter_track_shift_ln(knob_index, p.filter_key_track_ln, base_note)
 
-	env_cutoff_states := p.filter_env_cutoff_states
+	// Each step of parameter 21 moves the envelope's endpoint by two stored
+	// states of the cutoff knob.
+	env_amount := p.filter_env_cutoff_states * FILTER_INDEX_STEPS / f32(FILTER_TABLE_SIZE)
 	if p.filter_velocity {
 		// Parameter 24: "Select whether the amount of envelope variation
 		// changes according to the velocity of the note played."
-		env_cutoff_states *= v.velocity
+		env_amount *= v.velocity
 	}
-	// Clamp the full envelope destination in controller-state space first, then
-	// take the envelope fraction of the achievable state travel. This ordering
-	// is observable near either end of the cutoff knob. For example, cutoff 44
-	// and amount 31 request -64 states: the endpoint stops at state 0, sustain
-	// 73 takes 57.5% of the surviving 44-state trip, and lands near state 19.
-	full_env_state := dsp.clamp32(
-		p.filter_cutoff_state + env_cutoff_states,
-		0,
-		f32(FILTER_TABLE_SIZE - 1),
+	// The amount is held to the room left on the axis first, then the envelope
+	// level takes its fraction of what survives. The order is observable near
+	// either end of the knob: cutoff 44 with amount 31 asks for -64 states, the
+	// endpoint stops at the bottom, and a sustain of 73 takes 57.5% of the
+	// surviving 44-state trip.
+	env_shift := filter_env_shift(knob_index + track_shift, env_amount, filter_env)
+	target_index := filter_modulate_index(
+		knob_index + track_shift + env_shift,
+		mod_cutoff_steps,
 	)
-	achievable_env_states := full_env_state - p.filter_cutoff_state
-	cutoff_state := p.filter_cutoff_state + achievable_env_states * filter_env
-	cutoff := filter_cutoff_at_state(p, cutoff_state)
-	cutoff *= math.pow(f32(2.0), track_octaves + mod_cutoff_octaves)
-	cutoff = dsp.clamp32(cutoff, dsp.MIN_CUTOFF_HZ, sample_rate * dsp.MAX_CUTOFF_RATIO)
+	cutoff_index := cutoff_ramp_step(
+		&v.cutoff_ramp,
+		target_index,
+		p.filter_cutoff_state,
+		p.filter_env_cutoff_states,
+		p.filter_key_track,
+		cutoff_ramp_samples(sample_rate),
+	)
+	// Every filter type runs on the position itself, one step of the axis at a
+	// time.
+	axis_index := math.floor(cutoff_index)
+	if v.axis_hz_cache == 0 || axis_index != v.axis_index_cache {
+		v.axis_index_cache = axis_index
+		v.axis_hz_cache = filter_index_hz(axis_index)
+	}
+	axis_hz := v.axis_hz_cache
 
 	// -- amplitude -----------------------------------------------------------
 
@@ -871,6 +917,9 @@ voice_process :: proc(
 	// -- audio rate ----------------------------------------------------------
 
 	for i in 0 ..< v.unison_count {
+		if v.live_layers & (u32(1) << u32(i)) == 0 {
+			continue
+		}
 		u := &v.unison[i]
 
 		layer_pitch := unison_layer_pitch(i, p.unison_pitch)
@@ -952,15 +1001,24 @@ voice_process :: proc(
 		// into the phase. The panel position is converted to its measured frequency
 		// depth below; it is not itself a phase offset. One value drives every OSC1
 		// component at that component's own increment.
-		dsp.oscillator_advance(&u.osc2)
-		// Read before oscillator 1 is advanced, and before hard sync can reset
-		// this oscillator below: the modulator's contribution to this sample is
-		// its state at the top of the sample.
+		//
+		// Every oscillator is read first and advanced afterwards: a note's first
+		// sample is its start phase's value, and a sine starts at exactly zero. The
+		// reference's output is one sample behind an oscillator that advances before
+		// it is read, at every pitch; the earlier fixed start phase of -0.00125 turns
+		// was that sample measured at 60 Hz and written down as a constant, which is
+		// right at 60 Hz and wrong everywhere else.
+		//
+		// Oscillator 2 is read before oscillator 1 moves and before hard sync can
+		// reset it below: the modulator's contribution to this sample is its state
+		// at the top of the sample.
 		osc2_value := dsp.oscillator_value(&u.osc2, p.osc2_shape, pulse_width)
+		dsp.oscillator_advance(&u.osc2)
 
 		// Ring takes precedence: the readme and the manual agree that "FM
 		// modulation is only possible when ring modulation is off".
 		osc1_value: f32 = 0
+		sub_value: f32 = 0
 		centre_wrapped := false
 		centre_wrap_frac: f32 = 0
 		for component in first_component ..< component_limit {
@@ -973,13 +1031,16 @@ voice_process :: proc(
 				fm_offset = depth * osc1.increment
 				sub_fm_offset = depth * sub_oscillator.increment
 			}
+			osc1_value += dsp.oscillator_value(osc1, p.osc1_shape, pulse_width)
+			if p.sub_gain > 0 {
+				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
+			}
 			dsp.oscillator_advance_modulated(sub_oscillator, sub_fm_offset)
 			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset)
 			if component == OSC1_COMPONENT_CENTRE {
 				centre_wrapped = wrapped
 				centre_wrap_frac = wrap_frac
 			}
-			osc1_value += dsp.oscillator_value(osc1, p.osc1_shape, pulse_width)
 		}
 		osc1_value *= component_gain
 
@@ -1001,11 +1062,6 @@ voice_process :: proc(
 		mixed := osc1_value * (1.0 - p.osc_mix) + osc2_value * p.osc_mix
 
 		if p.sub_gain > 0 {
-			sub_value: f32 = 0
-			for component in first_component ..< component_limit {
-				sub_oscillator := sub_component(u, component)
-				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
-			}
 			sub_value *= component_gain
 			// The version history: "When the amount of the suboscillator is
 			// raised, the entire volume is automatically adjusted not to grow."
@@ -1019,77 +1075,38 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		// The 24 dB low pass is a ladder; see `dsp.Ladder`. Its level is its own
-		// measured surface -- `filter_ladder_gain` -- rather than the table that
-		// exists to undo two biquads' resonance gain.
+		// Each type is the reference's own section at the reference's own corner,
+		// so no measured table or level correction sits in front of any of them:
+		// see `dsp.Chamberlin`, `dsp.Moog_Ladder` and `dsp.Diode_Ladder`.
 		filtered: f32
-		output_gain := p.filter_output_gain
-		if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
-			dsp.ladder_set(
-				&u.ladder,
-				cutoff,
-				p.filter_ladder_feedback,
-				sample_rate,
-			)
-			filtered = dsp.sanitize(
-				dsp.filter_saturate(
-					dsp.ladder_process(&u.ladder, mixed),
-					p.filter_saturation_drive,
-				),
-			)
-			// Only as far as the filter is open; see `FILTER_LADDER_GAIN_DB`. The
-			// raw ladder is already right at cutoff 64 and below -- within 0.4 dB
-			// across the whole resonance knob -- and falls behind only as the pole
-			// climbs past state 80, by 0.9, 2.1, 3.0, 4.2, 5.5 and 6.4 dB at states
-			// 80, 96, 104, 112, 120 and 127. That is a straight line in the state,
-			// so the correction is the surface raised to it.
-			output_gain = math.pow(
-				p.filter_ladder_gain,
-				dsp.clamp32((cutoff_state - 80.0) / 47.0, 0, 1),
-			)
+		if p.filter_diode {
+			dsp.diode_ladder_set(&u.diode, axis_hz, p.filter_resonance, sample_rate)
+			filtered = dsp.diode_ladder_process(&u.diode, mixed)
+		} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
+			dsp.moog_ladder_set(&u.ladder, axis_hz, p.filter_resonance, sample_rate)
+			filtered = dsp.moog_ladder_process(&u.ladder, mixed)
 		} else {
-			dsp.filter_set_damping(
-				&u.filter,
-				cutoff,
-				p.filter_damping,
-				sample_rate,
-				p.filter_slope,
-			)
-			filtered = dsp.filter_process(
-				&u.filter,
+			dsp.chamberlin_set_cutoff(&u.chamberlin, axis_hz, sample_rate)
+			filtered = dsp.chamberlin_process(
+				&u.chamberlin,
 				mixed,
+				p.filter_resonance,
 				p.filter_mode,
-				p.filter_slope,
-				p.filter_saturation_drive,
 			)
 		}
+		filtered = dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
 
-		sample := filtered * output_gain * gain * stack_scale
+		sample := filtered * gain * stack_scale
 
-		// The reference's pan law: full level in both channels at the centre, and
-		// panning attenuates the channel you are moving away from.
-		//
-		// Measured, and it replaces an equal-power law that cost 3 dB on every patch
-		// in the bank. Sweeping parameter 90 through the reference and reading the
-		// mid level gives 6.0 dB from hard left to centre; an equal-power law gives
-		// 3.0 and that is what ours gave. The half-panned point settles which of the
-		// two laws produces the 6 dB, since they disagree there too:
-		//
-		//   pan             -1.0    -0.5     0.0
-		//   this law, mid    0.50    0.75    1.00
-		//   predicted dB    -6.0    -2.5     0.0
-		//   measured        -6.0    -2.5     0.0
-		//
-		// This was the larger half of the level error -- our peak sat 4.35 dB under
-		// the reference's across the bank, and 3 dB of it was here, on every patch at
-		// once, including a bare sine with the filter open and every effect off.
-		//
-		// It does mean the total power rises by 3 dB as a voice moves to the centre,
-		// which is what an equal-power law exists to avoid. That is the reference's
-		// behaviour and the point of this engine is to reproduce it.
-		pan := dsp.clamp32(u.pan + p.pan + mod_pan, -1, 1)
-		left += sample * min(f32(1.0), 1.0 - pan)
-		right += sample * min(f32(1.0), 1.0 + pan)
+		// Full level in both channels at the centre, and the channel being moved
+		// away from falls linearly: measured, and it replaced an equal-power law that
+		// cost 3 dB on every patch in the bank (6.0 dB from hard left to the centre
+		// in the reference, 3.0 in an equal-power law, -2.5 dB at half pan). It does
+		// mean the power rises by 3 dB as a voice moves to the centre, which is the
+		// reference's behaviour. The three controls multiply: see `static_pan_gains`.
+		layer_left, layer_right := static_pan_gains(u.pan)
+		left += sample * layer_left * static_left * v.pan_lfo_gain[0]
+		right += sample * layer_right * static_right * v.pan_lfo_gain[1]
 	}
 
 	if voice_is_finished(v) {

@@ -48,7 +48,7 @@ test_midi_controller_assignments_add_on_one_destination :: proc(t: ^testing.T) {
 	want_patch := p
 	want_patch.values[19] = 127
 	want := engine.bind_patch(want_patch)
-	testing.expect_value(t, e.params.filter_cutoff_hz, want.filter_cutoff_hz)
+	testing.expect_value(t, e.params.filter_cutoff_state, want.filter_cutoff_state)
 }
 
 @(test)
@@ -166,165 +166,20 @@ test_oscillator_sync_resets_phase :: proc(t: ^testing.T) {
 // Filter
 // ---------------------------------------------------------------------------
 
-// The contract for this slice names four responses at two slopes. Every
-// combination is driven at the extremes of cutoff and damping with full-scale
-// input; the filter is the only feedback path in the engine, so a divergence
-// here is the one that poisons a whole render.
-//
-// The damping is swept directly rather than through the 0..1 resonance knob,
-// because the engine no longer uses that knob's linear law: `voice_process`
-// takes its damping from the measured table in `filter_resonance_table.odin`,
-// which reaches dsp.MIN_DAMPING. Testing `filter_set` alone left the sharpest
-// two decades of the engine's actual range unexercised.
-//
-// What is asserted is the property the old version meant to assert and did not.
-// It required `peak < 40.0`, which is a statement about gain, not about
-// stability -- and a wrong one, since a Q of 1000 is entitled to a gain of 1000
-// while staying perfectly bounded. Reading it as a stability limit is what kept
-// the resonance curve pinned at a fourteenth of the reference's. A filter that
-// diverges is one whose output keeps growing; a filter that merely resonates
-// rings up to a plateau and stays there. So the test compares the peak of the
-// second half of a long run against the first half's, which separates the two,
-// and keeps an absolute ceiling only as a backstop at the gain the topology can
-// actually reach.
-@(test)
-test_filter_stable_across_modes_and_extremes :: proc(t: ^testing.T) {
-	cutoffs := []f32{1.0, 20.0, 1000.0, 20000.0, SR, SR * 10.0}
-	dampings := []f32{2.0, 1.0, 0.25, 0.05, 0.01, dsp.MIN_DAMPING}
-
-	// A two-pole section's gain at resonance is 1/k, and the 24 dB path shares
-	// its damping between two sections so the pair reaches the same. Twice that
-	// is a backstop with room for the transient overshoot of a filter ringing up,
-	// not a target anything is expected to approach.
-	ceiling := 2.0 / dsp.MIN_DAMPING
-
-	HALF :: 48000
-
-	for mode in dsp.Filter_Mode {
-		for slope in dsp.Filter_Slope {
-			for cutoff in cutoffs {
-				for damping in dampings {
-					f: dsp.Filter
-					dsp.filter_init(&f)
-					dsp.filter_set_damping(&f, cutoff, damping, SR, slope)
-
-					rng: dsp.Rng
-					dsp.rng_init(&rng, 4242)
-
-					early: f32 = 0
-					late: f32 = 0
-					for i in 0 ..< 2 * HALF {
-						x := dsp.rng_next_bipolar(&rng)
-						y := dsp.filter_process(&f, x, mode, slope, 0.0)
-						testing.expectf(
-							t,
-							finite(y),
-							"%v/%v at cutoff %v damping %v went non-finite",
-							mode,
-							slope,
-							cutoff,
-							damping,
-						)
-						if i < HALF {
-							if abs(y) > early {early = abs(y)}
-						} else {
-							if abs(y) > late {late = abs(y)}
-						}
-					}
-
-					// Ringing up is allowed; still climbing after a second is not.
-					testing.expectf(
-						t,
-						late <= early * 1.5 + 1.0e-6,
-						"%v/%v at cutoff %v damping %v is still growing: %v then %v",
-						mode,
-						slope,
-						cutoff,
-						damping,
-						early,
-						late,
-					)
-					testing.expectf(
-						t,
-						max(early, late) < ceiling,
-						"%v/%v at cutoff %v damping %v reached %v, past the %v backstop",
-						mode,
-						slope,
-						cutoff,
-						damping,
-						max(early, late),
-						ceiling,
-					)
-				}
-			}
-		}
-	}
-}
-
-// The two measured resonance curves have to be usable as damping without any
-// further checking at the use site, which means bounded and monotonic.
-//
-// Monotonic is the audible one: `filter_damping` indexes these directly from the
-// knob, so a single entry out of order is a resonance control that goes
-// backwards at one setting.
-@(test)
-test_resonance_tables_are_bounded_and_monotonic :: proc(t: ^testing.T) {
-	tables := [][]f32{engine.FILTER_DAMPING[:], engine.FILTER_DAMPING_24[:]}
-	for table, which in tables {
-		testing.expect_value(t, len(table), engine.FILTER_RESONANCE_TABLE_SIZE)
-		for k, i in table {
-			testing.expectf(
-				t,
-				k >= dsp.MIN_DAMPING && k <= 2.0,
-				"table %v entry %v is %v, outside [%v, 2.0]",
-				which,
-				i,
-				k,
-				dsp.MIN_DAMPING,
-			)
-			if i > 0 {
-				testing.expectf(
-					t,
-					k <= table[i - 1],
-					"table %v goes backwards at %v: %v then %v",
-					which,
-					i,
-					table[i - 1],
-					k,
-				)
-			}
-		}
-		// The knob has to actually do something across its range.
-		testing.expectf(
-			t,
-			table[0] > table[len(table) - 1] * 100.0,
-			"table %v spans only %v to %v",
-			which,
-			table[0],
-			table[len(table) - 1],
-		)
-	}
-}
-
 // Saturation is a nonlinearity in the signal path, so it gets its own sweep.
-// The measured transfer is bounded, but it can receive an over-unity unison
-// sum and must remain finite at every setting.
+// It can receive an over-unity unison sum and must stay finite and bounded at
+// every setting.
 @(test)
 test_filter_saturation_bounded :: proc(t: ^testing.T) {
-	for drive in ([]f32{0.0, 2.321027, 16.879008}) {
-		f: dsp.Filter
-		dsp.filter_init(&f)
-		dsp.filter_set(&f, 800.0, 1.0, SR)
-
+	for drive in ([]f32{0.0, 2.321027, 16.879008, 200.0, 1.0e6}) {
 		for i in 0 ..< 9600 {
-			// Deliberately over unity: a unison stack summing in phase does
-			// exactly this.
-			x := 4.0 * math.sin(f32(i) * 0.05)
-			y := dsp.filter_process(&f, x, .Low_Pass, .Slope_24, drive)
+			x := 40.0 * math.sin(f32(i) * 0.05)
+			y := dsp.filter_saturate(x, drive)
 			testing.expectf(t, finite(y), "saturation drive %v went non-finite", drive)
-			testing.expectf(t, abs(y) < 40.0, "saturation drive %v reached %v", drive, y)
+			testing.expectf(t, abs(y) < 41.0, "saturation drive %v reached %v for %v", drive, y, x)
 		}
 	}
+	testing.expect_value(t, dsp.filter_saturate(math.nan_f32(), 2.0), f32(0))
 }
 
 @(test)
@@ -340,32 +195,6 @@ test_filter_saturation_is_peak_normalised :: proc(t: ^testing.T) {
 		"the measured high-drive curve should amplify small signals")
 }
 
-// The reference's open-filter transfer is the same in both slopes. Applying the
-// saturation after each section would compound it in the 24 dB cascade, so keep
-// a direct guard on the single, completed-filter placement.
-@(test)
-test_filter_saturation_is_not_compounded_by_slope :: proc(t: ^testing.T) {
-	f12, f24: dsp.Filter
-	dsp.filter_init(&f12)
-	dsp.filter_init(&f24)
-	dsp.filter_set_damping(&f12, 12000.0, 2.0, SR, .Slope_12)
-	dsp.filter_set_damping(&f24, 12000.0, 2.0, SR, .Slope_24)
-
-	difference, signal: f64
-	for i in 0 ..< 12000 {
-		x := 0.2 * math.sin(f32(i) * 0.02)
-		y12 := dsp.filter_process(&f12, x, .Low_Pass, .Slope_12, 2.321027)
-		y24 := dsp.filter_process(&f24, x, .Low_Pass, .Slope_24, 2.321027)
-		if i >= 4000 {
-			d := f64(y12 - y24)
-			difference += d * d
-			signal += f64(y12) * f64(y12)
-		}
-	}
-	testing.expectf(t, difference / signal < 0.0001,
-		"open 24 dB response compounded saturation: relative error %v", difference / signal)
-}
-
 @(test)
 test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 	p := default_patch()
@@ -376,85 +205,6 @@ test_filter_saturation_binding_uses_measured_knots :: proc(t: ^testing.T) {
 	p.values[23] = 122
 	testing.expectf(t, abs(engine.bind_patch(p).filter_saturation_drive - 75.3) < 0.00001,
 		"stored 122 did not bind to its measured drive")
-}
-
-@(test)
-test_24db_cutoff_binding_tracks_resonance_surface :: proc(t: ^testing.T) {
-	p := default_patch()
-	for index in ([]int{14, 19, 20, 21}) {
-		p.present[index] = true
-	}
-	p.values[14] = 1 // 24 dB low pass
-	p.values[19] = 64
-	p.values[21] = 20
-
-	p.values[20] = 0
-	low := engine.bind_patch(p)
-	low_expected := engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] * f32(1.255)
-	testing.expectf(t, abs(low.filter_cutoff_hz - low_expected) < 0.001,
-		"resonance-0 cutoff did not use the low-Q surface: %v", low.filter_cutoff_hz)
-	// The voice runs a ladder on this path, and a ladder has one pole surface at
-	// every resonance -- the peak surface -- rather than a blend of two. The
-	// blended field above is still what `bind_patch` reports.
-	testing.expectf(t, abs(engine.filter_cutoff_at_state(&low, 0) - engine.FILTER_CUTOFF_HZ_24[0]) < 0.001,
-		"resonance-0 ladder pole did not follow the peak surface")
-	testing.expectf(t, abs(low.filter_env_cutoff_states - f32(20 - 63) * 2.0) < 0.001,
-		"filter envelope amount did not resolve to two cutoff states per step")
-	testing.expect_value(t, low.filter_cutoff_state, f32(64))
-	testing.expect_value(t, low.filter_cutoff_surface_blend, f32(0))
-	testing.expect_value(t, low.filter_cutoff_topology_scale, f32(1.255))
-
-	p.values[20] = 4
-	mid := engine.bind_patch(p)
-	expected_mid := f32(1.259) * engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64] *
-		math.pow(engine.FILTER_CUTOFF_HZ_24[64] / engine.FILTER_CUTOFF_HZ_24_LOW_RESONANCE[64], f32(0.2405))
-	testing.expectf(t, abs(mid.filter_cutoff_hz - expected_mid) < 0.001,
-		"resonance-4 cutoff did not use the measured log blend: %v vs %v", mid.filter_cutoff_hz, expected_mid)
-
-	p.values[20] = 107
-	high := engine.bind_patch(p)
-	testing.expectf(t, abs(high.filter_cutoff_hz - engine.FILTER_CUTOFF_HZ_24[64]) < 0.001,
-		"resonance-107 cutoff did not reach the high-Q surface: %v", high.filter_cutoff_hz)
-	testing.expectf(t, abs(engine.filter_cutoff_at_state(&high, f32(engine.FILTER_TABLE_SIZE - 1)) - engine.FILTER_CUTOFF_HZ_24[engine.FILTER_TABLE_SIZE - 1]) < 0.001,
-		"resonance-107 ceiling did not follow the high-Q surface")
-	// And the pole must not move when only the resonance does, which is the
-	// property that separates a ladder from a pair of biquads and the one the
-	// reference was identified by.
-	testing.expectf(
-		t,
-		abs(engine.filter_cutoff_at_state(&low, 64) - engine.filter_cutoff_at_state(&high, 64)) < 0.001,
-		"ladder pole moved with resonance: %v vs %v",
-		engine.filter_cutoff_at_state(&low, 64),
-		engine.filter_cutoff_at_state(&high, 64),
-	)
-
-	p.values[20] = 127
-	at_top := engine.bind_patch(p)
-	testing.expectf(t, abs(at_top.filter_cutoff_hz - high.filter_cutoff_hz) < 0.001,
-		"cutoff surface moved above its measured resonance-107 endpoint")
-}
-
-// A non-finite input must not be able to lodge itself in the filter state, or
-// one bad sample would silence the rest of the render.
-@(test)
-test_filter_recovers_from_non_finite_input :: proc(t: ^testing.T) {
-	f: dsp.Filter
-	dsp.filter_init(&f)
-	dsp.filter_set(&f, 2000.0, 0.8, SR)
-
-	poison := math.inf_f32(1)
-	dsp.filter_process(&f, poison, .Low_Pass, .Slope_24, 0.0)
-	dsp.filter_process(&f, math.nan_f32(), .Low_Pass, .Slope_24, 0.0)
-
-	recovered := false
-	for i in 0 ..< 4800 {
-		y := dsp.filter_process(&f, math.sin(f32(i) * 0.02), .Low_Pass, .Slope_24, 0.0)
-		testing.expect(t, finite(y))
-		if abs(y) > 0.01 {
-			recovered = true
-		}
-	}
-	testing.expect(t, recovered, "filter never resumed passing signal after a poisoned sample")
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +285,7 @@ test_envelope_idle_is_silent :: proc(t: ^testing.T) {
 @(test)
 test_lfo_bounded_and_moving :: proc(t: ^testing.T) {
 	for shape in dsp.Lfo_Waveform {
-		for rate in ([]f32{0.05, 5.0, 40.0, SR}) {
+		for rate in ([]f32{0.05, 5.0, 40.0, 125.0}) {
 			l: dsp.Lfo
 			dsp.lfo_init(&l, 8181)
 			l.shape = shape
@@ -960,7 +710,7 @@ test_pre_107_lfo_destinations_bind_to_their_measured_mechanisms :: proc(t: ^test
 }
 
 // The five measured filter states map onto the four documented responses plus
-// LPDL, which this slice binds to the 24 dB low pass.
+// LPDL, which is a filter of its own and is flagged rather than given a slope.
 @(test)
 test_filter_type_binding :: proc(t: ^testing.T) {
 	// Measured with `s1probe filterprobe`, which drives noise through each state
@@ -969,7 +719,7 @@ test_filter_type_binding :: proc(t: ^testing.T) {
 	// the same version says and as the measured pass band -- bounded at both
 	// ends, and tracking the cutoff knob -- confirms.
 	modes := []dsp.Filter_Mode{.Low_Pass, .Low_Pass, .High_Pass, .Band_Pass, .Low_Pass}
-	slopes := []dsp.Filter_Slope{.Slope_12, .Slope_24, .Slope_12, .Slope_12, .Slope_24}
+	slopes := []dsp.Filter_Slope{.Slope_12, .Slope_24, .Slope_12, .Slope_12, .Slope_12}
 
 	for stored in 0 ..< 5 {
 		p := default_patch()
@@ -983,6 +733,7 @@ test_filter_type_binding :: proc(t: ^testing.T) {
 			bound.filter_mode,
 		)
 		testing.expect_value(t, bound.filter_slope, slopes[stored])
+		testing.expect_value(t, bound.filter_diode, stored == 4)
 	}
 }
 
@@ -1585,9 +1336,12 @@ test_release_follows_the_fade_law_over_its_length :: proc(t: ^testing.T) {
 	one_length_later := peak_at(left[:], hold + int(length * f32(SR)) + 8, window)
 	testing.expect(t, at_off > 0.001, "the note was not sounding at note off")
 
+	// The law gives 2048 * exp(-4) * 0.5 = 18.76 steps at the half way point, a
+	// factor of 109; the envelope is whole 1/2048ths, so the 18 it floors to reads
+	// 113.8, and a 5 ms window catches a little of the step above it.
 	ratio := at_off / max(halfway, 1.0e-9)
-	testing.expectf(t, ratio > 105.0 && ratio < 115.0,
-		"half way through the release (%v s long) the level fell by a factor of %v, expected about 109",
+	testing.expectf(t, ratio > 105.0 && ratio < 120.0,
+		"half way through the release (%v s long) the level fell by a factor of %v, expected about 109 to 114",
 		length, ratio)
 	testing.expectf(t, one_length_later == 0.0, "the release was still sounding after its length: %v", one_length_later)
 }
@@ -1798,18 +1552,16 @@ test_filter_tracking_is_measured_from_c3 :: proc(t: ^testing.T) {
 	bound := engine.bind_patch(p)
 	testing.expectf(t, abs(bound.filter_key_track - 1.0) < 0.01,
 		"full tracking should read as one octave per octave, got %v", bound.filter_key_track)
-
-	// The reference note itself: the offset the engine applies is
-	// key_track * (note - 48) / 12, so a note at 48 gets nothing and middle C
-	// gets a whole octave.
 	testing.expect_value(t, engine.FILTER_TRACK_REFERENCE_NOTE, 48.0)
 
-	offset_at_48 := bound.filter_key_track * (48.0 - engine.FILTER_TRACK_REFERENCE_NOTE) / 12.0
-	offset_at_60 := bound.filter_key_track * (60.0 - engine.FILTER_TRACK_REFERENCE_NOTE) / 12.0
-	testing.expectf(t, abs(offset_at_48) < 0.001,
-		"the reference note should get no tracking offset, got %v octaves", offset_at_48)
-	testing.expectf(t, abs(offset_at_60 - 1.0) < 0.02,
-		"middle C should get one octave at full tracking, got %v", offset_at_60)
+	knob := engine.filter_knob_index(bound.filter_cutoff_state)
+	at_48 := engine.filter_track_shift(knob, bound.filter_key_track, 48.0)
+	at_60 := engine.filter_track_shift(knob, bound.filter_key_track, 60.0)
+	testing.expectf(t, abs(at_48) < 0.001,
+		"the reference note should get no tracking offset, got %v steps", at_48)
+	octave := math.log2(engine.filter_index_hz(knob + at_60) / engine.filter_index_hz(knob))
+	testing.expectf(t, abs(octave - 1.0) < 0.01,
+		"middle C should get one octave at full tracking, got %v", octave)
 }
 
 // ---------------------------------------------------------------------------
@@ -1850,9 +1602,15 @@ test_equalizer_is_flat_at_its_centre :: proc(t: ^testing.T) {
 	p := default_patch()
 	p.values[62] = 64
 	testing.expect_value(t, engine.bind_patch(p).eq_gain_db, 0.0)
+	// The equaliser's own tone is not off at its centre: it is a low pass at 22 kHz,
+	// which is flat in the audible band at 48 kHz to about a decibel. The delay's
+	// tone is the one that is bypassed there.
 	p.values[60] = 64
-	testing.expectf(t, abs(engine.bind_patch(p).eq_tone) < 0.01,
-		"the tone knob's centre should be flat, got %v", engine.bind_patch(p).eq_tone)
+	tone := engine.bind_patch(p).eq_tone
+	testing.expect_value(t, tone.mode, dsp.Tone_Mode.Low_Pass)
+	testing.expectf(t, abs(tone.hz - 22000.0) < 1.0, "the tone knob's centre should be 22 kHz, got %v", tone.hz)
+	p.values[98] = 64
+	testing.expect_value(t, engine.bind_patch(p).delay_tone.mode, dsp.Tone_Mode.Off)
 
 	// Both ends carry real decibels, read rather than mapped.
 	p.values[62] = 0
@@ -2048,17 +1806,21 @@ test_delay_division_table_matches_the_measured_reference :: proc(t: ^testing.T) 
 	}
 }
 
-// Parameter 83 reads out both channel times at once.
+// Parameter 83 is centred at 64, the left channel's offset grows above it and the right's
+// below, and the offset is 0.1 ms * 10^(steps/21) up to 100 ms.
 @(test)
-test_delay_spread_display_parses_both_channels :: proc(t: ^testing.T) {
-	l, r := engine.delay_spread_ms("0.0 : 100.0 msec")
-	testing.expectf(t, abs(l) < 0.01 && abs(r - 100.0) < 0.01, "got %v : %v", l, r)
+test_delay_spread_follows_its_position :: proc(t: ^testing.T) {
+	l, r := engine.delay_spread_ms(127)
+	testing.expectf(t, abs(l - 100.0) < 0.01 && r == 0, "got %v : %v", l, r)
 
-	l, r = engine.delay_spread_ms("100.0 : 0.0 msec")
-	testing.expectf(t, abs(l - 100.0) < 0.01 && abs(r) < 0.01, "got %v : %v", l, r)
+	l, r = engine.delay_spread_ms(0)
+	testing.expectf(t, l == 0 && abs(r - 100.0) < 0.01, "got %v : %v", l, r)
 
-	l, r = engine.delay_spread_ms("0.0 : 0.0 msec")
-	testing.expectf(t, abs(l) < 0.01 && abs(r) < 0.01, "centre should be no spread, got %v : %v", l, r)
+	l, r = engine.delay_spread_ms(64)
+	testing.expectf(t, l == 0 && r == 0, "centre should be no spread, got %v : %v", l, r)
+
+	l, r = engine.delay_spread_ms(66)
+	testing.expectf(t, abs(l - 0.1245) < 0.001 && r == 0, "two steps above the centre, got %v : %v", l, r)
 }
 
 // The delay line has to return what was put into it, a chosen number of samples
@@ -2104,7 +1866,8 @@ test_delay_modes_route_repeats_independently :: proc(t: ^testing.T) {
 			left_samples  = 2,
 			right_samples = 2,
 			feedback      = 0.5,
-			dry_wet       = 1,
+			dry_gain      = 0,
+			wet_gain      = 1,
 			mode          = mode,
 		}
 		left, right: [9]f32
@@ -2129,15 +1892,15 @@ test_delay_modes_route_repeats_independently :: proc(t: ^testing.T) {
 	testing.expect_value(t, right[4], 0.5)
 	testing.expect_value(t, left[6], 0.25)
 
-	// Ping-pong sums both inputs into the left line and alternates from there.
+	// Ping-pong averages both inputs into the left line and alternates from there.
 	left, right = render(.Ping_Pong, 0.25, 0.75)
-	testing.expect_value(t, left[2], 1.0)
+	testing.expect_value(t, left[2], 0.5)
 	testing.expect_value(t, right[2], 0.0)
 	// Feedback is applied once per round trip, so the right echo matches the
 	// first left echo and the next pair is down by the feedback amount.
-	testing.expect_value(t, right[4], 1.0)
-	testing.expect_value(t, left[6], 0.5)
-	testing.expect_value(t, right[8], 0.5)
+	testing.expect_value(t, right[4], 0.5)
+	testing.expect_value(t, left[6], 0.25)
+	testing.expect_value(t, right[8], 0.25)
 }
 
 // A delay with the mix up has to still be sounding after the note has gone, and
@@ -2894,15 +2657,15 @@ test_oscillator_phase_law_is_the_measured_one :: proc(t: ^testing.T) {
 		"stored 1 should fix the phase")
 }
 
-// The engaged start is a signed position, not only a relationship.
+// The engaged start is a position, not only a relationship: oscillator 1 starts
+// at phase zero and oscillator 2 at the relationship's own offset, and the first
+// sample of a note is the value *at* that phase (see `voice_process`).
 //
-// The same `s1probe phaseabsolute` command reads oscillator 1 at -0.00125
-// turns for every engaged setting at notes 36, 48, 60, 72 and 84. It projects
-// one oscillator at a time against note-on and fits phase against frequency, so
-// output latency is the slope and start phase is the intercept. Cancellation
-// depth could not see this common shift at all. Oscillator 2's separately read
-// signed starts pin the direction of the relationship. The free-running sub's
-// zero is a separate invariant, checked below.
+// An earlier version of this test pinned oscillator 1 at -0.00125 turns, which was
+// a sample of latency read at 60 Hz and recorded as a start phase. A sine through
+// the whole engine against the reference at nine notes from 65 Hz to 2 kHz is one
+// sample late at every pitch with that constant, and cancels to -82 dB at 1 kHz
+// without it. The free-running sub's zero is a separate invariant, checked below.
 @(test)
 test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^testing.T) {
 	read := proc(stored, note: int) -> (osc1, osc2, sub: f32) {
@@ -2942,8 +2705,8 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 
 	for stored in 1 ..= 127 {
 		osc1, _, _ := read(stored, 60)
-		testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
-			"stored %d put oscillator 1 at %.7f turns; the reference reads -0.00125",
+		testing.expectf(t, abs(signed(osc1)) < 1.0e-7,
+			"stored %d put oscillator 1 at %.7f turns; the reference starts it at zero",
 			stored, signed(osc1))
 	}
 
@@ -2952,25 +2715,25 @@ test_engaged_oscillator_one_starts_at_the_measured_signed_phase :: proc(t: ^test
 	// this wiring check independent from the binding law tested above, while the
 	// start still distinguishes +base_phase from the phase-even alternative.
 	for reading in ([][3]f32{
-		{1, 0.000000, -0.00125},
-		{16, 0.059524, 0.05827},
-		{32, 0.123016, 0.12177},
-		{48, 0.186508, 0.18526},
-		{64, 0.250000, 0.24875},
-		{96, 0.376984, 0.37573},
-		{127, 0.500000, 0.49875},
+		{1, 0.000000, 0.000000},
+		{16, 0.059524, 0.059524},
+		{32, 0.123016, 0.123016},
+		{48, 0.186508, 0.186508},
+		{64, 0.250000, 0.250000},
+		{96, 0.376984, 0.376984},
+		{127, 0.500000, -0.500000},
 	}) {
 		_, osc2 := read_shift(reading[1], 60)
 		testing.expectf(t, abs(signed(osc2) - reading[2]) < 5.0e-6,
-			"stored %.0f put oscillator 2 at %.5f turns; the reference reads %.5f",
+			"stored %.0f put oscillator 2 at %.5f turns; expected %.5f",
 			reading[0], signed(osc2), reading[2])
 	}
 
 	for note in ([]int{36, 48, 72, 84}) {
 		for stored in ([]int{1, 64, 127}) {
 			osc1, _, _ := read(stored, note)
-			testing.expectf(t, abs(signed(osc1) - f32(-0.00125)) < 1.0e-7,
-				"note %d stored %d put oscillator 1 at %.7f turns, not -0.00125",
+			testing.expectf(t, abs(signed(osc1)) < 1.0e-7,
+				"note %d stored %d put oscillator 1 at %.7f turns, not zero",
 				note, stored, signed(osc1))
 		}
 	}
@@ -4180,20 +3943,28 @@ test_effect_disabled_passes_through :: proc(t: ^testing.T) {
 	}
 }
 
+// The distortions' low-pass is a resonant biquad with a Q of three, measured against the
+// reference's complex transfer function: its corner follows the fitted law, and a step
+// rings past its final value where a one-pole filter never does.
+@(test)
+test_distortion_lowpass_is_a_resonant_biquad :: proc(t: ^testing.T) {
+	testing.expect(t, abs(dsp.effect_lowpass_hz(0) - 399.9) < 0.5, "corner at ctl2 0 drifted from the fit")
+	testing.expect(t, abs(dsp.effect_lowpass_hz(64.0 / 127.0) - 2567.0) < 5.0, "corner at ctl2 64 drifted from the fit")
+	testing.expect(t, abs(dsp.effect_lowpass_hz(1.0) - 16004.0) < 20.0, "corner at ctl2 127 drifted from the fit")
+
+	fx: dsp.Effect
+	peak: f32
+	for _ in 0 ..< 400 {
+		out, _ := dsp.effect_lowpass(&fx, 1, 1, 2567.0, SR)
+		peak = max(peak, out)
+	}
+	testing.expectf(t, peak > 1.3, "a step through the low-pass peaked at %v, which is no ring", peak)
+}
+
 @(test)
 test_effect_measured_curves_hit_their_measured_values :: proc(t: ^testing.T) {
 	// The four curves that were read out of the reference in real units. If any of
 	// these drifts, the measurement recorded in src/dsp/effect.odin has been lost.
-
-	// The shared low-pass corner: 452 Hz at the bottom, 2901 Hz measured at
-	// stored 64, and about 17.6 kHz at the top.
-	testing.expect(t, abs(dsp.effect_lowpass_hz(0) - 451.9) < 1.0)
-	mid_corner := dsp.effect_lowpass_hz(64.0 / 127.0)
-	testing.expect(
-		t,
-		abs(mid_corner - 2901.0) < 90.0,
-		"the low-pass corner at mid knob drifted from its measured 2901 Hz",
-	)
 
 	// The ring modulator: 92.7 Hz measured at stored 64, 7869 Hz at the top.
 	ring_mid := dsp.effect_ring_hz(64.0 / 127.0)
@@ -4282,8 +4053,8 @@ test_effect_analog1_makes_even_harmonics_and_analog2_does_not :: proc(t: ^testin
 		pos, neg: [2]f32
 		p1, n1: f32
 		for _ in 0 ..< 64 {
-			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01)
-			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01)
+			p1 = dsp.effect_shape_analog1(&pos, x, 8, 1, 0.01, 3.8, 0.87)
+			n1 = dsp.effect_shape_analog1(&neg, -x, 8, 1, 0.01, 3.8, 0.87)
 		}
 		a2 := dsp.effect_shape_analog2(x, 8, 1) + dsp.effect_shape_analog2(-x, 8, 1)
 		asymmetric_error += abs(p1 + n1)
@@ -4532,15 +4303,15 @@ test_chorus_four_taps_are_narrower_than_two :: proc(t: ^testing.T) {
 @(test)
 test_effect_analog_drive_saturates :: proc(t: ^testing.T) {
 	// The largest error in the old distortions was the drive, which ran
-	// exponentially to 64 while the reference's stops moving: a.d.2's odd
-	// harmonics are identical at ctl1 80, 96, 112 and 127, so whatever drives it
-	// has reached its end well before the knob does.
+	// exponentially to 64 while the reference's stops moving: a.d.2's drive,
+	// refitted against its exact low-pass, climbs to about 57 by ctl1 96 and is
+	// within a hair of 59 from there to the top of the knob.
 	top := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 1.0)
-	at80 := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 80.0 / 127.0)
+	at112 := dsp.effect_ad_table(dsp.EFFECT_AD2_DRIVE, 112.0 / 127.0)
 	testing.expect(
 		t,
-		abs(top - at80) < 1.0e-3,
-		fmt.tprintf("a.d.2's drive still moves above ctl1 80: %.3f against %.3f", at80, top),
+		abs(top - at112) < 0.01 * top,
+		fmt.tprintf("a.d.2's drive still moves above ctl1 112: %.3f against %.3f", at112, top),
 	)
 	testing.expect(t, top < 64.0, fmt.tprintf("a.d.2's drive reaches %.1f, the old law's ceiling", top))
 
@@ -4599,17 +4370,19 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	// input twice must not give the same output -- that is the whole point -- and
 	// the loop must still be stable, which a feedback path has to be checked for.
 	SR_LOCAL :: f32(48000.0)
-	coef := dsp.one_pole_coef(dsp.EFFECT_ANALOG1_FEEDBACK_HZ, SR_LOCAL)
+	coef := dsp.one_pole_coef(dsp.effect_ad_table(dsp.EFFECT_AD1_FEEDBACK_HZ, 0), SR_LOCAL)
 	// Read at the gentlest drive: anywhere above it the clip saturates on the
 	// first sample and stays there, which is correct and shows no settling.
 	mid := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 0)
 	gain := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 0)
+	loop_gain := dsp.effect_ad_table(dsp.EFFECT_AD1_LOOP_GAIN, 0)
+	rest := dsp.effect_ad_table(dsp.EFFECT_AD1_REST, 0)
 
 	state: [2]f32
-	first := dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef)
+	first := dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef, loop_gain, rest)
 	settled := first
 	for _ in 0 ..< 8000 {
-		settled = dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef)
+		settled = dsp.effect_shape_analog1(&state, 0.5, mid, gain, coef, loop_gain, rest)
 	}
 	testing.expect(
 		t,
@@ -4622,7 +4395,7 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	idle: [2]f32
 	quiet := f32(0)
 	for _ in 0 ..< 4000 {
-		quiet = dsp.effect_shape_analog1(&idle, 0, mid, gain, coef)
+		quiet = dsp.effect_shape_analog1(&idle, 0, mid, gain, coef, loop_gain, rest)
 	}
 	testing.expect(t, abs(quiet) < 1.0e-6, fmt.tprintf("a.d.1 idles at %.5f, not silence", quiet))
 
@@ -4631,16 +4404,193 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	// exceed that times the gain.
 	drive := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 1.0)
 	top := dsp.effect_ad_table(dsp.EFFECT_AD1_GAIN, 1.0)
-	bound := top * (1.0 + dsp.EFFECT_ANALOG1_REST) * 1.001
+	top_loop_gain := dsp.effect_ad_table(dsp.EFFECT_AD1_LOOP_GAIN, 1.0)
+	top_rest := dsp.effect_ad_table(dsp.EFFECT_AD1_REST, 1.0)
+	bound := top * (1.0 + math.tanh(top_rest)) * 1.001
 	loud: [2]f32
 	for i in 0 ..< 48000 {
 		x := f32(i % 97) / 48.0 - 1.0
-		v := dsp.effect_shape_analog1(&loud, x, drive, top, coef)
+		v := dsp.effect_shape_analog1(&loud, x, drive, top, coef, top_loop_gain, top_rest)
 		if !(abs(v) <= bound) || v != v {
 			testing.expect(t, false, fmt.tprintf("a.d.1 left its rails at sample %d: %.4f", i, v))
 			break
 		}
 	}
+}
+
+// Past ctl1 80 a.d.1's loop is a square wave with equal halves and no even harmonics of its
+// own; the reference's second harmonic there is about -30 dB at 131 Hz at any level. The weak
+// quadratic behind the shared high pass supplies it from the droop that high pass puts on the
+// wave, so a loud sine at 131 Hz must come out with its second harmonic well above where a
+// clean square wave leaves it.
+@(test)
+test_effect_analog1_saturated_output_has_a_second_harmonic :: proc(t: ^testing.T) {
+	SR_LOCAL :: f32(48000.0)
+	fx := dsp.Effect_Params {
+		enabled = true,
+		type    = .Analog_1,
+		ctl1    = 1.0,
+		ctl2    = 1.0,
+		level   = 1.0,
+	}
+	dsp.effect_derive(&fx)
+	e: dsp.Effect
+	hz := f32(130.81)
+	frames := 24000
+	re1, im1, re2, im2: f64
+	for i in 0 ..< frames {
+		x := 0.8 * math.sin(2.0 * math.PI * hz * f32(i) / SR_LOCAL)
+		l, _ := dsp.effect_process(&e, x, x, &fx, SR_LOCAL)
+		if i < 8000 {continue}
+		a1 := 2.0 * math.PI * f64(hz) * f64(i) / f64(SR_LOCAL)
+		re1 += f64(l) * math.cos(a1)
+		im1 += f64(l) * math.sin(a1)
+		re2 += f64(l) * math.cos(2.0 * a1)
+		im2 += f64(l) * math.sin(2.0 * a1)
+	}
+	h1 := math.sqrt(re1 * re1 + im1 * im1)
+	h2 := math.sqrt(re2 * re2 + im2 * im2)
+	ratio_db := 20.0 * math.log10(h2 / h1)
+	testing.expectf(t, ratio_db > -40.0 && ratio_db < -20.0, "second harmonic at %.1f dB against the first, expected -40 to -20", ratio_db)
+}
+
+// The quadratic behind the shared high pass makes a constant out of a loud wave, and the
+// section after it has a pole under 1 Hz, so a constant left in would be a slow offset while
+// a note is held and a long tail after it ends. Neither may carry a mean.
+@(test)
+test_effect_analog1_has_no_offset_while_held_or_after_release :: proc(t: ^testing.T) {
+	SR_LOCAL :: f32(48000.0)
+	for ctl1 in ([?]f32{0.25, 0.5, 1.0}) {
+		fx := dsp.Effect_Params {
+			enabled = true,
+			type    = .Analog_1,
+			ctl1    = ctl1,
+			ctl2    = 1.0,
+			level   = 1.0,
+		}
+		dsp.effect_derive(&fx)
+		e: dsp.Effect
+		hz := f32(130.81)
+		held_mean, held_power, tail_mean, tail_power: f64
+		held_count, tail_count := 0, 0
+		held_frames := 72000
+		for i in 0 ..< held_frames + 48000 {
+			x: f32 = 0
+			if i < held_frames {x = 0.8 * math.sin(2.0 * math.PI * hz * f32(i) / SR_LOCAL)}
+			l, _ := dsp.effect_process(&e, x, x, &fx, SR_LOCAL)
+			if i >= 48000 && i < held_frames {
+				held_mean += f64(l)
+				held_power += f64(l) * f64(l)
+				held_count += 1
+			} else if i >= held_frames + 4800 {
+				tail_mean += f64(l)
+				tail_power += f64(l) * f64(l)
+				tail_count += 1
+			}
+		}
+		held_mean /= f64(held_count)
+		held_rms := math.sqrt(held_power / f64(held_count))
+		tail_mean /= f64(tail_count)
+		testing.expectf(t, abs(held_mean) < 0.01 * held_rms, "ctl1 %v: a held note carries a mean of %v against %v rms", ctl1, held_mean, held_rms)
+		testing.expectf(t, abs(tail_mean) < 0.005 * held_rms, "ctl1 %v: the tail after release carries a mean of %v against %v rms", ctl1, tail_mean, held_rms)
+	}
+}
+
+// Two LFOs on pan at full depth sum to 2, and the curve is only defined up to 1: past it the
+// far channel's gain goes negative, which is a polarity flip and not a quieter channel.
+// The level read a chunk ahead is a closed form for the finite decay and release segments and
+// a stepped copy otherwise; either way it has to be what stepping the envelope gives.
+@(test)
+test_envelope_value_ahead_matches_stepping_it :: proc(t: ^testing.T) {
+	SR_LOCAL :: f32(48000.0)
+	for attack in ([?]f32{0.001, 0.05}) {
+		for decay in ([?]f32{0.02, 0.4, 3.0}) {
+			for release in ([?]f32{0.01, 0.3, 4.0}) {
+				for sustain in ([?]f32{0, 0.3, 0.9}) {
+					for gate_off_at in ([?]int{-1, 100, 3000, 20000}) {
+						e: dsp.Envelope
+						dsp.envelope_set_fade(&e, attack, decay, sustain, release, SR_LOCAL)
+						dsp.envelope_gate_on(&e, true)
+						for i in 0 ..< 60000 {
+							if i == gate_off_at {dsp.envelope_gate_off(&e)}
+							if i % 97 == 0 {
+								ahead := dsp.envelope_value_ahead(&e, 256)
+								probe := e
+								stepped: f32
+								for _ in 0 ..< 256 {stepped = dsp.envelope_process(&probe)}
+								if abs(ahead - stepped) > 1.0e-5 {
+									testing.expectf(t, false, "attack %v decay %v release %v sustain %v off %v sample %v: ahead %v, stepped %v", attack, decay, release, sustain, gate_off_at, i, ahead, stepped)
+									return
+								}
+							}
+							dsp.envelope_process(&e)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// Past the end of the cutoff axis the ladder would run with a coefficient above one at a low
+// sample rate and diverge. It is held under 0.45 of the rate, as the diode ladder is.
+@(test)
+test_moog_ladder_is_stable_at_a_low_sample_rate_with_the_cutoff_at_the_top :: proc(t: ^testing.T) {
+	for sr in ([?]f32{22050, 32000, 44100, 48000}) {
+		l: dsp.Moog_Ladder
+		dsp.moog_ladder_set(&l, 16000, 1.0, sr)
+		seed := u32(12345)
+		peak: f32
+		for i in 0 ..< 48000 {
+			seed = seed * 1664525 + 1013904223
+			x := f32(seed >> 8) / f32(1 << 24) * 2 - 1
+			y := dsp.moog_ladder_process(&l, x)
+			peak = max(peak, abs(y))
+			if !(abs(y) < 100) {
+				testing.expectf(t, false, "sample rate %v: output %v at sample %v", sr, y, i)
+				return
+			}
+		}
+	}
+}
+
+// Re-pressing a note that still sounds takes its own slots back before it looks elsewhere. It
+// must not cut off a released note that is only ringing out.
+@(test)
+test_repressing_a_sounding_note_does_not_cut_off_a_ringing_one :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[94] = 3
+	p.values[73] = 0
+	p.values[25] = 0
+	p.values[28] = 127
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	if !testing.expect_value(t, len(e.voices), 3) {return}
+	left := make([]f32, 256)
+	right := make([]f32, 256)
+	defer delete(left)
+	defer delete(right)
+	for note in ([?]int{60, 62, 64}) {engine.engine_note_on(&e, note, 1.0)}
+	engine.engine_process(&e, left, right)
+	engine.engine_note_off(&e, 60)
+	engine.engine_note_on(&e, 65, 1.0)
+	engine.engine_process(&e, left, right)
+	engine.engine_note_off(&e, 62)
+	engine.engine_process(&e, left, right)
+	before := engine.engine_active_voice_count(&e)
+	engine.engine_note_on(&e, 65, 1.0)
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, engine.engine_active_voice_count(&e), before)
+}
+
+@(test)
+test_pan_lfo_gain_never_goes_negative_past_full_depth :: proc(t: ^testing.T) {
+	for x in ([?]f32{1.0, 1.5, 2.0, -1.0, -1.5, -2.0}) {
+		testing.expectf(t, engine.pan_lfo_gain(x) >= 0, "pan LFO gain %v at %v", engine.pan_lfo_gain(x), x)
+	}
+	testing.expect_value(t, engine.pan_lfo_gain(2.0), engine.pan_lfo_gain(1.0))
+	testing.expect_value(t, engine.pan_lfo_gain(-2.0), engine.pan_lfo_gain(-1.0))
 }
 
 @(test)
@@ -4651,7 +4601,16 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	// 0, 64 and 127 -- so it is a fixed filter in front, and this checks the
 	// filter is there and steep.
 	SR_LOCAL :: f32(48000.0)
-	measure :: proc(hz, sr: f32) -> f32 {
+	roots := [7]f32 {
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_ZERO_RE_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_ZERO_IM_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_ZERO_REAL_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_POLE_1_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_POLE_2_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_POLE_3_HZ, 0),
+		dsp.effect_ad_table(dsp.EFFECT_AD1_POST_GAIN, 0),
+	}
+	measure :: proc(hz, sr: f32, roots: ^[7]f32) -> f32 {
 		e: dsp.Effect
 		state: [2][2]f32
 		peak := f32(0)
@@ -4666,14 +4625,7 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 				dsp.EFFECT_AD_HIGHPASS_Q,
 				sr,
 			)
-			l2, _ := dsp.effect_ad_highpass(
-				&e.ad1_highpass,
-				l,
-				r,
-				dsp.EFFECT_ANALOG1_HP2_HZ,
-				dsp.EFFECT_ANALOG1_HP2_Q,
-				sr,
-			)
+			l2, _ := dsp.effect_analog1_post(&e, l, r, roots, sr)
 			// The last two thirds, so the filters have settled.
 			if i > n / 3 && abs(l2) > peak {peak = abs(l2)}
 		}
@@ -4681,9 +4633,9 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	}
 	TAU_LOCAL :: f32(6.283185307179586)
 
-	low := measure(32.7, SR_LOCAL)
-	mid := measure(130.8, SR_LOCAL)
-	high := measure(2093.0, SR_LOCAL)
+	low := measure(32.7, SR_LOCAL, &roots)
+	mid := measure(130.8, SR_LOCAL, &roots)
+	high := measure(2093.0, SR_LOCAL, &roots)
 	low_db := 20.0 * math.log10(max(low / high, 1.0e-9))
 	mid_db := 20.0 * math.log10(max(mid / high, 1.0e-9))
 
@@ -4741,53 +4693,6 @@ test_effect_phaser_period_is_whole_control_blocks :: proc(t: ^testing.T) {
 		abs(top - 6.0) < 1.0e-3,
 		fmt.tprintf("ctl2 127 should sweep in 6 blocks, not %.3f", top),
 	)
-}
-
-// The ladder's feedback is what parameter 20 controls, and it must reach the
-// measured endpoints without passing the point where a four-pole ladder
-// oscillates on its own.
-@(test)
-test_ladder_feedback_follows_the_measured_law :: proc(t: ^testing.T) {
-	testing.expect_value(t, engine.filter_ladder_feedback(0), f32(0))
-	testing.expectf(t, abs(engine.filter_ladder_feedback(64) - 2.00) < 0.01,
-		"resonance 64 did not give the measured feedback: %v", engine.filter_ladder_feedback(64))
-	testing.expectf(t, abs(engine.filter_ladder_feedback(96) - 3.00) < 0.01,
-		"resonance 96 did not give the measured feedback: %v", engine.filter_ladder_feedback(96))
-	last := engine.filter_ladder_feedback(127)
-	testing.expectf(t, last > 3.5 && last < 4.0,
-		"top of the resonance knob left the measured range or reached oscillation: %v", last)
-}
-
-// A ladder run at full feedback must stay bounded and finite: at the pole its
-// loop gain is at its largest, and that is where a solved feedback path either
-// holds or runs away.
-@(test)
-test_ladder_is_stable_at_full_feedback :: proc(t: ^testing.T) {
-	l: dsp.Ladder
-	dsp.ladder_reset(&l)
-	dsp.ladder_set(&l, 500.0, 3.7, 48000.0)
-	peak := f32(0)
-	for i in 0 ..< 48000 {
-		x := math.sin(2.0 * math.PI * 500.0 * f32(i) / 48000.0)
-		y := dsp.ladder_process(&l, x)
-		testing.expectf(t, dsp.is_finite(y), "ladder produced a non-finite sample at %v", i)
-		if abs(y) > peak {peak = abs(y)}
-	}
-	testing.expectf(t, peak < 40, "ladder ran away at its own pole: peak %v", peak)
-}
-
-// And a bad sample must not lodge in its state, exactly as for the section it
-// sits beside.
-@(test)
-test_ladder_recovers_from_non_finite_input :: proc(t: ^testing.T) {
-	l: dsp.Ladder
-	dsp.ladder_reset(&l)
-	dsp.ladder_set(&l, 1000.0, 2.0, 48000.0)
-	dsp.ladder_process(&l, math.inf_f32(1))
-	for i in 0 ..< 64 {
-		y := dsp.ladder_process(&l, 0.25)
-		testing.expectf(t, dsp.is_finite(y), "ladder stayed poisoned at %v", i)
-	}
 }
 
 // The saturation curve is algebraic, not a tanh, and the two are told apart at
@@ -4897,16 +4802,15 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 			return
 		}
 		testing.expect(t, e.effect != fresh.effect, "the effect unit held no state")
-		smoothed := [3]f32{e.cutoff_smooth.value, e.gain_smooth.value, e.pan_smooth.value}
+		smoothed := [2]f32{e.gain_smooth.value, e.pan_smooth.value}
 
 		engine.engine_apply_patch(&e, to, snap)
 
 		if !snap {
 			// An edit keeps its tails and glides; that is what a knob needs.
 			testing.expect(t, !all_zero(e.delay_left), "an edit cleared the delay")
-			testing.expect_value(t, e.cutoff_smooth.value, smoothed[0])
-			testing.expect_value(t, e.gain_smooth.value, smoothed[1])
-			testing.expect_value(t, e.pan_smooth.value, smoothed[2])
+			testing.expect_value(t, e.gain_smooth.value, smoothed[0])
+			testing.expect_value(t, e.pan_smooth.value, smoothed[1])
 			continue
 		}
 		for buffer in ([?][]f32{e.delay_left, e.delay_right, e.chorus_left, e.chorus_right}) {
@@ -4915,9 +4819,13 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 		testing.expect(t, e.effect == fresh.effect, "the effect unit kept the previous patch's state")
 		testing.expect(t, e.equalizer == fresh.equalizer, "the equaliser kept the previous patch's state")
 		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
-		testing.expect_value(t, e.chorus.phase, fresh.chorus.phase)
-		testing.expect_value(t, e.cutoff_smooth.value, fresh.cutoff_smooth.value)
+		testing.expect_value(t, e.chorus.cosine, fresh.chorus.cosine)
+		// The gain snaps to the new patch's, so its first chunk does not ramp from the
+		// old one's. The fade-in behind the effects starts a hair under zero on a fresh
+		// engine only: a patch change on a running one does not repeat it.
 		testing.expect_value(t, e.gain_smooth.value, fresh.gain_smooth.value)
+		testing.expect_value(t, fresh.gain_smooth.value, fresh.params.amp_gain)
+		testing.expect_value(t, fresh.load_fade.value, engine.GAIN_SMOOTHER_START)
 		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)
 	}
 }
@@ -4989,12 +4897,12 @@ test_patch_change_keeps_a_controller_only_while_its_number_is_the_same :: proc(t
 		testing.expect_value(t, e.ctrl_value[0], f32(1))
 		want := to
 		want.values[19] = 127
-		testing.expect_value(t, e.params.filter_cutoff_hz, engine.bind_patch(want).filter_cutoff_hz)
+		testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
 
 		// An ordinary edit afterwards keeps the displacement, as it always has.
 		engine.engine_set_stored(&e, 20, 10)
 		want.values[20] = 10
-		testing.expect_value(t, e.params.filter_cutoff_hz, engine.bind_patch(want).filter_cutoff_hz)
+		testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
 		testing.expect_value(t, e.params.filter_resonance, engine.bind_patch(want).filter_resonance)
 	}
 	{
@@ -5031,5 +4939,147 @@ test_patch_change_snaps_to_where_a_kept_controller_puts_the_target :: proc(t: ^t
 	engine.engine_apply_patch(&e, to, snap = true, keep_voice_pool = true)
 	want := to
 	want.values[19] = 127
-	testing.expect_value(t, e.cutoff_smooth.value, engine.bind_patch(want).filter_cutoff_state)
+	testing.expect_value(t, e.params.filter_cutoff_state, engine.bind_patch(want).filter_cutoff_state)
+}
+
+// A sine's first sample is exactly zero and the second is the sine one increment
+// along: the oscillator is read, then advanced. Advancing first put every note one
+// sample ahead of the reference, at every pitch.
+@(test)
+test_a_sine_notes_first_sample_is_zero :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[0] = 0 // oscillator 1 sine
+	p.values[5] = 0 // oscillator 1 alone
+	p.values[73] = 0
+	p.values[91] = 1
+	p.values[65] = 0 // delay off
+	p.values[66] = 0 // chorus off
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_note_on(&e, 69, 1.0)
+	left := make([]f32, 64)
+	right := make([]f32, 64)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, left[0], f32(0))
+	testing.expect(t, left[1] != 0, "the second sample did not move")
+	testing.expect(t, abs(left[1]) < abs(left[8]), "the note did not rise from zero")
+}
+
+// A note's level comes in under the engine's gain smoother only on the first note after
+// a load. The second note reaches full level on its own ramp alone, on the same voice
+// or on another: the reference's second note is identical sample for sample to ours in
+// its first 100 samples, where a per-note factor made ours 60% quiet at sample 160.
+@(test)
+test_only_the_first_note_after_a_load_rises_under_the_gain_smoother :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[0] = 0
+	p.values[5] = 0
+	p.values[73] = 0
+	p.values[91] = 1
+	p.values[25] = 0 // the shortest attack
+	p.values[65] = 0
+	p.values[66] = 0
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 1024)
+	right := make([]f32, 1024)
+	defer delete(left)
+	defer delete(right)
+
+	peak_of :: proc(x: []f32, from, count: int) -> f32 {
+		peak: f32
+		for i in from ..< from + count {peak = max(peak, abs(x[i]))}
+		return peak
+	}
+
+	engine.engine_note_on(&e, 84, 1.0)
+	engine.engine_process(&e, left, right)
+	first := peak_of(left, 40, 24)
+	engine.engine_note_off(&e, 84)
+	engine.engine_process(&e, left, right)
+	engine.engine_process(&e, left, right)
+
+	engine.engine_note_on(&e, 84, 1.0)
+	engine.engine_process(&e, left, right)
+	second := peak_of(left, 40, 24)
+	testing.expectf(t, second > first * 1.3, "the second note's early peak %v is not above the first's %v", second, first)
+}
+
+// Oscillator 2's pitch edit slides linearly over fifty milliseconds, whatever its
+// size, and the wheel moves at a fixed rate in wheel units, whatever the bend range.
+// `s1probe arch ramp`: the reference's pitch edit takes 39.9 ms from 10 to 90% for
+// twelve semitones and 39.7 for three; its bend 33.6 ms at a range of 2, 12 and 24.
+slide_probe_engine :: proc(patch_values: [][2]int) -> engine.Engine {
+	p := default_patch()
+	p.values[73] = 0
+	p.values[66] = 0
+	p.values[65] = 0
+	for pair in patch_values {p.values[pair[0]] = pair[1]}
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	return e
+}
+
+@(test)
+test_oscillator_2_pitch_edit_slides_over_fifty_milliseconds :: proc(t: ^testing.T) {
+	e := slide_probe_engine({{1, 3}, {5, 127}})
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 4800)
+	right := make([]f32, 4800)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_note_on(&e, 60, 1.0)
+	engine.engine_process(&e, left, right)
+	before := e.osc2_pitch.value
+
+	p := e.patch
+	p.values[2] += 12
+	engine.engine_apply_patch(&e, p)
+	distance := e.params.osc2_semitones - before
+	testing.expect(t, distance > 5, "the edit did not move the target")
+	engine.engine_process(&e, left[:1200], right[:1200]) // 25 ms
+	halfway := (e.osc2_pitch.value - before) / distance
+	testing.expectf(t, abs(halfway - 0.5) < 0.02, "half way through the slide the pitch had moved %v of the way", halfway)
+	engine.engine_process(&e, left[:1300], right[:1300])
+	testing.expectf(t, abs(e.osc2_pitch.value - e.params.osc2_semitones) < 0.001, "after 52 ms the pitch was %v from its target", e.osc2_pitch.value - e.params.osc2_semitones)
+}
+
+@(test)
+test_pitch_wheel_moves_at_a_fixed_rate_in_wheel_units :: proc(t: ^testing.T) {
+	e := slide_probe_engine({})
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 960)
+	right := make([]f32, 960)
+	defer delete(left)
+	defer delete(right)
+	engine.engine_set_pitch_bend(&e, 1)
+	testing.expect_value(t, e.pitch_bend, f32(1))
+	testing.expect_value(t, e.pitch_bend_applied, f32(0))
+	engine.engine_process(&e, left[:480], right[:480]) // 10 ms
+	testing.expectf(t, abs(e.pitch_bend_applied - 0.2375) < 0.002, "after 10 ms the bend was %v, want 0.2375", e.pitch_bend_applied)
+	engine.engine_process(&e, left, right) // 20 ms more: 30 ms in total, less than the 42 ms travel
+	engine.engine_process(&e, left, right)
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, e.pitch_bend_applied, f32(1))
+}
+
+// Key shift, fine tune and master tune move at once, in both engines.
+@(test)
+test_other_pitch_controls_are_not_slid :: proc(t: ^testing.T) {
+	e := slide_probe_engine({})
+	defer engine.engine_destroy(&e)
+	left := make([]f32, 64)
+	right := make([]f32, 64)
+	defer delete(left)
+	defer delete(right)
+	p := e.patch
+	p.values[9] += 12
+	engine.engine_apply_patch(&e, p)
+	testing.expect_value(t, e.params.key_shift, f32(12))
+	engine.engine_process(&e, left, right)
+	testing.expect_value(t, e.params.key_shift, f32(12))
 }

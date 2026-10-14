@@ -4,8 +4,8 @@ import "core:math"
 
 // Band-limited wavetables, built the way the reference builds its own.
 //
-// Read out of the reference binary (`CVco::buildWaveTables` and
-// `CVco::selectWaveTable` in the Ghidra project), not fitted to renders. The
+// This is the reference's own construction (its `CVco::buildWaveTables` and
+// `CVco::selectWaveTable`), not something fitted to renders. The
 // reference does not band-limit at run time at all: it sums each waveform's
 // Fourier series once, at load, into 2048-sample tables, one per band, and plays
 // them back by linear interpolation. Reproducing that is what lets the null test

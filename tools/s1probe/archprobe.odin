@@ -15,7 +15,9 @@ package s1probe
 //   s1probe arch osc                   oscillator purity and aliasing
 //   s1probe arch voices                polyphony and unison accounting
 //   s1probe arch eq                    equaliser peak response
-//   s1probe arch filtertype            parameter 14's five responses
+//   s1probe arch filtertype            parameter 14's five responses; --values cutoff,resonance
+//   s1probe arch hits                  a short patch averaged over many hits; --what <patch.sy1> --values <hits>
+//   s1probe arch tone                  the equaliser's tone, each state against stored 65; --values states
 //
 // Common options: --wav <dir> writes every render pair; --values <list>
 // overrides a subcommand's sweep where it has one.
@@ -581,15 +583,10 @@ match_state :: proc(profile: []f64, states: []f64, profiles: [][]f64) -> (state,
 	return
 }
 
-// The cutoff table, geometrically interpolated at a fractional state.
+// The cutoff axis's frequency at a fractional state.
 cutoff_hz_at :: proc(state: f64) -> f64 {
 	s := clamp(state, 0, f64(sengine.FILTER_TABLE_SIZE - 1))
-	lo := int(math.floor(s))
-	hi := min(lo + 1, sengine.FILTER_TABLE_SIZE - 1)
-	t := s - f64(lo)
-	a := f64(sengine.FILTER_CUTOFF_HZ[lo])
-	b := f64(sengine.FILTER_CUTOFF_HZ[hi])
-	return a * math.pow(b / a, t)
+	return f64(sengine.filter_index_hz(f32(s) * sengine.FILTER_INDEX_MAX / f32(sengine.FILTER_TABLE_SIZE - 1)))
 }
 
 // ================================================================== commands
@@ -1052,13 +1049,13 @@ cmd_arch_lfophase :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	rate := 0
 	best := 1.0e9
 	for s in 0 ..< 128 {
-		hz := f64(sengine.LFO_RATE_HZ[clamp(sengine.resolved_position(43, s), 0, sengine.LFO_RATE_TABLE_SIZE - 1)])
+		hz := f64(sengine.lfo_rate_hz(sengine.resolved_position(43, s)))
 		if abs(hz - 2.5) < best {
 			best = abs(hz - 2.5)
 			rate = s
 		}
 	}
-	table_hz := f64(sengine.LFO_RATE_HZ[sengine.resolved_position(43, rate)])
+	table_hz := f64(sengine.lfo_rate_hz(sengine.resolved_position(43, rate)))
 	period := f64(SAMPLE_RATE) / table_hz
 	FRAME :: 96
 	fmt.println("arch lfophase: mono, sine note 84, LFO 1 saw on volume at depth 127; the saw's jump marks its cycle")
@@ -1310,7 +1307,7 @@ cmd_arch_ramp :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	fmt.println("  u(t): progress of the step at t ms after the event's block boundary; t10/t90: when it crosses 10%")
 	fmt.println("  and 90%; mid: u halfway between t10 and t90, 0.50 for a linear ramp, 0.70 for a one-pole")
 	fmt.println()
-	whats := []string{"cutoff", "cc", "pitch", "bend", "cutoff-small", "bend-half"}
+	whats := []string{"cutoff", "cc", "pitch", "bend", "cutoff-small", "bend-half", "pitch-small", "keyshift", "finetune", "master", "bend-quarter", "bend-range2", "bend-range24"}
 	if o.what != "" {whats = []string{o.what}}
 	offsets := []f64{0, 5, 10, 20, 30, 40, 50, 60}
 	head := strings.builder_make(context.temp_allocator)
@@ -1350,10 +1347,42 @@ cmd_arch_ramp :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 			set_param(&p, 2, zero)
 			set_param(&p, 3, 64)
 			append(&ev, script_on(0, note), script_set(0.5, 2, arch_stored_for_number(2, 12)), script_set(1.0, 2, zero), script_off(1.5, note))
-		case "bend", "bend-half":
+		case "pitch-small":
 			note = 96
-			set_param(&p, 40, arch_stored_for_number(40, 12))
-			append(&ev, script_on(0, note), script_bend(0.5, what == "bend" ? 16383 : 12288), script_bend(1.0, 8192), script_off(1.5, note))
+			set_param(&p, 1, 3)
+			set_param(&p, 5, 127)
+			set_param(&p, 4, 1)
+			zero := arch_stored_for_number(2, 0)
+			set_param(&p, 2, zero)
+			set_param(&p, 3, 64)
+			append(&ev, script_on(0, note), script_set(0.5, 2, arch_stored_for_number(2, 3)), script_set(1.0, 2, zero), script_off(1.5, note))
+		case "keyshift":
+			note = 84
+			zero := arch_stored_for_number(9, 0)
+			set_param(&p, 9, zero)
+			append(&ev, script_on(0, note), script_set(0.5, 9, arch_stored_for_number(9, 12)), script_set(1.0, 9, zero), script_off(1.5, note))
+		case "finetune":
+			note = 96
+			set_param(&p, 1, 3)
+			set_param(&p, 5, 127)
+			set_param(&p, 4, 1)
+			set_param(&p, 2, arch_stored_for_number(2, 0))
+			set_param(&p, 3, 0)
+			append(&ev, script_on(0, note), script_set(0.5, 3, 127), script_set(1.0, 3, 0), script_off(1.5, note))
+		case "master":
+			note = 96
+			set_param(&p, 72, 0)
+			append(&ev, script_on(0, note), script_set(0.5, 72, 127), script_set(1.0, 72, 0), script_off(1.5, note))
+		case "bend", "bend-half", "bend-quarter", "bend-range2", "bend-range24":
+			note = 96
+			range_semitones := f32(12)
+			if what == "bend-range2" {range_semitones = 2}
+			if what == "bend-range24" {range_semitones = 24}
+			set_param(&p, 40, arch_stored_for_number(40, range_semitones))
+			target := 16383
+			if what == "bend-half" {target = 12288}
+			if what == "bend-quarter" {target = 10240}
+			append(&ev, script_on(0, note), script_bend(0.5, target), script_bend(1.0, 8192), script_off(1.5, note))
 		case:
 			usage()
 		}
@@ -1464,7 +1493,7 @@ cmd_arch_rate :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	lfo_rate := 0
 	best := 1.0e9
 	for s in 0 ..< 128 {
-		hz := f64(sengine.LFO_RATE_HZ[clamp(sengine.resolved_position(43, s), 0, sengine.LFO_RATE_TABLE_SIZE - 1)])
+		hz := f64(sengine.lfo_rate_hz(sengine.resolved_position(43, s)))
 		if abs(hz - 8) < best {
 			best = abs(hz - 8)
 			lfo_rate = s
@@ -1748,17 +1777,20 @@ cmd_arch_voices :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 
 // ------------------------------------------------------------------ eq
 
-// The magnitude of the bilinear peaking biquad this engine uses
-// (`sdsp.peaking_coefficients`), at `hz`.
+// The magnitude of the cookbook peaking biquad, at `hz`, written out here and not
+// taken from the engine: the engine's peak is the reference's own design, and a
+// fit to "the nearest cookbook Q" is only a way of putting one number on a width.
 rbj_peak_db :: proc(f0, gain_db, q, hz: f64) -> f64 {
-	k := sdsp.peaking_coefficients(f32(f0), f32(gain_db), f32(q), f32(SAMPLE_RATE))
+	a := math.pow(10.0, gain_db / 40)
+	w0 := 2 * math.PI * f0 / f64(SAMPLE_RATE)
+	alpha := math.sin(w0) / (2 * q)
+	b0, b1, b2 := 1 + alpha * a, -2 * math.cos(w0), 1 - alpha * a
+	a0, a1, a2 := 1 + alpha / a, -2 * math.cos(w0), 1 - alpha / a
 	w := 2.0 * math.PI * hz / f64(SAMPLE_RATE)
-	c1, s1 := math.cos(w), -math.sin(w)
-	c2, s2 := math.cos(2 * w), -math.sin(2 * w)
-	nr := f64(k.b0) + f64(k.b1) * c1 + f64(k.b2) * c2
-	ni := f64(k.b1) * s1 + f64(k.b2) * s2
-	dr := 1.0 + f64(k.a1) * c1 + f64(k.a2) * c2
-	di := f64(k.a1) * s1 + f64(k.a2) * s2
+	nr := b0 + b1 * math.cos(w) + b2 * math.cos(2 * w)
+	ni := -b1 * math.sin(w) - b2 * math.sin(2 * w)
+	dr := a0 + a1 * math.cos(w) + a2 * math.cos(2 * w)
+	di := -a1 * math.sin(w) - a2 * math.sin(2 * w)
 	return 10.0 * math.log10((nr * nr + ni * ni) / (dr * dr + di * di))
 }
 
@@ -1820,7 +1852,7 @@ cmd_arch_eq :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	fmt.println("arch eq: oscillator 2 noise, filter open; transfer = EQ render against the flat render (same noise)")
 	fmt.printfln("  EQ frequency stored %v (%q); level stored 127 (%q) and %v (%q)", freq, sengine.resolved_display(61, freq),
 		sengine.resolved_display(62, 127), cut, sengine.resolved_display(62, cut))
-	fmt.println("  Q fit: the bilinear peaking biquad (this engine's form) with centre and gain fixed at the measured peak")
+	fmt.println("  Q fit: the cookbook peaking biquad with centre and gain fixed at the measured peak")
 	fmt.println()
 	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
 	flat := arch_noise_patch()
@@ -1886,9 +1918,11 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	N :: 16384
 	bin_hz := f64(SAMPLE_RATE) / f64(N)
 	cutoff := 64
+	resonance := 0
 	if len(o.values) > 0 {cutoff = o.values[0]}
-	fmt.printfln("arch filtertype: noise, cutoff %v (table %v Hz), resonance 0; transfer against the 12 dB low pass at 127",
-		cutoff, dec1(f64(sengine.FILTER_CUTOFF_HZ[cutoff])))
+	if len(o.values) > 1 {resonance = o.values[1]}
+	fmt.printfln("arch filtertype: noise, cutoff %v (%v Hz on the axis), resonance %v; transfer against the 12 dB low pass at 127",
+		cutoff, dec1(f64(sengine.filter_index_hz(sengine.filter_knob_index(f32(cutoff))))), resonance)
 	fmt.println("  dB at octaves around the table corner, then the slope over the two octaves below and above it")
 	fmt.println()
 	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
@@ -1898,7 +1932,7 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	defer arch_free_pair(oref, oours)
 	omids := [2][]f32{script_channel(oref, -1), script_channel(oours, -1)}
 	defer for m in omids {delete(m)}
-	fc := f64(sengine.FILTER_CUTOFF_HZ[cutoff])
+	fc := f64(sengine.filter_index_hz(sengine.filter_knob_index(f32(cutoff))))
 	octaves := []f64{-3, -2, -1, 0, 1, 2, 3, 4}
 	header := strings.builder_make(context.temp_allocator)
 	for oc in octaves {fmt.sbprintf(&header, " %v", pad_left(fmt.tprintf("%+.0f", oc), 6))}
@@ -1907,7 +1941,7 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 		p := arch_noise_patch()
 		set_param(&p, 14, arch_stored_for_id(14, t))
 		set_param(&p, 19, cutoff)
-		set_param(&p, 20, 0)
+		set_param(&p, 20, resonance)
 		ref, ours := arch_render(dll, &p, c, ev, 3.1)
 		write_pair(o.wav, fmt.tprintf("filtertype-%v", t), ref, ours)
 		for audio, side in ([2][]f32{ref, ours}) {
@@ -1929,7 +1963,1344 @@ cmd_arch_filtertype :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
 	}
 }
 
+// ------------------------------------------------------------------ tone
+
+// The equaliser's tone control against its own next step up. Stored 65 is a high
+// pass at 10 Hz, which is flat across the audible band, so the render at 65 is the
+// baseline and every other setting's transfer against it is that setting's own
+// section: a low pass up to the centre (22 kHz at 64, so a little under a decibel
+// down at 10 kHz) and a high pass above it.
+cmd_arch_tone :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	N :: 16384
+	bin_hz := f64(SAMPLE_RATE) / f64(N)
+	states := o.values[:]
+	if len(states) == 0 {
+		states = []int{64, 48, 32, 16, 0, 80, 96, 112, 127}
+	}
+	fmt.println("arch tone: noise, equaliser tone at each stored state against stored 65 (a 10 Hz high pass)")
+	fmt.println()
+	freqs := []f64{100, 500, 1000, 2000, 4000, 7000, 10000, 14000, 18000}
+	header := strings.builder_make(context.temp_allocator)
+	for hz in freqs {fmt.sbprintf(&header, " %v", pad_left(fmt.tprintf("%.0f", hz), 6))}
+	fmt.printfln("  %-6v %-4v |%v", "state", "", strings.to_string(header))
+
+	ev := []Script_Event{script_on(0, 60), script_off(3.0, 60)}
+	base := arch_noise_patch()
+	set_param(&base, 60, 65)
+	bref, bours := arch_render(dll, &base, c, ev, 3.1)
+	defer arch_free_pair(bref, bours)
+	bmids := [2][]f32{script_channel(bref, -1), script_channel(bours, -1)}
+	defer for m in bmids {delete(m)}
+
+	for state in states {
+		p := arch_noise_patch()
+		set_param(&p, 60, state)
+		ref, ours := arch_render(dll, &p, c, ev, 3.1)
+		for audio, side in ([2][]f32{ref, ours}) {
+			x := script_channel(audio, -1)
+			h := arch_transfer(bmids[side], x, ms_to_frame(300), ms_to_frame(2900), N)
+			row := strings.builder_make(context.temp_allocator)
+			for hz in freqs {
+				fmt.sbprintf(&row, " %v", sdec1(arch_transfer_db_at(h, bin_hz, hz), 6))
+			}
+			fmt.printfln("  %-6v %-4v |%v", side == 0 ? fmt.tprintf("%v", state) : "", side == 0 ? "ref" : "ours", strings.to_string(row))
+			delete(h)
+			delete(x)
+		}
+		arch_free_pair(ref, ours)
+		free_all(context.temp_allocator)
+	}
+}
+
+// ------------------------------------------------------------------ hits
+
+// A short sound, read properly. The envelope of a hat or a click is a few
+// milliseconds of band-limited noise, and the two engines' noise is not the same
+// noise, so the level in any one window of one note is a sample of a distribution
+// several decibels wide and the difference between engines is mostly that. This
+// plays the patch `--values <n>` times (60 by default) in one render, a hit every
+// 250 ms, and averages the power in each bin across the hits, which is the
+// quantity the engines are supposed to agree on. `--what <file.sy1>` names the
+// patch.
+// Mean power of x over the frames [onset + from, onset + to) of every onset.
+mean_power_across_hits :: proc(x: []f32, onsets: []int, from, to: int) -> f64 {
+	total := 0.0
+	count := 0
+	for onset in onsets {
+		for k in max(onset + from, 0) ..< min(onset + to, len(x)) {
+			total += f64(x[k]) * f64(x[k])
+			count += 1
+		}
+	}
+	return total / f64(max(count, 1))
+}
+
+cmd_arch_hits :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	if len(o.what) == 0 {
+		fmt.eprintln("arch hits: --what <patch.sy1> names the patch")
+		os.exit(1)
+	}
+	data, read_err := os.read_entire_file(o.what, context.allocator)
+	if read_err != nil {
+		fmt.eprintfln("arch hits: cannot read %v", o.what)
+		os.exit(1)
+	}
+	defer delete(data)
+	patch, parse_err := cpatch.parse_sy1(data)
+	if parse_err != .None {
+		fmt.eprintfln("arch hits: %v is not a patch", o.what)
+		os.exit(1)
+	}
+
+	hits := 60
+	if len(o.values) > 0 {hits = o.values[0]}
+	PERIOD :: 0.25
+	HOLD :: 0.12
+	events: [dynamic]Script_Event
+	defer delete(events)
+	for h in 0 ..< hits {
+		t := 0.1 + f64(h) * PERIOD
+		append(&events, script_on(t, 60))
+		append(&events, script_off(t + HOLD, 60))
+	}
+	seconds := 0.1 + f64(hits) * PERIOD + 0.2
+	ref, ours := arch_render(dll, &patch, c, events[:], seconds)
+	defer arch_free_pair(ref, ours)
+	mids := [2][]f32{script_channel(ref, -1), script_channel(ours, -1)}
+	defer for m in mids {delete(m)}
+
+	onsets: [dynamic]int
+	defer delete(onsets)
+	for i := 0; i < len(events); i += 2 {
+		append(&onsets, events[i].frame)
+	}
+
+	fmt.printfln("arch hits: %v, %v hits of note 60, a hit every %v ms; power averaged across hits", o.what, hits, int(PERIOD * 1000))
+	fmt.println()
+	fmt.println("   window ms      ref dB    ours dB    ours-ref")
+	edges := [?]f64{0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30, 40, 60, 80, 100}
+	for b in 0 ..< len(edges) - 1 {
+		power: [2]f64
+		for side in 0 ..< 2 {
+			power[side] = mean_power_across_hits(mids[side], onsets[:], ms_to_frame(edges[b]), ms_to_frame(edges[b + 1]))
+		}
+		r_db := 10.0 * math.log10(max(power[0], 1.0e-20))
+		o_db := 10.0 * math.log10(max(power[1], 1.0e-20))
+		fmt.printfln("  %4v - %-4v   %8v   %8v   %8v", edges[b], edges[b + 1], sdec1(r_db, 8), sdec1(o_db, 8), sdec1(o_db - r_db, 8))
+	}
+}
+
+// ------------------------------------------------------------------ arp
+
+// Which stored arpeggiator types play the same thing, in both engines. A chord is
+// held (60, 64, 67) with the arpeggiator on, each stored value is rendered, and
+// the values whose renders are bit-identical are grouped. The step pitches are
+// not read: they come back as octaves and harmonics of the chord and the detector's
+// scatter is larger than the difference being looked for. `--what <patch.sy1>` is
+// the base (a patch the reference renders under every arpeggiator setting, such
+// as factory 110), `--values` the stored types to try.
+cmd_arch_arp :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	if len(o.what) == 0 {
+		fmt.eprintln("arch arp: --what <patch.sy1> names the base patch")
+		os.exit(1)
+	}
+	data, read_err := os.read_entire_file(o.what, context.allocator)
+	if read_err != nil {
+		fmt.eprintfln("arch arp: cannot read %v", o.what)
+		os.exit(1)
+	}
+	defer delete(data)
+	base, parse_err := cpatch.parse_sy1(data)
+	if parse_err != .None {
+		fmt.eprintfln("arch arp: %v is not a patch", o.what)
+		os.exit(1)
+	}
+	values := o.values[:]
+	if len(values) == 0 {
+		values = []int{-1, 0, 1, 2, 3, 4, 5, 9}
+	}
+
+	fmt.printfln("arch arp: %v, chord 60 64 67 held, arpeggiator on, beat division 9, range 0", o.what)
+	fmt.println("  stored values whose renders are bit-identical")
+	fmt.println()
+	notes := []int{60, 64, 67}
+	hashes: [2][dynamic]u64
+	defer {for h in hashes {delete(h)}}
+	for stored in values {
+		patch := base
+		for pair in ([][2]int{{59, 1}, {31, stored}, {32, 0}, {33, 9}, {34, 64}}) {
+			patch.values[pair[0]] = pair[1]
+			patch.present[pair[0]] = true
+		}
+		events: [dynamic]Script_Event
+		for n in notes {append(&events, script_on(0, n))}
+		ref, ours := arch_render(dll, &patch, c, events[:], 4.0)
+		for audio, side in ([2][]f32{ref, ours}) {
+			hash := u64(14695981039346656037)
+			for sample in audio {
+				hash = (hash ~ u64(transmute(u32)sample)) * 1099511628211
+			}
+			append(&hashes[side], hash)
+		}
+		delete(events)
+		arch_free_pair(ref, ours)
+	}
+	for side in 0 ..< 2 {
+		fmt.printf("  %-4v", side == 0 ? "ref" : "ours")
+		groups := identical_groups(hashes[side][:])
+		for group in groups {
+			fmt.print(" {")
+			for index, k in group {
+				fmt.printf("%v%v", k == 0 ? "" : ",", values[index])
+			}
+			fmt.print("}")
+			delete(group)
+		}
+		delete(groups)
+		fmt.println()
+	}
+}
+
+// The indices of equal hashes, grouped, each group in order and the groups in order
+// of their first member.
+identical_groups :: proc(hashes: []u64) -> [dynamic][dynamic]int {
+	groups: [dynamic][dynamic]int
+	done := make([]bool, len(hashes))
+	defer delete(done)
+	for i in 0 ..< len(hashes) {
+		if done[i] {continue}
+		group: [dynamic]int
+		for j in i ..< len(hashes) {
+			if !done[j] && hashes[j] == hashes[i] {
+				append(&group, j)
+				done[j] = true
+			}
+		}
+		append(&groups, group)
+	}
+	return groups
+}
+
+// ------------------------------------------------------------------ chorus
+
+Chorus_Case :: struct {
+	name:     string,
+	type:     int,
+	delay:    int,
+	depth:    int,
+	rate:     int,
+	feedback: int,
+	level:    int,
+}
+
+// A stereo source with different content in the two channels: two detuned saw
+// layers panned apart, so a chorus that mixes the channels or reads the wrong one
+// cannot hide behind a mono input.
+chorus_source_patch :: proc() -> cpatch.Patch {
+	p := arch_sine_patch()
+	set_param(&p, 0, arch_stored_for_id(0, 1))
+	set_param(&p, 5, 0)
+	set_param(&p, 73, 1)
+	set_param(&p, 93, 2)
+	set_param(&p, 75, 40)
+	set_param(&p, 84, 127)
+	set_param(&p, 65, 0)
+	switch g_chorus_source {
+	case 1: // one saw, panned off centre: the two channels are scaled copies
+		set_param(&p, 73, 0)
+		set_param(&p, 90, 40)
+	case 2: // two unison sines, different content in each channel and nothing broadband
+		set_param(&p, 0, 0)
+	}
+	for pair in g_chorus_overrides {
+		if pair[0] < 200 {set_param(&p, pair[0], pair[1])}
+	}
+	return p
+}
+
+g_chorus_overrides: [dynamic][2]int
+
+// Which source the chorus probe plays: 0 two detuned saws, 1 one panned saw, 2 two
+// unison sines. Set by `--what`.
+g_chorus_source: int
+
+// How deeply `b` cancels against `a` over [from, to), in dB (0 is none, lower is
+// closer), and `b`'s level over `a`'s in dB.
+null_and_level :: proc(a, b: []f32, from, to: int) -> (null_db, level_db: f64) {
+	residual, power_a, power_b := 0.0, 0.0, 0.0
+	for i in max(from, 0) ..< min(to, min(len(a), len(b))) {
+		d := f64(a[i]) - f64(b[i])
+		residual += d * d
+		power_a += f64(a[i]) * f64(a[i])
+		power_b += f64(b[i]) * f64(b[i])
+	}
+	null_db = 10.0 * math.log10(max(residual, 1.0e-30) / max(power_a, 1.0e-30))
+	level_db = 10.0 * math.log10(max(power_b, 1.0e-30) / max(power_a, 1.0e-30))
+	return
+}
+
+// How `b` differs from `a` once the simplest differences are removed: the integer
+// lag (within +-64 samples) and gain that cancel best, and what is left. A lag near
+// zero with a gain near one and a deep null is a match; a deep null only at a lag is
+// a timing offset; a shallow one everywhere is a different shape.
+dry_alignment :: proc(a, b: []f32, from, to: int) -> (lag: f64, gain_db, null_db: f64) {
+	residuals: [129]f64
+	gains: [129]f64
+	for l in -64 ..= 64 {
+		ab, bb, aa := 0.0, 0.0, 0.0
+		for i in max(from, 64) ..< min(to, min(len(a), len(b))) - 64 {
+			x, y := f64(a[i]), f64(b[i + l])
+			ab += x * y
+			bb += y * y
+			aa += x * x
+		}
+		residuals[l + 64] = 1.0e30
+		if bb <= 0 || aa <= 0 {continue}
+		g := ab / bb
+		gains[l + 64] = g
+		residuals[l + 64] = (aa - 2 * g * ab + g * g * bb) / aa
+	}
+	best := 0
+	for i in 1 ..< 129 {
+		if residuals[i] < residuals[best] {best = i}
+	}
+	lag = f64(best - 64)
+	if best > 0 && best < 128 {
+		r0, rm, rp := residuals[best], residuals[best - 1], residuals[best + 1]
+		den := rm - 2 * r0 + rp
+		if den > 0 {lag += 0.5 * (rm - rp) / den}
+	}
+	null_db = 10.0 * math.log10(max(residuals[best], 1.0e-30))
+	gain_db = 20.0 * math.log10(max(abs(gains[best]), 1.0e-30))
+	return
+}
+
+// The chorus's wet in both engines, one channel at a time, by rendering the same
+// patch with the section on and off and subtracting.
+chorus_wet :: proc(dll: string, c: ^Arch_Chunk, cs: Chorus_Case, events: []Script_Event) -> (wet: [2][2][]f32) {
+	renders: [2][2][]f32
+	for state in 0 ..< 2 {
+		p := chorus_source_patch()
+		set_param(&p, 66, state)
+		late := false
+		for pair in g_chorus_overrides {
+			if pair[0] == 666 {late = true}
+		}
+		if late {set_param(&p, 66, 0)}
+		set_param(&p, 64, cs.type)
+		set_param(&p, 52, cs.delay)
+		set_param(&p, 53, cs.depth)
+		set_param(&p, 54, cs.rate)
+		set_param(&p, 55, cs.feedback)
+		set_param(&p, 56, cs.level)
+		run_events := events
+		if late && state == 1 {
+			run_events = make([]Script_Event, len(events) + 1, context.temp_allocator)
+			run_events[0] = events[0]
+			run_events[1] = script_set(0.5, 66, 1)
+			copy(run_events[2:], events[1:])
+		}
+		ref, ours := arch_render(dll, &p, c, run_events, 2.6)
+		renders[state] = {ref, ours}
+	}
+	for side in 0 ..< 2 {
+		for ch in 0 ..< 2 {
+			on := script_channel(renders[1][side], ch)
+			off := script_channel(renders[0][side], ch)
+			for i in 0 ..< len(on) {on[i] -= off[i]}
+			delete(off)
+			wet[side][ch] = on
+		}
+	}
+	for state in 0 ..< 2 {
+		arch_free_pair(renders[state][0], renders[state][1])
+	}
+	return
+}
+
+// `s1probe arch chorus [--values <case indices>]`. Reports, per channel, how deeply
+// the two engines' wets cancel (0 dB is no cancellation) and ours over the
+// reference's in level. The first row is the floor: the same measure on the dry
+// source, which is as deep as any wet can cancel.
+cmd_arch_chorus :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	cases := [?]Chorus_Case {
+		{"type 1, centre", 1, 64, 64, 64, 64, 127},
+		{"type 2, centre", 2, 64, 64, 64, 64, 127},
+		{"type 4, centre", 4, 64, 64, 64, 64, 127},
+		{"type 1, deep slow", 1, 100, 100, 40, 64, 127},
+		{"type 2, deep slow", 2, 100, 100, 40, 64, 127},
+		{"type 4, deep slow", 4, 100, 100, 40, 64, 127},
+		{"type 2, half level", 2, 64, 64, 64, 64, 64},
+		{"type 2, feedback +50%", 2, 64, 64, 64, 96, 127},
+		{"type 2, feedback -99%", 2, 64, 64, 64, 0, 127},
+		{"type 2, flanger", 2, 8, 90, 80, 100, 127},
+		{"type 4, flanger", 4, 8, 90, 80, 100, 127},
+		{"type 2, fast and deep", 2, 100, 127, 120, 64, 127},
+		{"type 4, fast and deep", 4, 100, 127, 120, 64, 127},
+		{"type 2, no depth", 2, 64, 0, 64, 64, 127},
+		{"comb fb 0", 1, 64, 0, 64, 0, 127},
+		{"comb fb 1", 1, 64, 0, 64, 1, 127},
+		{"comb fb 2", 1, 64, 0, 64, 2, 127},
+		{"comb fb 3", 1, 64, 0, 64, 3, 127},
+		{"comb fb 4", 1, 64, 0, 64, 4, 127},
+		{"comb fb 8", 1, 64, 0, 64, 8, 127},
+		{"comb fb 127", 1, 64, 0, 64, 127, 127},
+		{"sweep rate 90", 2, 100, 127, 90, 64, 127},
+		{"sweep rate 100", 2, 100, 127, 100, 64, 127},
+		{"sweep rate 110", 2, 100, 127, 110, 64, 127},
+		{"sweep rate 127", 2, 100, 127, 127, 64, 127},
+		{"sweep rate 120 depth 64", 2, 100, 64, 120, 64, 127},
+		{"sweep rate 120 depth 100", 2, 100, 100, 120, 64, 127},
+		{"type 2, rate 0", 2, 100, 127, 0, 64, 127},
+		{"type 2, rate 1", 2, 100, 127, 1, 64, 127},
+		{"type 2, rate 8", 2, 100, 127, 8, 64, 127},
+		{"type 1, delay 20", 1, 20, 127, 40, 64, 127},
+		{"type 2, delay 60", 2, 60, 80, 40, 64, 127},
+	}
+	// `--what` is a source name, then any `index=value` overrides: `sine,14=4`.
+	parts := strings.split(o.what, ",", context.temp_allocator)
+	g_chorus_source = 0
+	g_chorus_overrides = {}
+	for part, i in parts {
+		if i == 0 {
+			g_chorus_source = part == "pan" ? 1 : (part == "sine" ? 2 : 0)
+			continue
+		}
+		if eq := strings.index_byte(part, '='); eq > 0 {
+			index, _ := strconv.parse_int(part[:eq])
+			value, _ := strconv.parse_int(part[eq + 1:])
+			append(&g_chorus_overrides, [2]int{index, value})
+		}
+	}
+	note := 60
+	for pair in g_chorus_overrides {
+		if pair[0] == 999 {note = pair[1]}
+	}
+	events := []Script_Event{script_on(0, note), script_off(2.5, note)}
+	for pair in g_chorus_overrides {
+		if pair[0] == 998 {
+			// Two notes on the same voice: the second starts at one second.
+			events = []Script_Event{script_on(0, note), script_off(0.5, note), script_on(1.0, note), script_off(1.5, note)}
+		}
+	}
+	from, to := ms_to_frame(500), ms_to_frame(2400)
+
+	fmt.println("arch chorus: note 60 through a source chosen by --what (default two detuned saws, `pan` one panned saw, `sine` two unison sines); wet = chorus on minus off")
+	fmt.println("  null: how deeply the two engines' wets cancel (dB, lower is closer); level: ours over reference (dB)")
+	fmt.println()
+	fmt.println("  case                       |  null L   null R | level L  level R")
+
+	dry := chorus_source_patch()
+	set_param(&dry, 66, 0)
+	dref, dours := arch_render(dll, &dry, c, events, 2.6)
+	defer arch_free_pair(dref, dours)
+	floor: [2]f64
+	for ch in 0 ..< 2 {
+		a := script_channel(dref, ch)
+		b := script_channel(dours, ch)
+		floor[ch], _ = null_and_level(a, b, from, to)
+		delete(a)
+		delete(b)
+	}
+	fmt.printfln("  %-26v | %7v  %7v |", "(dry source, no chorus)", sdec1(floor[0], 7), sdec1(floor[1], 7))
+	{
+		a := script_channel(dref, 0)
+		b := script_channel(dours, 0)
+		lag, gain, null := dry_alignment(a, b, from, to)
+		fmt.printfln("  (dry source, left, best lag %.3f samples, gain %v dB: null %v dB)", lag, sdec1(gain), sdec1(null))
+		if len(o.values) > 0 && o.values[0] == 97 {
+			for i in 0 ..< 3000 {
+				fmt.printfln("S %v %.9f %.9f", i, a[48000 + i], b[48000 + i])
+			}
+		}
+		if len(o.values) > 0 && o.values[0] == 98 {
+			for i in 0 ..< 6000 {
+				fmt.printfln("S %v %.9f %.9f", i, a[i], b[i])
+			}
+		}
+		for w in 0 ..< 4 {
+			wa, wb := ms_to_frame(300 + f64(w) * 500), ms_to_frame(700 + f64(w) * 500)
+			wl, wg, wn := dry_alignment(a, b, wa, wb)
+			fmt.printfln("    window %.1f-%.1f s: lag %.3f samples, gain %v dB, null %v dB", 0.3 + f64(w) * 0.5, 0.7 + f64(w) * 0.5, wl, sdec1(wg), sdec1(wn))
+		}
+		delete(a)
+		delete(b)
+	}
+
+	for cs, index in cases {
+		if len(o.values) > 0 {
+			listed := false
+			for v in o.values {if v == index {listed = true}}
+			if len(o.values) > 1 && o.values[0] == 500 {listed = o.values[1] == index}
+			if !listed {continue}
+		}
+		wet := chorus_wet(dll, c, cs, events)
+		if len(o.values) > 1 && o.values[0] == 500 && o.values[1] == index {
+			for i in ms_to_frame(300) ..< ms_to_frame(300) + 32768 {
+				fmt.printfln("W %v %.9f %.9f", i, wet[0][0][i], wet[1][0][i])
+			}
+		}
+		nulls, levels: [2]f64
+		for ch in 0 ..< 2 {
+			nulls[ch], levels[ch] = null_and_level(wet[0][ch], wet[1][ch], from, to)
+		}
+		fmt.printfln(
+			"  %-26v | %7v  %7v | %7v  %7v",
+			cs.name, sdec1(nulls[0], 7), sdec1(nulls[1], 7), sdec1(levels[0], 7), sdec1(levels[1], 7),
+		)
+		if len(o.values) > 0 && o.values[0] < 90 {
+			fmt.printf("      left null by window (s):")
+			for w in 0 ..< 6 {
+				a, b := ms_to_frame(300 + f64(w) * 350), ms_to_frame(650 + f64(w) * 350)
+				n, _ := null_and_level(wet[0][0], wet[1][0], a, b)
+				fmt.printf("  %.2f-%.2f %v", 0.3 + f64(w) * 0.35, 0.65 + f64(w) * 0.35, sdec1(n, 6))
+			}
+			fmt.println()
+		}
+		for side in 0 ..< 2 {
+			for ch in 0 ..< 2 {delete(wet[side][ch])}
+		}
+	}
+}
+
+// ------------------------------------------------------------------ modenv
+
+// The modulation envelope on oscillator 2's pitch, read as semitones above the same
+// patch with the envelope off, at chosen times after the note starts, in both engines.
+// `--values attack,decay,amount` (stored 12, 13, 11); the defaults are a slow attack
+// and decay at full amount so a pitch window of a few milliseconds can follow it.
+cmd_arch_modenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, decay, amount := 64, 90, 127
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {decay = o.values[1]}
+	if len(o.values) > 2 {amount = o.values[2]}
+	note := 60
+	if o.what != "" {
+		n, _ := strconv.parse_int(o.what)
+		note = n
+	}
+	times := []f64{10, 25, 50, 100, 150, 200, 300, 400, 600, 800, 1000, 1300, 1700, 2200, 2800, 3400}
+	fmt.printfln("arch modenv: oscillator 2 triangle alone, note %v, mod envelope on pitch; attack %v, decay %v, amount %v", note, attack, decay, amount)
+	fmt.println("  semitones above the envelope-off render, at each time after note on (ms)")
+	head := strings.builder_make(context.temp_allocator)
+	for t in times {fmt.sbprintf(&head, " %v", pad_left(fmt.tprintf("%.0f", t), 6))}
+	fmt.printfln("  side  |%v", strings.to_string(head))
+
+	renders: [2][2][]f32
+	for on in 0 ..< 2 {
+		p := arch_sine_patch()
+		set_param(&p, 1, 3)
+		set_param(&p, 5, 127)
+		set_param(&p, 4, 1)
+		set_param(&p, 2, arch_stored_for_number(2, 0))
+		set_param(&p, 3, 64)
+		set_param(&p, 71, 0)
+		set_param(&p, 10, on)
+		set_param(&p, 11, amount)
+		set_param(&p, 12, attack)
+		set_param(&p, 13, decay)
+		events := []Script_Event{script_on(0, note), script_off(3.8, note)}
+		ref, ours := arch_render(dll, &p, c, events, 4.0)
+		renders[on] = {ref, ours}
+	}
+	for side in 0 ..< 2 {
+		off := script_channel(renders[0][side], -1)
+		on := script_channel(renders[1][side], -1)
+		row := strings.builder_make(context.temp_allocator)
+		for t in times {
+			centre := ms_to_frame(t)
+			half := ms_to_frame(3)
+			diffs: [7]f64
+			for k in 0 ..< 7 {
+				at := centre + (k - 3) * ms_to_frame(0.9)
+				diffs[k] = hz_to_midi(zc_frequency(on, at - half, at + half)) - hz_to_midi(zc_frequency(off, at - half, at + half))
+			}
+			slice.sort(diffs[:])
+			fmt.sbprintf(&row, " %v", dec2(diffs[3], 6))
+		}
+		fmt.printfln("  %-5v |%v", side == 0 ? "ref" : "ours", strings.to_string(row))
+		delete(off)
+		delete(on)
+	}
+	for on in 0 ..< 2 {arch_free_pair(renders[on][0], renders[on][1])}
+}
+
+// The filter envelope on the cutoff, read as the level of a sine two octaves above the
+// 12 dB low pass's corner, in dB relative to the envelope-off level, at times after the
+// note starts, in both engines. `--values attack,decay,amount,sustain` (stored 15, 16,
+// 21, 17).
+cmd_arch_filterenv :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, decay, amount, sustain := 64, 90, 79, 0
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {decay = o.values[1]}
+	if len(o.values) > 2 {amount = o.values[2]}
+	if len(o.values) > 3 {sustain = o.values[3]}
+	note := 108
+	cutoff := 30
+	if len(o.values) > 4 {cutoff = o.values[4]}
+	if len(o.values) > 5 {note = o.values[5]}
+	times := []f64{10, 25, 50, 100, 150, 200, 300, 400, 600, 800, 1000, 1300, 1700, 2200, 2800, 3400}
+	if o.what == "fine" {
+		times = []f64{2, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30, 36, 44, 54, 66, 80}
+	}
+	if o.what == "ms" {
+		times = make([]f64, 40, context.temp_allocator)
+		for i in 0 ..< 40 {times[i] = f64(i * 2 + 2)}
+	}
+	fmt.printfln("arch filterenv: sine note %v through the 12 dB low pass at cutoff %v; attack %v, decay %v, amount %v, sustain %v", note, cutoff, attack, decay, amount, sustain)
+	fmt.println("  dB above the envelope-off render at each time after note on (ms)")
+	head := strings.builder_make(context.temp_allocator)
+	for t in times {fmt.sbprintf(&head, " %v", pad_left(fmt.tprintf("%.0f", t), 6))}
+	fmt.printfln("  side  |%v", strings.to_string(head))
+	renders: [2][2][]f32
+	for on in 0 ..< 2 {
+		p := arch_sine_patch()
+		set_param(&p, 14, arch_stored_for_id(14, 0))
+		set_param(&p, 19, cutoff)
+		set_param(&p, 20, 0)
+		set_param(&p, 21, on == 1 ? amount : 63)
+		set_param(&p, 15, attack)
+		set_param(&p, 16, decay)
+		set_param(&p, 17, sustain)
+		set_param(&p, 18, 0)
+		events := []Script_Event{script_on(0, note), script_off(3.8, note)}
+		ref, ours := arch_render(dll, &p, c, events, 4.0)
+		renders[on] = {ref, ours}
+	}
+	for side in 0 ..< 2 {
+		off := script_channel(renders[0][side], -1)
+		on := script_channel(renders[1][side], -1)
+		row := strings.builder_make(context.temp_allocator)
+		for t in times {
+			centre := ms_to_frame(t)
+			half := ms_to_frame(o.what == "fine" || o.what == "ms" ? 1 : 2)
+			if o.what == "abs" {
+				fmt.sbprintf(&row, " %v", dec2(window_db(on, centre - half, centre + half), 6))
+			} else {
+				fmt.sbprintf(&row, " %v", dec2(window_db(on, centre - half, centre + half) - window_db(off, centre - half, centre + half), 6))
+			}
+		}
+		fmt.printfln("  %-5v |%v", side == 0 ? "ref" : "ours", strings.to_string(row))
+		delete(off)
+		delete(on)
+	}
+	for on in 0 ..< 2 {arch_free_pair(renders[on][0], renders[on][1])}
+}
+
+// The filter envelope's path through the first milliseconds, from noise through the 12 dB
+// low pass averaged over many identical hits: the power in each 1 ms window rises with the
+// cutoff, so the two engines' noises can differ and the averages still agree.
+// `--values attack,decay,amount,sustain,cutoff`; the first hit is left out, since the
+// first note after a load rises under the gain smoother.
+cmd_arch_filterhits :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, decay, amount, sustain, cutoff := 56, 90, 79, 0, 60
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {decay = o.values[1]}
+	if len(o.values) > 2 {amount = o.values[2]}
+	if len(o.values) > 3 {sustain = o.values[3]}
+	if len(o.values) > 4 {cutoff = o.values[4]}
+	HITS :: 80
+	p := arch_noise_patch()
+	set_param(&p, 14, arch_stored_for_id(14, 0))
+	set_param(&p, 19, cutoff)
+	set_param(&p, 20, 0)
+	set_param(&p, 21, amount)
+	set_param(&p, 15, attack)
+	set_param(&p, 16, decay)
+	set_param(&p, 17, sustain)
+	set_param(&p, 18, 0)
+	set_param(&p, 29, 127)
+	events: [dynamic]Script_Event
+	defer delete(events)
+	for h in 0 ..< HITS {
+		t := 0.1 + f64(h) * 0.25
+		append(&events, script_on(t, 60))
+		append(&events, script_off(t + 0.15, 60))
+	}
+	ref, ours := arch_render(dll, &p, c, events[:], 0.1 + f64(HITS) * 0.25 + 0.2)
+	defer arch_free_pair(ref, ours)
+	mids := [2][]f32{script_channel(ref, -1), script_channel(ours, -1)}
+	defer for m in mids {delete(m)}
+	onsets: [dynamic]int
+	defer delete(onsets)
+	for i := 2; i < len(events); i += 2 {append(&onsets, events[i].frame)}
+
+	fmt.printfln("arch filterhits: noise through the 12 dB low pass at cutoff %v; attack %v, decay %v, amount %v, sustain %v; %v hits", cutoff, attack, decay, amount, sustain, HITS - 1)
+	fmt.println("  power per 1 ms window, dB relative to the 40-60 ms window of the same engine")
+	fmt.println("  window ms     ref     ours    diff")
+	base: [2]f64
+	for side in 0 ..< 2 {
+		base[side] = mean_power_across_hits(mids[side], onsets[:], ms_to_frame(40), ms_to_frame(60))
+	}
+	for w in 0 ..< 40 {
+		pw: [2]f64
+		for side in 0 ..< 2 {
+			pw[side] = 10.0 * math.log10(max(mean_power_across_hits(mids[side], onsets[:], ms_to_frame(f64(w)), ms_to_frame(f64(w + 1))), 1.0e-20) / max(base[side], 1.0e-20))
+		}
+		fmt.printfln("  %4v-%-4v  %8v %8v %8v", w, w + 1, sdec1(pw[0], 7), sdec1(pw[1], 7), sdec1(pw[1] - pw[0], 7))
+	}
+}
+
+// The modulation envelope's reach on FM and on pulse width, read as the static setting
+// that cancels against it. The envelope is held near its peak (instant attack, the
+// longest decay) so over 150 to 250 ms it is within 2.5% of one; the same patch is then
+// rendered with the envelope off and the destination's own parameter at each stored
+// value, and the value whose render nulls deepest against the envelope's is the one it
+// is equivalent to. Done in each engine against itself, so the oscillators' own offsets
+// cancel. `--what fm|pw`, `--values amount[,base]`.
+cmd_arch_modenvscale :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	pw := o.what == "pw"
+	amount, base := 96, pw ? 32 : 0
+	if len(o.values) > 0 {amount = o.values[0]}
+	if len(o.values) > 1 {base = o.values[1]}
+	param := pw ? 8 : 45
+	from, to := ms_to_frame(150), ms_to_frame(250)
+	events := []Script_Event{script_on(0, 60), script_off(0.4, 60)}
+
+	patch_for :: proc(pw: bool, on: bool, amount, value: int) -> cpatch.Patch {
+		p := arch_sine_patch()
+		set_param(&p, 5, 0)
+		set_param(&p, 71, pw ? 2 : 1)
+		set_param(&p, 4, 1)
+		set_param(&p, 2, arch_stored_for_number(2, 0))
+		set_param(&p, 3, 64)
+		set_param(&p, 12, 0)
+		set_param(&p, 13, 127)
+		set_param(&p, 11, amount)
+		if pw {
+			set_param(&p, 0, arch_stored_for_id(0, 2))
+			set_param(&p, 8, value)
+		} else {
+			set_param(&p, 0, 0)
+			set_param(&p, 1, 3)
+			set_param(&p, 45, value)
+		}
+		set_param(&p, 10, on ? 1 : 0)
+		return p
+	}
+
+	on_patch := patch_for(pw, true, amount, base)
+	on_ref, on_ours := arch_render(dll, &on_patch, c, events, 0.5)
+	defer arch_free_pair(on_ref, on_ours)
+	on_mid := [2][]f32{script_channel(on_ref, -1), script_channel(on_ours, -1)}
+	defer for m in on_mid {delete(m)}
+
+	best_null: [2]f64 = {1.0e9, 1.0e9}
+	best_value: [2]int
+	try :: proc(dll: string, c: ^Arch_Chunk, pw: bool, value: int, events: []Script_Event, on_mid: [2][]f32, from, to: int, best_null: ^[2]f64, best_value: ^[2]int) {
+		p := patch_for(pw, false, 64, value)
+		ref, ours := arch_render(dll, &p, c, events, 0.5)
+		defer arch_free_pair(ref, ours)
+		for side in 0 ..< 2 {
+			audio := side == 0 ? ref : ours
+			x := script_channel(audio, -1)
+			defer delete(x)
+			n, _ := null_and_level(on_mid[side], x, from, to)
+			if n < best_null[side] {
+				best_null[side] = n
+				best_value[side] = value
+			}
+		}
+	}
+	limit := 127
+	for v := 0; v <= limit; v += 4 {
+		try(dll, c, pw, v, events, on_mid, from, to, &best_null, &best_value)
+	}
+	coarse := best_value
+	for side in 0 ..< 2 {
+		for d in -3 ..= 3 {
+			if d == 0 {continue}
+			v := coarse[side] + d
+			if v < 0 || v > limit {continue}
+			// Only the side being refined needs the render; both sides are scored.
+			try(dll, c, pw, v, events, on_mid, from, to, &best_null, &best_value)
+		}
+	}
+	fmt.printfln("arch modenvscale: %v, mod envelope amount %v (stored 11), parameter %v base %v", pw ? "pulse width" : "FM", amount, param, base)
+	fmt.printfln("  equivalent static value of parameter %v at the envelope's peak:", param)
+	fmt.printfln("  ref  %v (null %v dB)", best_value[0], sdec1(best_null[0]))
+	fmt.printfln("  ours %v (null %v dB)", best_value[1], sdec1(best_null[1]))
+}
+
+// ------------------------------------------------------------------ onset
+
+// The amplifier's first samples, as the ratio of the reference's output to the engine's.
+// A saw at a very low note is positive and slowly varying for its first 2900 samples, so
+// the ratio is the two amplifiers' ratio sample by sample with no zero crossings and no
+// phase estimate. `--values attack,gain,note`; `--what raw` prints every sample.
+cmd_arch_onset :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	attack, gain, note := 0, 110, 0
+	if len(o.values) > 0 {attack = o.values[0]}
+	if len(o.values) > 1 {gain = o.values[1]}
+	if len(o.values) > 2 {note = o.values[2]}
+	p := arch_sine_patch()
+	set_param(&p, 0, arch_stored_for_id(0, 1))
+	set_param(&p, 5, 0)
+	set_param(&p, 25, attack)
+	set_param(&p, 29, gain)
+	set_param(&p, 66, 0)
+	set_param(&p, 65, 0)
+	velocity := 100
+	if strings.has_prefix(o.what, "v") {
+		v, _ := strconv.parse_int(o.what[1:])
+		velocity = v
+	}
+	if strings.has_prefix(o.what, "p") {
+		v, _ := strconv.parse_int(o.what[1:])
+		set_param(&p, 90, v)
+	}
+	if strings.has_prefix(o.what, "d") {
+		v, _ := strconv.parse_int(o.what[1:])
+		set_param(&p, 26, v)
+	}
+	if strings.has_prefix(o.what, "s") && o.what != "second" {
+		v, _ := strconv.parse_int(o.what[1:])
+		set_param(&p, 27, v)
+	}
+	if strings.has_prefix(o.what, "c") {
+		v, _ := strconv.parse_int(o.what[1:])
+		set_param(&p, 19, v)
+	}
+	if strings.has_prefix(o.what, "t") {
+		v, _ := strconv.parse_int(o.what[1:])
+		set_param(&p, 14, v)
+	}
+	if strings.has_prefix(o.what, "m") {
+		set_param(&p, 72, 64)
+	}
+	events := []Script_Event{script_on(0, note, velocity), script_off(0.5, note)}
+	start := 0
+	if o.what == "second" {
+		events = []Script_Event{script_on(0, note, velocity), script_off(0.2, note), script_on(1.0, note, velocity), script_off(1.4, note)}
+		start = events[2].frame
+	}
+	ref, ours := arch_render(dll, &p, c, events, 1.6)
+	defer arch_free_pair(ref, ours)
+	a_all := script_channel(ref, 0)
+	b_all := script_channel(ours, 0)
+	defer delete(a_all)
+	defer delete(b_all)
+	a := a_all[start:]
+	b := b_all[start:]
+	if o.what == "raw" {
+		for i in 0 ..< 3000 {
+			fmt.printfln("R %v %.9f %.9f", i, a[i], b[i])
+		}
+		return
+	}
+	fmt.printfln("arch onset: saw note %v, attack %v, gain %v; reference / engine, in 1e-3 above one", note, attack, gain)
+	fmt.println("  sample   ref/ours   ref        ours")
+	for i in ([]int{0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 28, 32, 40, 48, 64, 80, 96, 128, 160, 192, 256, 320, 400, 512, 768, 1024, 1536, 2048, 2560}) {
+		r := b[i] != 0 ? a[i] / b[i] : 0
+		fmt.printfln("  %5v   %9.3f  %.7f  %.7f", i, (r - 1) * 1000, a[i], b[i])
+	}
+}
+
+// Our chorus run on the reference's own dry output, compared with the reference's chorus-on
+// output. If this nulls to the floor the chorus is exact and any residual in the full render
+// is the dry source's; if it does not, it is the chorus meeting the start of the note.
+// `--values <case index>`.
+ref_on_left_early :: proc(on_ref: []f32) -> []f32 {
+	return script_channel(on_ref, 0)
+}
+
+cmd_arch_chorusreplay :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	index := 14
+	if len(o.values) > 0 {index = o.values[0]}
+	cases := [?]Chorus_Case{
+		{"type 2 centre", 2, 64, 64, 64, 64, 127},
+		{"comb fb 0", 1, 64, 0, 64, 0, 127},
+		{"comb fb 1", 1, 64, 0, 64, 1, 127},
+		{"comb fb 4", 1, 64, 0, 64, 4, 127},
+		{"type 2 fast and deep", 2, 100, 127, 120, 64, 127},
+		{"type 4 centre", 4, 64, 64, 64, 64, 127},
+	}
+	cs := cases[clamp(index, 0, len(cases) - 1)]
+	events := []Script_Event{script_on(0, 60), script_off(2.5, 60)}
+	from, to := ms_to_frame(500), ms_to_frame(2400)
+
+	patch_with :: proc(cs: Chorus_Case, on: int) -> cpatch.Patch {
+		p := chorus_source_patch()
+		set_param(&p, 66, on)
+		set_param(&p, 64, cs.type)
+		set_param(&p, 52, cs.delay)
+		set_param(&p, 53, cs.depth)
+		set_param(&p, 54, cs.rate)
+		set_param(&p, 55, cs.feedback)
+		set_param(&p, 56, cs.level)
+		return p
+	}
+	off_patch := patch_with(cs, 0)
+	on_patch := patch_with(cs, 1)
+	off_ref, off_ours := arch_render(dll, &off_patch, c, events, 2.6)
+	on_ref, on_ours := arch_render(dll, &on_patch, c, events, 2.6)
+	defer arch_free_pair(off_ref, off_ours)
+	defer arch_free_pair(on_ref, on_ours)
+
+	bound := sengine.bind_patch(on_patch)
+	frames := len(off_ref) / 2
+	ring := int(sengine.CHORUS_MAX_MS * 0.001 * f32(SAMPLE_RATE)) + 4
+	run :: proc(dry: []f32, bound: sengine.Engine_Params, ring, frames: int, feedback_scale: f32 = 1.0, delay_offset: f32 = 0.0) -> []f32 {
+		left_line := make([]f32, ring)
+		right_line := make([]f32, ring)
+		defer delete(left_line)
+		defer delete(right_line)
+		ch: sdsp.Chorus
+		sdsp.chorus_init(&ch, left_line, right_line)
+		params := sdsp.Chorus_Params {
+			stages        = bound.chorus_stages,
+			delay_samples = sdsp.clamp32(bound.chorus_delay_seconds * f32(SAMPLE_RATE) + delay_offset, 1.0, f32(max(ring / 2 - 2, 2))),
+			depth         = bound.chorus_depth,
+			rate_hz       = bound.chorus_rate_hz,
+			feedback      = bound.chorus_feedback * feedback_scale,
+			level         = bound.chorus_level,
+		}
+		out := make([]f32, frames)
+		sdsp.chorus_begin_block(&ch, true)
+		for i in 0 ..< frames {
+			if i % 256 == 0 {sdsp.chorus_begin_chunk(&ch)}
+			l, _ := sdsp.chorus_process(&ch, dry[i * 2], dry[i * 2 + 1], &params, f32(SAMPLE_RATE))
+			out[i] = l
+		}
+		return out
+	}
+	replay_on_ref := run(off_ref, bound, ring, frames)
+	replay_on_ours := run(off_ours, bound, ring, frames)
+	defer delete(replay_on_ref)
+	defer delete(replay_on_ours)
+	ref_on_left := script_channel(on_ref, 0)
+	ours_on_left := script_channel(on_ours, 0)
+	defer delete(ref_on_left)
+	defer delete(ours_on_left)
+
+	if o.what == "dump" {
+		ref_on := ref_on_left_early(on_ref)
+		ref_off := script_channel(off_ref, 0)
+		defer delete(ref_on)
+		defer delete(ref_off)
+		bytes := make([]f32, frames * 5)
+		defer delete(bytes)
+		for i in 0 ..< frames {
+			bytes[i] = ref_off[i]
+			bytes[frames + i] = ref_on[i]
+			bytes[2 * frames + i] = replay_on_ref[i]
+			bytes[3 * frames + i] = ours_on_left[i]
+			bytes[4 * frames + i] = off_ours[i * 2]
+		}
+		_ = os.write_entire_file(fmt.tprintf("build/chorus_dump_%v.f32", index), slice.to_bytes(bytes))
+		fmt.printfln("dumped %v frames: dry, ref-on, ours-on-ref-dry", frames)
+		return
+	}
+	if o.what == "resid" {
+		ref_on := ref_on_left_early(on_ref)
+		ref_off := script_channel(off_ref, 0)
+		defer delete(ref_on)
+		defer delete(ref_off)
+		fmt.printfln("arch chorusreplay resid: %v; per 100 ms window: peak ref-on, peak ref-dry, peak residual, rms residual, worst sample index, ref-on there, ours there", cs.name)
+		window := ms_to_frame(100)
+		for start := 0; start + window <= frames; start += window {
+			peak_on, peak_dry, peak_res, sum_res: f32
+			worst := start
+			for i in start ..< start + window {
+				peak_on = max(peak_on, abs(ref_on[i]))
+				peak_dry = max(peak_dry, abs(ref_off[i]))
+				r := abs(ref_on[i] - replay_on_ref[i])
+				sum_res += r * r
+				if r > peak_res {peak_res = r; worst = i}
+			}
+			fmt.printfln("  %5.2fs  %10.5f %10.5f %12.7f %12.8f  %6v %10.5f %10.5f", f32(start) / f32(SAMPLE_RATE), peak_on, peak_dry, peak_res, math.sqrt(sum_res / f32(window)), worst, ref_on[worst], replay_on_ref[worst])
+		}
+		return
+	}
+	if o.what == "scan" {
+		fmt.printfln("arch chorusreplay scan: %v, our chorus on the reference's dry, loop gain scaled by k; null vs the reference's chorus-on", cs.name)
+		for k in ([]f32{0.9995, 0.9998, 1.0, 1.0001, 1.0002, 1.0003, 1.0004, 1.0006, 1.0008, 1.001, 1.0015}) {
+			scaled := run(off_ref, bound, ring, frames, k)
+			n, _ := null_and_level(ref_on_left_early(on_ref), scaled, from, to)
+			fmt.printfln("  k %.4f  %v", k, sdec1(n, 8))
+			delete(scaled)
+		}
+		fmt.println("  delay offset scan (samples), k 1.0")
+		for d in ([]f32{-2, -1, -0.5, -0.25, 0, 0.25, 0.5, 1, 2}) {
+			shifted := run(off_ref, bound, ring, frames, 1.0, d)
+			n, _ := null_and_level(ref_on_left_early(on_ref), shifted, from, to)
+			fmt.printfln("  d %6.2f  %v", d, sdec1(n, 8))
+			delete(shifted)
+		}
+		return
+	}
+	fmt.printfln("arch chorusreplay: %v; left channel, null over 0.5 to 2.4 s (dB, lower is closer)", cs.name)
+	n1, _ := null_and_level(ref_on_left, replay_on_ref, from, to)
+	n2, _ := null_and_level(ours_on_left, replay_on_ours, from, to)
+	n3, _ := null_and_level(ref_on_left, ours_on_left, from, to)
+	n4, _ := null_and_level(ref_on_left, replay_on_ours, from, to)
+	fmt.printfln("  our chorus on the REFERENCE's dry   vs the reference's chorus-on:  %v", sdec1(n1, 7))
+	fmt.printfln("  our chorus on OUR dry               vs our full render:            %v   (should be ~ -150: same code)", sdec1(n2, 7))
+	fmt.printfln("  our full render                     vs the reference's chorus-on:  %v", sdec1(n3, 7))
+	fmt.printfln("  our chorus on OUR dry               vs the reference's chorus-on:  %v", sdec1(n4, 7))
+}
+
 // ------------------------------------------------------------------ entry
+
+// Where the output gain's fade-in sits against the effects. At the start of the first note the
+// reference's dry output is faded in by a one-millisecond smoother; a section whose input is
+// taken before that fade sees the unfaded signal. Each case switches on one section and
+// nulls this engine against the reference over a window at the start of the note that section
+// first shapes, next to the same window with every section off. `--values` is unused.
+cmd_arch_fadein :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	Fade_Case :: struct {
+		name:   string,
+		kind:   int,
+		from:   f64,
+		to:     f64,
+	}
+	cases := [?]Fade_Case{
+		{"all off, 0-30 ms", 0, 0, 30},
+		{"effect unit (tanh), 0-30 ms", 1, 0, 30},
+		{"effect unit (tanh), 300-500 ms", 1, 300, 500},
+		{"delay fb 0, 300-500 ms", 4, 300, 500},
+		{"equaliser boost, 0-30 ms", 2, 0, 30},
+		{"equaliser cut, 0-30 ms", 3, 0, 30},
+		{"delay fb 0, dry, 0-30 ms", 4, 0, 30},
+		{"delay fb 0, first echo, 250-300 ms", 4, 250, 300},
+		{"delay fb 40, first echo, 250-300 ms", 5, 250, 300},
+		{"chorus comb fb 0, wet onset, 15-45 ms", 6, 15, 45},
+		{"chorus comb fb 0, 45-100 ms", 6, 45, 100},
+	}
+	events := []Script_Event{script_on(0, 60), script_off(0.6, 60)}
+	fmt.println("arch fadein: one section on at a time, note 60 from a fresh engine; left channel, ours against the reference, null in dB over the window (lower is closer)")
+	for cs in cases {
+		p := o.what == "sine" ? fxorder_patch(false, 64, 64) : chorus_source_patch()
+		set_param(&p, 29, 127)
+		switch cs.kind {
+		case 1:
+			set_param(&p, 77, 1)
+			set_param(&p, 78, arch_stored_for_id(78, 1))
+			set_param(&p, 79, 64)
+			set_param(&p, 80, 64)
+			set_param(&p, 81, 127)
+		case 2:
+			set_param(&p, 61, 40)
+			set_param(&p, 62, 127)
+		case 3:
+			set_param(&p, 61, 40)
+			set_param(&p, 62, 0)
+		case 4, 5:
+			set_param(&p, 65, 1)
+			set_param(&p, 35, arch_stored_for_display(35, "(8)"))
+			set_param(&p, 36, cs.kind == 5 ? 40 : 0)
+			set_param(&p, 37, o.what == "sine" ? 32 : 64)
+			set_param(&p, 82, 0)
+			set_param(&p, 98, 64)
+		case 6:
+			set_param(&p, 66, 1)
+			set_param(&p, 64, 1)
+			set_param(&p, 52, 64)
+			set_param(&p, 53, 0)
+			set_param(&p, 54, 64)
+			set_param(&p, 55, 0)
+			set_param(&p, 56, 127)
+		}
+		ref, ours := arch_render(dll, &p, c, events, 0.7)
+		ref_left := script_channel(ref, 0)
+		ours_left := script_channel(ours, 0)
+		n, _ := null_and_level(ref_left, ours_left, ms_to_frame(cs.from), ms_to_frame(cs.to))
+		fmt.printfln("  %-42v %v", cs.name, sdec1(n, 8))
+		delete(ref_left)
+		delete(ours_left)
+		arch_free_pair(ref, ours)
+		free_all(context.temp_allocator)
+	}
+}
+
+// Writes the reference's left channel with one section off and on, and this engine's with it on,
+// to build/fade_<kind>.f32 as three planes, for analysis outside the probe. `--values <kind>`:
+// 1 effect unit, 4 delay with no feedback.
+cmd_arch_fadedump :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	kind := len(o.values) > 0 ? o.values[0] : 1
+	mix := len(o.values) > 1 ? o.values[1] : 32
+	division := len(o.values) > 2 ? o.values[2] : -1
+	spread := len(o.values) > 3 ? o.values[3] : -1
+	channel := len(o.values) > 4 ? o.values[4] : 0
+	feedback := len(o.values) > 5 ? o.values[5] : 0
+	delay_mode := len(o.values) > 6 ? o.values[6] : 0
+	pan := len(o.values) > 7 ? o.values[7] : -1
+	saw := len(o.values) > 8 && o.values[8] == 1
+	note := len(o.values) > 9 ? o.values[9] : 60
+	events := []Script_Event{script_on(0, note), script_off(kind == 6 ? 2.8 : 0.6, note)}
+	patch_for :: proc(kind, on, mix, division, spread, feedback, delay_mode, pan: int, saw: bool) -> cpatch.Patch {
+		p := saw ? chorus_source_patch() : fxorder_patch(false, 64, 64)
+		if pan >= 0 && kind != 1 {set_param(&p, 90, pan)}
+		set_param(&p, 29, 127)
+		switch kind {
+		case 1:
+			set_param(&p, 77, on)
+			set_param(&p, 78, arch_stored_for_id(78, pan >= 0 ? pan : 1))
+			set_param(&p, 79, division >= 0 ? division : 64)
+			set_param(&p, 80, mix)
+			set_param(&p, 81, 127)
+		case 6:
+			p = arch_noise_patch()
+			set_param(&p, 29, 40)
+			set_param(&p, 77, on)
+			set_param(&p, 78, arch_stored_for_id(78, division >= 0 ? division : 1))
+			set_param(&p, 79, feedback)
+			set_param(&p, 80, mix)
+			set_param(&p, 81, 127)
+		case 4:
+			set_param(&p, 65, on)
+			stored, _ := cpatch.parameter_stored_at_position(35, division)
+			set_param(&p, 35, division >= 0 ? stored : arch_stored_for_display(35, "(8)"))
+			set_param(&p, 36, feedback)
+			set_param(&p, 37, mix)
+			set_param(&p, 82, delay_mode)
+			set_param(&p, 98, 64)
+			if spread >= 0 {
+				spread_stored, _ := cpatch.parameter_stored_at_position(83, spread)
+				set_param(&p, 83, spread_stored)
+			}
+		}
+		return p
+	}
+	off_patch := patch_for(kind, 0, mix, division, spread, feedback, delay_mode, pan, saw)
+	on_patch := patch_for(kind, 1, mix, division, spread, feedback, delay_mode, pan, saw)
+	seconds := kind == 6 ? 3.0 : (division >= 0 ? 1.6 : 0.7)
+	off_ref, off_ours := arch_render(dll, &off_patch, c, events, seconds)
+	on_ref, on_ours := arch_render(dll, &on_patch, c, events, seconds)
+	defer arch_free_pair(off_ref, off_ours)
+	defer arch_free_pair(on_ref, on_ours)
+	nominal := sengine.bind_patch(on_patch)
+	fmt.printfln("division position %v: nominal %v samples at 120 bpm", division, nominal.delay_beats * 0.5 * f32(SAMPLE_RATE) * (division >= 0 ? 1 : 1))
+	a := script_channel(off_ref, channel)
+	b := script_channel(on_ref, channel)
+	d := script_channel(on_ours, channel)
+	defer delete(a)
+	defer delete(b)
+	defer delete(d)
+	frames := len(a)
+	planes := make([]f32, frames * 3)
+	defer delete(planes)
+	copy(planes[0:], a)
+	copy(planes[frames:], b)
+	copy(planes[2 * frames:], d)
+	if kind == 6 {
+		bound := sengine.bind_patch(on_patch)
+		fx := sdsp.Effect_Params {
+			enabled      = true,
+			type         = bound.effect_type,
+			ctl1         = bound.effect_ctl1,
+			ctl2         = bound.effect_ctl2,
+			level        = bound.effect_level,
+			hold_samples = sdsp.effect_hold_samples(bound.effect_ctl1_steps, f32(SAMPLE_RATE)),
+		}
+		sdsp.effect_derive(&fx)
+		replay: sdsp.Effect
+		for i in 0 ..< frames {
+			l, _ := sdsp.effect_process(&replay, a[i], a[i], &fx, f32(SAMPLE_RATE))
+			planes[2 * frames + i] = l
+		}
+	}
+	_ = os.write_entire_file(fmt.tprintf("build/fade_%v_m%v_t%v_s%v_c%v_n%v.f32", kind, mix, division, spread, channel, note), slice.to_bytes(planes))
+	fmt.printfln("wrote build/fade_%v_m%v_t%v.f32: %v frames x (reference off, reference on, ours on)", kind, mix, division, frames)
+}
+
+// The delay's mix, spread, division and feedback against the reference: left and right nulls
+// over 0.25-0.59 s of a held note, one row per setting.
+cmd_arch_delaygrid :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	Row :: struct {
+		mix, spread, division, feedback, delay_mode: int,
+	}
+	rows := [?]Row{
+		{32, 66, 8, 0, 0}, {0, 66, 8, 0, 0}, {1, 66, 8, 0, 0}, {64, 66, 8, 0, 0}, {96, 66, 8, 0, 0}, {127, 66, 8, 0, 0},
+		{64, 64, 8, 0, 0}, {64, 80, 8, 0, 0}, {64, 112, 8, 0, 0}, {64, 127, 8, 0, 0}, {64, 0, 8, 0, 0}, {64, 40, 8, 0, 0},
+		{64, 66, 5, 0, 0}, {64, 66, 3, 0, 0}, {64, 66, 1, 0, 0}, {64, 66, 0, 0, 0},
+		{64, 66, 5, 40, 0}, {64, 66, 5, 100, 0}, {64, 66, 5, 127, 0},
+		{64, 66, 5, 64, 1}, {64, 66, 5, 64, 2},
+	}
+	events := []Script_Event{script_on(0, 60), script_off(0.6, 60)}
+	fmt.println("arch delaygrid: sine-based patch, note 60 held 0.6 s, tone 64; null in dB over 0.25-0.59 s, left | right")
+	fmt.printfln("  %-5v %-6v %-9v %-9v %-5v | %7v %7v", "mix", "spread", "division", "feedback", "mode", "left", "right")
+	for r in rows {
+		p := fxorder_patch(false, 64, 64)
+		set_param(&p, 29, 127)
+		set_param(&p, 65, 1)
+		stored, _ := cpatch.parameter_stored_at_position(35, r.division)
+		set_param(&p, 35, stored)
+		set_param(&p, 36, r.feedback)
+		set_param(&p, 37, r.mix)
+		set_param(&p, 82, r.delay_mode)
+		set_param(&p, 98, 64)
+		spread_stored, _ := cpatch.parameter_stored_at_position(83, r.spread)
+		set_param(&p, 83, spread_stored)
+		ref, ours := arch_render(dll, &p, c, events, 0.8)
+		nulls: [2]f64
+		for ch in 0 ..< 2 {
+			a := script_channel(ref, ch)
+			b := script_channel(ours, ch)
+			nulls[ch], _ = null_and_level(a, b, ms_to_frame(250), ms_to_frame(590))
+			delete(a)
+			delete(b)
+		}
+		fmt.printfln("  %-5v %-6v %-9v %-9v %-5v | %v %v", r.mix, r.spread, r.division, r.feedback, r.delay_mode, sdec1(nulls[0], 7), sdec1(nulls[1], 7))
+		arch_free_pair(ref, ours)
+		free_all(context.temp_allocator)
+	}
+}
+
+// The effect unit's distortions against the reference, left channel, null over 0.3-0.5 s of a held
+// sine, one row per type and ctl2 (ctl1 64, level 127).
+cmd_arch_fxgrid :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	events := []Script_Event{script_on(0, 60), script_off(0.6, 60)}
+	types := [?]int{0, 1, 2}
+	ctl1 := len(o.values) > 0 ? o.values[0] : 64
+	ctl2s := [?]int{0, 32, 64, 96, 112, 127}
+	fmt.printfln("arch fxgrid: sine note 60, effect level 127, ctl1 %v", ctl1)
+	fmt.println("  null in dB over 0.3-0.5 s, ours against the reference")
+	fmt.printfln("  %-6v | %v", "ctl2", "a.d.1   a.d.2   d.d.")
+	for ctl2 in ctl2s {
+		row: [3]f64
+		for type, i in types {
+			p := fxorder_patch(false, 64, 64)
+			set_param(&p, 29, 127)
+			set_param(&p, 77, 1)
+			set_param(&p, 78, arch_stored_for_id(78, type))
+			set_param(&p, 79, ctl1)
+			set_param(&p, 80, ctl2)
+			set_param(&p, 81, 127)
+			ref, ours := arch_render(dll, &p, c, events, 0.7)
+			a := script_channel(ref, 0)
+			b := script_channel(ours, 0)
+			row[i], _ = null_and_level(a, b, ms_to_frame(300), ms_to_frame(500))
+			delete(a)
+			delete(b)
+			arch_free_pair(ref, ours)
+			free_all(context.temp_allocator)
+		}
+		fmt.printfln("  %-6v | %v %v %v", ctl2, sdec1(row[0], 7), sdec1(row[1], 7), sdec1(row[2], 7))
+	}
+}
+
+// Where a mid-note change of the output gain (parameter 29) reaches the delay: the echo alone, from a
+// sine held through a 250 ms delay with the gain halved at 0.6 s. A gain ahead of the delay shows
+// up in the echo a delay later; a gain behind it shows up at once.
+cmd_arch_gainstep :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	p := fxorder_patch(false, 64, 64)
+	set_param(&p, 29, 127)
+	set_param(&p, 65, 1)
+	stored, _ := cpatch.parameter_stored_at_position(35, 8)
+	set_param(&p, 35, stored)
+	set_param(&p, 36, 0)
+	set_param(&p, 37, o.what == "dry" ? 1 : 127)
+	set_param(&p, 82, 0)
+	set_param(&p, 98, 64)
+	spread_stored, _ := cpatch.parameter_stored_at_position(83, 64)
+	set_param(&p, 83, spread_stored)
+	events := []Script_Event{script_on(0, 60), script_set(0.6, 29, 64), script_off(1.4, 60)}
+	ref, ours := arch_render(dll, &p, c, events, 1.6)
+	defer arch_free_pair(ref, ours)
+	a := script_channel(ref, 0)
+	b := script_channel(ours, 0)
+	defer delete(a)
+	defer delete(b)
+	fmt.println("arch gainstep: echo-only output (delay 250 ms), output gain 127 -> 64 at 0.6 s; rms in 10 ms windows, reference | ours")
+	rms :: proc(x: []f32, from, to: int) -> f64 {
+		sum := 0.0
+		for i in from ..< to {sum += f64(x[i]) * f64(x[i])}
+		return math.sqrt(sum / f64(to - from))
+	}
+	if o.what == "dry" || o.what == "echo" {
+		centre := o.what == "dry" ? ms_to_frame(600) : ms_to_frame(850)
+		planes := make([]f32, 2 * 4000)
+		defer delete(planes)
+		for i in 0 ..< 4000 {
+			planes[i] = a[centre - 2000 + i]
+			planes[4000 + i] = b[centre - 2000 + i]
+		}
+		_ = os.write_entire_file(fmt.tprintf("build/gainstep_%v.f32", o.what), slice.to_bytes(planes))
+		fmt.printfln("wrote build/gainstep_%v.f32: 4000 samples from 2000 before the step, reference then ours", o.what)
+		return
+	}
+	window := ms_to_frame(10)
+	for t_ms := 540; t_ms <= 900; t_ms += 20 {
+		from := ms_to_frame(f64(t_ms))
+		fmt.printfln("  %4v ms   %.4f | %.4f", t_ms, rms(a, from, from + window), rms(b, from, from + window))
+	}
+}
+
+// Complex coefficients of the first eight harmonics of a note's frequency in x[from:to], as
+// (re, im) pairs, in absolute sample time so phases are comparable between renders.
+arch_complex_harmonics :: proc(x: []f32, from, to: int, hz: f64) -> (h: [16][2]f64) {
+	for k in 0 ..< 16 {
+		w := 2.0 * math.PI * hz * f64(k + 1) / f64(SAMPLE_RATE)
+		re, im := 0.0, 0.0
+		for n in from ..< to {
+			re += f64(x[n]) * math.cos(w * f64(n))
+			im -= f64(x[n]) * math.sin(w * f64(n))
+		}
+		scale := 2.0 / f64(to - from)
+		h[k] = {re * scale, im * scale}
+	}
+	return
+}
+
+// a.d.1 against frequency and level: a sine at six pitches and six output gains, three
+// ctl1 settings, ctl2 at 127 so the low-pass is out of the way. One CSV line per harmonic:
+// note ctl1 gain k dry_re dry_im ref_re ref_im ours_re ours_im, the dry being the same
+// render with the effect off and the harmonic its fundamental's. `--values <type>`
+// picks the distortion (default 0, a.d.1).
+cmd_arch_ad1sweep :: proc(dll: string, c: ^Arch_Chunk, o: ^Arch_Options) {
+	type := len(o.values) > 0 ? o.values[0] : 0
+	notes := [?]int{36, 48, 60, 72, 84, 96}
+	gains := [?]int{16, 32, 48, 64, 96, 127}
+	ctl1s := [?]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 96, 112, 127}
+	events_for :: proc(note: int) -> [2]Script_Event {
+		return {script_on(0, note), script_off(0.6, note)}
+	}
+	builder: strings.Builder
+	strings.builder_init(&builder)
+	defer strings.builder_destroy(&builder)
+	fmt.sbprintln(&builder, "note,ctl1,gain,k,dry_re,dry_im,ref_re,ref_im,ours_re,ours_im")
+	from, to := ms_to_frame(150), ms_to_frame(550)
+	for note in notes {
+		hz := note_hz(f64(note))
+		ev := events_for(note)
+		for gain in gains {
+			base := fxorder_patch(false, 64, 64)
+			set_param(&base, 29, gain)
+			set_param(&base, 80, 127)
+			off_ref, off_ours := arch_render(dll, &base, c, ev[:], 0.65)
+			a := script_channel(off_ref, 0)
+			dry := arch_complex_harmonics(a, from, to, hz)
+			delete(a)
+			arch_free_pair(off_ref, off_ours)
+			for ctl1 in ctl1s {
+				p := fxorder_patch(false, 64, 64)
+				set_param(&p, 29, gain)
+				set_param(&p, 77, 1)
+				set_param(&p, 78, arch_stored_for_id(78, type))
+				set_param(&p, 79, ctl1)
+				set_param(&p, 80, 127)
+				set_param(&p, 81, 127)
+				ref, ours := arch_render(dll, &p, c, ev[:], 0.65)
+				rl := script_channel(ref, 0)
+				ol := script_channel(ours, 0)
+				rh := arch_complex_harmonics(rl, from, to, hz)
+				oh := arch_complex_harmonics(ol, from, to, hz)
+				delete(rl)
+				delete(ol)
+				arch_free_pair(ref, ours)
+				for k in 0 ..< 16 {
+					fmt.sbprintfln(&builder, "%v,%v,%v,%v,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f", note, ctl1, gain, k + 1,
+						dry[0][0], dry[0][1], rh[k][0], rh[k][1], oh[k][0], oh[k][1])
+				}
+				free_all(context.temp_allocator)
+			}
+		}
+		fmt.eprintfln("ad1sweep: note %v done", note)
+	}
+	_ = os.write_entire_file(fmt.tprintf("build/ad1sweep_type%v.csv", type), transmute([]u8)strings.to_string(builder))
+	fmt.printfln("wrote build/ad1sweep_type%v.csv", type)
+}
 
 cmd_arch :: proc(dll: string, args: []string) {
 	if len(args) < 1 {usage()}
@@ -1982,6 +3353,23 @@ cmd_arch :: proc(dll: string, args: []string) {
 	case "voices": cmd_arch_voices(dll, &c, &o)
 	case "eq": cmd_arch_eq(dll, &c, &o)
 	case "filtertype": cmd_arch_filtertype(dll, &c, &o)
+	case "tone": cmd_arch_tone(dll, &c, &o)
+	case "hits": cmd_arch_hits(dll, &c, &o)
+	case "arp": cmd_arch_arp(dll, &c, &o)
+	case "chorus": cmd_arch_chorus(dll, &c, &o)
+	case "modenv": cmd_arch_modenv(dll, &c, &o)
+	case "filterenv": cmd_arch_filterenv(dll, &c, &o)
+	case "filterhits": cmd_arch_filterhits(dll, &c, &o)
+	case "modenvscale": cmd_arch_modenvscale(dll, &c, &o)
+	case "onset": cmd_arch_onset(dll, &c, &o)
+	case "chorusreplay": cmd_arch_chorusreplay(dll, &c, &o)
+	case "fadein": cmd_arch_fadein(dll, &c, &o)
+	case "fadedump": cmd_arch_fadedump(dll, &c, &o)
+	case "delaygrid": cmd_arch_delaygrid(dll, &c, &o)
+	case "fxgrid": cmd_arch_fxgrid(dll, &c, &o)
+	case "gainstep": cmd_arch_gainstep(dll, &c, &o)
+	case "ad1sweep": cmd_arch_ad1sweep(dll, &c, &o)
+	case "ad1fit": cmd_arch_ad1fit(&o)
 	case: usage()
 	}
 }

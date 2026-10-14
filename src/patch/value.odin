@@ -110,9 +110,10 @@ parameter_stored_range :: proc "contextless" (index: int) -> (lo, hi: int, ok: b
 }
 
 // The table position selected by a stored integer. This is the shared inverse
-// used by host display adapters and by controller motion; it follows the same
-// display-keyed rule as parameter_norm and saturates unresolved values exactly
-// as the engine binding does.
+// used by host display adapters and by controller motion, and it is the state the
+// engine sounds. It follows the display-keyed rule of parameter_norm for every
+// stored integer that has a display, and differs from it where there is none: see
+// `display_state_clamped` for what the reference's sound does there.
 parameter_position :: proc "contextless" (index, stored: int) -> (position: int, ok: bool) {
 	states := parameter_states(index)
 	if len(states) == 0 {return 0, false}
@@ -123,11 +124,49 @@ parameter_position :: proc "contextless" (index, stored: int) -> (position: int,
 				return i, true
 			}
 		}
+		if clamped, found := display_state_clamped(states, stored); found {
+			return clamped, true
+		}
 	} else if stored >= 0 && stored < len(states) {
 		return stored, true
 	}
 	if stored < 0 {return 0, true}
 	return len(states) - 1, true
+}
+
+// For a display-keyed parameter, the state a stored integer that matches none of
+// the displays sounds as: the integer is clamped into the range the displays span
+// and then looked up, so below the range it is the state with the smallest display,
+// and otherwise the state with the largest display under it. That is the last state
+// past the end of an ascending range, and the lower neighbour in a gap (chorus type
+// 3, between displays 2 and 4, sounds as 2). Where the displays are not in order the
+// answer is still by value and not by position: the LFO types run 0, 1, 5, 2, 3, 4,
+// so a stored 6 or more sounds as display 5, which is the third state and not the
+// last.
+//
+// This is what the reference's *sound* does, and it is not what its read-back
+// reports. `getParameter` answers the top state for a stored 0 on every one of
+// these parameters (`parameter_norm` models that, and is right about it), but a
+// render at stored 0 is identical to one at the first display, and stored values
+// above the range are identical to the last. Measured on one note with only that
+// parameter changed, for oscillator 2 shape, both LFO destinations, both LFO types,
+// chorus type, unison voices and polyphony.
+display_state_clamped :: proc "contextless" (states: []Parameter_State, stored: int) -> (position: int, found: bool) {
+	at_or_below, lowest := -1, -1
+	below_value, lowest_value := 0, 0
+	for state, i in states {
+		value, is_int := display_integer(state.display)
+		if !is_int {continue}
+		if lowest < 0 || value < lowest_value {
+			lowest, lowest_value = i, value
+		}
+		if value <= stored && (at_or_below < 0 || value > below_value) {
+			at_or_below, below_value = i, value
+		}
+	}
+	if at_or_below >= 0 {return at_or_below, true}
+	if lowest >= 0 {return lowest, true}
+	return 0, false
 }
 
 // The stored integer selecting a table position, inverse to parameter_position

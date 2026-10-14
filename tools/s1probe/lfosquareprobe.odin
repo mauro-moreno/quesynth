@@ -18,9 +18,9 @@
 // The answer is that there is no shared curve: all four destinations differ, and
 // the cutoff and the volume are not even bipolar. Each reports in its own unit:
 //
-//   cutoff   octaves above the unmodulated corner   LFO_CUTOFF_OCTAVES
+//   cutoff   states above the unmodulated corner    a fraction of the room above the knob
 //   volume   decibels removed at the trough         no constant; linear in amplitude
-//   pan      peak deviation, -1..1                  LFO_PAN_DEPTH_VALUES
+//   pan      peak deviation, -1..1                  linear in the knob; see pan_lfo_gain
 package s1probe
 
 import "core:fmt"
@@ -82,7 +82,7 @@ lfo_square_calibrate :: proc(dll: string, pristine, work: []byte, note: u8) -> L
 		delete(series)
 
 		c := s / f64(len(series))
-		hz := f64(sengine.FILTER_CUTOFF_HZ[v])
+		hz := f64(sengine.filter_index_hz(sengine.filter_knob_index(f32(v))))
 		// Monotonic only: a calibration that doubles back cannot be inverted, and
 		// where the centroid has stopped responding it does exactly that.
 		if len(cal.centroid) > 0 && c <= cal.centroid[len(cal.centroid) - 1] {
@@ -529,7 +529,7 @@ cmd_lfosquare :: proc(dll: string, param, dest: int, spec: string, note: u8, rat
 			dec0(math.pow(2.0, cal.centroid[len(cal.centroid) - 1])),
 			dec0(math.pow(2.0, cal.value[0])),
 			dec0(math.pow(2.0, cal.value[len(cal.value) - 1])))
-		base = f64(log2f(f64(sengine.FILTER_CUTOFF_HZ[g_lfo_sq_cutoff_base])))
+		base = f64(log2f(f64(sengine.filter_index_hz(sengine.filter_knob_index(f32(g_lfo_sq_cutoff_base))))))
 		fmt.printfln("unmodulated corner:   %v Hz", dec1(math.pow(2.0, base)))
 		fmt.println()
 	}

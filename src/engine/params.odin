@@ -98,29 +98,18 @@ lfo_pitch_depth_curve :: proc(unit: f32) -> f32 {
 	u := dsp.clamp32(unit, 0, 1)
 	return (math.exp(LFO_DEPTH_CURVE_K * u) - 1.0) / (math.exp(LFO_DEPTH_CURVE_K) - 1.0)
 }
-// The filter cutoff, measured the same way and **unipolar**.
+// The filter cutoff is **unipolar** too, and its depth is a fraction of the
+// travel left above the knob rather than a number of octaves. The measurement
+// and the law are in `filter_modulate_index`.
 //
 // `s1probe lfosquare --dest 3` reads the corner in each half of a square, through
-// a centroid calibrated against the reference's own static cutoff sweep -- the
-// -3 dB crossing every other filter measurement here uses turned out far too noisy
-// to survive being split into two levels.
+// a centroid calibrated against the reference's own static cutoff sweep. The low
+// half sits at exactly the unmodulated corner at every depth and from every base
+// cutoff, which a bipolar modulation could not do, and the opening is linear in
+// the knob and in the room above it:
 //
-// The finding that matters is not the number. The low half of the square sits at
-// **exactly the unmodulated corner** at every depth, and still does with the base
-// moved from 585 Hz to 7 kHz, so this destination never closes the filter -- it
-// only opens it. That also explains an old observation in
-// `docs/reference-notes.md` which had no explanation at the time: with the cutoff
-// wide open the LFO produces a bit-identical render, which a bipolar modulation
-// could not do because its downward half would still have somewhere to go.
-//
-//   depth              8      32      64      96
-//   octaves up     0.317   1.262   2.553   3.881
-//   / (depth/127)   5.03    5.01    5.07    5.13
-//
-// Linear in the knob, to about 2%. The full-depth figure is the slope of that
-// line rather than a reading, because at full depth the corner is pushed past the
-// top of the filter's own range and cannot be observed.
-LFO_CUTOFF_OCTAVES :: f32(5.06)
+//   base 32: 11.7 / 23.8 / 35.8 states against depth/127 * (127 - base) = 12.0 / 23.9 / 35.9
+//   base 88:  4.8 /  9.8 / 14.8 states against                           4.9 /  9.8 / 14.7
 
 // The volume duck, which is **linear in amplitude and reaches silence**.
 //
@@ -142,74 +131,16 @@ LFO_CUTOFF_OCTAVES :: f32(5.06)
 // the bottom of the LFO's cycle, which is why this needs no scaling factor and why
 // the one it had was wrong.
 
-// The stereo position, bipolar and symmetric -- unlike the two above -- and
-// reaching a hard-panned image at full depth rather than the 0.927 measured
-// before.
-//
-// The curve is strongly concave, which is the opposite of the pitch destination's,
-// and it is the reason this is a table. Measured as the pan value our own law
-// needs in order to reproduce the reference's channel ratio, which makes it
-// independent of what the reference does internally:
-//
-//   depth   8    16    24    32    48    64    80    96   112   127
-//   pan  .243  .425  .565  .673  .823  .913  .964  .990  .999 1.000
-//
-// The last two are against the rails -- an image cannot be panned harder than hard
-// -- so they are bounds. Everything from 96 up is within a hundredth of full.
-LFO_PAN_DEPTH_STEPS := [10]int{8, 16, 24, 32, 48, 64, 80, 96, 112, 127}
-LFO_PAN_DEPTH_VALUES := [10]f32{0.243, 0.425, 0.565, 0.673, 0.823, 0.913, 0.964, 0.990, 0.999, 1.000}
-
-// The pan depth for a knob position on 0..1, interpolated between the measured
-// points and running to zero at the bottom.
-lfo_pan_depth_curve :: proc(unit: f32) -> f32 {
-	u := dsp.clamp32(unit, 0, 1) * 127.0
-	if u <= 0 {
-		return 0
-	}
-	prev_step := f32(0)
-	prev_value := f32(0)
-	for i in 0 ..< len(LFO_PAN_DEPTH_STEPS) {
-		step := f32(LFO_PAN_DEPTH_STEPS[i])
-		value := LFO_PAN_DEPTH_VALUES[i]
-		if u <= step {
-			span := step - prev_step
-			if span <= 0 {
-				return value
-			}
-			t := (u - prev_step) / span
-			return prev_value + t * (value - prev_value)
-		}
-		prev_step = step
-		prev_value = value
-	}
-	return 1.0
-}
+// The stereo position is bipolar and symmetric, unlike the two above, and its
+// depth is the knob's own position with no curve of its own. What it does to the
+// two channels is the cubic in `pan_lfo_gain`: the table that stood here was the
+// pan value a straight-line law would need to reproduce the reference's channel
+// ratio, which is steeply concave because the law it was fitted to is the wrong
+// shape.
 
 // The note the filter's keyboard tracking is measured from: C3, an octave below
 // middle C. Measured -- see the use site in `voice_process`.
 FILTER_TRACK_REFERENCE_NOTE :: f32(48.0)
-
-// Where the band pass centres, against the corner `FILTER_CUTOFF_HZ` records.
-//
-// That table was measured on the 12 dB *low pass*, as its own header says, and
-// the reference's band pass does not centre on the same frequency for the same
-// knob setting -- it sits about a minor third below. Ours centred exactly on the
-// table, so every band-pass patch was two and a half semitones sharp.
-//
-// Measured at five cutoff settings spanning five octaves, with the resonance at
-// maximum so the peak is unmistakable, as the reference's peak over ours:
-//
-//   stored      17      32      48      64      80
-//   ratio    0.868   0.868   0.860   0.855   0.844
-//
-// One constant rather than a table, because the drift across the five is 2.8%
-// and in one direction -- real, but a twentieth of what it is correcting, and
-// small enough that a table would be fitting the last decimal of a corner
-// estimate. The drift is recorded rather than modelled. Stored 96 was measured
-// and thrown out: the tracker returned 1242 Hz where the peak is near 2400, which
-// is a lock on the wrong feature and not a filter that moved.
-BAND_PASS_CENTRE_RATIO :: f32(0.859)
-
 
 // Parameter 38. The measured table has three states and the readme's voice
 // display lists poly, mono and legato behaviour, so the three map in order.
@@ -343,10 +274,10 @@ Lfo_Params :: struct {
 	// measurement rather than an assumption. Driven with a square, the four
 	// destinations disagree completely: the pitch is exponential in the knob, the
 	// cutoff is linear in octaves, the volume is linear in amplitude, and the pan
-	// is steeply concave. `depth` itself stays as the raw linear reading, which is
-	// what the cutoff, volume and FM destinations use directly.
+	// is linear in the knob but cubic in what it does to the channels. `depth` itself
+	// stays as the raw linear reading, which is what the cutoff, volume, FM and pan
+	// destinations use directly.
 	pitch_depth: f32,
-	pan_depth:   f32,
 	key_sync:    bool,
 	tempo_sync:  bool,
 }
@@ -405,37 +336,24 @@ Engine_Params :: struct {
 	// -- filter --------------------------------------------------------------
 	filter_mode:        dsp.Filter_Mode,
 	filter_slope:       dsp.Filter_Slope,
-	filter_cutoff_hz:   f32,
+	// Parameter 14's fifth state, which is a filter of its own and not a slope.
+	filter_diode:       bool,
 	// Parameter 19's resolved controller state. The filter envelope moves this
 	// state, rather than multiplying the already-resolved frequency by a fixed
-	// octave amount; the cutoff tables are deliberately not uniform in octaves.
+	// octave amount.
 	filter_cutoff_state: f32,
-	// The two controls needed to sample that same 24 dB surface at fractional
-	// controller states while the filter envelope is moving. They are neutral
-	// (0 and 1) for the 12 dB path.
-	filter_cutoff_surface_blend: f32,
-	filter_cutoff_topology_scale: f32,
-	// Parameter 20 on 0..1, kept because it is the knob's own position and
-	// several things want to know it, and the same knob resolved to the filter's
-	// damping k = 1/Q, which is what the audio path consumes. Resolved once at
-	// patch load rather than per sample: it is a table lookup and the table does
-	// not move while a note is sounding.
+	// Parameter 20 on 0..1: the resonance, which every filter takes as it is.
 	filter_resonance:   f32,
-	filter_damping:     f32,
-	// The output gain that goes with that damping. Resonance adds energy, and the
-	// reference does not simply pass it through; measured, and the same curve for
-	// every response and both slopes.
-	filter_output_gain: f32,
 	// Parameter 21 as signed cutoff-controller states at full envelope level.
 	// Each amount step moves two cutoff states. The full endpoint is clamped in
 	// state space before the envelope fraction is applied.
 	filter_env_cutoff_states: f32,
 	// Parameter 22, 0..1, where 1 is one octave of cutoff per octave of note.
 	filter_key_track:   f32,
+	// ln(1 + filter_key_track), which the cutoff reads every sample.
+	filter_key_track_ln: f32,
 	// Parameter 23 resolved to the measured peak-normalised tanh drive.
 	filter_saturation_drive: f32,
-	filter_ladder_feedback:   f32,
-	filter_ladder_gain:       f32,
 	filter_velocity:    bool,
 	filter_attack:      f32,
 	filter_decay:       f32,
@@ -465,7 +383,7 @@ Engine_Params :: struct {
 	eq_gain_db:         f32,
 	eq_q:               f32,
 	// Parameter 60, signed on -1..1.
-	eq_tone:            f32,
+	eq_tone:            dsp.Tone_Setting,
 
 	// -- effect unit ---------------------------------------------------------
 	//
@@ -489,17 +407,16 @@ Engine_Params :: struct {
 	// has to be recomputed when the tempo moves, not when a note starts.
 	delay_on:           bool,
 	// Parameter 35. Cycle length in beats, or zero when the state selects the
-	// fixed short setting rather than a musical division.
+	// short setting rather than a musical division.
 	delay_beats:        f32,
-	// Parameter 35 state 0, in milliseconds.
-	delay_fixed_ms:     f32,
 	// Parameter 83, the left and right offsets in milliseconds.
 	delay_left_ms:      f32,
 	delay_right_ms:     f32,
 	delay_feedback:     f32,
-	delay_dry_wet:      f32,
+	delay_dry_gain:     f32,
+	delay_wet_gain:     f32,
 	// Parameter 98, signed on -1..1.
-	delay_tone:         f32,
+	delay_tone:         dsp.Tone_Setting,
 	// Parameter 82: normal stereo, cross feedback, or ping-pong.
 	delay_mode:         dsp.Delay_Mode,
 
@@ -507,7 +424,7 @@ Engine_Params :: struct {
 	chorus_on:          bool,
 	chorus_stages:      int,
 	// Parameter 52, in milliseconds.
-	chorus_delay_ms:    f32,
+	chorus_delay_seconds: f32,
 	chorus_depth:       f32,
 	chorus_rate_hz:     f32,
 	// Parameter 55, signed on -1..1.

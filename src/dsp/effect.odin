@@ -50,22 +50,31 @@ Effect_Type :: enum u8 {
 
 // ------------------------------------------------------------ measured curves
 
-// The shared low-pass corner, in hertz, for `ctl2` on 0..1.
+// The shared low-pass, for `ctl2` on 0..1.
 //
-// Measured. All three distortions carry the same filter -- the manual gives ctl2
-// as a low-pass cutoff for a.d.1, a.d.2 and d.d. alike, and the measured corners
-// agree across the three to within half a percent, which is tighter than the
-// measurement's own resolution. Probed with white noise rather than a sine,
-// because a sine's only test frequencies are the distortion's own harmonics and
-// those move when the drive moves, so filter and drive could not be separated:
+// Measured, and exactly: all three distortions carry the same second-order low-pass, a
+// biquad of the usual bilinear-prewarped kind with a Q of 3.0 and a corner that follows
+// 399.92 Hz * 2^(0.04191 * ctl2), ctl2 being the stored 0..127. Probed in the linear
+// regime -- noise at a quiet level through the lowest drive, so the transfer function is
+// the filter's and not the shaper's -- and fitted to the reference's complex response,
+// magnitude and phase together, over 250 Hz to 20 kHz. The fit lands within 0.3 per cent
+// rms in log magnitude and phase at every one of six settings, the corner within 0.01 per
+// cent of that law, and Q at 2.99 to 3.00 at all of them (`s1probe arch fadedump
+// --values 6,<ctl2>,<type>`). d.d. against a.d.2 is a flat -0.2 dB and 0 degrees from 300
+// Hz to 14 kHz at every ctl2, and a.d.1 against a.d.2 is the same curve at every ctl2, so
+// the filter is common and a.d.1's difference is a stage that does not depend on ctl2.
 //
-//   ctl2        0     16     32     48     64     80     96    112
-//   corner    452    719   1150   1827   2901   4590   7212  11140  Hz
+//   ctl2         0     32      64      96     112      127
+//   corner   399.9   1013    2567    6504   10352    16003  Hz
 //
-// A clean exponential at 0.0416 octaves per step, so it is a formula and not a
-// table. 127 reads as no corner at all because it sits above the analysis band.
-EFFECT_LOWPASS_MIN_HZ :: f32(451.9)
-EFFECT_LOWPASS_OCTAVES :: f32(5.286)
+// An earlier version took the corner from white noise as the point where the response had
+// fallen 3 dB, and called the filter one pole. That corner is real, 451.9 Hz at the bottom
+// and 2901 at stored 64, but it is where this resonant response crosses -3 dB and not where
+// the filter sits: a one-pole there rings nothing, and the reference's rings, which a null
+// of a held distorted sine finds at -11 dB where this reaches -30 and better.
+EFFECT_LOWPASS_MIN_HZ :: f32(399.92)
+EFFECT_LOWPASS_OCTAVES :: f32(5.3226)
+EFFECT_LOWPASS_Q :: f32(3.0)
 
 effect_lowpass_hz :: proc "contextless" (ctl2: f32) -> f32 {
 	return EFFECT_LOWPASS_MIN_HZ * math.pow(f32(2.0), EFFECT_LOWPASS_OCTAVES * clamp32(ctl2, 0, 1))
@@ -255,13 +264,20 @@ effect_comp_attack_s :: proc "contextless" (ctl2: f32) -> f32 {
 EFFECT_AD_KNOTS :: [14]f32 {
 	0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 72.0, 80.0, 96.0, 112.0, 127.0,
 }
+// a.d.2's two columns were refitted against the reference once its low-pass was known
+// exactly (see EFFECT_LOWPASS_MIN_HZ): they had been fitted through a one-pole low-pass that
+// is not the reference's, which hid how far the drive keeps climbing. It does not saturate at
+// ctl1 80 but at about 57 by ctl1 96, and the null of a held sine at ctl2 127 improved by 3 to
+// 13 dB at every ctl1 from 40 up. Fitted in the time domain against `s1probe arch fadedump
+// --values 1,127,<ctl1>`, with the first knot, where drive and gain trade off against each
+// other, keeping its old drive.
 EFFECT_AD2_DRIVE :: [14]f32 {
-	0.2818, 0.6528, 1.3410, 2.2557, 3.5024, 5.4382, 8.1128,
-	12.1029, 16.6672, 23.8896, 34.2416, 34.2416, 34.2416, 34.2416,
+	0.2818, 0.6425, 1.3158, 2.2048, 3.5001, 5.5656, 9.0016,
+	14.6572, 23.6063, 35.1219, 46.2247, 57.1646, 58.894, 59.0187,
 }
 EFFECT_AD2_GAIN :: [14]f32 {
-	3.6347, 1.6966, 1.0335, 0.8646, 0.8342, 0.8234, 0.8322,
-	0.8279, 0.8358, 0.8349, 0.8344, 0.8344, 0.8344, 0.8344,
+	3.553, 1.7095, 1.0417, 0.8690, 0.8252, 0.8192, 0.8209,
+	0.8229, 0.8242, 0.8253, 0.8261, 0.8271, 0.8274, 0.8274,
 }
 
 // Read one of the tables above at a knob position on 0..1, linearly between the
@@ -305,12 +321,12 @@ effect_ad_table :: proc "contextless" (table: [14]f32, ctl1: f32) -> f32 {
 // its output at full drive collapsing to -23 dB with the energy spread
 // inharmonically, so a memoryless fold reproduces that by doing the same thing.
 EFFECT_DD_DRIVE :: [14]f32 {
-	0.5400, 0.8988, 1.4982, 2.5200, 4.1548, 6.9885, 11.5221,
-	19.1640, 31.8760, 53.0190, 88.1870, 244.100, 675.700, 1768.50,
+	0.5400, 0.8628, 1.5106, 2.5096, 4.1696, 6.9264, 11.5085,
+	19.1165, 31.7586, 53.0190, 88.1870, 244.100, 675.700, 1768.50,
 }
 EFFECT_DD_GAIN :: [14]f32 {
-	1.8430, 1.2500, 0.8490, 0.7140, 0.6700, 0.6310, 0.6370,
-	0.6370, 0.6370, 0.6370, 0.6370, 0.6370, 0.6370, 0.6370,
+	1.8430, 1.2365, 0.8560, 0.7185, 0.6673, 0.6486, 0.6401,
+	0.6235, 0.5763, 0.6370, 0.6370, 0.6370, 0.6370, 0.6370,
 }
 
 // The rest of the section keeps the old exponential drive.
@@ -363,30 +379,110 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // shared section held at its own measured value it lands within 0.20 dB at every
 // one of the fourteen. Written as one feedback loop instead it reaches 0.71 dB at
 // best, so the loop is not what shapes it and the two are separate in series.
-EFFECT_ANALOG1_HP2_HZ :: f32(21.9)
-EFFECT_ANALOG1_HP2_Q :: f32(0.234)
-// A one-pole shelf, as a gain plus what a low pass at its pole leaves behind:
-// (1 + s/wz)/(1 + s/wp) is exactly G + (1 - G) * lowpass(wp), with G = wp/wz.
-EFFECT_ANALOG1_SHELF_HZ :: f32(630.0)
-EFFECT_ANALOG1_SHELF_GAIN :: f32(630.0 / 220.0)
-EFFECT_ANALOG1_MAKEUP :: f32(0.8174)
+//
+// That section was refitted in two stages, against a time-domain null and then against the
+// reference's complex transfer function measured in the linear regime (`s1probe arch fadedump
+// --values 6,127,0`), and what follows is the second. With the shared high pass and low-pass
+// divided out and the shelf and the loop below held as fitted, the remainder is a third-order
+// section: a pair of zeros at 8.50 +- j11.89 Hz, a real zero at -16.54 kHz, poles at -15.73 Hz,
+// -246.8 Hz and -9.255 kHz, and a gain of 2.069 at infinity, within 0.23 dB rms of the
+// reference. They are stored as analog roots and rebuilt by the bilinear transform at the
+// running sample rate, which at 48 kHz is the fit.
+// The section's roots follow ctl1: they are tabulated per knot, as analog frequencies in hertz, and
+// read linearly between the knots. See the tables below, `EFFECT_AD1_POST_*`.
 
-EFFECT_ANALOG1_LOOP_GAIN :: f32(4.0)
-EFFECT_ANALOG1_FEEDBACK_HZ :: f32(40.0)
-// Where the loop rests: the feedback servo holds the clip's input at bias over
-// one plus the loop gain, which is 0.700 of the way to a rail 1.000 away. That
-// offset is the asymmetry, and it is what makes the even harmonics rise through
-// the middle of the knob and fade at the top -- small signals sit clear of both
-// rails, middling ones clip the near one, and large ones clip both and come out
-// square. A bias that had to be tabled by hand to get that shape is not needed.
-EFFECT_ANALOG1_REST :: f32(0.680)
+// What stands in front of that section is a one-pole shelf and then a loop around a tanh.
+// The shelf is a gain plus what a low pass at its pole leaves behind: (1 + s/wz)/(1 + s/wp)
+// is exactly G + (1 - G) * lowpass(wp), with G = wp/wz.
+//
+// The loop, the shelf and the nonlinearity were fitted together by simulating the whole
+// chain against the reference's harmonics, from sines at six pitches, six levels and
+// fourteen settings of ctl1 (`s1probe arch ad1sweep`, `arch ad1fit`). The linear remainder
+// is divided out analytically at each harmonic, so only what has memory is searched. A hard
+// clip, which this had been, comes out at 9.1 dB rms in log harmonic magnitude over three
+// settings of ctl1, a cubic soft clip at 4.6 and a sine at 4.6; tanh comes out at 3.4 over all
+// fourteen, 1.6 to 2.4 dB across the middle of the knob and 4 to 5.5 at its ends. Its
+// even harmonics come from the loop's rest point, which sits well up the curve.
+// A weak quadratic between the shared high pass and the section after the loop. Past ctl1 80
+// the loop's clipper is a square wave with equal halves and almost no even harmonics, yet the
+// reference's second harmonic is -17 dB at 65 Hz and falls to -43 dB at 1 kHz, whatever the
+// level once the loop is saturated. A quadratic acting on the high pass's output makes that:
+// a square wave squared is constant, so it only turns the droop and ringing the high pass puts
+// on the wave into even harmonics, large at low pitch and gone at high. Where it sits matters
+// as much as how big it is. Behind the whole chain its second harmonic comes out 110 to 135
+// degrees from the reference's and makes the null worse; behind the high pass the phases
+// agree and the best coefficient is 0.114 to 0.122 across four pitches for the second
+// harmonic (0.063 to 0.088 for the fourth), which is where this takes it.
+EFFECT_ANALOG1_MID_QUADRATIC :: f32(0.10)
+EFFECT_ANALOG1_QUADRATIC_MEAN_HZ :: f32(10.0)
+
+// Per knot of ctl1, fitted knot by knot (`s1probe arch ad1fit`): the drive, the loop gain, where the
+// loop rests, the feedback corner, the shelf's gain and corner, and the gain after it. The
+// objective is the energy of the complex difference over harmonics 1 to 16, each held-sine
+// configuration weighted by its own energy, which is what a null of a held sine measures. Fitting
+// it that way, and letting every one of those follow the knob, took a.d.1 above ctl1 48 from -10
+// to -14 dB to -17 to -26 dB. The loop gain climbs from about 3 at the bottom to 7 in the upper
+// middle and 10 at the top; the feedback corner sits near 77 Hz above ctl1 48 and the shelf is
+// nearly flat there. The rest point is where the tanh's input settles, and the offset taken off
+// its output so that rest is zero. The section after the loop is refitted at every knot from the
+// linear response with that knot's shelf and loop divided out, and its roots tabulated
+// alongside. Knot 0 keeps an earlier fit, whose post-loop section followed its shelf more
+// closely.
 EFFECT_AD1_DRIVE :: [14]f32 {
-	0.3500, 0.6000, 1.0500, 1.8500, 3.3000, 6.0000, 12.0000,
-	27.1908, 45.7357, 76.9288, 99.7712, 167.8180, 282.2745, 366.0903,
+	0.8881, 1.2357, 1.5887, 3.11, 5.9244, 9.6271, 19.0219,
+	32.4531, 57.7338, 94.777, 163.712, 519.69, 2484.93, 6045.24,
 }
 EFFECT_AD1_GAIN :: [14]f32 {
-	2.6042, 0.9244, 0.4781, 0.4053, 0.3809, 0.3300, 0.3052,
-	0.2970, 0.2952, 0.2943, 0.2940, 0.2933, 0.2926, 0.2927,
+	1.06846, 0.50701, 0.33535, 0.21682, 0.17398, 0.17489, 0.14929,
+	0.14762, 0.13714, 0.13751, 0.13285, 0.12761, 0.08526, 0.09796,
+}
+EFFECT_AD1_LOOP_GAIN :: [14]f32 {
+	2.5838, 4.1998, 4.1949, 4.0617, 4.667, 4.9412, 6.404,
+	6.5684, 7.0335, 7.0026, 7.3677, 8.4547, 11.3146, 9.8803,
+}
+EFFECT_AD1_REST :: [14]f32 {
+	0.8621, 0.7793, 0.8554, 0.7273, 0.748, 0.7137, 0.6787,
+	0.666, 0.6795, 0.6591, 0.6691, 0.7111, 0.9723, 0.8743,
+}
+EFFECT_AD1_FEEDBACK_HZ :: [14]f32 {
+	118.44, 88.8, 71.55, 78.76, 86.7, 80.67, 77.11,
+	77.11, 77.11, 77.11, 77.11, 66.77, 77.11, 77.11,
+}
+EFFECT_AD1_SHELF_GAIN :: [14]f32 {
+	1.1305, 1.0027, 1.4371, 1.4371, 1.3056, 1.2746, 1.0923,
+	1.1188, 1.0411, 1.0411, 1.0411, 1.0411, 0.7621, 0.9234,
+}
+EFFECT_AD1_SHELF_HZ :: [14]f32 {
+	224.7, 135.7, 508.1, 559.3, 409.4, 381, 390.2,
+	484.2, 380.9, 484.2, 586.7, 841, 6467.8, 4512.5,
+}
+EFFECT_AD1_POST_ZERO_RE_HZ :: [14]f32 {
+	10.4052, 12.2689, 12.7358, 11.9207, 11.5824, 12.1617, 12.1124,
+	11.714, 11.9184, 11.7849, 11.5581, 12.7293, 11.7368, 11.7082,
+}
+EFFECT_AD1_POST_ZERO_IM_HZ :: [14]f32 {
+	14.9069, 16.6292, 16.3178, 15.8998, 15.9476, 16.4123, 16.2272,
+	15.7764, 16.0194, 15.8607, 15.5952, 16.3043, 15.842, 15.8055,
+}
+EFFECT_AD1_POST_ZERO_REAL_HZ :: [14]f32 {
+	16186.9, 13437.6, 12926.2, 13956.1, 14927.2, 13790.7, 14068.3,
+	14705.3, 14460.6, 14635.7, 14818.4, 12599.9, 13315.9, 14675,
+}
+EFFECT_AD1_POST_POLE_1_HZ :: [14]f32 {
+	5.8762, 2.42197, 4.27854, 0.887727, 0.37095, 2.11336, 1.88744,
+	0.18732, 1.0649, 0.490617, 0.472872, 4.48343, 0.32362, 0.198263,
+}
+EFFECT_AD1_POST_POLE_2_HZ :: [14]f32 {
+	404.239, 355.152, 293.32, 249.427, 236.694, 234.193, 215.723,
+	200.903, 207.349, 203.196, 195.165, 200.249, 200.623, 199.375,
+}
+EFFECT_AD1_POST_POLE_3_HZ :: [14]f32 {
+	9290.56, 8129.95, 7750.48, 8172.9, 8834.21, 8360.69, 8456.26,
+	8656.95, 8604.51, 8645.52, 8667.19, 7691.7, 8484.35, 9058.87,
+}
+EFFECT_AD1_POST_GAIN :: [14]f32 {
+	2.43866, 2.56034, 2.01819, 1.67013, 1.85043, 1.84936, 2.04082,
+	1.93956, 2.12084, 2.0629, 2.07675, 2.27355, 3.52431, 2.96445,
 }
 
 // The unit's own response, measured where its curve is straight.
@@ -436,6 +532,59 @@ effect_ad_highpass :: proc "contextless" (
 		return y
 	}
 	return step(&state[0], l, b0, b1, b2, a1, a2), step(&state[1], r, b0, b1, b2, a1, a2)
+}
+
+// a.d.1's post-loop section: a biquad holding the zero pair and two of the poles, then a
+// first-order section with the last zero and pole, rebuilt from analog roots by the bilinear
+// transform. Transposed direct form II; three states per channel.
+effect_analog1_post :: proc "contextless" (
+	e: ^Effect,
+	l, r: f32,
+	roots: ^[7]f32,
+	sr: f32,
+) -> (
+	out_l, out_r: f32,
+) {
+	key := [8]f32{roots[0], roots[1], roots[2], roots[3], roots[4], roots[5], roots[6], sr}
+	if e.ad1_post_key != key {
+		tau := 2.0 * math.PI
+		sigma := tau * f64(roots[0])
+		omega := tau * f64(roots[1])
+		zero_real := tau * f64(roots[2])
+		pole_1 := tau * f64(roots[3])
+		pole_2 := tau * f64(roots[4])
+		pole_3 := tau * f64(roots[5])
+		post_gain := f64(roots[6])
+		c := 2.0 * f64(sr)
+
+		n2, n1, n0 := 1.0, -2.0 * sigma, sigma * sigma + omega * omega
+		d2, d1, d0 := 1.0, pole_1 + pole_2, pole_1 * pole_2
+		a0 := d2 * c * c + d1 * c + d0
+		first_den := c + pole_3
+		e.ad1_post_coefficients = {
+			f32(post_gain * (n2 * c * c + n1 * c + n0) / a0),
+			f32(post_gain * (2.0 * n0 - 2.0 * n2 * c * c) / a0),
+			f32(post_gain * (n2 * c * c - n1 * c + n0) / a0),
+			f32((2.0 * d0 - 2.0 * d2 * c * c) / a0),
+			f32((d2 * c * c - d1 * c + d0) / a0),
+			f32((c + zero_real) / first_den),
+			f32((zero_real - c) / first_den),
+			f32((pole_3 - c) / first_den),
+		}
+		e.ad1_post_key = key
+	}
+	k := e.ad1_post_coefficients
+	b0, b1, b2, a1, a2, f0, f1, fa1 := k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]
+
+	step :: proc "contextless" (z: ^[3]f32, x, b0, b1, b2, a1, a2, f0, f1, fa1: f32) -> f32 {
+		y := b0 * x + z[0]
+		z[0] = flush_denormal(b1 * x - a1 * y + z[1])
+		z[1] = flush_denormal(b2 * x - a2 * y)
+		w := f0 * y + z[2]
+		z[2] = flush_denormal(f1 * y - fa1 * w)
+		return w
+	}
+	return step(&e.ad1_post[0], l, b0, b1, b2, a1, a2, f0, f1, fa1), step(&e.ad1_post[1], r, b0, b1, b2, a1, a2, f0, f1, fa1)
 }
 
 // The compressor's static curve, and what `comp.` actually is.
@@ -920,6 +1069,12 @@ Effect_Params :: struct {
 
 	// Derived from the two controls, in the units named above.
 	lowpass_hz:    f32,
+	ad1_loop_gain: f32,
+	ad1_feedback_hz: f32,
+	ad1_shelf_gain: f32,
+	ad1_shelf_hz: f32,
+	ad1_rest:      f32,
+	ad1_post:      [7]f32,
 	drive:         f32,
 	shape_bias:    f32,
 	shape_gain:    f32,
@@ -1009,6 +1164,20 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 	case .Analog_1:
 		p.drive = effect_ad_table(EFFECT_AD1_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD1_GAIN, p.ctl1)
+		p.ad1_loop_gain = effect_ad_table(EFFECT_AD1_LOOP_GAIN, p.ctl1)
+		p.ad1_feedback_hz = effect_ad_table(EFFECT_AD1_FEEDBACK_HZ, p.ctl1)
+		p.ad1_shelf_gain = effect_ad_table(EFFECT_AD1_SHELF_GAIN, p.ctl1)
+		p.ad1_shelf_hz = effect_ad_table(EFFECT_AD1_SHELF_HZ, p.ctl1)
+		p.ad1_rest = effect_ad_table(EFFECT_AD1_REST, p.ctl1)
+		p.ad1_post = {
+			effect_ad_table(EFFECT_AD1_POST_ZERO_RE_HZ, p.ctl1),
+			effect_ad_table(EFFECT_AD1_POST_ZERO_IM_HZ, p.ctl1),
+			effect_ad_table(EFFECT_AD1_POST_ZERO_REAL_HZ, p.ctl1),
+			effect_ad_table(EFFECT_AD1_POST_POLE_1_HZ, p.ctl1),
+			effect_ad_table(EFFECT_AD1_POST_POLE_2_HZ, p.ctl1),
+			effect_ad_table(EFFECT_AD1_POST_POLE_3_HZ, p.ctl1),
+			effect_ad_table(EFFECT_AD1_POST_GAIN, p.ctl1),
+		}
 	case .Analog_2:
 		p.drive = effect_ad_table(EFFECT_AD2_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD2_GAIN, p.ctl1)
@@ -1043,8 +1212,12 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 // --------------------------------------------------------------------- state
 
 Effect :: struct {
-	// The shared low-pass on the three distortions, one pole per channel.
-	lowpass:   [2]f32,
+	// The shared low-pass on the three distortions, a biquad in transposed direct form
+	// II, two states per channel, and the coefficients last derived with the corner and
+	// sample rate they were derived for: the settings move per block, not per sample.
+	lowpass:   [2][2]f32,
+	lowpass_key: [2]f32,
+	lowpass_coefficients: [4]f32,
 	// a.d.1's own pole, as the low content to subtract.
 	highpass:  [2]f32,
 	// The two-pole high pass the analogue types and d.d. share, two states per
@@ -1052,9 +1225,12 @@ Effect :: struct {
 	ad_highpass: [2][2]f32,
 	// a.d.1's feedback loop: two poles of the output, per channel.
 	ad1_loop:    [2][2]f32,
-	// and the response after it: a second two-pole high pass of its own, and the
-	// low pass the shelf is built from.
-	ad1_highpass: [2][2]f32,
+	// and the response after it, and the low pass the shelf is built from.
+	ad1_post:    [2][3]f32,
+	ad1_post_key: [8]f32,
+	ad1_post_coefficients: [8]f32,
+	// The running mean of the squared term, taken back out of it.
+	ad1_quadratic_mean: [2]f32,
 	ad1_shelf:    [2]f32,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
@@ -1099,7 +1275,7 @@ effect_reset :: proc "contextless" (e: ^Effect) {
 // integrated, and the feedback is two poles of the output.
 effect_shape_analog1 :: proc "contextless" (
 	state: ^[2]f32,
-	x, drive, gain, coef: f32,
+	x, drive, gain, coef, loop_gain, rest: f32,
 ) -> f32 {
 	// The drive is outside the feedback, so the loop gain is fixed and the
 	// response it shapes does not move with the knob. Written the other way --
@@ -1111,8 +1287,8 @@ effect_shape_analog1 :: proc "contextless" (
 	// with the feedback settled, v = REST and the output is REST, so carrying
 	// (output - REST) leaves a loop that starts silent instead of thumping its way
 	// down from the rail.
-	v := drive * x - EFFECT_ANALOG1_LOOP_GAIN * state[0] + EFFECT_ANALOG1_REST
-	y := clamp32(v, -1, 1) - EFFECT_ANALOG1_REST
+	v := drive * x - loop_gain * state[0] + rest
+	y := math.tanh(v) - math.tanh(rest)
 	state[0] += (y - state[0]) * coef
 	state[0] = flush_denormal(state[0])
 	return gain * y
@@ -1189,18 +1365,18 @@ effect_process :: proc "contextless" (
 		// 2.84 dB to 5.30. Split, the response lands within 0.61 dB and the
 		// harmonics within 3.95, and the high pass is above 131 Hz by then so it
 		// barely touches them.
-		shelf := one_pole_coef(EFFECT_ANALOG1_SHELF_HZ, sr)
+		shelf := one_pole_coef(p.ad1_shelf_hz, sr)
 		e.ad1_shelf[0] += (wl - e.ad1_shelf[0]) * shelf
 		e.ad1_shelf[1] += (wr - e.ad1_shelf[1]) * shelf
 		e.ad1_shelf[0] = flush_denormal(e.ad1_shelf[0])
 		e.ad1_shelf[1] = flush_denormal(e.ad1_shelf[1])
-		sg := EFFECT_ANALOG1_SHELF_GAIN
-		wl = (sg * wl + (1.0 - sg) * e.ad1_shelf[0]) * EFFECT_ANALOG1_MAKEUP
-		wr = (sg * wr + (1.0 - sg) * e.ad1_shelf[1]) * EFFECT_ANALOG1_MAKEUP
+		sg := p.ad1_shelf_gain
+		wl = sg * wl + (1.0 - sg) * e.ad1_shelf[0]
+		wr = sg * wr + (1.0 - sg) * e.ad1_shelf[1]
 
-		coef := one_pole_coef(EFFECT_ANALOG1_FEEDBACK_HZ, sr)
-		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef)
-		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef)
+		coef := one_pole_coef(p.ad1_feedback_hz, sr)
+		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
+		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
 
 		wl, wr = effect_ad_highpass(
 			&e.ad_highpass,
@@ -1210,14 +1386,19 @@ effect_process :: proc "contextless" (
 			EFFECT_AD_HIGHPASS_Q,
 			sr,
 		)
-		wl, wr = effect_ad_highpass(
-			&e.ad1_highpass,
-			wl,
-			wr,
-			EFFECT_ANALOG1_HP2_HZ,
-			EFFECT_ANALOG1_HP2_Q,
-			sr,
-		)
+		// The squared term carries a constant, and the section after it has a pole under
+		// 1 Hz and a gain of tens at DC, so a constant here would be a slow thump on
+		// every note-on and note-off. Only its varying part is wanted.
+		mean_coef := one_pole_coef(EFFECT_ANALOG1_QUADRATIC_MEAN_HZ, sr)
+		square_l := wl * wl
+		square_r := wr * wr
+		e.ad1_quadratic_mean[0] += (square_l - e.ad1_quadratic_mean[0]) * mean_coef
+		e.ad1_quadratic_mean[1] += (square_r - e.ad1_quadratic_mean[1]) * mean_coef
+		e.ad1_quadratic_mean[0] = flush_denormal(e.ad1_quadratic_mean[0])
+		e.ad1_quadratic_mean[1] = flush_denormal(e.ad1_quadratic_mean[1])
+		wl += EFFECT_ANALOG1_MID_QUADRATIC * (square_l - e.ad1_quadratic_mean[0])
+		wr += EFFECT_ANALOG1_MID_QUADRATIC * (square_r - e.ad1_quadratic_mean[1])
+		wl, wr = effect_analog1_post(e, wl, wr, &p.ad1_post, sr)
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Analog_2:
@@ -1425,10 +1606,22 @@ effect_lowpass :: proc "contextless" (
 	f32,
 	f32,
 ) {
-	coef := one_pole_coef(corner_hz, sample_rate)
-	e.lowpass[0] += (l - e.lowpass[0]) * coef
-	e.lowpass[1] += (r - e.lowpass[1]) * coef
-	e.lowpass[0] = flush_denormal(e.lowpass[0])
-	e.lowpass[1] = flush_denormal(e.lowpass[1])
-	return e.lowpass[0], e.lowpass[1]
+	key := [2]f32{corner_hz, sample_rate}
+	if e.lowpass_key != key {
+		w := TAU * clamp32(corner_hz, 1.0, sample_rate * 0.45) / sample_rate
+		cs := math.cos(w)
+		alpha := math.sin(w) / (2.0 * EFFECT_LOWPASS_Q)
+		a0 := 1.0 + alpha
+		e.lowpass_coefficients = {(1.0 - cs) * 0.5 / a0, (1.0 - cs) / a0, -2.0 * cs / a0, (1.0 - alpha) / a0}
+		e.lowpass_key = key
+	}
+	b0, b1, a1, a2 := e.lowpass_coefficients[0], e.lowpass_coefficients[1], e.lowpass_coefficients[2], e.lowpass_coefficients[3]
+
+	step :: proc "contextless" (z: ^[2]f32, x, b0, b1, a1, a2: f32) -> f32 {
+		y := b0 * x + z[0]
+		z[0] = flush_denormal(b1 * x - a1 * y + z[1])
+		z[1] = flush_denormal(b0 * x - a2 * y)
+		return y
+	}
+	return step(&e.lowpass[0], l, b0, b1, a1, a2), step(&e.lowpass[1], r, b0, b1, a1, a2)
 }

@@ -174,187 +174,6 @@ FILTER_SATURATION_DRIVE := [?]f32{
 	4.5439, 7.3086, 11.5249, 17.8173, 28.6600, 37.6000,
 	44.0800, 67.5000, 75.3000, 83.8000, 96.9000,
 }
-// What the saturation control does to the level once the filter is resonant.
-//
-// The corner-opening tables above were fitted at resonance 0 and are exact
-// there. They are not the whole control. Through a *fully open* filter, where no
-// corner is in play at all, the reference gains 10.5 dB from the saturation knob
-// at resonance 115 and 1.7 dB at resonance 0, while this engine gains about 2 dB
-// either way -- 8.4 dB short at the corner of the surface. Open filter and one
-// note means the resonant peak is far above what is being measured, so this is a
-// broadband gain and not a peak height, which is what makes it separable from
-// everything else here and correctable as a gain.
-//
-// Each row is referenced to its own saturation-0 value, so this table is what
-// the saturation control does and nothing else. The raw surface also showed the
-// 24 dB path short by up to 3.8 dB at saturation 0, which is its resonance output
-// gain rather than saturation, and correcting that from an open-filter reading
-// was wrong: those patches play closed, where the deficit is not there, and four
-// factory patches at saturation 0 went about 3.5 dB loud when it was included.
-// It is a real error and it is left for a measurement taken where it applies.
-//
-// Measured at the knots below, as decibels the reference has over this engine.
-FILTER_OUTPUT_CORRECTION_RESONANCE := [?]int{0, 32, 64, 96, 115, 127}
-FILTER_OUTPUT_CORRECTION_SATURATION := [?]int{0, 32, 64, 96, 127}
-
-FILTER_OUTPUT_CORRECTION_DB_12 := [6][5]f32 {
-	{+0.0, +0.0, -0.2, -0.1, +0.0},
-	{+0.0, +0.3, +1.0, +1.5, +1.7},
-	{+0.0, +0.7, +2.3, +3.4, +3.7},
-	{+0.0, +1.0, +3.8, +5.7, +6.4},
-	{+0.0, +1.2, +4.8, +7.6, +8.4},
-	{+0.0, +1.3, +5.5, +9.0, +10.1},
-}
-
-// The ladder's own level, which replaces the surface the two biquads needed.
-//
-// A ladder loses gain at DC as its feedback rises. The reference loses less than
-// a raw one does -- 5.4 dB less at resonance 64, where the raw loss is 9.5 -- so
-// it compensates, though not fully. Measured through an open filter, where the
-// pole is far above the note and what is left is the DC region:
-//
-//   res      0     16     32     48     64     80     96    107    115
-//   dB     0.0   +2.3   +3.7   +4.7   +5.4   +6.2   +6.4   +6.8   +6.9
-//
-// The saturation columns fall away because the output curve pins the level once
-// it is driven, so this is a surface in both and not a curve in one. They were
-// re-measured after the curve underneath them was replaced -- the old ones had
-// drifted into a shallow bowl reaching -1.1 dB at resonance 115 -- and the
-// saturation-0 column is untouched by that, being the ladder's own DC loss and
-// nothing to do with the shaping.
-//
-// Held flat above resonance 115. The 24 dB filter self-oscillates at 127, where
-// the reference collapses by 15 to 34 dB, but only at open cutoffs -- at cutoff
-// 34 it still matches the ordinary ladder to 0.06 dB rms. A flat correction
-// cannot be both, so that state keeps the resonance-115 value and its own error
-// is recorded rather than papered over.
-FILTER_LADDER_GAIN_RESONANCE := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115}
-FILTER_LADDER_GAIN_SATURATION := [?]int{0, 32, 64, 96, 127}
-FILTER_LADDER_GAIN_DB := [9][5]f32 {
-	{+0.0, +0.0, +0.0, +0.0, +0.0},
-	{+2.3, +1.9, +0.9, +0.2, +0.0},
-	{+3.7, +3.2, +1.6, +0.4, +0.1},
-	{+4.7, +4.1, +2.1, +0.6, +0.2},
-	{+5.4, +4.8, +2.7, +0.8, +0.3},
-	{+6.2, +5.6, +3.3, +1.0, +0.4},
-	{+6.4, +5.8, +3.6, +1.2, +0.4},
-	{+6.8, +6.1, +3.8, +1.3, +0.4},
-	{+6.9, +6.4, +4.0, +1.4, +0.4},
-}
-
-filter_ladder_gain :: proc(resonance, saturation: int) -> f32 {
-	r := resolved_position(20, resonance)
-	sa := resolved_position(23, saturation)
-	ri, rt := correction_axis(FILTER_LADDER_GAIN_RESONANCE[:], r)
-	si, st := correction_axis(FILTER_LADDER_GAIN_SATURATION[:], sa)
-	lo := dsp.lerp32(FILTER_LADDER_GAIN_DB[ri][si], FILTER_LADDER_GAIN_DB[ri][si + 1], st)
-	hi := dsp.lerp32(FILTER_LADDER_GAIN_DB[ri + 1][si], FILTER_LADDER_GAIN_DB[ri + 1][si + 1], st)
-	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
-}
-
-@(private = "file")
-correction_axis :: proc(knots: []int, state: int) -> (index: int, t: f32) {
-	last := len(knots) - 1
-	if state <= knots[0] {
-		return 0, 0
-	}
-	if state >= knots[last] {
-		return last - 1, 1
-	}
-	for i in 0 ..< last {
-		if state <= knots[i + 1] {
-			return i, f32(state - knots[i]) / f32(knots[i + 1] - knots[i])
-		}
-	}
-	return last - 1, 1
-}
-
-filter_output_correction :: proc(resonance, saturation: int) -> f32 {
-	r := resolved_position(20, resonance)
-	s := resolved_position(23, saturation)
-	ri, rt := correction_axis(FILTER_OUTPUT_CORRECTION_RESONANCE[:], r)
-	si, stt := correction_axis(FILTER_OUTPUT_CORRECTION_SATURATION[:], s)
-	table := &FILTER_OUTPUT_CORRECTION_DB_12
-	lo := dsp.lerp32(table[ri][si], table[ri][si + 1], stt)
-	hi := dsp.lerp32(table[ri + 1][si], table[ri + 1][si + 1], stt)
-	return math.pow(f32(10), dsp.lerp32(lo, hi, rt) / 20)
-}
-
-// The ladder's feedback, which is what parameter 20 actually controls.
-//
-// Fitted from the reference's own magnitude response: held at cutoff 34 and swept
-// across notes 36 to 90, the pole frequency stays at 110.4 Hz at every resonance
-// from 0 to 115 while the feedback rises, at 0.03 to 0.06 dB rms. The same
-// feedback comes back at cutoff 64 -- 0.00, 1.95 and 3.15 against 0.00, 2.00 and
-// 3.35 -- so it is a function of the knob and of nothing else.
-//
-// It is very nearly the knob over 32, and it stops rising near the top.
-FILTER_LADDER_FEEDBACK_STATES := [?]int{0, 16, 32, 48, 64, 80, 96, 107, 115, 127}
-FILTER_LADDER_FEEDBACK := [?]f32{
-	0.00, 0.50, 1.00, 1.50, 2.00, 2.55, 3.00, 3.35, 3.60, 3.70,
-}
-
-// A few per cent of pole, which the peak surface does not carry.
-//
-// `FILTER_CUTOFF_HZ_24` was measured from the resonant peak, and for a four-pole
-// ladder that is the pole -- but measured at resonance 107, through a filter that
-// is ringing. Fitting the pole instead against the reference's whole magnitude
-// response at resonance 0, where the fit is a pure `G^4` and lands at 0.02 to
-// 0.04 dB rms, it comes out consistently above the table: 1.024, 0.998, 1.028,
-// 1.006, 1.000, 1.024, 1.053, 1.003, 1.035, 1.062, 1.052, 1.054, 1.036 and 1.023
-// across states 8 to 64.
-//
-// Those are the states whose transition is actually inside the swept notes; above
-// 64 the response is flat across the sweep and the fit stops constraining
-// anything, so the correction returns to one there rather than following numbers
-// that mean nothing. The curve is smoothed: the state-to-state scatter is the
-// table's own noise, and chasing it would be fitting that instead of the filter.
-//
-// It is worth 1.8 dB at state 34, where four decibels of output per decibel of
-// corner turns 5 per cent into exactly the offset measured there.
-FILTER_LADDER_POLE_STATES := [?]int{0, 8, 16, 24, 34, 44, 52, 60, 64, 72, 80, 127}
-FILTER_LADDER_POLE := [?]f32{
-	1.00, 1.01, 1.01, 1.01, 1.04, 1.05, 1.05, 1.04, 1.02, 1.01, 1.00, 1.00,
-}
-
-filter_ladder_pole :: proc "contextless" (state: f32) -> f32 {
-	last := len(FILTER_LADDER_POLE_STATES) - 1
-	if state <= f32(FILTER_LADDER_POLE_STATES[0]) {
-		return FILTER_LADDER_POLE[0]
-	}
-	if state >= f32(FILTER_LADDER_POLE_STATES[last]) {
-		return FILTER_LADDER_POLE[last]
-	}
-	for i in 0 ..< last {
-		lo := f32(FILTER_LADDER_POLE_STATES[i])
-		hi := f32(FILTER_LADDER_POLE_STATES[i + 1])
-		if state <= hi {
-			return dsp.lerp32(FILTER_LADDER_POLE[i], FILTER_LADDER_POLE[i + 1], (state - lo) / (hi - lo))
-		}
-	}
-	return FILTER_LADDER_POLE[last]
-}
-
-filter_ladder_feedback :: proc(stored: int) -> f32 {
-	state := resolved_position(20, stored)
-	last := len(FILTER_LADDER_FEEDBACK_STATES) - 1
-	if state <= FILTER_LADDER_FEEDBACK_STATES[0] {
-		return FILTER_LADDER_FEEDBACK[0]
-	}
-	if state >= FILTER_LADDER_FEEDBACK_STATES[last] {
-		return FILTER_LADDER_FEEDBACK[last]
-	}
-	for i in 0 ..< last {
-		lo := FILTER_LADDER_FEEDBACK_STATES[i]
-		hi := FILTER_LADDER_FEEDBACK_STATES[i + 1]
-		if state <= hi {
-			t := f32(state - lo) / f32(hi - lo)
-			return dsp.lerp32(FILTER_LADDER_FEEDBACK[i], FILTER_LADDER_FEEDBACK[i + 1], t)
-		}
-	}
-	return FILTER_LADDER_FEEDBACK[last]
-}
-
 filter_saturation_drive :: proc(stored: int) -> f32 {
 	state := resolved_position(23, stored)
 	if state <= FILTER_SATURATION_STATES[0] {
@@ -373,144 +192,6 @@ filter_saturation_drive :: proc(stored: int) -> f32 {
 		}
 	}
 	return FILTER_SATURATION_DRIVE[last]
-}
-
-// Where the 24 dB response moves from its resonance-0 corner surface to the
-// high-Q peak surface. The transition was measured at cutoff states 44, 64, 80
-// and 110. At each resonance the four log-frequency fractions agreed closely;
-// these are their means:
-//
-//   resonance       0       4       8      16      32      64     107
-//   blend       0.0000  0.2405  0.4332  0.7000  0.8773  0.9835  1.0000
-//
-// Interpolation is linear between measured controller states here and
-// geometric between the two frequency tables below. Frequencies and cutoff
-// ratios live in octaves, so an arithmetic Hz blend would be the wrong space.
-FILTER_CUTOFF_24_RESONANCE_STATES := [?]int{0, 4, 8, 16, 32, 64, 107}
-FILTER_CUTOFF_24_RESONANCE_BLEND := [?]f32{0.0, 0.2405, 0.4332, 0.7000, 0.8773, 0.9835, 1.0}
-
-// Converting the reference's audible corner target into the coefficient this
-// engine's two-section topology needs. At low Q its -3 dB corner is consistently
-// 0.80 of the supplied coefficient, so the resonance-0 surface needs 1.255x.
-// The factor was measured from cutoff 44 through 110 at every resonance knot;
-// it reaches unity once the resonant peak, rather than the cascade's corner
-// ratio, anchors the response.
-FILTER_CUTOFF_24_TOPOLOGY_SCALE := [?]f32{1.255, 1.259, 1.264, 1.267, 1.165, 1.0, 1.0}
-
-// The same conversion for the 12 dB low pass, which had none.
-//
-// Measured as the gain our stopband carries over the reference's: +2.86 dB at
-// cutoff 40 and +3.00 at 64 with the resonance off, running to +3.69 at
-// resonance 96. On a 12 dB per octave slope that is 0.24 octaves of corner, and
-// 2^-0.24 is the factor below. The passband agrees to within half a decibel
-// either side of the change, which is what says this is a corner and not a gain.
-FILTER_CUTOFF_12_LOW_PASS_RATIO :: f32(0.846)
-
-// Correcting the resonance-0 corner surface, which was measured at one note.
-//
-// `filter_table_24_low.odin` is generated by `s1probe filtertable`, and against a
-// held sine it is 19 dB out in the middle of its range: at cutoff 44, resonance
-// 0, the reference passes a 262 Hz note at 11.0 dB where we pass it at -1.9. Our
-// own corner is exactly where the table puts it -- inverting the attenuation
-// returns 108.0 Hz against the table's 108.0 -- so the filter is doing what it is
-// told and the table is what is wrong.
-//
-// It is wrong because the reference's shape is not ours. Swept across notes 42 to
-// 78 at cutoff 34, the reference falls 19.0 dB per octave where we fall 23.4; at
-// cutoff 8, where both are far into the stopband, they agree at 23.6 and 24.1. So
-// the reference leaves its pass band at 12 dB per octave and reaches 24 only well
-// out, which is two sections at different corners rather than the two at one
-// corner this engine cascades. Fitting that topology directly gets the residual
-// from 9.67 dB rms to 5.90, and a four-pole ladder to 6.32, neither of which is
-// close enough to justify rebuilding the path on it -- the ladder is 16 dB out at
-// cutoff 8, where what is here already agrees.
-//
-// So this is a correction and not a model: the factor that best places our corner
-// against the reference across seven notes at each state, fitted on max error so
-// that no note is traded away for the one the harness happens to play. It takes
-// the worst state from 19.1 dB to 6.5 and leaves the shape mismatch behind, which
-// is the part that needs the topology and is recorded in docs/null-test.md as
-// still open.
-//
-// Only the resonance-0 surface. `FILTER_CUTOFF_HZ_24` is measured from the
-// resonant peak instead, and the blend between them is measured separately.
-FILTER_CUTOFF_24_LOW_CORRECTION_STATES := [?]int{
-	0, 8, 12, 16, 20, 24, 28, 34, 40, 44, 48, 52, 56, 60, 64, 72, 80, 88, 127,
-}
-FILTER_CUTOFF_24_LOW_CORRECTION := [?]f32{
-	1.00, 1.00, 1.03, 1.11, 1.21, 1.32, 1.38, 1.39, 1.41, 1.44,
-	1.49, 1.51, 1.49, 1.45, 1.39, 1.25, 1.03, 1.00, 1.00,
-}
-
-filter_cutoff_24_low_correction :: proc "contextless" (state: f32) -> f32 {
-	last := len(FILTER_CUTOFF_24_LOW_CORRECTION_STATES) - 1
-	if state <= f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[0]) {
-		return FILTER_CUTOFF_24_LOW_CORRECTION[0]
-	}
-	if state >= f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[last]) {
-		return FILTER_CUTOFF_24_LOW_CORRECTION[last]
-	}
-	for i in 0 ..< last {
-		lo := f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[i])
-		hi := f32(FILTER_CUTOFF_24_LOW_CORRECTION_STATES[i + 1])
-		if state <= hi {
-			t := (state - lo) / (hi - lo)
-			return dsp.lerp32(
-				FILTER_CUTOFF_24_LOW_CORRECTION[i],
-				FILTER_CUTOFF_24_LOW_CORRECTION[i + 1],
-				t,
-			)
-		}
-	}
-	return FILTER_CUTOFF_24_LOW_CORRECTION[last]
-}
-
-filter_cutoff_24_resonance_blend :: proc(stored: int) -> f32 {
-	state := resolved_position(20, stored)
-	if state <= FILTER_CUTOFF_24_RESONANCE_STATES[0] {
-		return FILTER_CUTOFF_24_RESONANCE_BLEND[0]
-	}
-	last := len(FILTER_CUTOFF_24_RESONANCE_STATES) - 1
-	if state >= FILTER_CUTOFF_24_RESONANCE_STATES[last] {
-		return FILTER_CUTOFF_24_RESONANCE_BLEND[last]
-	}
-	for i in 0 ..< last {
-		lo_state := FILTER_CUTOFF_24_RESONANCE_STATES[i]
-		hi_state := FILTER_CUTOFF_24_RESONANCE_STATES[i + 1]
-		if state <= hi_state {
-			t := f32(state - lo_state) / f32(hi_state - lo_state)
-			return dsp.lerp32(FILTER_CUTOFF_24_RESONANCE_BLEND[i], FILTER_CUTOFF_24_RESONANCE_BLEND[i + 1], t)
-		}
-	}
-	return FILTER_CUTOFF_24_RESONANCE_BLEND[last]
-}
-
-filter_cutoff_24_topology_scale :: proc(stored: int) -> f32 {
-	state := resolved_position(20, stored)
-	if state <= FILTER_CUTOFF_24_RESONANCE_STATES[0] {
-		return FILTER_CUTOFF_24_TOPOLOGY_SCALE[0]
-	}
-	last := len(FILTER_CUTOFF_24_RESONANCE_STATES) - 1
-	if state >= FILTER_CUTOFF_24_RESONANCE_STATES[last] {
-		return FILTER_CUTOFF_24_TOPOLOGY_SCALE[last]
-	}
-	for i in 0 ..< last {
-		lo_state := FILTER_CUTOFF_24_RESONANCE_STATES[i]
-		hi_state := FILTER_CUTOFF_24_RESONANCE_STATES[i + 1]
-		if state <= hi_state {
-			t := f32(state - lo_state) / f32(hi_state - lo_state)
-			return dsp.lerp32(FILTER_CUTOFF_24_TOPOLOGY_SCALE[i], FILTER_CUTOFF_24_TOPOLOGY_SCALE[i + 1], t)
-		}
-	}
-	return FILTER_CUTOFF_24_TOPOLOGY_SCALE[last]
-}
-
-// Near the 20 Hz DSP floor the filter's measured corner converges on its
-// coefficient frequency, so the low-Q topology compensation must converge on
-// one too. It reaches the full measured factor by cutoff state 20; applying the
-// factor unchanged at state zero raises the audible floor from 23 to 28 Hz.
-filter_cutoff_24_effective_topology_scale :: proc(scale, state: f32) -> f32 {
-	return dsp.lerp32(1, scale, dsp.clamp32(state / 20.0, 0, 1))
 }
 
 // Envelope times, read out of the reference.
@@ -671,6 +352,58 @@ centred_position :: proc(index, stored: int) -> f32 {
 	return f32(state - centre) / f32(len(states) - 1 - centre)
 }
 
+// The equaliser's controls, as the reference computes them from the stored state.
+EQ_FREQUENCY_LOW_HZ :: f32(50)
+EQ_FREQUENCY_SPAN :: f32(320)
+EQ_GAIN_RANGE_DB :: f32(50)
+EQ_Q_SPAN :: f32(10)
+
+eq_frequency_hz :: proc "contextless" (state: int) -> f32 {
+	return EQ_FREQUENCY_LOW_HZ * math.pow(EQ_FREQUENCY_SPAN, f32(state) / 127.0)
+}
+
+eq_gain_db :: proc "contextless" (state: int) -> f32 {
+	return f32(state - 64) / 127.0 * EQ_GAIN_RANGE_DB
+}
+
+eq_q :: proc "contextless" (state: int) -> f32 {
+	return math.pow(EQ_Q_SPAN, f32(state) / 127.0)
+}
+
+// The tone control's corner. Up to the centre it is a low pass at
+// 200 Hz * 110^(s/64), which at the centre is 22 kHz; above it a high pass at
+// 10 Hz * 800^((s - 64)/64), reaching 7.2 kHz at the top.
+eq_tone_setting :: proc "contextless" (state: int) -> dsp.Tone_Setting {
+	if state <= 64 {
+		return {.Low_Pass, 200.0 * math.pow(f32(110), f32(state) / 64.0)}
+	}
+	return {.High_Pass, 10.0 * math.pow(f32(800), f32(state - 64) / 64.0)}
+}
+
+// The delay's tone is the same pair of corners on slightly different travel, and
+// is bypassed at the centre: 200 Hz * 110^(s/63) below it and
+// 10 Hz * 800^((s - 65)/62) above.
+delay_tone_setting :: proc "contextless" (state: int) -> dsp.Tone_Setting {
+	if state == 64 {
+		return {}
+	}
+	if state < 64 {
+		return {.Low_Pass, 200.0 * math.pow(f32(110), f32(state) / 63.0)}
+	}
+	return {.High_Pass, 10.0 * math.pow(f32(800), f32(state - 65) / 62.0)}
+}
+
+// The LFO's free-running rate, in hertz, from its stored state.
+lfo_rate_hz :: proc(state: int) -> f32 {
+	return math.pow(f32(1500), f32(clamp_int(state, 0, 127)) / 127.0) / 12.0
+}
+
+// Tempo sync's divisions, in 24ths of a beat per cycle.
+LFO_SYNC_TICKS := [30]int {
+	1536, 1152, 864, 768, 576, 432, 384, 288, 216, 192, 144, 96, 84, 72, 48,
+	42, 36, 32, 24, 21, 18, 16, 12, 9, 8, 6, 4, 3, 2, 1,
+}
+
 // Read a frequency display in hertz, honouring the kilohertz suffix.
 //
 // Parameter 61 switches units partway up its range: "50.0 Hz", "213.9 Hz",
@@ -690,27 +423,19 @@ display_frequency_hz :: proc(display: string) -> f32 {
 	return value
 }
 
-// Parse parameter 83's "L : R msec" display into its two millisecond values.
-delay_spread_ms :: proc(display: string) -> (left, right: f32) {
-	colon := -1
-	for i in 0 ..< len(display) {
-		if display[i] == ':' {
-			colon = i
-			break
-		}
-	}
-	if colon < 0 {
+// Parameter 83's two channel offsets in milliseconds, from its position. The display
+// reads "0.1 : 0.0 msec" and rounds to a tenth of a millisecond, which at 48 kHz is
+// nearly five samples and not the number the reference uses: `s1probe arch fadedump`
+// measured whole-sample offsets that follow 0.1 ms * 10^(k/21) for k steps off the
+// centre at 64, held at 100 ms, left channel above the centre and right below it.
+delay_spread_ms :: proc(position: int) -> (left, right: f32) {
+	steps := position - 64
+	magnitude := steps < 0 ? -steps : steps
+	if magnitude == 0 {
 		return 0, 0
 	}
-	l, l_ok := display_leading_number(display[:colon])
-	r, r_ok := display_leading_number(display[colon + 1:])
-	if !l_ok {
-		l = 0
-	}
-	if !r_ok {
-		r = 0
-	}
-	return l, r
+	ms := min(0.1 * math.pow(f32(10.0), f32(magnitude) / 21.0), 100.0)
+	return steps > 0 ? ms : 0, steps < 0 ? ms : 0
 }
 
 // Bind a parsed patch.
@@ -966,8 +691,8 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// Displays "-64".."+63". Normalised by 64 so the centre state is exactly
 	// zero modulation, which is what the readme promises.
 	e.mod_env_amount = dsp.clamp32(display_number(11, p.values[11], 0) / 64.0, -1, 1)
-	e.mod_env_attack = envelope_attack_time(12, p.values[12])
-	e.mod_env_decay = envelope_decay_time(13, p.values[13])
+	e.mod_env_attack = amp_attack_seconds(resolved_position(12, p.values[12]))
+	e.mod_env_decay = envelope_segment_length(13, p.values[13])
 
 	// -- filter --------------------------------------------------------------
 
@@ -975,15 +700,14 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// (12 dB), low-pass (24 dB), high-pass (12 dB) or high-pass (24 dB)" -- and
 	// the v1.13 beta 2 entry in the version history adds the fifth: "A new
 	// filter 'LPDL' has been added", a fourth-order diode ladder described as
-	// "close to 'LP24'". This slice has no diode ladder model, so LPDL is bound
-	// to the 24 dB low pass, which is the response the changelog itself calls
-	// it close to.
+	// "close to 'LP24'".
 	//
-	// Band pass and notch are implemented in src/dsp and reachable through
-	// `Engine_Params.filter_mode`, as the contract for this slice requires, but
-	// no Synth1 filter-type state selects them: the reference plugin has no
-	// band pass or notch. Inventing a mapping to reach them would corrupt every
-	// patch that uses a real state.
+	// "Close" is the changelog's word and the measurement does not agree: at
+	// resonance 0 it is 20.8 dB down at the corner against the 24 dB ladder's
+	// 12, with 5.7 dB per octave below and 15.6 above. It is its own filter,
+	// `dsp.Diode_Ladder`, and its mode and slope here only keep it out of the
+	// other branches.
+	e.filter_diode = false
 	switch resolved_display_id(14, p.values[14]) {
 	case 0:
 		e.filter_mode, e.filter_slope = .Low_Pass, .Slope_12
@@ -1007,16 +731,12 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 		// this measurement are the same filter described two ways.
 		e.filter_mode, e.filter_slope = .Band_Pass, .Slope_12
 	case:
-		// LPDL, the diode ladder added in v1.13 beta 2. Measured at 12 to 14 dB
-		// per octave with a corner well below the other types' for the same knob
-		// setting, so it is neither of the slopes this filter has; the changelog
-		// calls it close to LP24 and that is what it is bound to, pending a
-		// ladder model. Its measured slope is closer to the 12 dB section.
-		e.filter_mode, e.filter_slope = .Low_Pass, .Slope_24
+		e.filter_mode, e.filter_slope = .Low_Pass, .Slope_12
+		e.filter_diode = true
 	}
 
-	e.filter_attack = envelope_attack_time(15, p.values[15])
-	e.filter_decay = envelope_decay_time(16, p.values[16])
+	e.filter_attack = amp_attack_seconds(resolved_position(15, p.values[15]))
+	e.filter_decay = envelope_segment_length(16, p.values[16])
 	// Parameter 17 is a linear reading of the knob, and for once that is not a
 	// guess -- it is a guess that measurement confirmed.
 	//
@@ -1031,75 +751,13 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// Within 0.005 the whole way. Unlike the amplitude sustain, which shares the
 	// gain knob's curve, this one really is linear.
 	e.filter_sustain = unit_position(17, p.values[17])
-	e.filter_release = envelope_release_time(18, p.values[18])
+	e.filter_release = envelope_segment_length(18, p.values[18])
 
-	// Parameter 19, measured rather than chosen.
-	//
-	// The curve this replaces spanned 20 Hz to 20 kHz exponentially, "the audible
-	// band" -- a reasonable guess that came out about a quarter of an octave
-	// sharp across the whole range. `s1probe filtertable` renders noise through
-	// the 12 dB low pass at every setting and reads the corner off the spectrum:
-	// the real curve runs 24 Hz to about 17 kHz and, above stored 16, moves in
-	// steps of very close to one semitone.
-	//
-	// The 24 dB path needs two surfaces. `FILTER_CUTOFF_HZ_24_LOW_RESONANCE`
-	// reads the -3 dB corner at resonance 0; `FILTER_CUTOFF_HZ_24` reads the
-	// peak at resonance 107. Substituting either globally is wrong: the first
-	// regressed 29 high-Q patches, while the second leaves resonance-0 corners
-	// 1.1 octaves high around the middle of the knob. A six-resonance sweep
-	// measured how the audible corner travels between them, and the helper
-	// above resolves that transition in log-frequency space.
-	cutoff_state := clamp_int(resolved_position(19, p.values[19]), 0, FILTER_TABLE_SIZE - 1)
-	e.filter_cutoff_state = f32(cutoff_state)
-	if e.filter_slope == .Slope_24 {
-		blend := filter_cutoff_24_resonance_blend(p.values[20])
-		topology_scale := filter_cutoff_24_topology_scale(p.values[20])
-		base_topology_scale := filter_cutoff_24_effective_topology_scale(topology_scale, f32(cutoff_state))
-		e.filter_cutoff_surface_blend = blend
-		e.filter_cutoff_topology_scale = topology_scale
-		e.filter_cutoff_hz = base_topology_scale * exp_map(
-			blend,
-			FILTER_CUTOFF_HZ_24_LOW_RESONANCE[cutoff_state],
-			FILTER_CUTOFF_HZ_24[cutoff_state],
-		)
-	} else {
-		e.filter_cutoff_surface_blend = 0
-		e.filter_cutoff_topology_scale = 1
-		e.filter_cutoff_hz = FILTER_CUTOFF_HZ[cutoff_state]
-		// See FILTER_CUTOFF_12_LOW_PASS_RATIO and `filter_cutoff_at_state`, which
-		// is where the cutoff a voice actually runs on is resolved.
-		if e.filter_mode == .Low_Pass {
-			e.filter_cutoff_hz *= FILTER_CUTOFF_12_LOW_PASS_RATIO
-		}
-	}
-	// That table is the low pass's corner, and the band pass does not centre on
-	// it. See the constant.
-	if e.filter_mode == .Band_Pass {
-		e.filter_cutoff_hz *= BAND_PASS_CENTRE_RATIO
-	}
-	// Parameter 20, measured rather than chosen.
-	//
-	// The law this replaces was a straight line to a maximum Q of 14, and the
-	// reference reaches Q = 950 -- almost all of it in the last fifteen steps of
-	// the knob. The old number came from reading the resonance off a 1/6-octave
-	// band profile, which cannot resolve a Q above 8.65 because that is the band's
-	// own Q; see `filter_resonance_table.odin` and `s1probe qprobe`.
-	//
-	// Two curves, chosen by the slope the type above selected. Our 24 dB path is
-	// two sections in series and the reference's is one four-pole design, and the
-	// two shapes do not coincide under any single damping -- so the 24 dB curve is
-	// its own measurement rather than the 12 dB one adjusted.
-	{
-		state := clamp_int(resolved_position(20, p.values[20]), 0, FILTER_RESONANCE_TABLE_SIZE - 1)
-		e.filter_resonance = unit_position(20, p.values[20])
-		e.filter_damping = e.filter_slope == .Slope_24 ? FILTER_DAMPING_24[state] : FILTER_DAMPING[state]
-		e.filter_output_gain =
-			e.filter_slope == .Slope_24 ? FILTER_OUTPUT_GAIN_24[state] : FILTER_OUTPUT_GAIN[state]
-		// See `filter_output_correction`: what the saturation control does to the
-		// level once the filter is resonant, plus the 24 dB path's own resonance
-		// gain error, which is that surface's saturation-0 column.
-		e.filter_output_gain *= filter_output_correction(p.values[20], p.values[23])
-	}
+	// Parameter 19 is a position on the cutoff axis (`filter_knob_index`), and
+	// parameter 20 is the resonance, `state/127`: every filter turns those two
+	// into its own coefficients, so nothing is looked up here.
+	e.filter_cutoff_state = f32(clamp_int(resolved_position(19, p.values[19]), 0, FILTER_TABLE_SIZE - 1))
+	e.filter_resonance = unit_position(20, p.values[20])
 
 	// Parameter 21 displays -63..64, with stored 63 as zero. Controlled sweeps
 	// reveal the underlying law more directly than an octave fit: every amount
@@ -1113,14 +771,13 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// "leave the frequency unchanged", so the linear 0..1 reading is the
 	// documented one.
 	e.filter_key_track = unit_position(22, p.values[22])
+	e.filter_key_track_ln = e.filter_key_track > 0 ? math.ln(1.0 + e.filter_key_track) : 0
 	e.filter_saturation_drive = filter_saturation_drive(p.values[23])
-	e.filter_ladder_feedback = filter_ladder_feedback(p.values[20])
-	e.filter_ladder_gain = filter_ladder_gain(p.values[20], p.values[23])
 	e.filter_velocity = resolved_position(24, p.values[24]) != 0
 
 	// -- amplifier -----------------------------------------------------------
 
-	e.amp_attack = envelope_attack_time(25, p.values[25])
+	e.amp_attack = amp_attack_seconds(resolved_position(25, p.values[25]))
 	e.amp_decay = envelope_segment_length(26, p.values[26])
 	e.amp_sustain = AMP_SUSTAIN_LEVEL[clamp_int(resolved_position(27, p.values[27]), 0, AMP_TABLE_SIZE - 1)]
 	e.amp_release = envelope_segment_length(28, p.values[28])
@@ -1272,17 +929,17 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 	// A parametric peak plus a tone tilt, which is what the manual describes and
 	// what the parameters confirm. Two of the four carry real units.
 	//
-	// There is no on/off switch for this section and it does not need one: the
-	// level display reads exactly "0.0 db" at stored 64 and the tone is flat at its
-	// own centre, so a patch that leaves both alone passes through untouched.
-	e.eq_freq_hz = display_frequency_hz(resolved_display(61, p.values[61]))
-	e.eq_gain_db = display_number(62, p.values[62], 0)
-	// Parameter 63 is a bare 0..127, described only as "flat turning left, steep
-	// turning right". 0.3 to 8 spans a broad shelf-like lift through to a narrow
-	// notch, which is the useful span for a single band; the curve is chosen.
-	e.eq_q = exp_map(unit_position(63, p.values[63]), 0.3, 8.0)
-	// Parameter 60, centred flat, same reading as the delay's tone.
-	e.eq_tone = centred_position(60, p.values[60])
+	// There is no on/off switch for this section. A level of exactly 0 dB is the
+	// centre of the level knob and the peak is skipped there; the tone is a
+	// first-order section at every setting.
+	//
+	// All four are the reference's own formulas in the stored state, not readings
+	// of the display, which rounds: the frequency is 50 Hz * 320^(s/127), the level
+	// (s - 64)/127 * 50 dB, the Q 10^(s/127), and the tone is `eq_tone_setting`.
+	e.eq_freq_hz = eq_frequency_hz(resolved_position(61, p.values[61]))
+	e.eq_gain_db = eq_gain_db(resolved_position(62, p.values[62]))
+	e.eq_q = eq_q(resolved_position(63, p.values[63]))
+	e.eq_tone = eq_tone_setting(resolved_position(60, p.values[60]))
 
 	// -- effect unit ---------------------------------------------------------
 	//
@@ -1314,30 +971,26 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 
 	// -- delay ---------------------------------------------------------------
 	//
-	// Unusually for this file, most of this is read rather than chosen. The
-	// displays carry real units: parameter 35 spells out musical divisions,
-	// 83 reads out the two channel times in milliseconds, 37 is a percentage.
+	// Parameter 35 spells out musical divisions in its display, which is read. State 0,
+	// "0.1 msec", is not a division and binds to no beats; the engine gives it the
+	// shortest time.
 	e.delay_on = resolved_position(65, p.values[65]) != 0
-	{
-		display := resolved_display(35, p.values[35])
-		beats, musical := delay_display_beats(display)
-		e.delay_beats = beats
-		if !musical {
-			// State 0 is "0.1 msec", a fixed short time rather than a division.
-			ms, ok := display_leading_number(display)
-			e.delay_fixed_ms = ok ? ms : 0.1
-		}
-	}
-	e.delay_left_ms, e.delay_right_ms = delay_spread_ms(resolved_display(83, p.values[83]))
+	e.delay_beats, _ = delay_display_beats(resolved_display(35, p.values[35]))
+	e.delay_left_ms, e.delay_right_ms = delay_spread_ms(resolved_position(83, p.values[83]))
 	// Parameter 36 is a bare 0..127 and feeds that fraction of each echo back.
 	// A transient at stored 100 decays by 100/127 per repeat, while stored 127
 	// holds at unity, so there is no conventional just-below-one scale here.
 	e.delay_feedback = unit_position(36, p.values[36])
-	// Parameter 37 displays a percentage, so it is read, not mapped.
-	e.delay_dry_wet = dsp.clamp32(display_number(37, p.values[37], 0) / 100.0, 0, 1)
-	// Parameter 98 is a bare 0..127 with the centre flat, per the manual's
-	// description of a knob that cuts highs one way and lows the other.
-	e.delay_tone = centred_position(98, p.values[98])
+	// Parameter 37 is not a crossfade. Measured against the reference at every eighth
+	// position, the dry stays at exactly one up to the middle and then falls by 1/63 a
+	// step, and the echo rises by 1/63 a step from position 1 and stays at one from the
+	// middle up. So position 64 has both at full and 127 is echo alone.
+	mix := resolved_position(37, p.values[37])
+	e.delay_dry_gain = dsp.clamp32(f32(127 - mix) / 63.0, 0, 1)
+	e.delay_wet_gain = dsp.clamp32(f32(mix - 1) / 63.0, 0, 1)
+	// Parameter 98 is a bare 0..127, a knob that cuts highs one way and lows the
+	// other and is bypassed at its centre.
+	e.delay_tone = delay_tone_setting(resolved_position(98, p.values[98]))
 	// Parameter 82's three states are named in the changelog rather than the
 	// manual: v1.07 alpha lists them as "ノーマルステレオ(ST)、クロスフィードバック(X)、
 	// ピンポン(PP)", so in order they are normal stereo, cross feedback and
@@ -1354,135 +1007,64 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 
 	// -- chorus --------------------------------------------------------------
 	e.chorus_on = resolved_position(66, p.values[66]) != 0
-	// Parameter 64's three states display "1", "2" and "4", read here as the
-	// number of stages.
+	// Parameter 64: 1, 2 or 4, how the taps are arranged. See `dsp.Chorus`.
 	e.chorus_stages = clamp_int(resolved_display_id(64, p.values[64]), 1, dsp.CHORUS_MAX_STAGES)
-	// Parameter 52 displays milliseconds, 54 hertz, 55 a signed percentage.
-	e.chorus_delay_ms = max(display_number(52, p.values[52], 1.0), 0.01)
-	e.chorus_rate_hz = max(display_number(54, p.values[54], 0.5), 0.0)
-	e.chorus_feedback = dsp.clamp32(display_number(55, p.values[55], 0) / 100.0, -1, 1)
-	// Parameter 53's depth stays a linear reading, and stays a guess.
-	//
-	// The measurement says the shape is nothing like linear. `chorusprobe --sweep
-	// depth` isolates the chorus in the side signal and reads the pitch wobble a
-	// swept tap produces, which converts back to a delay swing in closed form.
-	// Normalised against full depth:
-	//
-	//   stored      16      32      64      96     127
-	//   measured  0.004   0.012   0.050   0.202   1.000
-	//   linear    0.126   0.252   0.504   0.756   1.000
-	//
-	// Steeply exponential. But the measurement does not settle the *scale*, only
-	// the shape: at full depth the swing is 0.50 of the centre delay at a 30 ms
-	// centre, 0.35 at 18.9 ms and 0.25 at 3.8 ms, so the reference is not simply
-	// scaling by the centre and there is no single fraction to apply.
-	//
-	// Fitting the shape with half the centre as its top made the null test worse on
-	// every count that matters here -- stereo width from -0.065 back out to -0.323,
-	// spectral error up 0.4 dB -- which is what a right shape on a wrong scale does.
-	// The shape, now applied. Two things changed since the note above was written.
-	//
-	// First, the rate used to convert a pitch wobble into a delay swing was the
-	// *displayed* one, and that was never checked. It checks out: measuring how fast
-	// the tracked pitch itself oscillates gives 0.95, 1.04 and 1.01 times the display
-	// at the three rates whose period fits the analysis window. So parameter 54 needs
-	// no curve at all -- it is read in hertz and the hertz are real.
-	//
-	// Second, and this is what unblocks the shape: the swing *is* proportional to the
-	// centre delay after all. The earlier reading of 0.50, 0.35 and 0.25 of the centre
-	// suggested otherwise, but the wobble per millisecond of centre delay is constant
-	// -- 58.8, 60.8, 61.9 and 63.3 cents per ms across centres from 14.6 to 29.8 ms --
-	// and a constant ratio is what a multiplicative law looks like. So the DSP's
-	// existing "fraction of the centre delay" is the right form, and only the curve
-	// from the knob to that fraction was wrong.
-	//
-	//   stored      16      32      64      96     127
-	//   measured  0.004   0.012   0.050   0.202   1.000
-	//   fitted    0.005   0.011   0.051   0.232   1.000
-	//
-	// The exponent is bracketed by the measurement rather than read off it, and the
-	// null test picks inside the bracket. Both ends of the sweep are the least
-	// trustworthy points: at full depth the instrument returns a swing larger than the
-	// centre delay, which is impossible and about 1.35 times too big, and at stored 16
-	// the wobble it is reading is 7 cents, near its own noise floor. Correcting the
-	// top for that over-read refits the exponent at about 5.4; an under-read at the
-	// bottom pushes it the other way. So the form is measured -- exponential in the
-	// knob, multiplicative in the centre delay -- and the exponent is not.
-	//
-	// Four curves were tried across the whole bank, medians:
-	//
-	//                        spectral  envelope   width
-	//   linear                 11.69     9.35    -0.060
-	//   exp(3(u-1))             8.84     9.02    -0.072   best, and wrong at u=0
-	//   anchored k=6           10.22    11.32    -0.230   best fit, too steep
-	//   anchored k=2            9.24     9.32    -0.076   ships
-	//
-	// The floored exp(3(u-1)) form scores 0.4 dB better and is not used, because it
-	// never reaches zero: it leaves 5% of depth at the bottom of the knob, where the
-	// reference is measurably and exactly mono. A curve that is wrong at a point which
-	// was verified directly does not get to ship for 0.4 dB.
-	//
-	// Anchored k=6 is the best fit to the measured shape and clearly too steep on the
-	// bank, which says the shape measurement under-reads the middle of the range --
-	// consistent with the wobble at stored 16 being 7 cents, near the instrument's own
-	// noise floor. So k is the part chosen by the oracle; the *form*, and the zero at
-	// the bottom, are measured.
-	//
-	// The *scale* -- whether full depth swings the tap by the whole centre delay or
-	// some fraction -- is still unmeasured. Two instruments failed at it, both for
-	// reasons now recorded in chorusprobe.odin, so the top of the range stays put.
-	// Anchored at both ends: exactly zero at the bottom of the knob and one at the
-	// top. That is not cosmetic. The reference at stored depth 0 is *exactly mono* --
-	// side/mid measures 0.0000 with the channels correlating at +1.000 -- so its depth
-	// there is zero, and a plain exp(k * (u - 1)) never reaches zero. It left 5% of
-	// depth at the bottom, which for a broadband source is enough to decorrelate the
-	// channels completely: our width at stored 0 was 0.545 against the reference's
-	// 0.000.
-	//
-	// The exponent is measured now, and the two paragraphs above are the record of
-	// what it cost to get there rather than a live justification.
-	//
-	// `s1probe chorusdepth` reads the tap excursion off a *tone* instead of noise.
-	// A swept tap Dopplers the tone, so the demodulated phase is exactly
-	// -2*pi*f0*D(t) and the delay is already in it: the peak-to-peak phase swing
-	// over one sweep is 2*pi*f0*(2*swing), with no derivative and no transform, so
-	// a rate of 0.99 Hz costs nothing to resolve. The wet is isolated by rendering
-	// the same patch with parameter 66 on and off and subtracting, which works
-	// because the source is a sine and both renders are deterministic; the
-	// diagnostic that proved it reads wet/dry = 1.00 on both engines.
-	//
-	// It self-checks at both anchors. A static tap (stored 0) reads 0.000 on both
-	// engines, and full depth reads 15.66 ms against the reference's own 15.12 ms
-	// centre delay -- so full depth really does swing the tap by the whole centre
-	// delay, which the paragraph above records as unmeasured. Measured curve:
-	//
-	//   stored      0     16      32      64      96     112     127
-	//   reference  0.000  0.0071  0.0229  0.0957  0.3286  0.5957  1.0357
-	//   k = 4.65   0.000  0.0077  0.0215  0.0909  0.3149  0.5733  1.0000
-	//   k = 2.0    0.000  0.0449  0.1026  0.2723  0.5533  0.7567  1.0000
-	//
-	// k = 4.65 is the least-squares fit in log space, at 0.060 against k = 2.0's
-	// 1.195 and k = 6.0's 0.678. The shipped k = 2.0 was up to **seven times too
-	// deep** at the quiet end of the knob, and the four-point table that used to
-	// sit here described k = 6 rather than the constant beside it -- the constant
-	// had been retuned against the bank and the table left stale, which is how a
-	// 7x error survived in a file that documents everything.
-	//
-	// Re-measured after the change, ours against the reference's, the ratio is
-	// 0.97 to 1.01 across the whole knob. On the bank: spectral 7.65 -> 7.57 mean
-	// and 7.15 -> 6.90 median, level +0.91 -> +0.67, null depth -3.40 -> -3.59.
-	CHORUS_DEPTH_K :: f32(4.65)
-	{
-		u := unit_position(53, p.values[53])
-		e.chorus_depth = (math.exp(CHORUS_DEPTH_K * u) - 1.0) / (math.exp(CHORUS_DEPTH_K) - 1.0)
-	}
-	// Parameter 56's level, on the other hand, is linear -- and that was already
-	// what this read. Measured against a chorus-off render, the wet grows 0.252,
-	// 0.504, 0.756, 1.000 of full across stored 32, 64, 96, 127: linear to three
-	// decimal places.
+	// The delay, rate, depth, feedback and level are the reference's own laws, and
+	// the displays are those laws rounded for reading.
+	e.chorus_delay_seconds = chorus_delay_seconds(resolved_position(52, p.values[52]))
+	e.chorus_rate_hz = chorus_rate_hz(resolved_position(54, p.values[54]))
+	e.chorus_depth = chorus_depth_fraction(resolved_position(53, p.values[53]))
+	e.chorus_feedback = chorus_feedback_gain(resolved_position(55, p.values[55]))
 	e.chorus_level = unit_position(56, p.values[56])
 
 	return e
+}
+
+// The amplitude envelope's attack length in seconds, from parameter 25's state:
+// 0.0005 * 56000 ^ (v / 127), from half a millisecond to 28 seconds. The reference's
+// attack is a linear ramp of this length. The filter and modulation envelopes take the
+// same law: the table they used before floored at 3.5 ms, which was the gain smoother
+// settling on a first note after a load read as the shortest attack.
+amp_attack_seconds :: proc(state: int) -> f32 {
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	return f32(0.0005 * math.pow(56000.0, u))
+}
+
+// The chorus's delay time in seconds, from parameter 52's state: exponential over
+// the lower half of the knob and linear over the upper, meeting at 15 ms. Below the
+// middle it is 0.05 ms * 300 ^ ((2u) ^ 0.6) and from the middle up it is 30 ms * u,
+// with u the state over 127.
+chorus_delay_seconds :: proc(state: int) -> f32 {
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	ms: f64
+	if u < 0.5 {
+		ms = 0.05 * math.pow(300.0, math.pow(2.0 * u, 0.6))
+	} else {
+		ms = u * 30.0
+	}
+	return f32(ms * 0.001)
+}
+
+// Parameter 54's rate in hertz: 0.02 * 20000 ^ u, from 0.02 Hz to 400 Hz. The bottom
+// state plays at its displayed 0.01 Hz, which is not what the law gives there.
+chorus_rate_hz :: proc(state: int) -> f32 {
+	if state <= 0 {
+		return 0.01
+	}
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	return f32(0.02 * math.pow(20000.0, u))
+}
+
+// Parameter 53's depth as a fraction of the centre delay: (100 ^ u - 1) / 99, so the
+// bottom of the knob is exactly still and the top reaches the whole delay.
+chorus_depth_fraction :: proc(state: int) -> f32 {
+	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
+	return f32((math.pow(100.0, u) - 1.0) * (1.0 / 99.0))
+}
+
+// Parameter 55's feedback: (state - 64) / 64, scaled to 0.99.
+chorus_feedback_gain :: proc(state: int) -> f32 {
+	return f32(clamp_int(state, 0, 127) - 64) * (1.0 / 64.0) * 0.99
 }
 
 // The seven parameter indices an LFO owns, in the order the two LFOs lay them
@@ -1548,28 +1130,19 @@ bind_lfo :: proc(
 	dest = clamp_int(dest, 0, int(max(Lfo_Destination)))
 	l.destination = Lfo_Destination(dest)
 
-	// Parameter 43/48, measured rather than chosen.
-	//
-	// The curve this replaces spanned 0.05 Hz to 40 Hz. `s1probe lforatetable`
-	// points the LFO at the stereo position and counts how often that crosses its
-	// own mean, growing the render until enough cycles fit, and the real curve
-	// runs 0.078 Hz to **125 Hz** -- so the engine was 1.6 times too slow at the
-	// bottom of the range and 3.1 times too slow at the top. The version history's
-	// "LFO maximum speed up" entry is not an exaggeration; the top of this knob is
-	// an audio-rate oscillator.
-	//
-	// Like the filter cutoff, it moves in steps of close to one semitone: 0.083
-	// octaves per step across ten and a half octaves.
-	speed_unit := unit_position(speed_index, p.values[speed_index])
-	l.rate_hz = LFO_RATE_HZ[clamp_int(resolved_position(speed_index, p.values[speed_index]), 0, LFO_RATE_TABLE_SIZE - 1)]
+	// Parameter 43/48. Free running it is `1500^(s/127) / 12` Hz, from 0.083 Hz to
+	// 125 Hz: the top of this knob is an audio-rate oscillator, and the version
+	// history's "LFO maximum speed up" entry is not an exaggeration. The curve moves
+	// in steps of close to one semitone, 0.083 octaves per step across ten and a
+	// half octaves. The table this replaces was read off crossing counts, so it was
+	// a staircase of that formula and sat up to 1.7% low between its steps.
+	speed_state := resolved_position(speed_index, p.values[speed_index])
+	l.rate_hz = lfo_rate_hz(speed_state)
 
-	// Tempo sync reuses the same knob to pick a musical division. No state
-	// display gives the division table -- parameter 43's displays are a bare
-	// 0..127 -- so this ladder is a chosen mapping, spanning four beats per
-	// cycle down to a sixteenth.
-	sync_divisions := [8]f32{4.0, 3.0, 2.0, 1.5, 1.0, 0.75, 0.5, 0.25}
-	division := clamp_int(int(speed_unit * f32(len(sync_divisions))), 0, len(sync_divisions) - 1)
-	l.sync_beats = sync_divisions[division]
+	// Tempo sync reuses the same knob to pick a division from a table of thirty:
+	// the state indexes it as `(s * 30) >> 7`, and an entry is the cycle's length in
+	// 24ths of a beat, so the slowest is 64 beats and the fastest a twenty-fourth.
+	l.sync_beats = f32(LFO_SYNC_TICKS[clamp_int((speed_state * 30) >> 7, 0, len(LFO_SYNC_TICKS) - 1)]) / 24.0
 
 	// The depth knob, twice: its linear travel, and its measured curve.
 	//
@@ -1593,7 +1166,6 @@ bind_lfo :: proc(
 	// has been sound about shape and wrong about what to do with it.
 	l.depth = unit_position(depth_index, p.values[depth_index])
 	l.pitch_depth = lfo_pitch_depth_curve(l.depth)
-	l.pan_depth = lfo_pan_depth_curve(l.depth)
 	l.tempo_sync = resolved_position(tempo_index, p.values[tempo_index]) != 0
 	l.key_sync = resolved_position(key_index, p.values[key_index]) != 0
 }

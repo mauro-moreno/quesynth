@@ -18,6 +18,69 @@ DEFAULT_SAMPLE_RATE :: f32(48000.0)
 // cutoff would otherwise produce.
 SMOOTHING_SECONDS :: f32(0.01)
 
+// The output gain moves to a new value in a straight line over one render chunk, 256
+// samples, from the first sample after the change. That ramp sits ahead of the effects: a
+// gain change reaches the echo a delay later, as measured (`s1probe arch gainstep`, where
+// the reference's gain falls linearly across 256 samples).
+//
+// A second stage, behind the effects, is the fade-in of the first note after a load.
+// It halves its distance to full every millisecond, 48 samples at 48 kHz, which is a time
+// constant of 69.25 samples.
+// The effects see the unfaded signal -- the chorus, the equaliser, the effect unit and
+// the delay all take the dry output divided by the fade -- and only the output carries
+// it. It starts at -0.0023 and not at zero: the reference's first note after a load
+// follows 1 - exp(-(n + 0.84) / 69.25) times a linear ramp of exactly 24 samples, where
+// this was 1 - exp(-(n + 1) / 69.48), and the difference is 0.8 parts in a thousand at
+// its worst.
+GAIN_SMOOTHER_HALF_LIFE_SECONDS :: f32(0.001)
+GAIN_SMOOTHER_START :: f32(-0.002311)
+
+// Parameter 35's first state, "0.1 msec", the shortest delay time.
+DELAY_SHORTEST_MS :: f32(0.1)
+
+// A full wheel travel, from the rest position to the top, takes about 42 ms: the
+// reference moves the bend about four 14-bit units a sample, 23.75 full scales a
+// second as measured. The rate is in wheel units, so the time to bend a given number of
+// semitones depends on the wheel's travel and not on parameter 40's range: the same
+// 33.6 ms from 10 to 90% at a range of 2, 12 and 24.
+PITCH_BEND_SLEW_PER_SECOND :: f32(23.75)
+
+// Oscillator 2's pitch edit slides linearly over fifty milliseconds whatever its size
+// (39.7 ms from 10 to 90% for three semitones as for twelve). The other pitch controls,
+// key shift, fine tune and master tune, move at once.
+PITCH_SLIDE_SECONDS :: f32(0.05)
+
+Pitch_Slide :: struct {
+	value:   f32,
+	start:   f32,
+	target:  f32,
+	counter: int,
+}
+
+pitch_slide_set :: proc(s: ^Pitch_Slide, value: f32, sample_rate: f32) {
+	s^ = {value = value, start = value, target = value, counter = int(PITCH_SLIDE_SECONDS * sample_rate)}
+}
+
+// Aim at a new target: from wherever it has got to, over the full time.
+pitch_slide_aim :: proc(s: ^Pitch_Slide, target: f32) {
+	if target != s.target {
+		s.start = s.value
+		s.target = target
+		s.counter = 0
+	}
+}
+
+pitch_slide_step :: proc(s: ^Pitch_Slide, sample_rate: f32) -> f32 {
+	total := max(int(PITCH_SLIDE_SECONDS * sample_rate), 1)
+	if s.counter < total {
+		s.counter += 1
+		s.value = s.start + (s.target - s.start) * f32(s.counter) / f32(total)
+	} else {
+		s.value = s.target
+	}
+	return s.value
+}
+
 // The slowest tempo the delay will size its buffers for.
 //
 // The longest musical division parameter 35 offers is a whole note, four beats,
@@ -46,8 +109,8 @@ Engine :: struct {
 	// apart stay in phase with each other.
 	global_lfo:  [2]dsp.Lfo,
 
-	cutoff_smooth: Smoother,
-	gain_smooth:   Smoother,
+	gain_smooth:   Ramp,
+	load_fade:     Smoother,
 	pan_smooth:    Smoother,
 
 	// The effects, and the buffers their delay lines run in.
@@ -74,8 +137,14 @@ Engine :: struct {
 	chorus_left:   []f32,
 	chorus_right:  []f32,
 
-	// -1..1, in units of `Engine_Params.pitch_bend_range`.
+	// -1..1, in units of `Engine_Params.pitch_bend_range`: where the wheel is. The
+	// pitch follows it at a fixed rate in wheel units, whatever the bend range, and
+	// `pitch_bend_applied` is where it has got to.
 	pitch_bend:  f32,
+	pitch_bend_applied: f32,
+	// Oscillator 2's pitch, which slides to a new value over fifty milliseconds when
+	// it is edited.
+	osc2_pitch:  Pitch_Slide,
 	tempo_bpm:   f32,
 
 	// Monotonic, used for voice stealing and for seeding each voice's noise.
@@ -86,6 +155,13 @@ Engine :: struct {
 	// voice gate state: mono and legato mode may release a voice while its key is
 	// still down, and repeated note-on must not double-count that key.
 	held_notes:  int,
+	// The voice pool as the reference keeps it: `polyphony` slots, each holding one
+	// layer of one note, handed out round-robin from the one after the last. See
+	// `engine_acquire_voice`.
+	slots:         [MAX_POLYPHONY]Pool_Slot,
+	slot_next:     int,
+	slot_stamp:    u64,
+	pending_slots: [MAX_UNISON]int,
 
 	// The arpeggiator step clock and what it currently has sounding. Idle,
 	// and costing one branch a sample, when parameter 59 is off.
@@ -120,6 +196,8 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	e.params = params
 	e.tempo_bpm = 120.0
 	e.pitch_bend = 0
+	e.pitch_bend_applied = 0
+	pitch_slide_set(&e.osc2_pitch, params.osc2_semitones, e.sample_rate)
 	e.age = 0
 	e.last_note = 60.0
 	e.held_notes = 0
@@ -145,14 +223,13 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	dsp.delay_init(&e.delay, e.delay_left, e.delay_right)
 	dsp.chorus_init(&e.chorus, e.chorus_left, e.chorus_right)
 
+	e.slots = {}
+	e.slot_next = 0
+	e.slot_stamp = 0
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
 		v^ = {}
 		voice_set_wavetables(v, e.wavetables)
-		for j in 0 ..< 2 {
-			dsp.lfo_init(&v.lfo[j], 0x51F0_0001 + u32(i) * 2654435761 + u32(j))
-			v.lfo[j].shape = params.lfo[j].shape
-		}
 	}
 
 	for j in 0 ..< 2 {
@@ -160,8 +237,14 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 		e.global_lfo[j].shape = params.lfo[j].shape
 	}
 
-	smoother_init(&e.cutoff_smooth, params.filter_cutoff_state, SMOOTHING_SECONDS, e.sample_rate)
-	smoother_init(&e.gain_smooth, params.amp_gain, SMOOTHING_SECONDS, e.sample_rate)
+	// The output starts at zero and rises to full, as the reference's does when it is
+	// loaded: the first note after a load comes in under a one-pole of about 70
+	// samples, which a note on a settled engine does not. That is the whole of what
+	// looked like a per-note onset factor of 1 - exp(-n / 69): a second note, on the
+	// same voice or another, reaches full level at once. The gain itself starts at the
+	// patch's value, so only the fade is heard.
+	ramp_init(&e.gain_smooth, params.amp_gain)
+	smoother_init_half_life(&e.load_fade, GAIN_SMOOTHER_START, GAIN_SMOOTHER_HALF_LIFE_SECONDS, e.sample_rate)
 	smoother_init(&e.pan_smooth, params.pan, SMOOTHING_SECONDS, e.sample_rate)
 
 	engine_update_lfo_rates(e)
@@ -225,11 +308,14 @@ engine_load_patch :: proc(e: ^Engine, p: patch.Patch, sample_rate: f32) {
 // `keep_voice_pool` says it may not.
 // `snap` is the difference between loading a patch and turning a knob.
 //
-// The smoothed parameters -- cutoff, gain, pan -- glide to their target, which is
+// The smoothed parameters -- gain, pan -- glide to their target, which is
 // what stops a knob from stepping audibly. Across a *patch change* that glide is
 // wrong: the new sound would sweep in from the old one's cutoff over the first
 // tenth of a second, which is both audible and not what the patch is. Snapping
-// them is what `smoother_reset` exists for.
+// them is what `smoother_reset` and `ramp_init` exist for.
+//
+// What a patch change does not repeat is the first note's fade-in (`load_fade`): that
+// belongs to a freshly loaded instance, and starts in `engine_init` only.
 //
 // The cost of getting this backwards is not obvious from listening to one note,
 // which is why it is worth stating: rendered against the reference, a patch loaded
@@ -280,9 +366,9 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false, keep_voice
 		// After the controllers, not before: a controller kept across the
 		// change displaces the target, and snapping to the patch's undisplaced
 		// value would sweep the new sound from there to where the wheel sits.
-		smoother_reset(&e.cutoff_smooth, e.params.filter_cutoff_state)
-		smoother_reset(&e.gain_smooth, e.params.amp_gain)
 		smoother_reset(&e.pan_smooth, e.params.pan)
+		ramp_init(&e.gain_smooth, e.params.amp_gain)
+		pitch_slide_set(&e.osc2_pitch, e.params.osc2_semitones, e.sample_rate)
 
 		// And the effects' own memory, which is the part that is audible if it is
 		// forgotten.
@@ -480,9 +566,6 @@ engine_update_lfo_rates :: proc(e: ^Engine) {
 			hz = (bpm / 60.0) / lp.sync_beats
 		}
 		dsp.lfo_set_frequency(&e.global_lfo[j], hz, e.sample_rate)
-		for i in 0 ..< len(e.voices) {
-			dsp.lfo_set_frequency(&e.voices[i].lfo[j], hz, e.sample_rate)
-		}
 	}
 }
 
@@ -512,6 +595,16 @@ engine_mark_key_down :: proc(e: ^Engine, note: int) {
 	if !e.held_keys[note] {
 		e.held_keys[note] = true
 		e.held_notes += 1
+		// The two LFOs are shared by every voice, and a key-synced one restarts only
+		// when the key just pressed is the only one held: a key pressed over another
+		// leaves it running, whatever is sounding.
+		if e.held_notes == 1 {
+			for j in 0 ..< 2 {
+				if e.params.lfo[j].key_sync {
+					dsp.lfo_retrigger(&e.global_lfo[j])
+				}
+			}
+		}
 	}
 	e.key_clock += 1
 	e.key_order[note] = e.key_clock
@@ -552,27 +645,162 @@ engine_find_gated_voice :: proc(e: ^Engine) -> ^Voice {
 	return nil
 }
 
+// One voice of the pool: a layer of a note, and when it was handed out.
+Pool_Slot :: struct {
+	used:  bool,
+	// Index into `Engine.voices`, or -1 while the slot is being filled.
+	voice: int,
+	layer: int,
+	// The note's `age`, so a slot whose voice has since been reused by another
+	// note is recognised as stale.
+	age:   u64,
+	stamp: u64,
+}
+
+engine_slot_live :: proc(e: ^Engine, index: int) -> bool {
+	s := &e.slots[index]
+	if !s.used {
+		return false
+	}
+	if s.voice < 0 {
+		return true
+	}
+	v := &e.voices[s.voice]
+	return v.active && v.age == s.age && v.live_layers & (u32(1) << u32(s.layer)) != 0
+}
+
+// A slot is free when nothing in it is held by a key: empty, stale, or a note
+// that has been released and is only ringing out.
+engine_slot_free :: proc(e: ^Engine, index: int) -> bool {
+	if !engine_slot_live(e, index) {
+		return true
+	}
+	s := &e.slots[index]
+	return s.voice >= 0 && !e.voices[s.voice].gate
+}
+
+engine_take_slot :: proc(e: ^Engine, index: int) {
+	if engine_slot_live(e, index) && e.slots[index].voice >= 0 {
+		s := &e.slots[index]
+		v := &e.voices[s.voice]
+		v.live_layers &= ~(u32(1) << u32(s.layer))
+		if v.live_layers == 0 {
+			v.active = false
+		}
+	}
+	e.slots[index].used = false
+}
+
+// The reference's pool is counted in layers, not notes: polyphony is the number
+// of voices, and a note takes one per unison layer. A layer takes the first slot
+// not held by a key, scanning round-robin from the slot after the last one handed
+// out, so a note in release is free the moment the scan reaches it; when every
+// slot is held, it takes the oldest. With 3 voices and 2 layers a third note finds
+// one voice free, steals the oldest voice for its second layer, and ends with two
+// layers while the first keeps none (`s1probe arch voices`: poly 3 x unison 2 reads
+// 0 / 1 / 2 layers for three notes, poly 7 x 4 reads 0 / 3 / 4). A note wanting
+// more layers than there are voices keeps only its last ones.
+engine_acquire_voice :: proc(e: ^Engine, note: int, same: ^Voice) -> ^Voice {
+	poly := len(e.voices)
+	wanted := clamp_int(e.params.unison_voices, 1, MAX_UNISON)
+	keep := min(wanted, poly)
+
+	// A note pressed again while it still sounds gives its own slots back first, and takes
+	// them again before looking anywhere else: scanning on from `slot_next` could reach a
+	// released, ringing note before them and cut it off while its own slot sat unused.
+	freed: [MAX_POLYPHONY]int
+	freed_count := 0
+	if same != nil {
+		for i in 0 ..< poly {
+			s := &e.slots[i]
+			if s.used && s.voice >= 0 && e.voices[s.voice].age == s.age && &e.voices[s.voice] == same {
+				s.used = false
+				freed[freed_count] = i
+				freed_count += 1
+			}
+		}
+	}
+
+	for k in 0 ..< keep {
+		chosen := -1
+		if k < freed_count {
+			chosen = freed[k]
+		}
+		for step in 0 ..< poly {
+			if chosen >= 0 {break}
+			index := (e.slot_next + step) % poly
+			if engine_slot_free(e, index) {
+				chosen = index
+				break
+			}
+		}
+		if chosen < 0 {
+			for index in 0 ..< poly {
+				s := &e.slots[index]
+				if s.voice >= 0 && (chosen < 0 || s.stamp < e.slots[chosen].stamp) {
+					chosen = index
+				}
+			}
+		}
+		engine_take_slot(e, chosen)
+		e.slot_stamp += 1
+		e.slots[chosen] = {used = true, voice = -1, stamp = e.slot_stamp}
+		e.pending_slots[k] = chosen
+		e.slot_next = (chosen + 1) % poly
+	}
+
+	if same != nil {
+		return same
+	}
+	for i in 0 ..< poly {
+		if !e.voices[i].active {
+			return &e.voices[i]
+		}
+	}
+	return nil
+}
+
+// Seat the note in the slots `engine_acquire_voice` picked.
+engine_settle_layers :: proc(e: ^Engine, v: ^Voice) {
+	wanted := v.unison_count
+	keep := min(wanted, len(e.voices))
+	index := -1
+	for i in 0 ..< len(e.voices) {
+		if &e.voices[i] == v {
+			index = i
+		}
+	}
+	v.live_layers = 0
+	for k in 0 ..< keep {
+		layer := wanted - keep + k
+		slot := &e.slots[e.pending_slots[k]]
+		slot.voice = index
+		slot.layer = layer
+		slot.age = v.age
+		v.live_layers |= u32(1) << u32(layer)
+	}
+}
+
 // Find a voice for a new note.
 //
-// Order: the voice already holding this note, then any idle voice, then the
-// oldest sounding one. Stealing the oldest is the conventional choice and the
-// only one that keeps a held chord intact while a melody plays over it.
+// The voice already holding this note is reused, and the layers it needs are
+// taken from the pool as above. If the pool somehow has no entry free the oldest
+// sounding voice is taken.
 engine_allocate_voice :: proc(e: ^Engine, note: int) -> ^Voice {
 	if len(e.voices) == 0 {
 		return nil
 	}
 
+	same: ^Voice
 	for i in 0 ..< len(e.voices) {
 		v := &e.voices[i]
 		if v.active && v.note == note {
-			return v
+			same = v
+			break
 		}
 	}
-	for i in 0 ..< len(e.voices) {
-		v := &e.voices[i]
-		if !v.active {
-			return v
-		}
+	if v := engine_acquire_voice(e, note, same); v != nil {
+		return v
 	}
 
 	oldest := &e.voices[0]
@@ -641,8 +869,8 @@ engine_note_on :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.last_note,
 		.Fresh,
 		false,
-		&e.global_lfo,
 	)
+	engine_settle_layers(e, v)
 
 	e.last_note = f32(note)
 	engine_mark_key_down(e, note)
@@ -678,7 +906,6 @@ engine_move_line :: proc(e: ^Engine, v: ^Voice, note: int, velocity: f32) {
 		e.last_note,
 		legato ? .Legato : .Retrigger,
 		true,
-		&e.global_lfo,
 	)
 	e.last_note = f32(note)
 }
@@ -716,8 +943,8 @@ engine_start_voice :: proc(e: ^Engine, note: int, velocity: f32) {
 		e.last_note,
 		.Fresh,
 		false,
-		&e.global_lfo,
 	)
+	engine_settle_layers(e, v)
 	e.last_note = f32(note)
 }
 
@@ -842,30 +1069,39 @@ effect_params :: proc(
 	fx.hold_samples = dsp.effect_hold_samples(p.effect_ctl1_steps, e.sample_rate)
 	dsp.effect_derive(&fx)
 
-	base_ms: f32
-	if p.delay_beats > 0 {
-		base_ms = p.delay_beats * 60000.0 / bpm
-	} else {
-		base_ms = p.delay_fixed_ms
+
+	// The reference's delay lengths are whole samples: the beat division's and then
+	// parameter 83's offset, each truncated, and added. At 120 bpm the divisions are
+	// whole already, and the offsets measured as whole numbers at every position. A
+	// length that is a whole number in exact arithmetic must not fall a sample short
+	// to float rounding, so the product is taken in double precision with a margin.
+	// The first state, "0.1 msec", is not a base time that the offset adds to but a
+	// floor under it: four samples with no offset, and the offset itself once that
+	// is longer.
+	to_whole :: proc(samples: f64) -> f32 {
+		return f32(int(samples + 1.0e-3))
+	}
+	whole_length :: proc(beats, tempo_bpm, offset_ms, sample_rate: f32, length: int) -> f32 {
+		offset := to_whole(f64(offset_ms) * 0.001 * f64(sample_rate))
+		samples: f32
+		if beats > 0 {
+			samples = to_whole(f64(beats) * 60.0 * f64(sample_rate) / f64(tempo_bpm)) + offset
+		} else {
+			samples = max(to_whole(f64(DELAY_SHORTEST_MS) * 0.001 * f64(sample_rate)), offset)
+		}
+		return dsp.clamp32(samples, 1.0, f32(max(length - 2, 2)))
 	}
 
-	// Parameter 83 offsets the two channels around that base. The buffer was
-	// sized for the largest offset the parameter can hold, so this only has to
-	// stay non-negative.
-	to_samples :: proc(ms, sample_rate: f32, limit: int) -> f32 {
-		samples := ms * 0.001 * sample_rate
-		return dsp.clamp32(samples, 1.0, f32(max(limit - 2, 2)))
-	}
-
-	delay.left_samples = to_samples(base_ms + p.delay_left_ms, e.sample_rate, len(e.delay_left))
-	delay.right_samples = to_samples(base_ms + p.delay_right_ms, e.sample_rate, len(e.delay_right))
+	delay.left_samples = whole_length(p.delay_beats, bpm, p.delay_left_ms, e.sample_rate, len(e.delay_left))
+	delay.right_samples = whole_length(p.delay_beats, bpm, p.delay_right_ms, e.sample_rate, len(e.delay_right))
 	delay.feedback = p.delay_feedback
-	delay.dry_wet = p.delay_dry_wet
+	delay.dry_gain = p.delay_dry_gain
+	delay.wet_gain = p.delay_wet_gain
 	delay.tone = p.delay_tone
 	delay.mode = p.delay_mode
 
 	chorus.stages = p.chorus_stages
-	chorus.delay_samples = to_samples(p.chorus_delay_ms, e.sample_rate, len(e.chorus_left))
+	chorus.delay_samples = dsp.clamp32(p.chorus_delay_seconds * e.sample_rate, 1.0, f32(max(len(e.chorus_left) / 2 - 2, 2)))
 	chorus.depth = p.chorus_depth
 	chorus.rate_hz = p.chorus_rate_hz
 	chorus.feedback = p.chorus_feedback
@@ -886,26 +1122,52 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	// bytes, and copying it 48000 times a second was costing more than a whole
 	// voice: `e.params` cannot change during a block -- only the host can
 	// change it, and it does so between blocks -- so the only fields that need
-	// rewriting per sample are the three smoothed ones below.
+	// rewriting per sample are the smoothed ones below: the gain, the pan and
+	// oscillator 2's pitch.
 	params := e.params
 
+	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
+	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
+	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
+	dsp.chorus_begin_chunk(&e.chorus)
 	for i in 0 ..< n {
+		if chunk.position >= chunk.length {
+			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+			dsp.chorus_begin_chunk(&e.chorus)
+		}
 		// The free-running LFOs advance once per sample for the whole engine,
 		// so every non-key-synced voice reads the same value.
-		lfo_value: [2]f32
+		lfo_value, lfo_ramped: [2]f32
 		for j in 0 ..< 2 {
 			lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
+			lfo_ramped[j] = e.global_lfo[j].ramped
 		}
 
-		params.filter_cutoff_state = smoother_process(&e.cutoff_smooth, e.params.filter_cutoff_state)
-		params.amp_gain = smoother_process(&e.gain_smooth, e.params.amp_gain)
+		params.amp_gain = ramp_process(&e.gain_smooth, e.params.amp_gain, CHUNK_FRAMES)
+		load_fade := smoother_process(&e.load_fade, 1)
 		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
+		params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
+		bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
+		if abs(e.pitch_bend - e.pitch_bend_applied) <= bend_step {
+			e.pitch_bend_applied = e.pitch_bend
+		} else {
+			e.pitch_bend_applied += e.pitch_bend > e.pitch_bend_applied ? bend_step : -bend_step
+		}
 
 		// Per sample, and only when it is switched on. A step boundary rounded
 		// to the block would land a 1/24-beat step up to a whole step late at
 		// 512 frames, which is heard as swing the patch does not have.
 		if params.arp_on {
+			age_before := e.age
+			sounding_before := e.arp.sounding
 			arp_process(e, &params)
+			// A step that starts a note, or one whose gate closes, starts a chunk, as a
+			// note-on or note-off event does: the amplitude ramp otherwise keeps heading
+			// for the gate-on level to the end of the chunk and the release starts late.
+			if e.age != age_before || e.arp.sounding != sounding_before {
+				chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+				dsp.chorus_begin_chunk(&e.chorus)
+			}
 		}
 
 		sum_l: f32 = 0
@@ -916,7 +1178,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			if !v.active {
 				continue
 			}
-			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend, lfo_value)
+			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend_applied, lfo_value, lfo_ramped, chunk)
 			sum_l += l
 			sum_r += r
 		}
@@ -924,12 +1186,14 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// -- effects, on the summed voices ---------------------------------
 		//
 		// Delay before chorus, which is the order the reference's own panel and
-		// manual list them in. Both run whether or not they are switched on: a
+		// manual list them in. The delay runs whether or not it is switched on: a
 		// line that has been idle still holds whatever was last written to it,
-		// and switching an effect on mid-note would otherwise flush that out as
-		// a burst. Their parameter structs are rebuilt per sample from a value
-		// that only changes per block, which costs nothing measurable and keeps
-		// the tempo-dependent times honest when the host moves the tempo.
+		// and switching it on mid-note would otherwise flush that out as a burst.
+		// The chorus runs only while it is on, and clears its lines when it is
+		// switched on (`chorus_begin_block`), so it starts from silence either way.
+		// Their parameter structs are rebuilt per block from values that only change
+		// per block, which keeps the tempo-dependent times honest when the host moves
+		// the tempo.
 		out_l := dsp.sanitize(sum_l)
 		out_r := dsp.sanitize(sum_r)
 
@@ -960,17 +1224,20 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 			out_l, out_r = wet_l, wet_r
 		}
 
-		chorused_l, chorused_r := dsp.chorus_process(
-			&e.chorus, out_l, out_r, &chorus_params, e.sample_rate,
-		)
 		if params.chorus_on {
-			out_l, out_r = chorused_l, chorused_r
+			out_l, out_r = dsp.chorus_process(
+				&e.chorus, out_l, out_r, &chorus_params, e.sample_rate,
+			)
 		}
+
+		out_l *= load_fade
+		out_r *= load_fade
 
 		// A soft clip rather than a hard one: a stack of unison voices summing
 		// in phase can exceed 1.0 on a loud patch, and the contract asks for a
 		// stable output, not a truncated one.
 		left[i] = dsp.soft_clip(out_l)
 		right[i] = dsp.soft_clip(out_r)
+		chunk.position += 1
 	}
 }

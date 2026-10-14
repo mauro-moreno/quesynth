@@ -629,14 +629,11 @@ usage :: proc() {
 	fmt.eprintln("  s1probe behavior [dll] <keys|ctrl|delaytone|chorus1|osc2track|arp> [options]")
 	fmt.eprintln("                        -- timed MIDI scripts through both engines; see")
 	fmt.eprintln("                           behaviorprobe.odin and docs/synth1-behavior-errors.md")
-	fmt.eprintln("  s1probe arch [dll] <fxorder|pan|lfocutoff|lfophase|envshape|envlaw|ramp|clip|rate|osc|voices|eq|filtertype>")
+	fmt.eprintln("  s1probe arch [dll] <fxorder|pan|lfocutoff|lfophase|envshape|envlaw|ramp|clip|rate|osc|voices|eq|filtertype|tone|hits|arp|chorus|modenv|filterenv|filterhits|modenvscale|onset|chorusreplay|fadein|fadedump|delaygrid|fxgrid|gainstep|ad1sweep|ad1fit>")
 	fmt.eprintln("                        [--wav <dir>] [--values <list>] [--what cutoff|pitch|bend|knots]")
 	fmt.eprintln("                        -- the architecture theories; see archprobe.odin and")
 	fmt.eprintln("                           docs/synth1-architecture-evidence.md")
-	fmt.eprintln("  s1probe qprobe  [dll] [--type <0..4>] [--cutoff <n>] [--values <list|all>]")
 	fmt.eprintln("                        [--note <n>] [--calibrate]")
-	fmt.eprintln("  s1probe qtable  [dll] [out.odin]")
-	fmt.eprintln("  s1probe qlevel  [dll] [--type <0..4>] [--cutoff <n>] [--values <list>]")
 	fmt.eprintln("  s1probe lfoprobe [dll] [--param <41|46>] [--rate <n>] [--note <n>] [--dump]")
 	fmt.eprintln("  s1probe lfoshape [dll] [--param <42|47>] [--values <list|all>]")
 	fmt.eprintln("                        [--speed <n>] [--note <n>] [--dump]")
@@ -702,7 +699,7 @@ main :: proc() {
 	rest := args[1:]
 
 	dll := DEFAULT_DLL
-    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "qprobe" || cmd == "qtable" || cmd == "qlevel" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "noiseprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "filtertable" || cmd == "lfodepth" || cmd == "lforate" || cmd == "lforatetable" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "filtercurve" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" || cmd == "sectionlevel" || cmd == "paramlevel" {
+    if cmd == "verify" || cmd == "compare" || cmd == "envprobe" || cmd == "envtable" || cmd == "filterprobe" || cmd == "lfoprobe" || cmd == "lfoshape" || cmd == "lfopitch" || cmd == "lfosquare" || cmd == "lfofm" || cmd == "waveprobe" || cmd == "noiseprobe" || cmd == "gainprobe" || cmd == "leveltable" || cmd == "cutoffprobe" || cmd == "lfodepth" || cmd == "lforate" || cmd == "chorusprobe" || cmd == "chorusfb" || cmd == "chorustrack" || cmd == "choruswidth" || cmd == "choruspatch" || cmd == "envtrace" || cmd == "bandprofile" || cmd == "fxprobe" || cmd == "fxsweep" || cmd == "deciprobe" || cmd == "runhist" || cmd == "fxcorner" || cmd == "fxenv" || cmd == "fxcompare" || cmd == "phaserprobe" || cmd == "tuningcheck" || cmd == "mixprobe" || cmd == "phaseprobe" || cmd == "phaseabsolute" || cmd == "unisonprobe" || cmd == "patchdiag" || cmd == "fmfilter" || cmd == "peakprobe" || cmd == "chorusstability" || cmd == "oscspectrum" || cmd == "filterdistortion" || cmd == "filtersaturation" || cmd == "filtercurve" || cmd == "progparam" || cmd == "chorusphase" || cmd == "chorusdepth" || cmd == "velprobe" || cmd == "arpprobe" || cmd == "fmsubprobe" || cmd == "substageprobe" || cmd == "compcurve" || cmd == "comptrace" || cmd == "phaserband" || cmd == "phasercomb" || cmd == "phaserrate" || cmd == "fxcurve" || cmd == "fxharm" || cmd == "fxshape" || cmd == "sectionlevel" || cmd == "paramlevel" {
         if len(rest) >= 1 && (cmd == "fmfilter" || cmd == "unisonprobe" || cmd == "substageprobe" || len(rest) >= 2) && strings.has_suffix(strings.to_lower(rest[0]), ".dll") {
 			dll = rest[0]
 			rest = rest[1:]
@@ -1789,34 +1786,6 @@ main :: proc() {
 			}
 		}
 		cmd_cutoffprobe(dll, csweep, ccut, camt, csus, cspec, u8(clamp(cnote, 0, 127)), cdump)
-	case "filtertable":
-		ftype := 0
-		fout := ""
-		fpeak := -1
-		{
-			i := 0
-			for i < len(rest) {
-				switch rest[i] {
-				case "--type":
-					if !parse_probe_int(rest, i + 1, &ftype) {usage()}
-					i += 2
-				case "--peak":
-					if !parse_probe_int(rest, i + 1, &fpeak) {usage()}
-					i += 2
-				case:
-					if fout == "" {
-						fout = rest[i]
-						i += 1
-					} else {
-						usage()
-					}
-				}
-			}
-		}
-		if fout == "" {
-			fout = ftype == 1 ? "src/engine/filter_table_24.odin" : "src/engine/filter_table.odin"
-		}
-		cmd_filtertable(dll, fout, 60, ftype, fpeak)
 	case "lfopitch":
 		pparam := 41
 		pspec := "0,16,32,48,64,80,96,112,127"
@@ -1969,38 +1938,6 @@ main :: proc() {
 			}
 		}
 		cmd_lfoshape(dll, sparam, sspec, sspeed, u8(clamp(snote, 0, 127)), sdump)
-	case "qprobe":
-		qtype := QPROBE_TYPE_DEFAULT
-		qcut := QPROBE_CUTOFF_DEFAULT
-		qspec := ""
-		qnote := 60
-		qcal := false
-		{
-			i := 0
-			for i < len(rest) {
-				switch rest[i] {
-				case "--type":
-					if !parse_probe_int(rest, i + 1, &qtype) {usage()}
-					i += 2
-				case "--cutoff":
-					if !parse_probe_int(rest, i + 1, &qcut) {usage()}
-					i += 2
-				case "--values":
-					if i + 1 >= len(rest) {usage()}
-					qspec = rest[i + 1]
-					i += 2
-				case "--note":
-					if !parse_probe_int(rest, i + 1, &qnote) {usage()}
-					i += 2
-				case "--calibrate":
-					qcal = true
-					i += 1
-				case:
-					usage()
-				}
-			}
-		}
-		cmd_qprobe(dll, clamp(qtype, 0, 4), clamp(qcut, 0, 127), qspec, u8(clamp(qnote, 0, 127)), qcal)
 	case "peakprobe":
 		pktype := 1
 		pkcut := 80
@@ -2029,38 +1966,6 @@ main :: proc() {
 			}
 		}
 		cmd_peakprobe(dll, clamp(pktype, 0, 4), clamp(pkcut, 0, 127), pkspec, u8(clamp(pknote, 0, 127)))
-	case "qlevel":
-		ltype := QPROBE_TYPE_DEFAULT
-		lcut := QPROBE_CUTOFF_DEFAULT
-		lspec := ""
-		lnote := 60
-		{
-			i := 0
-			for i < len(rest) {
-				switch rest[i] {
-				case "--type":
-					if !parse_probe_int(rest, i + 1, &ltype) {usage()}
-					i += 2
-				case "--cutoff":
-					if !parse_probe_int(rest, i + 1, &lcut) {usage()}
-					i += 2
-				case "--values":
-					if i + 1 >= len(rest) {usage()}
-					lspec = rest[i + 1]
-					i += 2
-				case "--note":
-					if !parse_probe_int(rest, i + 1, &lnote) {usage()}
-					i += 2
-				case:
-					usage()
-				}
-			}
-		}
-		cmd_qlevel(dll, clamp(ltype, 0, 4), clamp(lcut, 0, 127), lspec, u8(clamp(lnote, 0, 127)))
-	case "qtable":
-		qout := "src/engine/filter_resonance_table.odin"
-		if len(rest) >= 1 {qout = rest[0]}
-		cmd_qtable(dll, qout, 60)
 	case "lfodepth":
 		dparam := 41
 		dspec := "0,16,32,48,64,80,96,112,127"
@@ -2173,10 +2078,6 @@ main :: proc() {
 			}
 		}
 		cmd_lforate(dll, rparam, rspec, u8(clamp(rnote, 0, 127)), rsync, rdump)
-	case "lforatetable":
-		rout := "src/engine/lfo_rate_table.odin"
-		if len(rest) >= 1 {rout = rest[0]}
-		cmd_lforatetable(dll, rout, RATE_PROBE_NOTE)
 	case "bandprofile":
 		bpdir := "ext/synth1/Synth1/soundbank00"
 		bpnote := 60

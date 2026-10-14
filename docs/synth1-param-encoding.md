@@ -102,6 +102,45 @@ A verify built on `setParameter` therefore *cannot* match the reference for
 these patches, no matter how the mapping is written. `s1probe verify` drives the
 plugin through `effSetChunk` for this reason.
 
+### The sound is not the read-back
+
+`getParameter` is not what the voice plays. For the parameters whose displays do not
+start at zero, and for the two that are out of order, the read-back above reports
+the **top** state for a stored 0 (and for any negative), and the sound does not
+follow it. One note (a chord for the arpeggiator), the same patch, only that
+parameter changed, with the reference's renders grouped by which are identical:
+
+| parameter | identical renders | the read-back says |
+|---|---|---|
+| 1 osc2 shape | {-1, 0, 1} {2} {3} {4, 5, 9} | stored 0 is the top state |
+| 31 arpeggiator type | {-1, 0, 1} {2} {3} {4, 5, 9} | stored 0 is the top state |
+| 41, 46 lfo destination | {-1, 0, 1} {2} {6} {7, 8, 12} | stored 0 is the top state |
+| 42, 47 lfo type | {-1, 0} {1} {2} {3} {4} {5, 6, 7, 9, 12} | past 5 is the last state |
+| 64 chorus type | {-1, 0, 1} {2, 3} {4, 5, 9} | 0 and 3 are the top state |
+| 93 unison voices | {-1, 0, 1, 2} {3} {8, 9, 12} | below 2 is not a state |
+| 94 polyphony | {-1, 0, 1} {2} {3} {4} | below 1 is not a state |
+
+So the sound clamps the stored *integer* into the range its displays span, and then
+looks the display up: below the range it is the state with the smallest display,
+above it the state with the largest, and an integer in a gap of the displays (chorus
+type 3, between 2 and 4) takes the state with the largest display under it. It is by
+display value and not by position, which only shows where the displays are out of
+order: the LFO types run 0, 1, 5, 2, 3, 4, so a stored 6 or more sounds as display 5,
+the third state and a sine, where the last state is a smoothed random. The engine binds
+that (`patch.parameter_position`, `display_state_clamped`), while `parameter_norm`
+keeps modelling the read-back, which is what a host asks. `s1probe lfoshape` confirms
+the shapes themselves: stored 0 to 5 agree with the reference's, and 6, 7, 9 and 12 are
+a sine in both.
+
+A file written by a version before 1.07 has its LFO destinations 1 to 5 renumbered on
+load (`upgrade_pre_107`), so a destination edit made to such a file reaches the
+parameter as a different integer; the groups above for 41 are in the stored integers
+after that, and 0, 1 and 7 or more are not renumbered.
+
+Factory patch 111 stores 0 for LFO 2's destination, and is the one patch in the
+bank this changes: spectral error 5.07 to 2.52 dB, centroid 5310 to 4777 Hz against
+the reference's 4766.
+
 ### There is no clamp
 
 Indices 33 and 35 are direct state indices over their whole range. The plugin

@@ -71,11 +71,23 @@
   // The position a stored integer selects. Mirrors `resolved_position` in
   // src/engine/binding.odin, including its clamping, so what the interface shows
   // is what the engine will do with the same number.
+  //
+  // For a parameter whose stored integers are its displays (`s`), an integer that
+  // matches none is clamped into the range the displays span and then looked up: the
+  // state with the smallest display below the range, otherwise the state with the
+  // largest display under it. By value and not by position, because the LFO types'
+  // displays run 0, 1, 5, 2, 3, 4 and a stored 6 sounds as display 5, the third state.
+  // See `display_state_clamped` in src/patch/value.odin, which has the evidence.
   function positionOf(param, stored) {
     if (param.s) {
       var exact = param.s.indexOf(stored);
       if (exact >= 0) return exact;
-      return stored < 0 ? 0 : param.s.length - 1;
+      var atOrBelow = -1, lowest = 0;
+      for (var i = 0; i < param.s.length; i++) {
+        if (param.s[i] < param.s[lowest]) lowest = i;
+        if (param.s[i] <= stored && (atOrBelow < 0 || param.s[i] > param.s[atOrBelow])) atOrBelow = i;
+      }
+      return atOrBelow >= 0 ? atOrBelow : lowest;
     }
     if (stored < 0) return 0;
     if (stored >= param.n) return param.n - 1;

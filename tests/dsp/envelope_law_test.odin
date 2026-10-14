@@ -133,10 +133,54 @@ test_amp_decay_and_release_lengths_follow_the_measured_law :: proc(t: ^testing.T
 		testing.expectf(t, abs(bound.amp_decay - want) <= 1.0e-6 * want, "decay %v gave %v s, want %v", stored, bound.amp_decay, want)
 		testing.expectf(t, abs(bound.amp_release - want) <= 1.0e-6 * want, "release %v gave %v s, want %v", stored, bound.amp_release, want)
 	}
-	// The filter and modulation envelopes have not been read this way.
+	// The filter and modulation envelopes follow the same law, read from the cutoff's
+	// and the pitch's own traces (`s1probe arch filterenv`, `arch modenv`).
+	p.values[13] = 90
 	p.values[16] = 64
 	p.values[18] = 64
 	bound := engine.bind_patch(p)
-	testing.expect_value(t, bound.filter_decay, engine.ENVELOPE_DECAY_SECONDS[64])
-	testing.expect_value(t, bound.filter_release, engine.ENVELOPE_RELEASE_SECONDS[64])
+	testing.expect_value(t, bound.filter_decay, amp_length(64))
+	testing.expect_value(t, bound.filter_release, amp_length(64))
+	testing.expect_value(t, bound.mod_env_decay, amp_length(90))
+}
+
+// The modulation envelope on oscillator 2's pitch reaches 60 semitones at full amount
+// and follows the fade law: predicted from the attack and decay lengths alone, the
+// reference reads 28.97 against 28.5 at 150 ms and 5.59 against 5.59 at 1 s for an
+// amount of 96, attack 64, decay 90.
+@(test)
+test_modulation_envelope_depth_is_sixty_semitones :: proc(t: ^testing.T) {
+	e: dsp.Envelope
+	dsp.envelope_set_fade(&e, 0.1235, 4.75, 0, 4.75, 48000)
+	dsp.envelope_gate_on(&e, true)
+	level: f32
+	for _ in 0 ..< 7200 {level = dsp.envelope_process(&e)} // 150 ms
+	pitch := engine.MOD_ENV_PITCH_SEMITONES * 0.5 * level
+	testing.expectf(t, abs(pitch - 28.5) < 0.6, "pitch at 150 ms: %v semitones, want about 28.5", pitch)
+	for _ in 0 ..< 40800 {level = dsp.envelope_process(&e)} // 1 s
+	pitch = engine.MOD_ENV_PITCH_SEMITONES * 0.5 * level
+	testing.expectf(t, abs(pitch - 5.59) < 0.15, "pitch at 1 s: %v semitones, want 5.59", pitch)
+}
+
+// The modulation envelope's pulse width is a share of the way to the end it heads for,
+// not an offset. Each row is a reference reading: the static knob setting (of 127, duty
+// = setting / 254) that cancels against the modulated render, for a base setting and an
+// amount of the envelope at its peak (0.976 of full over the measured window). The
+// readings are whole steps of a knob and the engine's own are one step high on positive
+// amounts and one low on negative, so the tolerance is two steps.
+@(test)
+test_modulation_envelope_pulse_width_is_a_share_of_the_room_left :: proc(t: ^testing.T) {
+	rows := [?][3]f32 {
+		{32, 72, 58}, {32, 76, 72}, {32, 84, 98}, {32, 88, 112},
+		{64, 72, 86}, {64, 80, 110},
+		{96, 56, 85}, {96, 48, 73}, {96, 32, 50},
+		{64, 56, 56}, {64, 48, 49}, {64, 40, 41}, {64, 16, 18},
+	}
+	for row in rows {
+		duty := row[0] / 254.0
+		amount := (row[1] - 64.0) / 64.0 * 0.976
+		got := engine.modulated_pulse_width(duty, amount) * 254.0
+		testing.expectf(t, abs(got - row[2]) <= 2.0, "base %v amount %v: the engine reaches %v, the reference %v", row[0], row[1], got, row[2])
+	}
+	testing.expect_value(t, engine.modulated_pulse_width(0.25, 0), f32(0.25))
 }

@@ -1,7 +1,7 @@
 // s1probe lfoshape - measure the LFO waveform states, parameters 42 and 47.
 //
 // The destinations of parameters 41 and 46 were measured by `lfoprobe`, and the
-// rate of 43 and 48 by `lforatetable`. The *shapes* never were. `binding.odin`
+// rate of 43 and 48 by `lforate`. The *shapes* never were. `binding.odin`
 // maps them from the English readme's list -- "saw, triangle, sine, square,
 // random(sample & hold) or random (smoothed)" -- read onto the display
 // identifier, and that is a guess of exactly the kind this project has already
