@@ -346,7 +346,11 @@ test_every_patch_load_replaces_the_patch_on_the_audio_thread :: proc(t: ^testing
 		if c.kept {want.values[19] = 127}
 		bound := engine.bind_patch(want)
 		testing.expectf(t, e.params.filter_cutoff_state == bound.filter_cutoff_state, "%v: cutoff target %v, want %v", c.entry, e.params.filter_cutoff_state, bound.filter_cutoff_state)
-		testing.expectf(t, e.gain_smooth.value == bound.amp_gain, "%v: gain glides from %v to %v", c.entry, e.gain_smooth.value, bound.amp_gain)
+		// The gain is not snapped: it ramps from where it stood to the new patch's, so it still
+		// reads the previous patch's until a block is rendered.
+		previous_gain := engine.bind_patch(from).amp_gain
+		testing.expectf(t, e.gain_smooth.value == previous_gain, "%v: gain stands at %v, the previous patch's is %v", c.entry, e.gain_smooth.value, previous_gain)
+		testing.expectf(t, e.params.amp_gain == bound.amp_gain, "%v: gain target %v, want %v", c.entry, e.params.amp_gain, bound.amp_gain)
 		testing.expectf(t, e.pan_smooth.value == bound.pan, "%v: pan glides from %v to %v", c.entry, e.pan_smooth.value, bound.pan)
 
 		// The pool the daemon started with, whatever parameter 94 now says.
