@@ -4370,7 +4370,7 @@ test_effect_analog1_is_a_loop_and_settles :: proc(t: ^testing.T) {
 	// input twice must not give the same output -- that is the whole point -- and
 	// the loop must still be stable, which a feedback path has to be checked for.
 	SR_LOCAL :: f32(48000.0)
-	coef := dsp.one_pole_coef(dsp.EFFECT_ANALOG1_FEEDBACK_HZ, SR_LOCAL)
+	coef := dsp.one_pole_coef(dsp.effect_ad_table(dsp.EFFECT_AD1_FEEDBACK_HZ, 0), SR_LOCAL)
 	// Read at the gentlest drive: anywhere above it the clip saturates on the
 	// first sample and stays there, which is correct and shows no settling.
 	mid := dsp.effect_ad_table(dsp.EFFECT_AD1_DRIVE, 0)

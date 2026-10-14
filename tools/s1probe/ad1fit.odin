@@ -25,8 +25,8 @@ AD1_HARMONICS :: 16
 @(rodata)
 AD1_CTL1S := [14]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 96, 112, 127}
 AD1_KNOTS :: 14
-AD1_SHARED :: 3
-AD1_PER_KNOT :: 3
+AD1_SHARED :: 0
+AD1_PER_KNOT :: 6
 AD1_FLOOR_DB :: -46.0
 
 Ad1_Config :: struct {
@@ -203,7 +203,55 @@ ad1_small_signal :: proc(m: Ad1_Model, hz: f64) -> complex128 {
 // Mean squared complex-log error of one ctl1's configurations. The real part is the log of the
 // magnitude ratio and has the common scale removed; the imaginary part is the phase difference,
 // wrapped, with nothing removed, because the scale is a real number.
+// The linear objective is the energy of the complex difference over the harmonics, which is what
+// a held-sine null measures, each configuration weighted by its own harmonic energy and one real
+// scale per knot solved in closed form. A negative `phase_weight` selects it.
+ad1_error_linear :: proc(m: Ad1_Model, configs: []Ad1_Config, ctl1: int) -> (error: f64, scale: f64) {
+	numerator, denominator: f64
+	count := 0
+	models: [dynamic][AD1_HARMONICS]complex128
+	targets: [dynamic][AD1_HARMONICS]complex128
+	weights: [dynamic]f64
+	defer delete(models)
+	defer delete(targets)
+	defer delete(weights)
+	for c in configs {
+		if c.ctl1 != ctl1 {continue}
+		h, ok := ad1_simulate(m, c)
+		if !ok {return 1.0e9, 1}
+		model_row, target_row: [AD1_HARMONICS]complex128
+		energy := 0.0
+		for k in 0 ..< AD1_HARMONICS {
+			if abs(c.hfull[k]) == 0 {continue}
+			post := c.hfull[k] / ad1_small_signal(m, c.hz * f64(k + 1))
+			model_row[k] = h[k] * post
+			target_row[k] = c.meas[k] * complex(math.cos(-f64(k + 1) * c.phase), math.sin(-f64(k + 1) * c.phase))
+			energy += real(target_row[k]) * real(target_row[k]) + imag(target_row[k]) * imag(target_row[k])
+		}
+		if energy < 1.0e-18 {continue}
+		append(&models, model_row)
+		append(&targets, target_row)
+		append(&weights, 1.0 / energy)
+		for k in 0 ..< AD1_HARMONICS {
+			numerator += (1.0 / energy) * real(model_row[k] * complex(real(target_row[k]), -imag(target_row[k])))
+			denominator += (1.0 / energy) * (real(model_row[k]) * real(model_row[k]) + imag(model_row[k]) * imag(model_row[k]))
+		}
+		count += 1
+	}
+	if count == 0 || denominator <= 0 {return 1.0e9, 1}
+	scale = numerator / denominator
+	total := 0.0
+	for i in 0 ..< len(models) {
+		for k in 0 ..< AD1_HARMONICS {
+			d := targets[i][k] - complex(scale, 0) * models[i][k]
+			total += weights[i] * (real(d) * real(d) + imag(d) * imag(d))
+		}
+	}
+	return total / f64(count), scale
+}
+
 ad1_error :: proc(m: Ad1_Model, configs: []Ad1_Config, ctl1: int, phase_weight: f64 = 1.0) -> (error: f64, scale: f64) {
+	if phase_weight < 0 {return ad1_error_linear(m, configs, ctl1)}
 	reals: [dynamic]f64
 	imags: [dynamic]f64
 	defer delete(reals)
@@ -241,20 +289,20 @@ ad1_error :: proc(m: Ad1_Model, configs: []Ad1_Config, ctl1: int, phase_weight: 
 	return (sum + 100.0 * f64(missing)) / f64(count), math.exp(mean)
 }
 
-AD1_PHASE_WEIGHT :: 0.5
+AD1_PHASE_WEIGHT := 0.5
 
 Ad1_Vector :: [AD1_SHARED + AD1_PER_KNOT * AD1_KNOTS]f64
 
 ad1_model_from :: proc(q: Ad1_Vector, shape: int, knot: int) -> Ad1_Model {
 	base := AD1_SHARED + AD1_PER_KNOT * knot
 	return Ad1_Model {
-		feedback_hz = math.exp(q[0]),
+		feedback_hz = math.exp(q[base + 3]),
 		feedback2_hz = 30000.0,
 		forward_hz = 30000.0,
 		blocker_hz = 0.001,
 		pre_hp_hz = 0.001,
-		shelf_gain = math.exp(q[1]),
-		shelf_hz = math.exp(q[2]),
+		shelf_gain = math.exp(q[base + 4]),
+		shelf_hz = math.exp(q[base + 5]),
 		drive = math.exp(q[base]),
 		loop_gain = math.exp(q[base + 1]),
 		bias = q[base + 2],
@@ -277,6 +325,7 @@ cmd_arch_ad1fit :: proc(o: ^Arch_Options) {
 	shape := len(o.values) > 0 ? o.values[0] : 1
 	iterations := len(o.values) > 1 ? o.values[1] : 50
 	start_lg := 3.82
+	if len(o.values) > 3 && o.values[3] == 1 {AD1_PHASE_WEIGHT = -1.0}
 	all_configs, ok := ad1_load()
 	if !ok {return}
 	defer delete(all_configs)
@@ -289,20 +338,29 @@ cmd_arch_ad1fit :: proc(o: ^Arch_Options) {
 
 	fmt.printfln("ad1fit: %v configurations, shape %v, per-knot loop gain and bias", len(configs), shape)
 	q: Ad1_Vector
-	q[0] = math.ln(118.44)
-	q[1] = math.ln(1.1305)
-	q[2] = math.ln(224.7)
-	drives := [AD1_KNOTS]f64{0.8881, 1.3932, 2.2771, 3.9536, 6.842, 10.8545, 18.6238, 28.8453, 55.8665, 117.0476, 213.4299, 887.4434, 1791.8025, 3209.0119}
-	loop_gains := [AD1_KNOTS]f64{2.5838, 3.3037, 3.4621, 4.0617, 4.7804, 4.5979, 4.9321, 4.4621, 5.3664, 6.8935, 7.6813, 10.5, 10.5, 10.5}
-	rests := [AD1_KNOTS]f64{0.8621, 0.8993, 0.8554, 0.8473, 0.868, 0.8337, 0.7987, 0.8361, 0.8403, 0.8646, 0.8878, 1.0619, 0.8523, 0.7543}
+	drives_low := [AD1_KNOTS]f64{0.8881, 1.3932, 2.2771, 3.9536, 6.842, 10.8545, 18.6238, 28.8453, 55.8665, 117.0476, 213.4299, 887.4434, 1791.8025, 3209.0119}
+	gains_low := [AD1_KNOTS]f64{2.5838, 3.3037, 3.4621, 4.0617, 4.7804, 4.5979, 4.9321, 4.4621, 5.3664, 6.8935, 7.6813, 10.5, 10.5, 10.5}
+	rests_low := [AD1_KNOTS]f64{0.8621, 0.8993, 0.8554, 0.8473, 0.868, 0.8337, 0.7987, 0.8361, 0.8403, 0.8646, 0.8878, 1.0619, 0.8523, 0.7543}
+	drives_lin := [AD1_KNOTS]f64{0.6739, 1.0607, 1.9322, 3.6048, 6.4878, 11.3776, 19.0219, 32.4531, 57.7338, 94.777, 163.7123, 519.6903, 2484.9292, 6815.9894}
+	gains_lin := [AD1_KNOTS]f64{5.6263, 5.618, 4.5636, 4.7344, 5.5989, 6.3734, 6.404, 6.5684, 7.0335, 7.0026, 7.3677, 7.8674, 11.3146, 9.8803}
+	rests_lin := [AD1_KNOTS]f64{0.9567, 0.9665, 0.7872, 0.7014, 0.7026, 0.6964, 0.6787, 0.666, 0.6795, 0.6591, 0.6691, 0.7111, 0.9723, 0.8743}
 	for d in 0 ..< AD1_KNOTS {
 		base := AD1_SHARED + AD1_PER_KNOT * d
-		q[base] = math.ln(drives[d])
-		start_bias := len(o.values) > 2 && o.values[2] > 0 ? f64(o.values[2]) / 100.0 : rests[d]
-		old_slope := 1.0 - math.tanh(rests[d]) * math.tanh(rests[d])
-		new_slope := 1.0 - math.tanh(start_bias) * math.tanh(start_bias)
-		q[base + 1] = math.ln(loop_gains[d] * old_slope / new_slope)
-		q[base + 2] = start_bias
+		if d <= 5 {
+			q[base] = math.ln(drives_low[d])
+			q[base + 1] = math.ln(gains_low[d])
+			q[base + 2] = rests_low[d]
+			q[base + 3] = math.ln(118.44)
+			q[base + 4] = math.ln(1.1305)
+			q[base + 5] = math.ln(224.7)
+		} else {
+			q[base] = math.ln(drives_lin[d])
+			q[base + 1] = math.ln(gains_lin[d])
+			q[base + 2] = rests_lin[d]
+			q[base + 3] = math.ln(77.11)
+			q[base + 4] = math.ln(1.0411)
+			q[base + 5] = math.ln(520.4)
+		}
 	}
 	_ = start_lg
 
@@ -331,11 +389,10 @@ cmd_arch_ad1fit :: proc(o: ^Arch_Options) {
 		if it % 5 == 4 {fmt.printfln("  iteration %v: rms %.3f", it + 1, math.sqrt(current))}
 	}
 	fmt.printfln("best: rms complex-log error %.3f", math.sqrt(current))
-	fmt.printfln("  feedback corner %.2f Hz  shelf gain %.4f  shelf corner %.1f Hz", math.exp(q[0]), math.exp(q[1]), math.exp(q[2]))
 	for i in 0 ..< AD1_KNOTS {
 		m := ad1_model_from(q, shape, i)
 		e, scale := ad1_error(m, configs[:], AD1_CTL1S[i], AD1_PHASE_WEIGHT)
 		magnitude_only, _ := ad1_error(m, configs[:], AD1_CTL1S[i], 0.0)
-		fmt.printfln("  ctl1 %3v: drive %.4f  loop gain %.4f  bias %.4f  scale %.4f  gain %.5f  err %.3f  (magnitude alone %.3f = %.1f dB)", AD1_CTL1S[i], m.drive, m.loop_gain, m.bias, scale, scale / m.drive, math.sqrt(e), math.sqrt(magnitude_only), math.sqrt(magnitude_only) * 8.686)
+		fmt.printfln("  ctl1 %3v: drive %.4f  loop gain %.4f  bias %.4f  scale %.4f  gain %.5f  feedback %.2f  shelf gain %.4f  shelf corner %.1f  err %.3f  (magnitude alone %.3f = %.1f dB)", AD1_CTL1S[i], m.drive, m.loop_gain, m.bias, scale, scale / m.drive, m.feedback_hz, m.shelf_gain, m.shelf_hz, math.sqrt(e), math.sqrt(magnitude_only), math.sqrt(magnitude_only) * 8.686)
 	}
 }

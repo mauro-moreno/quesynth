@@ -403,8 +403,6 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // settings of ctl1, a cubic soft clip at 4.6 and a sine at 4.6; tanh comes out at 3.4 over all
 // fourteen, 1.6 to 2.4 dB across the middle of the knob and 4 to 5.5 at its ends. Its
 // even harmonics come from the loop's rest point, which sits well up the curve.
-EFFECT_ANALOG1_SHELF_HZ :: f32(224.7)
-EFFECT_ANALOG1_SHELF_GAIN :: f32(1.1305)
 // A weak quadratic between the shared high pass and the section after the loop. Past ctl1 80
 // the loop's clipper is a square wave with equal halves and almost no even harmonics, yet the
 // reference's second harmonic is -17 dB at 65 Hz and falls to -43 dB at 1 kHz, whatever the
@@ -416,58 +414,74 @@ EFFECT_ANALOG1_SHELF_GAIN :: f32(1.1305)
 // agree and the best coefficient is 0.114 to 0.122 across four pitches for the second
 // harmonic (0.063 to 0.088 for the fourth), which is where this takes it.
 EFFECT_ANALOG1_MID_QUADRATIC :: f32(0.10)
-EFFECT_ANALOG1_FEEDBACK_HZ :: f32(118.44)
 
-// Per knot of ctl1, fitted together (`s1probe arch ad1fit`): the drive, the loop gain, where the
-// loop rests, and the gain after it. Letting the loop gain and the rest point follow the knob took
-// the fit from 0.509 to 0.484 rms, and put the loop gain at about 2.5 at the bottom, 4 to 5 through the
-// middle and 8 to 10 at the top, rising smoothly, where the saturated loop was losing too much of its low-frequency
-// lead. The rest point is where the tanh's input settles, and the offset taken off its output so
-// that rest is zero. The section after the loop is refitted at every knot from the linear
-// response with that knot's shelf and loop divided out, and its roots tabulated alongside.
+// Per knot of ctl1, fitted knot by knot (`s1probe arch ad1fit`): the drive, the loop gain, where the
+// loop rests, the feedback corner, the shelf's gain and corner, and the gain after it. The
+// objective is the energy of the complex difference over harmonics 1 to 16, each held-sine
+// configuration weighted by its own energy, which is what a null of a held sine measures. Fitting
+// it that way, and letting every one of those follow the knob, took a.d.1 above ctl1 48 from -10
+// to -14 dB to -17 to -26 dB. The loop gain climbs from about 3 at the bottom to 7 in the upper
+// middle and 10 at the top; the feedback corner sits near 77 Hz above ctl1 48 and the shelf is
+// nearly flat there. The rest point is where the tanh's input settles, and the offset taken off
+// its output so that rest is zero. The section after the loop is refitted at every knot from the
+// linear response with that knot's shelf and loop divided out, and its roots tabulated
+// alongside. Knot 0 keeps an earlier fit, whose post-loop section followed its shelf more
+// closely.
 EFFECT_AD1_DRIVE :: [14]f32 {
-	0.8881, 1.3932, 2.2771, 3.9536, 6.842, 10.8545, 18.6238,
-	28.8453, 55.8665, 117.048, 213.43, 887.443, 1791.8, 3209.01,
+	0.8881, 1.2357, 1.5887, 3.11, 5.9244, 9.6271, 19.0219,
+	32.4531, 57.7338, 94.777, 163.712, 519.69, 2484.93, 6045.24,
 }
 EFFECT_AD1_GAIN :: [14]f32 {
-	1.06846, 0.41371, 0.21518, 0.14494, 0.12951, 0.14037, 0.13079,
-	0.12746, 0.10839, 0.09606, 0.09146, 0.07297, 0.09304, 0.10051,
+	1.06846, 0.50701, 0.33535, 0.21682, 0.17398, 0.17489, 0.14929,
+	0.14762, 0.13714, 0.13751, 0.13285, 0.12761, 0.08526, 0.09796,
 }
 EFFECT_AD1_LOOP_GAIN :: [14]f32 {
-	2.5838, 3.3037, 3.4621, 4.0617, 4.7804, 4.5979, 4.9321,
-	4.4621, 5.3664, 6.8935, 7.6813, 10.5, 10.5, 10.5,
+	2.5838, 4.1998, 4.1949, 4.0617, 4.667, 4.9412, 6.404,
+	6.5684, 7.0335, 7.0026, 7.3677, 8.4547, 11.3146, 9.8803,
 }
 EFFECT_AD1_REST :: [14]f32 {
-	0.8621, 0.8993, 0.8554, 0.8473, 0.868, 0.8337, 0.7987,
-	0.8361, 0.8403, 0.8646, 0.8878, 1.0619, 0.8523, 0.7543,
+	0.8621, 0.7793, 0.8554, 0.7273, 0.748, 0.7137, 0.6787,
+	0.666, 0.6795, 0.6591, 0.6691, 0.7111, 0.9723, 0.8743,
+}
+EFFECT_AD1_FEEDBACK_HZ :: [14]f32 {
+	118.44, 88.8, 71.55, 78.76, 86.7, 80.67, 77.11,
+	77.11, 77.11, 77.11, 77.11, 66.77, 77.11, 77.11,
+}
+EFFECT_AD1_SHELF_GAIN :: [14]f32 {
+	1.1305, 1.0027, 1.4371, 1.4371, 1.3056, 1.2746, 1.0923,
+	1.1188, 1.0411, 1.0411, 1.0411, 1.0411, 0.7621, 0.9234,
+}
+EFFECT_AD1_SHELF_HZ :: [14]f32 {
+	224.7, 135.7, 508.1, 559.3, 409.4, 381, 390.2,
+	484.2, 380.9, 484.2, 586.7, 841, 6467.8, 4512.5,
 }
 EFFECT_AD1_POST_ZERO_RE_HZ :: [14]f32 {
-	10.4052, 10.5319, 10.5096, 10.3162, 10.0185, 9.99511, 9.6221,
-	10.0832, 9.5181, 8.56123, 8.17549, 7.90437, 6.57858, 6.5198,
+	10.4052, 12.2689, 12.7358, 11.9207, 11.5824, 12.1617, 12.1124,
+	11.714, 11.9184, 11.7849, 11.5581, 12.7293, 11.7368, 11.7082,
 }
 EFFECT_AD1_POST_ZERO_IM_HZ :: [14]f32 {
-	14.9069, 15.1254, 15.1153, 14.861, 14.4183, 14.3819, 13.7759,
-	14.5176, 13.5986, 11.7999, 10.9824, 10.3709, 6.86674, 6.85038,
+	14.9069, 16.6292, 16.3178, 15.8998, 15.9476, 16.4123, 16.2272,
+	15.7764, 16.0194, 15.8607, 15.5952, 16.3043, 15.842, 15.8055,
 }
 EFFECT_AD1_POST_ZERO_REAL_HZ :: [14]f32 {
-	16186.9, 16165.4, 16234.9, 16490.8, 16718.9, 16731.7, 16731.4,
-	16686.9, 16678.3, 15108.4, 13990.6, 13066.5, 6326.94, 4441.52,
+	16186.9, 13437.6, 12926.2, 13956.1, 14927.2, 13790.7, 14068.3,
+	14705.3, 14460.6, 14635.7, 14818.4, 12599.9, 13315.9, 14675,
 }
 EFFECT_AD1_POST_POLE_1_HZ :: [14]f32 {
-	5.8762, 5.22351, 5.29387, 6.16329, 7.57908, 7.6927, 9.54543,
-	7.26654, 10.0752, 15.2154, 17.4293, 19.0383, 27.6505, 28.0377,
+	5.8762, 2.42197, 4.27854, 0.887727, 0.37095, 2.11336, 1.88744,
+	0.18732, 1.0649, 0.490617, 0.472872, 4.48343, 0.32362, 0.198263,
 }
 EFFECT_AD1_POST_POLE_2_HZ :: [14]f32 {
-	404.239, 360.656, 335.336, 295.343, 264.635, 262.724, 237.099,
-	270.214, 231.139, 188.915, 175.9, 167.626, 133.061, 130.214,
+	404.239, 355.152, 293.32, 249.427, 236.694, 234.193, 215.723,
+	200.903, 207.349, 203.196, 195.165, 200.249, 200.623, 199.375,
 }
 EFFECT_AD1_POST_POLE_3_HZ :: [14]f32 {
-	9290.56, 9339.78, 9390.47, 9502.83, 9561.14, 9562.5, 9481.23,
-	9558.3, 9431.79, 8452.05, 7819.92, 7304.52, 3476.77, 2310.3,
+	9290.56, 8129.95, 7750.48, 8172.9, 8834.21, 8360.69, 8456.26,
+	8656.95, 8604.51, 8645.52, 8667.19, 7691.7, 8484.35, 9058.87,
 }
 EFFECT_AD1_POST_GAIN :: [14]f32 {
-	2.43866, 2.56824, 2.40871, 2.36583, 2.41824, 2.30516, 2.19001,
-	2.31656, 2.3156, 2.4258, 2.53949, 3.33675, 2.73853, 2.50809,
+	2.43866, 2.56034, 2.01819, 1.67013, 1.85043, 1.84936, 2.04082,
+	1.93956, 2.12084, 2.0629, 2.07675, 2.27355, 3.52431, 2.96445,
 }
 
 // The unit's own response, measured where its curve is straight.
@@ -1048,6 +1062,9 @@ Effect_Params :: struct {
 	// Derived from the two controls, in the units named above.
 	lowpass_hz:    f32,
 	ad1_loop_gain: f32,
+	ad1_feedback_hz: f32,
+	ad1_shelf_gain: f32,
+	ad1_shelf_hz: f32,
 	ad1_rest:      f32,
 	ad1_post:      [7]f32,
 	drive:         f32,
@@ -1140,6 +1157,9 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 		p.drive = effect_ad_table(EFFECT_AD1_DRIVE, p.ctl1)
 		p.shape_gain = effect_ad_table(EFFECT_AD1_GAIN, p.ctl1)
 		p.ad1_loop_gain = effect_ad_table(EFFECT_AD1_LOOP_GAIN, p.ctl1)
+		p.ad1_feedback_hz = effect_ad_table(EFFECT_AD1_FEEDBACK_HZ, p.ctl1)
+		p.ad1_shelf_gain = effect_ad_table(EFFECT_AD1_SHELF_GAIN, p.ctl1)
+		p.ad1_shelf_hz = effect_ad_table(EFFECT_AD1_SHELF_HZ, p.ctl1)
 		p.ad1_rest = effect_ad_table(EFFECT_AD1_REST, p.ctl1)
 		p.ad1_post = {
 			effect_ad_table(EFFECT_AD1_POST_ZERO_RE_HZ, p.ctl1),
@@ -1330,16 +1350,16 @@ effect_process :: proc "contextless" (
 		// 2.84 dB to 5.30. Split, the response lands within 0.61 dB and the
 		// harmonics within 3.95, and the high pass is above 131 Hz by then so it
 		// barely touches them.
-		shelf := one_pole_coef(EFFECT_ANALOG1_SHELF_HZ, sr)
+		shelf := one_pole_coef(p.ad1_shelf_hz, sr)
 		e.ad1_shelf[0] += (wl - e.ad1_shelf[0]) * shelf
 		e.ad1_shelf[1] += (wr - e.ad1_shelf[1]) * shelf
 		e.ad1_shelf[0] = flush_denormal(e.ad1_shelf[0])
 		e.ad1_shelf[1] = flush_denormal(e.ad1_shelf[1])
-		sg := EFFECT_ANALOG1_SHELF_GAIN
+		sg := p.ad1_shelf_gain
 		wl = sg * wl + (1.0 - sg) * e.ad1_shelf[0]
 		wr = sg * wr + (1.0 - sg) * e.ad1_shelf[1]
 
-		coef := one_pole_coef(EFFECT_ANALOG1_FEEDBACK_HZ, sr)
+		coef := one_pole_coef(p.ad1_feedback_hz, sr)
 		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
 		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
 
