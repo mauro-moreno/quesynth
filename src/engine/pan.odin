@@ -33,12 +33,17 @@ static_pan_gains :: proc "contextless" (position: f32) -> (left, right: f32) {
 //
 // Depth 32 of 127 reads 1.292 and 0.423 on the reference's near and far channels
 // and the top of the knob 1.504 and 0.000, which is the 1.5 and 0 above.
+//
+// The curve is only defined on -1 to 1. Two LFOs on pan at full depth sum to 2, past
+// which the far channel's `(1 - x)^3` goes negative and plays with its polarity flipped,
+// so `x` is held to the ends of the range here for every caller.
 pan_lfo_gain :: proc "contextless" (x: f32) -> f32 {
-	if x >= 0 {
-		u := x - 1
+	held := clamp(x, -1, 1)
+	if held >= 0 {
+		u := held - 1
 		return 1.5 + 0.5 * u * u * u
 	}
-	u := x + 1
+	u := held + 1
 	return u * u * u
 }
 

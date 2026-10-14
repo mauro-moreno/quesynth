@@ -57,6 +57,9 @@ Voice :: struct {
 	// The two channel gains an LFO on pan has reached; both are one when it is not
 	// driving pan.
 	pan_lfo_gain: [2]f32,
+	// The pan LFO's per-sample smoothing, derived from the sample rate when the parameters
+	// are pushed into the voice.
+	pan_lfo_smoothing: f32,
 	// The amplitude envelope as the render chunk sees it: it ramps linearly across
 	// the chunk to the whole 1/2048th it reaches at the chunk's last sample.
 	// `knots_valid` is false until the chunk this voice is in has been read, and
@@ -423,6 +426,7 @@ voice_apply_params :: proc(v: ^Voice, p: ^Engine_Params, sample_rate: f32) {
 	// its decay, which is the standard AD reading: the segment falls to silence
 	// after the attack and a key release cannot make it rise again.
 	dsp.envelope_set_fade(&v.mod_env, p.mod_env_attack, p.mod_env_decay, 0, p.mod_env_decay, sample_rate)
+	v.pan_lfo_smoothing = pan_lfo_smoothing(sample_rate)
 
 }
 
@@ -620,11 +624,20 @@ voice_process :: proc(
 		v.first_chunk = false
 	}
 	if chunk.position == 0 || !v.knots_valid {
-		ahead := v.amp_env
 		last_amp: f32
 		remaining := max(chunk.length - chunk.position, 1)
-		for _ in 0 ..< remaining {
-			last_amp = dsp.envelope_process(&ahead)
+		// A held level and a finished envelope do not move, so there is nothing to step
+		// ahead to; only a segment in progress is run forward on a copy.
+		#partial switch v.amp_env.stage {
+		case .Sustain:
+			last_amp = v.amp_env.sustain
+		case .Idle:
+			last_amp = 0
+		case:
+			ahead := v.amp_env
+			for _ in 0 ..< remaining {
+				last_amp = dsp.envelope_process(&ahead)
+			}
 		}
 		target := math.floor(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
 		v.amp_step = (target - v.amp_now) / f32(remaining)
@@ -776,7 +789,7 @@ voice_process :: proc(
 
 	static_left, static_right := static_pan_gains(p.pan)
 	if pan_lfo_active {
-		smoothing := pan_lfo_smoothing(sample_rate)
+		smoothing := v.pan_lfo_smoothing > 0 ? v.pan_lfo_smoothing : pan_lfo_smoothing(sample_rate)
 		v.pan_lfo_gain[0] += (pan_lfo_gain(pan_lfo) - v.pan_lfo_gain[0]) * smoothing
 		v.pan_lfo_gain[1] += (pan_lfo_gain(-pan_lfo) - v.pan_lfo_gain[1]) * smoothing
 	} else {

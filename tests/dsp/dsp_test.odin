@@ -4454,6 +4454,59 @@ test_effect_analog1_saturated_output_has_a_second_harmonic :: proc(t: ^testing.T
 	testing.expectf(t, ratio_db > -40.0 && ratio_db < -20.0, "second harmonic at %.1f dB against the first, expected -40 to -20", ratio_db)
 }
 
+// The quadratic behind the shared high pass makes a constant out of a loud wave, and the
+// section after it has a pole under 1 Hz, so a constant left in would be a slow offset while
+// a note is held and a long tail after it ends. Neither may carry a mean.
+@(test)
+test_effect_analog1_has_no_offset_while_held_or_after_release :: proc(t: ^testing.T) {
+	SR_LOCAL :: f32(48000.0)
+	for ctl1 in ([?]f32{0.25, 0.5, 1.0}) {
+		fx := dsp.Effect_Params {
+			enabled = true,
+			type    = .Analog_1,
+			ctl1    = ctl1,
+			ctl2    = 1.0,
+			level   = 1.0,
+		}
+		dsp.effect_derive(&fx)
+		e: dsp.Effect
+		hz := f32(130.81)
+		held_mean, held_power, tail_mean, tail_power: f64
+		held_count, tail_count := 0, 0
+		held_frames := 72000
+		for i in 0 ..< held_frames + 48000 {
+			x: f32 = 0
+			if i < held_frames {x = 0.8 * math.sin(2.0 * math.PI * hz * f32(i) / SR_LOCAL)}
+			l, _ := dsp.effect_process(&e, x, x, &fx, SR_LOCAL)
+			if i >= 48000 && i < held_frames {
+				held_mean += f64(l)
+				held_power += f64(l) * f64(l)
+				held_count += 1
+			} else if i >= held_frames + 4800 {
+				tail_mean += f64(l)
+				tail_power += f64(l) * f64(l)
+				tail_count += 1
+			}
+		}
+		held_mean /= f64(held_count)
+		held_rms := math.sqrt(held_power / f64(held_count))
+		tail_mean /= f64(tail_count)
+		testing.expectf(t, abs(held_mean) < 0.01 * held_rms, "ctl1 %v: a held note carries a mean of %v against %v rms", ctl1, held_mean, held_rms)
+		testing.expectf(t, abs(tail_mean) < 0.005 * held_rms, "ctl1 %v: the tail after release carries a mean of %v against %v rms", ctl1, tail_mean, held_rms)
+	}
+}
+
+// Two LFOs on pan at full depth sum to 2, and the curve is only defined up to 1: past it the
+// far channel's gain goes negative, which is a polarity flip and not a quieter channel.
+@(test)
+test_pan_lfo_gain_never_goes_negative_past_full_depth :: proc(t: ^testing.T) {
+	for x in ([?]f32{1.0, 1.5, 2.0, -1.0, -1.5, -2.0}) {
+		testing.expectf(t, engine.pan_lfo_gain(x) >= 0, "pan LFO gain %v at %v", engine.pan_lfo_gain(x), x)
+	}
+	testing.expect_value(t, engine.pan_lfo_gain(2.0), engine.pan_lfo_gain(1.0))
+	testing.expect_value(t, engine.pan_lfo_gain(-2.0), engine.pan_lfo_gain(-1.0))
+}
+
 @(test)
 test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 	// The defect this fixes: a.d.1's loop lost about a decibel at 33 Hz where the
@@ -4486,7 +4539,7 @@ test_effect_analog1_loses_its_bottom_end :: proc(t: ^testing.T) {
 				dsp.EFFECT_AD_HIGHPASS_Q,
 				sr,
 			)
-			l2, _ := dsp.effect_analog1_post(&e.ad1_post, l, r, roots, sr)
+			l2, _ := dsp.effect_analog1_post(&e, l, r, roots, sr)
 			// The last two thirds, so the filters have settled.
 			if i > n / 3 && abs(l2) > peak {peak = abs(l2)}
 		}
@@ -4681,11 +4734,10 @@ test_patch_change_snap_clears_effect_memory_and_smoothers :: proc(t: ^testing.T)
 		testing.expect(t, e.equalizer == fresh.equalizer, "the equaliser kept the previous patch's state")
 		testing.expect(t, e.delay.tone == fresh.delay.tone, "the delay tone kept its state")
 		testing.expect_value(t, e.chorus.cosine, fresh.chorus.cosine)
-		// The gain is not snapped: it glides from where it was to the new patch's, in
-		// about a millisecond, as the reference's does, and it starts at the patch's. The
-		// fade-in behind the effects starts a hair under zero on a fresh engine, and only
-		// the first note after a load comes in under it.
-		testing.expect_value(t, e.gain_smooth.value, smoothed[0])
+		// The gain snaps to the new patch's, so its first chunk does not ramp from the
+		// old one's. The fade-in behind the effects starts a hair under zero on a fresh
+		// engine only: a patch change on a running one does not repeat it.
+		testing.expect_value(t, e.gain_smooth.value, fresh.gain_smooth.value)
 		testing.expect_value(t, fresh.gain_smooth.value, fresh.params.amp_gain)
 		testing.expect_value(t, fresh.load_fade.value, engine.GAIN_SMOOTHER_START)
 		testing.expect_value(t, e.pan_smooth.value, fresh.pan_smooth.value)

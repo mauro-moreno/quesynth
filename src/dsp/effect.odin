@@ -414,6 +414,7 @@ effect_drive :: proc "contextless" (ctl1: f32) -> f32 {
 // agree and the best coefficient is 0.114 to 0.122 across four pitches for the second
 // harmonic (0.063 to 0.088 for the fourth), which is where this takes it.
 EFFECT_ANALOG1_MID_QUADRATIC :: f32(0.10)
+EFFECT_ANALOG1_QUADRATIC_MEAN_HZ :: f32(10.0)
 
 // Per knot of ctl1, fitted knot by knot (`s1probe arch ad1fit`): the drive, the loop gain, where the
 // loop rests, the feedback corner, the shelf's gain and corner, and the gain after it. The
@@ -537,36 +538,43 @@ effect_ad_highpass :: proc "contextless" (
 // first-order section with the last zero and pole, rebuilt from analog roots by the bilinear
 // transform. Transposed direct form II; three states per channel.
 effect_analog1_post :: proc "contextless" (
-	state: ^[2][3]f32,
+	e: ^Effect,
 	l, r: f32,
 	roots: ^[7]f32,
 	sr: f32,
 ) -> (
 	out_l, out_r: f32,
 ) {
-	tau := 2.0 * math.PI
-	sigma := tau * f64(roots[0])
-	omega := tau * f64(roots[1])
-	zero_real := tau * f64(roots[2])
-	pole_1 := tau * f64(roots[3])
-	pole_2 := tau * f64(roots[4])
-	pole_3 := tau * f64(roots[5])
-	post_gain := f64(roots[6])
-	c := 2.0 * f64(sr)
+	key := [8]f32{roots[0], roots[1], roots[2], roots[3], roots[4], roots[5], roots[6], sr}
+	if e.ad1_post_key != key {
+		tau := 2.0 * math.PI
+		sigma := tau * f64(roots[0])
+		omega := tau * f64(roots[1])
+		zero_real := tau * f64(roots[2])
+		pole_1 := tau * f64(roots[3])
+		pole_2 := tau * f64(roots[4])
+		pole_3 := tau * f64(roots[5])
+		post_gain := f64(roots[6])
+		c := 2.0 * f64(sr)
 
-	n2, n1, n0 := 1.0, -2.0 * sigma, sigma * sigma + omega * omega
-	d2, d1, d0 := 1.0, pole_1 + pole_2, pole_1 * pole_2
-	a0 := d2 * c * c + d1 * c + d0
-	b0 := f32(post_gain * (n2 * c * c + n1 * c + n0) / a0)
-	b1 := f32(post_gain * (2.0 * n0 - 2.0 * n2 * c * c) / a0)
-	b2 := f32(post_gain * (n2 * c * c - n1 * c + n0) / a0)
-	a1 := f32((2.0 * d0 - 2.0 * d2 * c * c) / a0)
-	a2 := f32((d2 * c * c - d1 * c + d0) / a0)
-
-	first_den := c + pole_3
-	f0 := f32((c + zero_real) / first_den)
-	f1 := f32((zero_real - c) / first_den)
-	fa1 := f32((pole_3 - c) / first_den)
+		n2, n1, n0 := 1.0, -2.0 * sigma, sigma * sigma + omega * omega
+		d2, d1, d0 := 1.0, pole_1 + pole_2, pole_1 * pole_2
+		a0 := d2 * c * c + d1 * c + d0
+		first_den := c + pole_3
+		e.ad1_post_coefficients = {
+			f32(post_gain * (n2 * c * c + n1 * c + n0) / a0),
+			f32(post_gain * (2.0 * n0 - 2.0 * n2 * c * c) / a0),
+			f32(post_gain * (n2 * c * c - n1 * c + n0) / a0),
+			f32((2.0 * d0 - 2.0 * d2 * c * c) / a0),
+			f32((d2 * c * c - d1 * c + d0) / a0),
+			f32((c + zero_real) / first_den),
+			f32((zero_real - c) / first_den),
+			f32((pole_3 - c) / first_den),
+		}
+		e.ad1_post_key = key
+	}
+	k := e.ad1_post_coefficients
+	b0, b1, b2, a1, a2, f0, f1, fa1 := k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]
 
 	step :: proc "contextless" (z: ^[3]f32, x, b0, b1, b2, a1, a2, f0, f1, fa1: f32) -> f32 {
 		y := b0 * x + z[0]
@@ -576,7 +584,7 @@ effect_analog1_post :: proc "contextless" (
 		z[2] = flush_denormal(f1 * y - fa1 * w)
 		return w
 	}
-	return step(&state[0], l, b0, b1, b2, a1, a2, f0, f1, fa1), step(&state[1], r, b0, b1, b2, a1, a2, f0, f1, fa1)
+	return step(&e.ad1_post[0], l, b0, b1, b2, a1, a2, f0, f1, fa1), step(&e.ad1_post[1], r, b0, b1, b2, a1, a2, f0, f1, fa1)
 }
 
 // The compressor's static curve, and what `comp.` actually is.
@@ -1205,8 +1213,11 @@ effect_derive :: proc "contextless" (p: ^Effect_Params) {
 
 Effect :: struct {
 	// The shared low-pass on the three distortions, a biquad in transposed direct form
-	// II, two states per channel.
+	// II, two states per channel, and the coefficients last derived with the corner and
+	// sample rate they were derived for: the settings move per block, not per sample.
 	lowpass:   [2][2]f32,
+	lowpass_key: [2]f32,
+	lowpass_coefficients: [4]f32,
 	// a.d.1's own pole, as the low content to subtract.
 	highpass:  [2]f32,
 	// The two-pole high pass the analogue types and d.d. share, two states per
@@ -1216,6 +1227,10 @@ Effect :: struct {
 	ad1_loop:    [2][2]f32,
 	// and the response after it, and the low pass the shelf is built from.
 	ad1_post:    [2][3]f32,
+	ad1_post_key: [8]f32,
+	ad1_post_coefficients: [8]f32,
+	// The running mean of the squared term, taken back out of it.
+	ad1_quadratic_mean: [2]f32,
 	ad1_shelf:    [2]f32,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
@@ -1371,9 +1386,19 @@ effect_process :: proc "contextless" (
 			EFFECT_AD_HIGHPASS_Q,
 			sr,
 		)
-		wl += EFFECT_ANALOG1_MID_QUADRATIC * wl * wl
-		wr += EFFECT_ANALOG1_MID_QUADRATIC * wr * wr
-		wl, wr = effect_analog1_post(&e.ad1_post, wl, wr, &p.ad1_post, sr)
+		// The squared term carries a constant, and the section after it has a pole under
+		// 1 Hz and a gain of tens at DC, so a constant here would be a slow thump on
+		// every note-on and note-off. Only its varying part is wanted.
+		mean_coef := one_pole_coef(EFFECT_ANALOG1_QUADRATIC_MEAN_HZ, sr)
+		square_l := wl * wl
+		square_r := wr * wr
+		e.ad1_quadratic_mean[0] += (square_l - e.ad1_quadratic_mean[0]) * mean_coef
+		e.ad1_quadratic_mean[1] += (square_r - e.ad1_quadratic_mean[1]) * mean_coef
+		e.ad1_quadratic_mean[0] = flush_denormal(e.ad1_quadratic_mean[0])
+		e.ad1_quadratic_mean[1] = flush_denormal(e.ad1_quadratic_mean[1])
+		wl += EFFECT_ANALOG1_MID_QUADRATIC * (square_l - e.ad1_quadratic_mean[0])
+		wr += EFFECT_ANALOG1_MID_QUADRATIC * (square_r - e.ad1_quadratic_mean[1])
+		wl, wr = effect_analog1_post(e, wl, wr, &p.ad1_post, sr)
 		wl, wr = effect_lowpass(e, wl, wr, p.lowpass_hz, sr)
 
 	case .Analog_2:
@@ -1581,14 +1606,16 @@ effect_lowpass :: proc "contextless" (
 	f32,
 	f32,
 ) {
-	w := TAU * clamp32(corner_hz, 1.0, sample_rate * 0.45) / sample_rate
-	cs := math.cos(w)
-	alpha := math.sin(w) / (2.0 * EFFECT_LOWPASS_Q)
-	a0 := 1.0 + alpha
-	b0 := (1.0 - cs) * 0.5 / a0
-	b1 := (1.0 - cs) / a0
-	a1 := -2.0 * cs / a0
-	a2 := (1.0 - alpha) / a0
+	key := [2]f32{corner_hz, sample_rate}
+	if e.lowpass_key != key {
+		w := TAU * clamp32(corner_hz, 1.0, sample_rate * 0.45) / sample_rate
+		cs := math.cos(w)
+		alpha := math.sin(w) / (2.0 * EFFECT_LOWPASS_Q)
+		a0 := 1.0 + alpha
+		e.lowpass_coefficients = {(1.0 - cs) * 0.5 / a0, (1.0 - cs) / a0, -2.0 * cs / a0, (1.0 - alpha) / a0}
+		e.lowpass_key = key
+	}
+	b0, b1, a1, a2 := e.lowpass_coefficients[0], e.lowpass_coefficients[1], e.lowpass_coefficients[2], e.lowpass_coefficients[3]
 
 	step :: proc "contextless" (z: ^[2]f32, x, b0, b1, a1, a2: f32) -> f32 {
 		y := b0 * x + z[0]

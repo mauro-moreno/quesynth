@@ -96,9 +96,10 @@ delay_process :: proc "contextless" (
 	// Normal stereo keeps two independent echoes. Cross preserves the stereo
 	// input but swaps the feedback paths. Ping-pong folds the input to mono into
 	// the left line only, then uses the same cross feedback: the first repeat is
-	// left, the second right, and they alternate from there. The reference uses
-	// the sum rather than the average and applies feedback once per complete
-	// left-right round trip: each pair of echoes has the same level.
+	// left, the second right, and they alternate from there. The fold is the
+	// average, not the sum: a source in one channel only comes back at half its level
+	// and a centred one at its own. Feedback is applied once per complete left-right
+	// round trip: each pair of echoes has the same level.
 	switch p.mode {
 	case .Cross:
 		delay_line_write(&d.line[0], left_in + shaped_right * feedback)

@@ -1021,9 +1021,9 @@ bind_patch :: proc(p: patch.Patch) -> Engine_Params {
 
 // The amplitude envelope's attack length in seconds, from parameter 25's state:
 // 0.0005 * 56000 ^ (v / 127), from half a millisecond to 28 seconds. The reference's
-// attack is a linear ramp of this length. The table the filter and modulation
-// envelopes still use floors at 3.5 ms, which is the engine's gain smoother settling
-// on a first note after a load (see `engine_init`) read as the shortest attack.
+// attack is a linear ramp of this length. The filter and modulation envelopes take the
+// same law: the table they used before floored at 3.5 ms, which was the gain smoother
+// settling on a first note after a load read as the shortest attack.
 amp_attack_seconds :: proc(state: int) -> f32 {
 	u := f64(f32(clamp_int(state, 0, 127)) * (1.0 / 127.0))
 	return f32(0.0005 * math.pow(56000.0, u))

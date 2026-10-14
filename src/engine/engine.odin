@@ -312,7 +312,10 @@ engine_load_patch :: proc(e: ^Engine, p: patch.Patch, sample_rate: f32) {
 // what stops a knob from stepping audibly. Across a *patch change* that glide is
 // wrong: the new sound would sweep in from the old one's cutoff over the first
 // tenth of a second, which is both audible and not what the patch is. Snapping
-// them is what `smoother_reset` exists for.
+// them is what `smoother_reset` and `ramp_init` exist for.
+//
+// What a patch change does not repeat is the first note's fade-in (`load_fade`): that
+// belongs to a freshly loaded instance, and starts in `engine_init` only.
 //
 // The cost of getting this backwards is not obvious from listening to one note,
 // which is why it is worth stating: rendered against the reference, a patch loaded
@@ -364,6 +367,7 @@ engine_apply_patch :: proc(e: ^Engine, p: patch.Patch, snap := false, keep_voice
 		// change displaces the target, and snapping to the patch's undisplaced
 		// value would sweep the new sound from there to where the wheel sits.
 		smoother_reset(&e.pan_smooth, e.params.pan)
+		ramp_init(&e.gain_smooth, e.params.amp_gain)
 		pitch_slide_set(&e.osc2_pitch, e.params.osc2_semitones, e.sample_rate)
 
 		// And the effects' own memory, which is the part that is audible if it is
@@ -1143,9 +1147,12 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// 512 frames, which is heard as swing the patch does not have.
 		if params.arp_on {
 			age_before := e.age
+			sounding_before := e.arp.sounding
 			arp_process(e, &params)
-			// A step that starts a note starts a chunk, as a note event does.
-			if e.age != age_before {
+			// A step that starts a note, or one whose gate closes, starts a chunk, as a
+			// note-on or note-off event does: the amplitude ramp otherwise keeps heading
+			// for the gate-on level to the end of the chunk and the release starts late.
+			if e.age != age_before || e.arp.sounding != sounding_before {
 				chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
 				dsp.chorus_begin_chunk(&e.chorus)
 			}

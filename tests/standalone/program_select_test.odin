@@ -480,7 +480,7 @@ test_native_program_replaces_atomically_and_keeps_the_held_note :: proc(t: ^test
 		bound.polyphony = size
 		testing.expect_value(t, e.params, bound)
 		testing.expect_value(t, e.ctrl_value[0], source == 0xB001 ? f32(1) : f32(0))
-		testing.expect_value(t, e.gain_smooth.value, engine.bind_patch(from).amp_gain)
+		testing.expect_value(t, e.gain_smooth.value, bound.amp_gain)
 		testing.expect_value(t, e.pan_smooth.value, bound.pan)
 		testing.expect(t, raw_data(e.voices) == pool && len(e.voices) == size)
 		testing.expect_value(t, engine.engine_active_voice_count(e), voices)
