@@ -47,6 +47,9 @@ Envelope :: struct {
 	progress:      f64,
 	// The level the release started from.
 	release_from:  f32,
+	// True while `value` lags `progress` in a fade-law decay, after
+	// `envelope_advance`; `envelope_level` brings it up to date.
+	stale:         bool,
 }
 
 // The amplitude envelope's decay and release, measured against the reference
@@ -114,6 +117,7 @@ envelope_set_fade :: proc "contextless" (e: ^Envelope, attack, decay_length, sus
 }
 
 envelope_set_attack_and_sustain :: proc "contextless" (e: ^Envelope, attack, sustain, sr: f32) {
+	envelope_level(e)
 	a := is_finite(attack) ? max(attack, f32(0)) : 0
 	attack_samples := a * sr
 	if attack_samples < 1.0 {
@@ -140,7 +144,7 @@ envelope_fade_left :: proc "contextless" (u: f64) -> f32 {
 // sample by sample, and a segment boundary can fall inside the span, so those step a copy.
 envelope_value_ahead :: proc "contextless" (e: ^Envelope, steps: int) -> f32 {
 	if steps <= 0 {
-		return e.value
+		return envelope_level(e)
 	}
 	if e.fade {
 		switch e.stage {
@@ -175,11 +179,13 @@ envelope_value_ahead :: proc "contextless" (e: ^Envelope, steps: int) -> f32 {
 envelope_reset :: proc "contextless" (e: ^Envelope) {
 	e.stage = .Idle
 	e.value = 0
+	e.stale = false
 }
 
 // Start a note. `retrigger` false keeps the current level, which is what a
 // legato mono line needs; true restarts from silence.
 envelope_gate_on :: proc "contextless" (e: ^Envelope, retrigger: bool) {
+	envelope_level(e)
 	if retrigger {
 		e.value = 0
 	}
@@ -187,6 +193,7 @@ envelope_gate_on :: proc "contextless" (e: ^Envelope, retrigger: bool) {
 }
 
 envelope_gate_off :: proc "contextless" (e: ^Envelope) {
+	envelope_level(e)
 	// A second note-off during the release must not restart it.
 	if e.stage == .Idle || e.stage == .Release {
 		return
@@ -266,5 +273,35 @@ envelope_process :: proc "contextless" (e: ^Envelope) -> f32 {
 	}
 
 	e.value = sanitize(e.value)
+	e.stale = false
+	return e.value
+}
+
+// One sample on, as `envelope_process` moves it, for a caller that does not read
+// the level this sample. A fade-law decay is the one segment whose level costs an
+// `exp` and whose end does not depend on it, so there only the progress moves and
+// the level is left to `envelope_level`.
+envelope_advance :: proc "contextless" (e: ^Envelope) {
+	if !(e.fade && e.stage == .Decay) {
+		envelope_process(e)
+		return
+	}
+	e.progress += e.decay_step
+	if e.progress >= 1.0 {
+		e.value = sanitize(e.sustain)
+		e.stage = .Sustain
+		e.stale = false
+	} else {
+		e.stale = true
+	}
+}
+
+// The level, brought up to date if `envelope_advance` left it behind: what
+// `envelope_process` would have returned on the last sample.
+envelope_level :: proc "contextless" (e: ^Envelope) -> f32 {
+	if e.stale {
+		e.value = sanitize(e.sustain + (1.0 - e.sustain) * envelope_fade_left(e.progress))
+		e.stale = false
+	}
 	return e.value
 }

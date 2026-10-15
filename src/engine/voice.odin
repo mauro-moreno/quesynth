@@ -680,7 +680,14 @@ voice_process :: proc(
 		v.amp_step = (target - v.amp_now) / f32(remaining)
 		v.knots_valid = true
 	}
-	exact_amp := dsp.envelope_process(&v.amp_env)
+	// The exact level is only heard in a note's first chunk; after it the ramp
+	// stands in for it, and the envelope only has to move.
+	exact_amp: f32
+	if v.first_chunk {
+		exact_amp = dsp.envelope_process(&v.amp_env)
+	} else {
+		dsp.envelope_advance(&v.amp_env)
+	}
 	filter_env := dsp.envelope_process(&v.filter_env)
 	mod_env: f32 = 0
 	if p.mod_env_on {

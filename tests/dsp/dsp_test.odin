@@ -2583,14 +2583,14 @@ test_legato_second_note_does_not_restart_amp_envelope :: proc(t: ^testing.T) {
 
 	engine.engine_note_on(&e, 60, 1.0)
 	engine.engine_process(&e, left, right)
-	before := e.voices[0].amp_env.value
+	before := dsp.envelope_level(&e.voices[0].amp_env)
 	testing.expectf(t, before > 0.001, "first note did not raise the envelope enough: %v", before)
 
 	engine.engine_note_on(&e, 64, 1.0)
 	after: f32 = 0
 	for i in 0 ..< len(e.voices) {
 		if e.voices[i].active && e.voices[i].gate && e.voices[i].note == 64 {
-			after = e.voices[i].amp_env.value
+			after = dsp.envelope_level(&e.voices[i].amp_env)
 		}
 	}
 	testing.expectf(t, after > before * 0.9, "legato note retriggered the amp envelope: before %v after %v", before, after)
