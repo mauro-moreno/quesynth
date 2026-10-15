@@ -515,6 +515,11 @@ effect_ad_highpass :: proc "contextless" (
 ) -> (
 	out_l, out_r: f32,
 ) {
+	k := effect_ad_highpass_coefficients(fc, q, sr)
+	return effect_ad_highpass_run(state, l, r, &k)
+}
+
+effect_ad_highpass_coefficients :: proc "contextless" (fc, q, sr: f32) -> [5]f32 {
 	w := TAU * clamp32(fc, 1.0, sr * 0.45) / sr
 	cs := math.cos(w)
 	alpha := math.sin(w) / (2.0 * max(q, 0.01))
@@ -524,7 +529,22 @@ effect_ad_highpass :: proc "contextless" (
 	b2 := b0
 	a1 := -2.0 * cs / a0
 	a2 := (1.0 - alpha) / a0
+	return {b0, b1, b2, a1, a2}
+}
 
+// The same section with its coefficients held in `e` with the corner, Q and rate
+// they were derived for, which do not move from sample to sample.
+effect_ad_highpass_held :: proc "contextless" (e: ^Effect, l, r, fc, q, sr: f32) -> (out_l, out_r: f32) {
+	key := [3]f32{fc, q, sr}
+	if e.ad_highpass_key != key {
+		e.ad_highpass_coefficients = effect_ad_highpass_coefficients(fc, q, sr)
+		e.ad_highpass_key = key
+	}
+	return effect_ad_highpass_run(&e.ad_highpass, l, r, &e.ad_highpass_coefficients)
+}
+
+effect_ad_highpass_run :: proc "contextless" (state: ^[2][2]f32, l, r: f32, k: ^[5]f32) -> (out_l, out_r: f32) {
+	b0, b1, b2, a1, a2 := k[0], k[1], k[2], k[3], k[4]
 	step :: proc "contextless" (z: ^[2]f32, x, b0, b1, b2, a1, a2: f32) -> f32 {
 		y := b0 * x + z[0]
 		z[0] = flush_denormal(b1 * x - a1 * y + z[1])
@@ -1223,6 +1243,8 @@ Effect :: struct {
 	// The two-pole high pass the analogue types and d.d. share, two states per
 	// channel.
 	ad_highpass: [2][2]f32,
+	ad_highpass_key: [3]f32,
+	ad_highpass_coefficients: [5]f32,
 	// a.d.1's feedback loop: two poles of the output, per channel.
 	ad1_loop:    [2][2]f32,
 	// and the response after it, and the low pass the shelf is built from.
@@ -1378,8 +1400,8 @@ effect_process :: proc "contextless" (
 		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
 		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
 
-		wl, wr = effect_ad_highpass(
-			&e.ad_highpass,
+		wl, wr = effect_ad_highpass_held(
+			e,
 			wl,
 			wr,
 			EFFECT_AD_HIGHPASS_HZ,
@@ -1404,8 +1426,8 @@ effect_process :: proc "contextless" (
 	case .Analog_2:
 		wl = effect_shape_analog2(wl, p.drive, p.shape_gain)
 		wr = effect_shape_analog2(wr, p.drive, p.shape_gain)
-		wl, wr = effect_ad_highpass(
-			&e.ad_highpass,
+		wl, wr = effect_ad_highpass_held(
+			e,
 			wl,
 			wr,
 			EFFECT_AD_HIGHPASS_HZ,
@@ -1417,8 +1439,8 @@ effect_process :: proc "contextless" (
 	case .Digital:
 		wl = effect_shape_digital(wl, p.drive, p.shape_gain)
 		wr = effect_shape_digital(wr, p.drive, p.shape_gain)
-		wl, wr = effect_ad_highpass(
-			&e.ad_highpass,
+		wl, wr = effect_ad_highpass_held(
+			e,
 			wl,
 			wr,
 			EFFECT_AD_HIGHPASS_HZ,

@@ -5115,3 +5115,22 @@ test_other_pitch_controls_are_not_slid :: proc(t: ^testing.T) {
 	engine.engine_process(&e, left, right)
 	testing.expect_value(t, e.params.key_shift, f32(12))
 }
+
+// The effect unit's high pass with its coefficients held gives what the section
+// gives deriving them fresh, through changes of rate and back.
+@(test)
+test_effect_ad_highpass_held_matches_fresh :: proc(t: ^testing.T) {
+	e: dsp.Effect
+	state: [2][2]f32
+	for sr in ([?]f32{48000, 48000, 44100, 96000, 48000}) {
+		for i in 0 ..< 64 {
+			x := f32(i % 7) * 0.1 - 0.3
+			hl, hr := dsp.effect_ad_highpass_held(&e, x, -x, dsp.EFFECT_AD_HIGHPASS_HZ, dsp.EFFECT_AD_HIGHPASS_Q, sr)
+			fl, fr := dsp.effect_ad_highpass(&state, x, -x, dsp.EFFECT_AD_HIGHPASS_HZ, dsp.EFFECT_AD_HIGHPASS_Q, sr)
+			if transmute(u32)hl != transmute(u32)fl || transmute(u32)hr != transmute(u32)fr {
+				testing.expectf(t, false, "rate %v sample %v: held %v %v, fresh %v %v", sr, i, hl, hr, fl, fr)
+				return
+			}
+		}
+	}
+}
