@@ -5134,3 +5134,19 @@ test_effect_ad_highpass_held_matches_fresh :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// The phaser's held sweep is the one its depth, rate and sample rate give, through
+// a change of each in turn.
+@(test)
+test_phaser_holds_the_sweep_its_settings_give :: proc(t: ^testing.T) {
+	fx: dsp.Effect
+	Step :: struct {
+		ctl1, ctl2, sample_rate: f32,
+	}
+	for s in ([?]Step{{0.5, 0.5, 48000}, {0.5, 0.5, 48000}, {0.9, 0.5, 48000}, {0.9, 0.95, 48000}, {0.9, 0.95, 44100}, {0.5, 0.5, 48000}}) {
+		p := effect_params_for(.Phaser_2, s.ctl1, s.ctl2, 0.5)
+		dsp.effect_process(&fx, 0.25, -0.25, &p, s.sample_rate)
+		want := dsp.phaser_sweep(p.phaser_span_oct, p.phaser_rate_hz, s.sample_rate)
+		testing.expectf(t, fx.sweep == want, "%v: held %v, settings give %v", s, fx.sweep, want)
+	}
+}

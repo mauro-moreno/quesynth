@@ -1280,6 +1280,32 @@ Effect :: struct {
 	corner_rising: bool,
 	corner_set:    bool,
 	corner_tick:   int,
+	// What the sweep's limits and step come to, with the depth, rate and sample
+	// rate they came from.
+	sweep_key:     [3]f32,
+	sweep_valid:   bool,
+	sweep:         Phaser_Sweep,
+}
+
+Phaser_Sweep :: struct {
+	rest_oct: f32,
+	top:      f32,
+	bottom:   f32,
+	slew:     f32,
+}
+
+// Where the phaser's corner rests, the limits it turns at and how far it moves a
+// sample, in octaves above one hertz.
+phaser_sweep :: proc "contextless" (span_oct, rate_hz, sr: f32) -> Phaser_Sweep {
+	up := span_oct * EFFECT_PHASER_SPAN_UP_SHARE
+	down := span_oct - up
+	centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
+	return {
+		rest_oct = math.log2(EFFECT_PHASER_CORNER_REST_HZ),
+		top      = centre + up,
+		bottom   = centre - down,
+		slew     = 2.0 * span_oct * effect_phaser_block_rate(rate_hz, sr) / sr,
+	}
 }
 
 effect_reset :: proc "contextless" (e: ^Effect) {
@@ -1502,12 +1528,15 @@ effect_process :: proc "contextless" (
 		wr *= gain
 
 	case .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
-		rest_oct := math.log2(EFFECT_PHASER_CORNER_REST_HZ)
-		up := p.phaser_span_oct * EFFECT_PHASER_SPAN_UP_SHARE
-		down := p.phaser_span_oct - up
-		centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
-		top := centre + up
-		bottom := centre - down
+		sweep_key := [3]f32{p.phaser_span_oct, p.phaser_rate_hz, sr}
+		if !e.sweep_valid || e.sweep_key != sweep_key {
+			e.sweep = phaser_sweep(p.phaser_span_oct, p.phaser_rate_hz, sr)
+			e.sweep_key = sweep_key
+			e.sweep_valid = true
+		}
+		rest_oct := e.sweep.rest_oct
+		top := e.sweep.top
+		bottom := e.sweep.bottom
 
 		if !e.corner_set {
 			e.corner_oct = rest_oct
@@ -1583,7 +1612,7 @@ effect_process :: proc "contextless" (
 			// at all. Here it needs none: the limit is where depth puts it, and
 			// whether a boundary lands just short of it or just past it turns over
 			// from one depth to the next.
-			slew := 2.0 * p.phaser_span_oct * effect_phaser_block_rate(p.phaser_rate_hz, sr) / sr
+			slew := e.sweep.slew
 			if e.corner_rising {
 				e.corner_oct += slew
 				if e.corner_oct >= top {
