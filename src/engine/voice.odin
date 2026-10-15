@@ -1093,8 +1093,8 @@ voice_process :: proc(
 			if p.sub_gain > 0 {
 				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
 			}
-			dsp.oscillator_advance_modulated(sub_oscillator, sub_fm_offset)
-			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset)
+			dsp.oscillator_advance_modulated(sub_oscillator, sub_fm_offset, p.sub_shape == .Noise)
+			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset, p.osc1_shape == .Noise)
 			if component == OSC1_COMPONENT_CENTRE {
 				centre_wrapped = wrapped
 				centre_wrap_frac = wrap_frac
