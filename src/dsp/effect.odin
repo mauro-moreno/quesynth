@@ -1254,6 +1254,11 @@ Effect :: struct {
 	// The running mean of the squared term, taken back out of it.
 	ad1_quadratic_mean: [2]f32,
 	ad1_shelf:    [2]f32,
+	// a.d.1's three one-pole coefficients and its curve's value at rest, with the
+	// corners, rest point and sample rate they came from.
+	ad1_held_key:   [4]f32,
+	ad1_held_valid: bool,
+	ad1_held:       Analog1_Held,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
 	// The decimator: the value being held and how much of the step is left.
@@ -1285,6 +1290,22 @@ Effect :: struct {
 	sweep_key:     [3]f32,
 	sweep_valid:   bool,
 	sweep:         Phaser_Sweep,
+}
+
+Analog1_Held :: struct {
+	shelf:     f32,
+	feedback:  f32,
+	mean:      f32,
+	rest_tanh: f32,
+}
+
+analog1_held :: proc "contextless" (p: ^Effect_Params, sr: f32) -> Analog1_Held {
+	return {
+		shelf     = one_pole_coef(p.ad1_shelf_hz, sr),
+		feedback  = one_pole_coef(p.ad1_feedback_hz, sr),
+		mean      = one_pole_coef(EFFECT_ANALOG1_QUADRATIC_MEAN_HZ, sr),
+		rest_tanh = math.tanh(p.ad1_rest),
+	}
 }
 
 Phaser_Sweep :: struct {
@@ -1335,8 +1356,16 @@ effect_shape_analog1 :: proc "contextless" (
 	// with the feedback settled, v = REST and the output is REST, so carrying
 	// (output - REST) leaves a loop that starts silent instead of thumping its way
 	// down from the rail.
+	return effect_shape_analog1_from(state, x, drive, gain, coef, loop_gain, rest, math.tanh(rest))
+}
+
+// The same with the curve's value at rest, `tanh(rest)`, already taken.
+effect_shape_analog1_from :: proc "contextless" (
+	state: ^[2]f32,
+	x, drive, gain, coef, loop_gain, rest, rest_tanh: f32,
+) -> f32 {
 	v := drive * x - loop_gain * state[0] + rest
-	y := math.tanh(v) - math.tanh(rest)
+	y := math.tanh(v) - rest_tanh
 	state[0] += (y - state[0]) * coef
 	state[0] = flush_denormal(state[0])
 	return gain * y
@@ -1413,7 +1442,13 @@ effect_process :: proc "contextless" (
 		// 2.84 dB to 5.30. Split, the response lands within 0.61 dB and the
 		// harmonics within 3.95, and the high pass is above 131 Hz by then so it
 		// barely touches them.
-		shelf := one_pole_coef(p.ad1_shelf_hz, sr)
+		ad1_key := [4]f32{p.ad1_shelf_hz, p.ad1_feedback_hz, p.ad1_rest, sr}
+		if !e.ad1_held_valid || e.ad1_held_key != ad1_key {
+			e.ad1_held = analog1_held(p, sr)
+			e.ad1_held_key = ad1_key
+			e.ad1_held_valid = true
+		}
+		shelf := e.ad1_held.shelf
 		e.ad1_shelf[0] += (wl - e.ad1_shelf[0]) * shelf
 		e.ad1_shelf[1] += (wr - e.ad1_shelf[1]) * shelf
 		e.ad1_shelf[0] = flush_denormal(e.ad1_shelf[0])
@@ -1422,9 +1457,9 @@ effect_process :: proc "contextless" (
 		wl = sg * wl + (1.0 - sg) * e.ad1_shelf[0]
 		wr = sg * wr + (1.0 - sg) * e.ad1_shelf[1]
 
-		coef := one_pole_coef(p.ad1_feedback_hz, sr)
-		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
-		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
+		coef := e.ad1_held.feedback
+		wl = effect_shape_analog1_from(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest, e.ad1_held.rest_tanh)
+		wr = effect_shape_analog1_from(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest, e.ad1_held.rest_tanh)
 
 		wl, wr = effect_ad_highpass_held(
 			e,
@@ -1437,7 +1472,7 @@ effect_process :: proc "contextless" (
 		// The squared term carries a constant, and the section after it has a pole under
 		// 1 Hz and a gain of tens at DC, so a constant here would be a slow thump on
 		// every note-on and note-off. Only its varying part is wanted.
-		mean_coef := one_pole_coef(EFFECT_ANALOG1_QUADRATIC_MEAN_HZ, sr)
+		mean_coef := e.ad1_held.mean
 		square_l := wl * wl
 		square_r := wr * wr
 		e.ad1_quadratic_mean[0] += (square_l - e.ad1_quadratic_mean[0]) * mean_coef

@@ -5150,3 +5150,33 @@ test_phaser_holds_the_sweep_its_settings_give :: proc(t: ^testing.T) {
 		testing.expectf(t, fx.sweep == want, "%v: held %v, settings give %v", s, fx.sweep, want)
 	}
 }
+
+// a.d.1's held coefficients and rest value are the ones its settings give, through
+// a change of each corner, the rest point and the rate, one at a time.
+@(test)
+test_analog1_holds_what_its_settings_give :: proc(t: ^testing.T) {
+	fx: dsp.Effect
+	base := effect_params_for(.Analog_1, 0.5, 0.5, 0.5)
+	Step :: struct {
+		shelf_hz, feedback_hz, rest, sample_rate: f32,
+	}
+	b := Step{base.ad1_shelf_hz, base.ad1_feedback_hz, base.ad1_rest, 48000}
+	steps := [?]Step {
+		b,
+		b,
+		{b.shelf_hz * 2, b.feedback_hz, b.rest, b.sample_rate},
+		{b.shelf_hz * 2, b.feedback_hz * 2, b.rest, b.sample_rate},
+		{b.shelf_hz * 2, b.feedback_hz * 2, b.rest * 0.5, b.sample_rate},
+		{b.shelf_hz * 2, b.feedback_hz * 2, b.rest * 0.5, 44100},
+		b,
+	}
+	for s in steps {
+		p := base
+		p.ad1_shelf_hz = s.shelf_hz
+		p.ad1_feedback_hz = s.feedback_hz
+		p.ad1_rest = s.rest
+		dsp.effect_process(&fx, 0.25, -0.25, &p, s.sample_rate)
+		want := dsp.analog1_held(&p, s.sample_rate)
+		testing.expectf(t, fx.ad1_held == want, "%v: held %v, settings give %v", s, fx.ad1_held, want)
+	}
+}
