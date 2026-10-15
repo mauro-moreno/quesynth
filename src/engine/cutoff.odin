@@ -1,6 +1,7 @@
 package engine
 
 import "core:math"
+import "../dsp"
 
 // The filter cutoff as the reference keeps it: a position on a 1024-step
 // exponential axis, not a frequency.
@@ -40,7 +41,7 @@ FILTER_RAMP_SECONDS :: f32(0.05)
 // usable steps, so the knob does not land on a multiple of eight.
 filter_knob_index :: proc "contextless" (state: f32) -> f32 {
 	top := f32(FILTER_TABLE_SIZE - 1)
-	return math.floor(clamp(state, 0, top) * FILTER_INDEX_MAX / top)
+	return dsp.floor_f32(clamp(state, 0, top) * FILTER_INDEX_MAX / top)
 }
 
 // The fractional stored state a position corresponds to, for the measured
@@ -73,7 +74,7 @@ filter_track_shift_ln :: proc "contextless" (knob, ln_amount, note: f32) -> f32 
 		return 0
 	}
 	ratio_log := (note - FILTER_TRACK_REFERENCE_NOTE) / 12.0 * ln_amount
-	moved := math.floor(knob + FILTER_INDEX_STEPS * ratio_log / FILTER_AXIS_SPAN)
+	moved := dsp.floor_f32(knob + FILTER_INDEX_STEPS * ratio_log / FILTER_AXIS_SPAN)
 	return clamp(moved, 0, FILTER_INDEX_STEPS) - knob
 }
 
@@ -91,7 +92,7 @@ filter_env_shift :: proc "contextless" (base, amount_steps, level: f32) -> f32 {
 // Depth 1024 therefore takes the corner to the top from anywhere.
 filter_modulate_index :: proc "contextless" (index, modulation: f32) -> f32 {
 	room := modulation > 0 ? FILTER_INDEX_STEPS - index : index
-	moved := math.trunc(index + math.trunc(room * modulation / FILTER_INDEX_STEPS))
+	moved := dsp.trunc_f32(index + dsp.trunc_f32(room * modulation / FILTER_INDEX_STEPS))
 	return clamp(moved, 0, FILTER_INDEX_MAX)
 }
 
@@ -151,7 +152,7 @@ cutoff_ramp_step :: proc "contextless" (
 	if r.position >= length || target == r.current {
 		r.current = target
 	} else {
-		r.current = r.start + math.trunc((target - r.start) * f32(r.position) / f32(length))
+		r.current = r.start + dsp.trunc_f32((target - r.start) * f32(r.position) / f32(length))
 	}
 	if r.position < length {
 		r.position += 1

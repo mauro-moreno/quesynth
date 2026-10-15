@@ -32,6 +32,21 @@ Unison_Voice :: struct {
 	detune:          f32,
 	// -1..1.
 	pan:             f32,
+	// What the oscillators' frequencies were last set from. A layer's pitch only
+	// changes when something moves it -- glide, bend, vibrato -- so while the
+	// inputs are the same the increments and table bands already in the
+	// oscillators are the answer, and the three `pow`s that produced them are
+	// skipped. Cleared wherever the oscillators are re-initialised.
+	pitch_key:       Pitch_Key,
+	pitch_key_valid: bool,
+}
+
+Pitch_Key :: struct {
+	note1:       f32,
+	note2:       f32,
+	osc1_detune: f32,
+	sub_octave:  f32,
+	sample_rate: f32,
 }
 
 Voice :: struct {
@@ -64,6 +79,12 @@ Voice :: struct {
 	// steps and holds for many samples, and the frequency is a power.
 	axis_index_cache: f32,
 	axis_hz_cache: f32,
+	// The velocity law is a power of ten of two quantities that only change with
+	// a new note or an edit of the knob.
+	velocity_gain_sens:     f32,
+	velocity_gain_velocity: f32,
+	velocity_gain:          f32,
+	velocity_gain_valid:    bool,
 	// The amplitude envelope as the render chunk sees it: it ramps linearly across
 	// the chunk to the whole 1/2048th it reaches at the chunk's last sample.
 	// `knots_valid` is false until the chunk this voice is in has been read, and
@@ -272,6 +293,7 @@ unison_stack_scale :: proc(count: int) -> f32 {
 voice_set_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) {
 	for i in 0 ..< MAX_UNISON {
 		u := &v.unison[i]
+		u.pitch_key_valid = false
 		dsp.oscillator_set_bank(&u.osc1, bank)
 		dsp.oscillator_set_bank(&u.osc2, bank)
 		dsp.oscillator_set_bank(&u.sub, bank)
@@ -315,6 +337,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			}
 			fresh := i >= old_count
 
+			u.pitch_key_valid = false
 			dsp.oscillator_init(&u.osc1, voice_seed ~ 0x1)
 			dsp.oscillator_init(&u.osc2, voice_seed ~ 0x2)
 			dsp.oscillator_init(&u.sub, voice_seed ~ 0x3)
@@ -640,7 +663,7 @@ voice_process :: proc(
 		case:
 			last_amp = dsp.envelope_value_ahead(&v.amp_env, remaining)
 		}
-		target := math.floor(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
+		target := dsp.floor_f32(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
 		v.amp_step = (target - v.amp_now) / f32(remaining)
 		v.knots_valid = true
 	}
@@ -866,7 +889,7 @@ voice_process :: proc(
 	)
 	// Every filter type runs on the position itself, one step of the axis at a
 	// time.
-	axis_index := math.floor(cutoff_index)
+	axis_index := dsp.floor_f32(cutoff_index)
 	if v.axis_hz_cache == 0 || axis_index != v.axis_index_cache {
 		v.axis_index_cache = axis_index
 		v.axis_hz_cache = filter_index_hz(axis_index)
@@ -905,14 +928,26 @@ voice_process :: proc(
 	// The old law was not merely shallow, it was wrong in both directions --
 	// at the top of the knob it reached 42 dB against the reference's 29.8.
 	VELOCITY_DEPTH_DB :: f32(29.77)
-	velocity_attenuation_db := VELOCITY_DEPTH_DB * p.amp_velocity_sens * (1.0 - v.velocity)
-	velocity_gain := math.pow(f32(10.0), -velocity_attenuation_db / 20.0)
+	if !v.velocity_gain_valid ||
+	   v.velocity_gain_sens != p.amp_velocity_sens ||
+	   v.velocity_gain_velocity != v.velocity {
+		velocity_attenuation_db := VELOCITY_DEPTH_DB * p.amp_velocity_sens * (1.0 - v.velocity)
+		v.velocity_gain = math.pow(f32(10.0), -velocity_attenuation_db / 20.0)
+		v.velocity_gain_sens = p.amp_velocity_sens
+		v.velocity_gain_velocity = v.velocity
+		v.velocity_gain_valid = true
+	}
+	velocity_gain := v.velocity_gain
 	gain := amp_env * p.amp_gain * velocity_gain * mod_amplitude
 
 	// Synth1 sums the unison layers at unity; there is no count trim.
 	stack_scale := unison_stack_scale(v.unison_count)
 
 	fm_position := dsp.clamp32(p.osc1_fm + mod_fm, 0, 1)
+	fm_depth: f32 = 0
+	if fm_position > 0 && !p.osc_ring {
+		fm_depth = fm_frequency_depth(fm_position)
+	}
 
 	// -- audio rate ----------------------------------------------------------
 
@@ -926,15 +961,14 @@ voice_process :: proc(
 		note1 := base_note + layer_pitch +
 			u.detune / CENTS_PER_SEMITONE + mod_osc1_semitones
 
-		osc2_hz: f32
+		note2: f32
 		if p.osc2_key_track {
-			note2 :=
+			note2 =
 				base_note + layer_pitch +
 				u.detune / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones
-			osc2_hz = dsp.note_to_hz(note2)
 		} else {
 			// Tracking off fixes oscillator 2's base note, but unison pitch
 			// still separates the alternating layers -- and the fine tune and
@@ -946,14 +980,13 @@ voice_process :: proc(
 			// reference's fixed pitch is 220 Hz and this one's is middle C is
 			// a separate finding, left alone here; see
 			// docs/synth1-behavior-errors.md.
-			note2 :=
+			note2 =
 				60.0 + layer_pitch +
 				u.detune / CENTS_PER_SEMITONE +
 				p.fine_tune_cents / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones
-			osc2_hz = dsp.note_to_hz(note2)
 		}
 
 		// Parameter 76 is inside every outer layer. Zero keeps the exact old
@@ -967,21 +1000,26 @@ voice_process :: proc(
 			component_limit = OSC1_COMPONENT_COUNT
 			component_gain = OSC1_COMPONENT_GAIN
 		}
-		for component in first_component ..< component_limit {
-			component_note := note1 +
-				osc1_component_cents(component, p.osc1_detune) / CENTS_PER_SEMITONE
-			dsp.oscillator_set_frequency(
-				osc1_component(u, component),
-				dsp.note_to_hz(component_note),
-				sample_rate,
-			)
-			dsp.oscillator_set_frequency(
-				sub_component(u, component),
-				dsp.note_to_hz(component_note + p.sub_octave),
-				sample_rate,
-			)
+		pitch_key := Pitch_Key{note1, note2, p.osc1_detune, p.sub_octave, sample_rate}
+		if !u.pitch_key_valid || pitch_key != u.pitch_key {
+			for component in first_component ..< component_limit {
+				component_note := note1 +
+					osc1_component_cents(component, p.osc1_detune) / CENTS_PER_SEMITONE
+				dsp.oscillator_set_frequency(
+					osc1_component(u, component),
+					dsp.note_to_hz(component_note),
+					sample_rate,
+				)
+				dsp.oscillator_set_frequency(
+					sub_component(u, component),
+					dsp.note_to_hz(component_note + p.sub_octave),
+					sample_rate,
+				)
+			}
+			dsp.oscillator_set_frequency(&u.osc2, dsp.note_to_hz(note2), sample_rate)
+			u.pitch_key = pitch_key
+			u.pitch_key_valid = true
 		}
-		dsp.oscillator_set_frequency(&u.osc2, osc2_hz, sample_rate)
 
 		// Oscillator 2 advances first because it is the FM modulator: its output
 		// displaces oscillator 1's phase within the same sample.
@@ -1027,7 +1065,7 @@ voice_process :: proc(
 			fm_offset: f32 = 0
 			sub_fm_offset: f32 = 0
 			if fm_position > 0 && !p.osc_ring {
-				depth := osc2_value * fm_frequency_depth(fm_position)
+				depth := osc2_value * fm_depth
 				fm_offset = depth * osc1.increment
 				sub_fm_offset = depth * sub_oscillator.increment
 			}
