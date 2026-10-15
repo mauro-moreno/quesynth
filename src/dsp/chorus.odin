@@ -187,7 +187,24 @@ chorus_feed :: proc "contextless" (line: ^Delay_Line, amount: f32) {
 	if newest < 0 {
 		newest += n
 	}
-	line.buffer[newest] = sanitize(line.buffer[newest] + amount)
+	fed := sanitize(line.buffer[newest] + amount)
+	line.buffer[newest] = fed
+	if fed != 0 {
+		line.zero_run = 0
+	}
+}
+
+chorus_is_silent :: proc "contextless" (c: ^Chorus) -> bool {
+	return delay_line_is_silent(&c.line[0]) && delay_line_is_silent(&c.line[1])
+}
+
+// One sample of zero input through a chorus that `chorus_is_silent`: every tap
+// reads zero and every write leaves a zero where a zero was, so only the
+// oscillator moves, exactly as `chorus_process` moves it.
+chorus_process_silence :: proc "contextless" (c: ^Chorus, p: ^Chorus_Params, sample_rate: f32) {
+	step := chorus_sweep(c, p, sample_rate).step
+	c.sine = c.sine - step * c.cosine
+	c.cosine = c.sine * step + c.cosine
 }
 
 // Process one stereo sample.

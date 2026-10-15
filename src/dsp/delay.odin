@@ -61,6 +61,12 @@ delay_reset :: proc "contextless" (d: ^Delay) {
 	tone_reset(&d.tone[1])
 }
 
+// Whether the delay holds nothing at all: both lines and both tone sections at
+// zero. Fed zero, such a delay outputs zero and writes zero back.
+delay_is_silent :: proc "contextless" (d: ^Delay) -> bool {
+	return delay_line_is_silent(&d.line[0]) && delay_line_is_silent(&d.line[1]) && tone_is_silent(&d.tone[0]) && tone_is_silent(&d.tone[1])
+}
+
 // One-pole coefficient for a corner at `hz`.
 one_pole_coef :: proc "contextless" (hz, sample_rate: f32) -> f32 {
 	if sample_rate <= 0 {

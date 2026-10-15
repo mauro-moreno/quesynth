@@ -11,9 +11,12 @@ package dsp
 // samples turns a smooth sweep into a staircase whose steps are audible as a
 // zipper on the pitch.
 Delay_Line :: struct {
-	buffer: []f32,
+	buffer:   []f32,
 	// Where the next sample will be written.
-	write:  int,
+	write:    int,
+	// How many writes since the last one that was not zero. Once that is the
+	// buffer's length, every sample in it is zero.
+	zero_run: int,
 }
 
 delay_line_init :: proc "contextless" (d: ^Delay_Line, buffer: []f32) {
@@ -27,13 +30,20 @@ delay_line_clear :: proc "contextless" (d: ^Delay_Line) {
 		d.buffer[i] = 0
 	}
 	d.write = 0
+	d.zero_run = len(d.buffer)
+}
+
+delay_line_is_silent :: proc "contextless" (d: ^Delay_Line) -> bool {
+	return d.zero_run >= len(d.buffer)
 }
 
 delay_line_write :: proc "contextless" (d: ^Delay_Line, value: f32) {
 	if len(d.buffer) == 0 {
 		return
 	}
-	d.buffer[d.write] = sanitize(value)
+	clean := sanitize(value)
+	d.buffer[d.write] = clean
+	d.zero_run = clean != 0 ? 0 : d.zero_run + 1
 	d.write += 1
 	if d.write >= len(d.buffer) {
 		d.write = 0

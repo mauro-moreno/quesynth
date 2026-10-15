@@ -1198,12 +1198,14 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 
 		sum_l: f32 = 0
 		sum_r: f32 = 0
+		voiced := false
 
 		for vi in 0 ..< len(e.voices) {
 			v := &e.voices[vi]
 			if !v.active {
 				continue
 			}
+			voiced = true
 			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend_applied, lfo_value, lfo_ramped, chunk)
 			sum_l += l
 			sum_r += r
@@ -1222,6 +1224,24 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// the tempo.
 		out_l := dsp.sanitize(sum_l)
 		out_r := dsp.sanitize(sum_r)
+
+		// Silence into effects that hold nothing: every section would return zero
+		// and write zeros into lines of zeros, which read the same from wherever
+		// their write heads stand, so only the chorus's oscillator has to move. The
+		// effect unit carries state that runs without input, so it has to be off.
+		if !voiced &&
+		   !fx_params.enabled &&
+		   dsp.equalizer_is_silent(&e.equalizer, &eq_params) &&
+		   dsp.delay_is_silent(&e.delay) &&
+		   (!params.chorus_on || dsp.chorus_is_silent(&e.chorus)) {
+			if params.chorus_on {
+				dsp.chorus_process_silence(&e.chorus, &chorus_params, e.sample_rate)
+			}
+			left[i] = dsp.soft_clip(out_l * load_fade)
+			right[i] = dsp.soft_clip(out_r * load_fade)
+			chunk.position += 1
+			continue
+		}
 
 		// The effect unit comes first. The manual lists it after the equaliser,
 		// but the reference does not run it there: with a distortion on, an
