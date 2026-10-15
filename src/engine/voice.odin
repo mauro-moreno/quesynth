@@ -49,6 +49,12 @@ Pitch_Key :: struct {
 	sample_rate: f32,
 }
 
+Cutoff_Track_Key :: struct {
+	cutoff_state: f32,
+	key_track_ln: f32,
+	base_note:    f32,
+}
+
 Voice :: struct {
 	active:       bool,
 	// True while the key is held. A voice stays active after this goes false
@@ -79,6 +85,13 @@ Voice :: struct {
 	// steps and holds for many samples, and the frequency is a power.
 	axis_index_cache: f32,
 	axis_hz_cache: f32,
+	// The knob's position on the axis and keyboard tracking's shift from it, with
+	// what they were derived from: both only move with the knob, the tracking
+	// amount or the note.
+	cutoff_track_key:   Cutoff_Track_Key,
+	cutoff_track_valid: bool,
+	knob_index:         f32,
+	track_shift:        f32,
 	// The velocity law is a power of ten of two quantities that only change with
 	// a new note or an edit of the knob.
 	velocity_gain_sens:     f32,
@@ -858,8 +871,15 @@ voice_process :: proc(
 	// here while the reference sounded.
 	//
 	// The tracking amount is not linear: see `filter_track_shift`.
-	knob_index := filter_knob_index(p.filter_cutoff_state)
-	track_shift := filter_track_shift_ln(knob_index, p.filter_key_track_ln, base_note)
+	track_key := Cutoff_Track_Key{p.filter_cutoff_state, p.filter_key_track_ln, base_note}
+	if !v.cutoff_track_valid || track_key != v.cutoff_track_key {
+		v.knob_index = filter_knob_index(p.filter_cutoff_state)
+		v.track_shift = filter_track_shift_ln(v.knob_index, p.filter_key_track_ln, base_note)
+		v.cutoff_track_key = track_key
+		v.cutoff_track_valid = true
+	}
+	knob_index := v.knob_index
+	track_shift := v.track_shift
 
 	// Each step of parameter 21 moves the envelope's endpoint by two stored
 	// states of the cutoff knob.

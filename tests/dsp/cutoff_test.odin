@@ -4,6 +4,7 @@ import "core:math"
 import "core:testing"
 
 import "../../src/engine"
+import "../../src/patch"
 
 // The knob's position on the 1024-step axis: stored 127 is the top usable step,
 // and the endpoints of the axis are 15 Hz and 16 kHz.
@@ -123,4 +124,62 @@ test_filter_ramp_follows_a_moving_target :: proc(t: ^testing.T) {
 	}
 	testing.expectf(t, latest > 100, "the ramp did not follow its target: %v", latest)
 	testing.expect_value(t, engine.cutoff_ramp_step(&r, 500, 2, 0, 0, length), f32(500))
+}
+
+// The corner a note started under these settings has.
+fresh_corner :: proc(p: patch.Patch, note: int, bend: f32) -> f32 {
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	engine.engine_set_pitch_bend(&e, bend)
+	render_frames(&e, 4800)
+	engine.engine_note_on(&e, note, 1)
+	render_frames(&e, 1)
+	return e.voices[0].axis_hz_cache
+}
+
+// The corner follows a knob, tracking or bend edit made mid-note to where a note
+// started under those settings has it, once the edit's ramp and the bend's slew
+// are over. Each edit lands in its own block and is checked on its own, so a
+// voice that kept the corner it derived before any one of them is caught.
+@(test)
+test_filter_corner_follows_mid_note_knob_tracking_and_bend_edits :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[21] = 63 // no filter envelope
+	p.values[57] = 0 // LFO 1 off
+	p.values[58] = 0 // LFO 2 off
+	p.values[19] = 90
+	p.values[22] = 0
+	NOTE :: 72
+	STAGE :: 4800
+
+	e: engine.Engine
+	engine.engine_load_patch(&e, p, SR)
+	defer engine.engine_destroy(&e)
+	testing.expect_value(t, e.params.filter_env_cutoff_states, f32(0))
+	testing.expect(t, e.params.pitch_bend_range > 0, "bend does not move the note")
+	engine.engine_note_on(&e, NOTE, 1)
+	render_frames(&e, STAGE)
+	testing.expect_value(t, e.voices[0].axis_hz_cache, fresh_corner(p, NOTE, 0))
+
+	Edit :: struct {
+		index, stored: int,
+		bend:          f32,
+	}
+	bend: f32 = 0
+	for edit in ([?]Edit{{19, 40, 0}, {22, 127, 0}, {-1, 0, 1}}) {
+		before := e.voices[0].axis_hz_cache
+		if edit.index >= 0 {
+			engine.engine_set_stored(&e, edit.index, edit.stored)
+			p.values[edit.index] = edit.stored
+		} else {
+			bend = edit.bend
+			engine.engine_set_pitch_bend(&e, bend)
+		}
+		render_frames(&e, STAGE)
+		want := fresh_corner(p, NOTE, bend)
+		testing.expect(t, e.voices[0].active, "the note is not sounding")
+		testing.expectf(t, before != want, "edit %v does not move the corner: %v", edit, before)
+		testing.expectf(t, e.voices[0].axis_hz_cache == want, "after edit %v: corner %v, want %v", edit, e.voices[0].axis_hz_cache, want)
+	}
 }
