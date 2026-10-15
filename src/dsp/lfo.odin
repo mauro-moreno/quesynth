@@ -60,8 +60,6 @@ Lfo :: struct {
 	ramp_from: f32,
 	ramp_at:   int,
 	ramp_over: int,
-	// The cycle's position as a fraction of the cycle, for anyone watching.
-	phase:     f32,
 	rng:       Rng,
 	shape:     Lfo_Waveform,
 	// Sample & hold keeps `target` for a whole cycle; the smoothed random ramps
@@ -100,9 +98,14 @@ lfo_set_frequency :: proc "contextless" (l: ^Lfo, hz, sample_rate: f32) {
 lfo_retrigger :: proc "contextless" (l: ^Lfo) {
 	l.position = 0
 	l.update_at = 0
-	l.phase = 0
 	l.previous = l.target
 	l.target = rng_next_bipolar(&l.rng)
+}
+
+// Where the cycle is, as a fraction of it, for anyone watching: the position the
+// next sample is taken at.
+lfo_phase :: proc "contextless" (l: ^Lfo) -> f32 {
+	return f32(l.position) / f32(l.period)
 }
 
 // The unquantised value at a position, always on [-1, 1].
@@ -142,7 +145,6 @@ lfo_process :: proc "contextless" (l: ^Lfo) -> f32 {
 	}
 	l.ramp_at += 1
 	l.ramped = l.ramp_from + (l.output - l.ramp_from) * min(1.0, f32(l.ramp_at) / f32(l.ramp_over))
-	l.phase = f32(l.position) / f32(l.period)
 	result := l.output
 
 	l.position += 1

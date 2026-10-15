@@ -330,9 +330,9 @@ test_lfo_retrigger_resets_phase :: proc(t: ^testing.T) {
 	for _ in 0 ..< 1000 {
 		dsp.lfo_process(&l)
 	}
-	testing.expect(t, l.phase > 0)
+	testing.expect(t, dsp.lfo_phase(&l) > 0)
 	dsp.lfo_retrigger(&l)
-	testing.expect_value(t, l.phase, 0.0)
+	testing.expect_value(t, dsp.lfo_phase(&l), 0.0)
 }
 
 // ---------------------------------------------------------------------------

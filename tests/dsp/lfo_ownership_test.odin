@@ -2,6 +2,7 @@ package dsp_tests
 
 import "core:testing"
 
+import "../../src/dsp"
 import "../../src/engine"
 
 lfo_sync_engine :: proc(key_sync: bool) -> engine.Engine {
@@ -33,13 +34,13 @@ test_a_second_key_does_not_restart_a_synced_lfo :: proc(t: ^testing.T) {
 	defer engine.engine_destroy(&e)
 
 	engine.engine_note_on(&e, 60, 1.0)
-	testing.expect_value(t, e.global_lfo[0].phase, f32(0))
+	testing.expect_value(t, dsp.lfo_phase(&e.global_lfo[0]), f32(0))
 	render_samples(&e, 12000)
-	before := e.global_lfo[0].phase
+	before := dsp.lfo_phase(&e.global_lfo[0])
 	testing.expect(t, before > 0, "the LFO did not run while a key was held")
 
 	engine.engine_note_on(&e, 72, 1.0)
-	testing.expect_value(t, e.global_lfo[0].phase, before)
+	testing.expect_value(t, dsp.lfo_phase(&e.global_lfo[0]), before)
 }
 
 // With every key up, the next key is the only one held and restarts it, whatever
@@ -53,10 +54,10 @@ test_a_lone_key_restarts_a_synced_lfo_even_over_a_release_tail :: proc(t: ^testi
 	render_samples(&e, 12000)
 	engine.engine_note_off(&e, 60)
 	render_samples(&e, 100)
-	testing.expect(t, e.global_lfo[0].phase > 0, "the LFO did not run")
+	testing.expect(t, dsp.lfo_phase(&e.global_lfo[0]) > 0, "the LFO did not run")
 
 	engine.engine_note_on(&e, 64, 1.0)
-	testing.expect_value(t, e.global_lfo[0].phase, f32(0))
+	testing.expect_value(t, dsp.lfo_phase(&e.global_lfo[0]), f32(0))
 }
 
 // A free-running LFO is never restarted by a key.
@@ -66,8 +67,8 @@ test_a_free_running_lfo_ignores_keys :: proc(t: ^testing.T) {
 	defer engine.engine_destroy(&e)
 
 	render_samples(&e, 12000)
-	before := e.global_lfo[0].phase
+	before := dsp.lfo_phase(&e.global_lfo[0])
 	testing.expect(t, before > 0, "the LFO did not run")
 	engine.engine_note_on(&e, 60, 1.0)
-	testing.expect_value(t, e.global_lfo[0].phase, before)
+	testing.expect_value(t, dsp.lfo_phase(&e.global_lfo[0]), before)
 }
