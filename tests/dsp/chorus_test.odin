@@ -1,5 +1,6 @@
 package dsp_tests
 
+import "core:math"
 import "core:testing"
 
 import "../../src/dsp"
@@ -166,4 +167,40 @@ test_chorus_checks_its_oscillator_at_every_chunk_of_a_block :: proc(t: ^testing.
 	defer delete(right)
 	engine.engine_process(&e, left, right)
 	testing.expectf(t, e.chorus.cosine < 1.01, "the oscillator was left at %v", e.chorus.cosine)
+}
+
+// The sweep a chorus holds is the one derived fresh from its settings, through a
+// change of each setting it depends on, one at a time, and an invalid rate.
+@(test)
+test_chorus_holds_the_sweep_its_settings_give :: proc(t: ^testing.T) {
+	c, p, buffers := chorus_fixture(2, 480, 0.5, 2, 0)
+	defer delete(buffers[0])
+	defer delete(buffers[1])
+	dsp.chorus_begin_block(&c, true)
+	Step :: struct {
+		delay, depth, rate, sample_rate: f32,
+	}
+	steps := [?]Step {
+		{480, 0.5, 2, 48000},
+		{480, 0.5, 2, 48000},
+		{240.7, 0.5, 2, 48000},
+		{240.7, 0.9, 2, 48000},
+		{240.7, 0.9, 400, 48000},
+		{240.7, 0.9, 400, 96000},
+		{240.7, 0.9, math.nan_f32(), 96000},
+		{0, 0.9, 400, 96000},
+		{480, 0.5, 2, 48000},
+	}
+	for s in steps {
+		p.delay_samples = s.delay
+		p.depth = s.depth
+		p.rate_hz = s.rate
+		dsp.chorus_process(&c, 0.25, -0.25, &p, s.sample_rate)
+		fresh: dsp.Chorus
+		want := dsp.chorus_sweep(&fresh, &p, s.sample_rate)
+		testing.expectf(t,
+			c.sweep.centre == want.centre && c.sweep.scale == want.scale && c.sweep.step == want.step,
+			"%v: held centre %v scale %v step %v, fresh %v %v %v",
+			s, c.sweep.centre, c.sweep.scale, c.sweep.step, want.centre, want.scale, want.step)
+	}
 }
