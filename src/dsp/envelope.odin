@@ -47,9 +47,13 @@ Envelope :: struct {
 	progress:      f64,
 	// The level the release started from.
 	release_from:  f32,
-	// True while `value` lags `progress` in a fade-law decay, after
+	// True while `value` lags `progress` in a fade-law decay or release, after
 	// `envelope_advance`; `envelope_level` brings it up to date.
 	stale:         bool,
+	// The progress below which this release cannot reach the floor, worked out
+	// the first time `envelope_advance` moves it.
+	release_safe_below: f64,
+	release_safe_set:   bool,
 }
 
 // The amplitude envelope's decay and release, measured against the reference
@@ -201,6 +205,7 @@ envelope_gate_off :: proc "contextless" (e: ^Envelope) {
 	e.stage = .Release
 	e.progress = 0
 	e.release_from = e.value
+	e.release_safe_set = false
 }
 
 envelope_is_active :: proc "contextless" (e: ^Envelope) -> bool {
@@ -262,7 +267,7 @@ envelope_process :: proc "contextless" (e: ^Envelope) -> f32 {
 	case .Release:
 		if e.fade {
 			e.progress += e.release_step
-			e.value = e.progress >= 1.0 ? 0 : e.release_from * envelope_fade_left(e.progress)
+			e.value = envelope_release_left(e)
 		} else {
 			e.value *= e.release_coef
 		}
@@ -277,31 +282,73 @@ envelope_process :: proc "contextless" (e: ^Envelope) -> f32 {
 	return e.value
 }
 
+// What a fade-law release has left at its progress, before the floor is applied.
+envelope_release_left :: proc "contextless" (e: ^Envelope) -> f32 {
+	return e.progress >= 1.0 ? 0 : e.release_from * envelope_fade_left(e.progress)
+}
+
 // One sample on, as `envelope_process` moves it, for a caller that does not read
-// the level this sample. A fade-law decay is the one segment whose level costs an
-// `exp` and whose end does not depend on it, so there only the progress moves and
-// the level is left to `envelope_level`.
+// the level this sample. A fade-law segment's level costs an `exp`. A decay ends
+// on its progress alone, and a release ends at the floor, which it cannot reach
+// below `release_safe_below`, so there only the progress moves and the level is
+// left to `envelope_level`.
 envelope_advance :: proc "contextless" (e: ^Envelope) {
-	if !(e.fade && e.stage == .Decay) {
-		envelope_process(e)
+	if e.fade && e.stage == .Decay {
+		e.progress += e.decay_step
+		if e.progress >= 1.0 {
+			e.value = sanitize(e.sustain)
+			e.stage = .Sustain
+			e.stale = false
+		} else {
+			e.stale = true
+		}
 		return
 	}
-	e.progress += e.decay_step
-	if e.progress >= 1.0 {
-		e.value = sanitize(e.sustain)
-		e.stage = .Sustain
-		e.stale = false
-	} else {
-		e.stale = true
+	if e.fade && e.stage == .Release {
+		if !e.release_safe_set {
+			e.release_safe_below = envelope_release_safe_below(e.release_from)
+			e.release_safe_set = true
+		}
+		if e.progress + e.release_step < e.release_safe_below {
+			e.progress += e.release_step
+			e.stale = true
+			return
+		}
 	}
+	envelope_process(e)
 }
 
 // The level, brought up to date if `envelope_advance` left it behind: what
 // `envelope_process` would have returned on the last sample.
 envelope_level :: proc "contextless" (e: ^Envelope) -> f32 {
 	if e.stale {
-		e.value = sanitize(e.sustain + (1.0 - e.sustain) * envelope_fade_left(e.progress))
+		if e.stage == .Release {
+			e.value = sanitize(envelope_release_left(e))
+		} else {
+			e.value = sanitize(e.sustain + (1.0 - e.sustain) * envelope_fade_left(e.progress))
+		}
 		e.stale = false
 	}
 	return e.value
+}
+
+// The progress below which a release from `from` stays above the floor. Found by
+// bisection on the same arithmetic the release uses, then held back by a
+// thousandth of the segment, across which the curve falls by close to one per
+// cent: far more than the rounding that could otherwise carry a level found
+// above the floor below it.
+envelope_release_safe_below :: proc "contextless" (from: f32) -> f64 {
+	if !(from * envelope_fade_left(0) > ENVELOPE_FLOOR) {
+		return 0
+	}
+	above, below := f64(0), f64(1)
+	for _ in 0 ..< 40 {
+		middle := (above + below) * 0.5
+		if from * envelope_fade_left(middle) > ENVELOPE_FLOOR {
+			above = middle
+		} else {
+			below = middle
+		}
+	}
+	return max(above - 1.0e-3, 0)
 }
