@@ -175,11 +175,14 @@ Engine :: struct {
 	key_clock:   u64,
 
 	// The reference's band-limited oscillator tables; see `dsp.Wavetable_Bank`.
-	// About 650 KB, built once on the first `engine_init` and kept across every
-	// later one -- a re-init can happen on the audio thread when the voice pool
-	// resizes, and building there would be both an allocation and a few
-	// milliseconds of work. Freed only by `engine_destroy`.
-	wavetables:  ^dsp.Wavetable_Bank,
+	// About 650 KB. By default the engine builds its own on the first
+	// `engine_init` and keeps it across every later one -- a re-init can happen
+	// on the audio thread when the voice pool resizes, and building there would
+	// be both an allocation and a few milliseconds of work. A host running
+	// several engines builds one bank and hands it to each with
+	// `engine_share_wavetables`; the engine then only borrows it.
+	wavetables:        ^dsp.Wavetable_Bank,
+	wavetables_shared: bool,
 }
 
 // Allocate and configure the engine. This is the only procedure here that
@@ -190,6 +193,7 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	if e.wavetables == nil {
 		e.wavetables = new(dsp.Wavetable_Bank)
 		dsp.wavetable_build(e.wavetables)
+		e.wavetables_shared = false
 	}
 
 	e.sample_rate = sample_rate > 0 ? sample_rate : DEFAULT_SAMPLE_RATE
@@ -252,10 +256,32 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 
 engine_destroy :: proc(e: ^Engine) {
 	engine_release_buffers(e)
-	if e.wavetables != nil {
-		free(e.wavetables)
-		e.wavetables = nil
+	engine_drop_wavetables(e)
+}
+
+// Borrow a bank the host built and owns, so that many engines play from one set
+// of tables rather than each holding its own copy. The bank must be built and
+// must outlive every engine that borrows it. Call it before `engine_init`, or
+// after: a pool that already exists is pointed at the bank straight away.
+engine_share_wavetables :: proc(e: ^Engine, bank: ^dsp.Wavetable_Bank) {
+	if bank == nil || !bank.ready || bank == e.wavetables {
+		return
 	}
+	engine_drop_wavetables(e)
+	e.wavetables = bank
+	e.wavetables_shared = true
+	for i in 0 ..< len(e.voices) {
+		voice_set_wavetables(&e.voices[i], bank)
+	}
+}
+
+// Free the engine's own bank. A borrowed one is only let go, never freed.
+engine_drop_wavetables :: proc(e: ^Engine) {
+	if e.wavetables != nil && !e.wavetables_shared {
+		free(e.wavetables)
+	}
+	e.wavetables = nil
+	e.wavetables_shared = false
 }
 
 // Everything `engine_init` reallocates. The wavetables are not among it: they do
