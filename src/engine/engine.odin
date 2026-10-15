@@ -1135,6 +1135,61 @@ effect_params :: proc(
 	return
 }
 
+// What moves once a sample whether anything sounds or not: the smoothed gain, pan
+// and oscillator 2 pitch, the load fade, the bend, and the free-running LFOs, which
+// advance once a sample for the whole engine so every voice reads the same value.
+engine_step_controls :: proc(
+	e: ^Engine,
+	params: ^Engine_Params,
+) -> (
+	lfo_value: [2]f32,
+	lfo_ramped: [2]f32,
+	load_fade: f32,
+) {
+	for j in 0 ..< 2 {
+		lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
+		lfo_ramped[j] = e.global_lfo[j].ramped
+	}
+
+	params.amp_gain = ramp_process(&e.gain_smooth, e.params.amp_gain, CHUNK_FRAMES)
+	load_fade = smoother_process(&e.load_fade, 1)
+	params.pan = smoother_process(&e.pan_smooth, e.params.pan)
+	params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
+	bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
+	if abs(e.pitch_bend - e.pitch_bend_applied) <= bend_step {
+		e.pitch_bend_applied = e.pitch_bend
+	} else {
+		e.pitch_bend_applied += e.pitch_bend > e.pitch_bend_applied ? bend_step : -bend_step
+	}
+	return
+}
+
+// The whole of a block in which nothing can sound, going into effects that hold
+// nothing. Kept out of `engine_process` so that the loop that renders voices is
+// compiled as it was without it.
+engine_render_silence :: #force_no_inline proc(
+	e: ^Engine,
+	params: ^Engine_Params,
+	chorus_params: ^dsp.Chorus_Params,
+	left, right: []f32,
+	n: int,
+) {
+	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
+	for i in 0 ..< n {
+		if chunk.position >= chunk.length {
+			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+			dsp.chorus_begin_chunk(&e.chorus)
+		}
+		_, _, load_fade := engine_step_controls(e, params)
+		if params.chorus_on {
+			dsp.chorus_process_silence(&e.chorus, chorus_params, e.sample_rate)
+		}
+		left[i] = dsp.soft_clip(0 * load_fade)
+		right[i] = dsp.soft_clip(0 * load_fade)
+		chunk.position += 1
+	}
+}
+
 engine_process :: proc(e: ^Engine, left, right: []f32) {
 	n := min(len(left), len(right))
 
@@ -1160,29 +1215,24 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	dsp.chorus_begin_chunk(&e.chorus)
+
+	// A block in which nothing can sound, going into effects that hold nothing, is
+	// silence from end to end; see the same test below, sample by sample.
+	if !sounding &&
+	   !fx_params.enabled &&
+	   dsp.equalizer_is_silent(&e.equalizer, &eq_params) &&
+	   dsp.delay_is_silent(&e.delay) &&
+	   (!params.chorus_on || dsp.chorus_is_silent(&e.chorus)) {
+		engine_render_silence(e, &params, &chorus_params, left, right, n)
+		return
+	}
+
 	for i in 0 ..< n {
 		if chunk.position >= chunk.length {
 			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
 			dsp.chorus_begin_chunk(&e.chorus)
 		}
-		// The free-running LFOs advance once per sample for the whole engine,
-		// so every non-key-synced voice reads the same value.
-		lfo_value, lfo_ramped: [2]f32
-		for j in 0 ..< 2 {
-			lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
-			lfo_ramped[j] = e.global_lfo[j].ramped
-		}
-
-		params.amp_gain = ramp_process(&e.gain_smooth, e.params.amp_gain, CHUNK_FRAMES)
-		load_fade := smoother_process(&e.load_fade, 1)
-		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
-		params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
-		bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
-		if abs(e.pitch_bend - e.pitch_bend_applied) <= bend_step {
-			e.pitch_bend_applied = e.pitch_bend
-		} else {
-			e.pitch_bend_applied += e.pitch_bend > e.pitch_bend_applied ? bend_step : -bend_step
-		}
+		lfo_value, lfo_ramped, load_fade := engine_step_controls(e, &params)
 
 		// Per sample, and only when it is switched on. A step boundary rounded
 		// to the block would land a 1/24-beat step up to a whole step late at
