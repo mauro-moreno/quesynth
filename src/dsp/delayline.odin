@@ -51,7 +51,12 @@ delay_line_read :: proc "contextless" (d: ^Delay_Line, delay: f32) -> f32 {
 	if n == 0 {
 		return 0
 	}
+	whole, frac := delay_line_split(delay, n)
+	return delay_line_read_split(d, whole, frac)
+}
 
+// The read's whole samples and fraction for a delay, held to the buffer.
+delay_line_split :: proc "contextless" (delay: f32, n: int) -> (whole: int, frac: f32) {
 	want := delay
 	if !is_finite(want) {
 		want = 0
@@ -60,9 +65,13 @@ delay_line_read :: proc "contextless" (d: ^Delay_Line, delay: f32) -> f32 {
 	// and a zero delay would otherwise read the sample about to be overwritten.
 	want = clamp32(want, 1.0, f32(n - 2))
 
-	whole := int(want)
-	frac := want - f32(whole)
+	whole = int(want)
+	frac = want - f32(whole)
+	return
+}
 
+delay_line_read_split :: proc "contextless" (d: ^Delay_Line, whole: int, frac: f32) -> f32 {
+	n := len(d.buffer)
 	first := d.write - whole
 	for first < 0 {
 		first += n
@@ -75,4 +84,26 @@ delay_line_read :: proc "contextless" (d: ^Delay_Line, delay: f32) -> f32 {
 	a := d.buffer[first]
 	b := d.buffer[second]
 	return lerp32(a, b, frac)
+}
+
+// A read whose delay holds still for many samples, as the delay effect's does:
+// the split is kept with the delay and buffer length it came from.
+Delay_Tap :: struct {
+	delay:  f32,
+	length: int,
+	whole:  int,
+	frac:   f32,
+}
+
+delay_line_read_tap :: proc "contextless" (d: ^Delay_Line, tap: ^Delay_Tap, delay: f32) -> f32 {
+	n := len(d.buffer)
+	if n == 0 {
+		return 0
+	}
+	if delay != tap.delay || n != tap.length {
+		tap.whole, tap.frac = delay_line_split(delay, n)
+		tap.delay = delay
+		tap.length = n
+	}
+	return delay_line_read_split(d, tap.whole, tap.frac)
 }

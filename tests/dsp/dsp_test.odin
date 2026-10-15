@@ -1852,6 +1852,38 @@ test_delay_line_returns_what_went_in :: proc(t: ^testing.T) {
 	testing.expect(t, dsp.delay_line_read(&line, 100000) == dsp.delay_line_read(&line, f32(len(buffer) - 2)))
 }
 
+// A held tap reads exactly what a fresh read does, through every change of delay
+// time, an invalid time, and a move to a buffer of another length.
+@(test)
+test_delay_line_held_tap_reads_what_a_fresh_read_does :: proc(t: ^testing.T) {
+	long := make([]f32, 512)
+	short := make([]f32, 64)
+	defer delete(long)
+	defer delete(short)
+	line: dsp.Delay_Line
+	tap: dsp.Delay_Tap
+	dsp.delay_line_init(&line, long)
+	for i in 0 ..< 700 {
+		dsp.delay_line_write(&line, math.sin(f32(i) * 0.37))
+	}
+	delays := [?]f32{100, 100, 37.25, 37.25, 1, 0, -4, 5000, math.nan_f32(), math.inf_f32(1), 37.25, 500.5, 100}
+	for buffer in ([?][]f32{long, short}) {
+		if len(buffer) != len(line.buffer) {
+			dsp.delay_line_init(&line, buffer)
+			for i in 0 ..< 100 {
+				dsp.delay_line_write(&line, math.cos(f32(i) * 0.21))
+			}
+		}
+		for delay in delays {
+			held := dsp.delay_line_read_tap(&line, &tap, delay)
+			fresh := dsp.delay_line_read(&line, delay)
+			testing.expectf(t, transmute(u32)held == transmute(u32)fresh,
+				"length %v, delay %v: held tap %v, fresh read %v", len(buffer), delay, held, fresh)
+			dsp.delay_line_write(&line, held * 0.5 + 0.1)
+		}
+	}
+}
+
 // The modes differ in where the input enters and where feedback returns. Two
 // samples is long enough to make each repeat's channel explicit without an
 // engine render or a tolerance-sensitive spectral comparison.

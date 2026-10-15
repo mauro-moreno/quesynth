@@ -44,6 +44,7 @@ Delay :: struct {
 	// manual describes parameter 98 here and parameter 60 there in the same
 	// words, so it is the same control and lives in one place.
 	tone: [2]Tone,
+	tap:  [2]Delay_Tap,
 }
 
 delay_init :: proc "contextless" (d: ^Delay, left, right: []f32) {
@@ -87,8 +88,8 @@ delay_process :: proc "contextless" (
 	// before.
 	feedback := clamp32(p.feedback, 0.0, 1.0)
 
-	delayed_left := delay_line_read(&d.line[0], p.left_samples)
-	delayed_right := delay_line_read(&d.line[1], p.right_samples)
+	delayed_left := delay_line_read_tap(&d.line[0], &d.tap[0], p.left_samples)
+	delayed_right := delay_line_read_tap(&d.line[1], &d.tap[1], p.right_samples)
 
 	shaped_left := tone_process(&d.tone[0], delayed_left, p.tone, sample_rate)
 	shaped_right := tone_process(&d.tone[1], delayed_right, p.tone, sample_rate)
