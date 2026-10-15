@@ -1153,6 +1153,10 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	params := e.params
 
 	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
+	// Only a note event or the arpeggiator starts a voice, so with the arpeggiator
+	// off and nothing sounding at the top of the block, nothing sounds in it and the
+	// pool is not scanned sample by sample.
+	sounding := params.arp_on || engine_active_voice_count(e) > 0
 	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	dsp.chorus_begin_chunk(&e.chorus)
@@ -1201,6 +1205,9 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		voiced := false
 
 		for vi in 0 ..< len(e.voices) {
+			if !sounding {
+				break
+			}
 			v := &e.voices[vi]
 			if !v.active {
 				continue
