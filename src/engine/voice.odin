@@ -55,6 +55,21 @@ Cutoff_Track_Key :: struct {
 	base_note:    f32,
 }
 
+// Everything the cutoff position is derived from once the ramp has finished: the knob
+// and tracking's contribution, the envelope level and its amount, the modulation, and
+// the parameters the ramp restarts on.
+Cutoff_Key :: struct {
+	filter_env:   f32,
+	mod_steps:    f32,
+	knob_index:   f32,
+	track_shift:  f32,
+	env_states:   f32,
+	env_velocity: f32,
+	cutoff_state: f32,
+	key_track:    f32,
+	sample_rate:  f32,
+}
+
 Voice :: struct {
 	active:       bool,
 	// True while the key is held. A voice stays active after this goes false
@@ -90,6 +105,12 @@ Voice :: struct {
 	// amount or the note.
 	cutoff_track_key:   Cutoff_Track_Key,
 	cutoff_track_valid: bool,
+	// The position the ramp finished on, and what it was worked out from. While the
+	// ramp is finished the position is a function of that key alone, so a held note
+	// reads it back instead of working it out again. Cleared with the ramp.
+	cutoff_key:         Cutoff_Key,
+	cutoff_held:        f32,
+	cutoff_settled:     bool,
 	knob_index:         f32,
 	track_shift:        f32,
 	// The velocity law is a power of ten of two quantities that only change with
@@ -540,6 +561,7 @@ voice_note_on :: proc(
 	switch start {
 	case .Fresh:
 		cutoff_ramp_reset(&v.cutoff_ramp)
+		v.cutoff_settled = false
 		v.amp_now = 0
 		v.amp_step = 0
 		v.pan_lfo_gain = {1, 1}
@@ -923,32 +945,54 @@ voice_process :: proc(
 	knob_index := v.knob_index
 	track_shift := v.track_shift
 
-	// Each step of parameter 21 moves the envelope's endpoint by two stored
-	// states of the cutoff knob.
-	env_amount := p.filter_env_cutoff_states * FILTER_INDEX_STEPS / f32(FILTER_TABLE_SIZE)
-	if p.filter_velocity {
-		// Parameter 24: "Select whether the amount of envelope variation
-		// changes according to the velocity of the note played."
-		env_amount *= v.velocity
-	}
-	// The amount is held to the room left on the axis first, then the envelope
-	// level takes its fraction of what survives. The order is observable near
-	// either end of the knob: cutoff 44 with amount 31 asks for -64 states, the
-	// endpoint stops at the bottom, and a sustain of 73 takes 57.5% of the
-	// surviving 44-state trip.
-	env_shift := filter_env_shift(knob_index + track_shift, env_amount, filter_env)
-	target_index := filter_modulate_index(
-		knob_index + track_shift + env_shift,
+	cutoff_key := Cutoff_Key {
+		filter_env,
 		mod_cutoff_steps,
-	)
-	cutoff_index := cutoff_ramp_step(
-		&v.cutoff_ramp,
-		target_index,
-		p.filter_cutoff_state,
+		knob_index,
+		track_shift,
 		p.filter_env_cutoff_states,
+		p.filter_velocity ? v.velocity : 1,
+		p.filter_cutoff_state,
 		p.filter_key_track,
-		cutoff_ramp_samples(sample_rate),
-	)
+		sample_rate,
+	}
+	cutoff_index: f32
+	if v.cutoff_settled && cutoff_key == v.cutoff_key {
+		cutoff_index = v.cutoff_held
+	} else {
+		// Each step of parameter 21 moves the envelope's endpoint by two stored
+		// states of the cutoff knob.
+		env_amount := p.filter_env_cutoff_states * FILTER_INDEX_STEPS / f32(FILTER_TABLE_SIZE)
+		if p.filter_velocity {
+			// Parameter 24: "Select whether the amount of envelope variation
+			// changes according to the velocity of the note played."
+			env_amount *= v.velocity
+		}
+		// The amount is held to the room left on the axis first, then the envelope
+		// level takes its fraction of what survives. The order is observable near
+		// either end of the knob: cutoff 44 with amount 31 asks for -64 states, the
+		// endpoint stops at the bottom, and a sustain of 73 takes 57.5% of the
+		// surviving 44-state trip.
+		env_shift := filter_env_shift(knob_index + track_shift, env_amount, filter_env)
+		target_index := filter_modulate_index(
+			knob_index + track_shift + env_shift,
+			mod_cutoff_steps,
+		)
+		cutoff_index = cutoff_ramp_step(
+			&v.cutoff_ramp,
+			target_index,
+			p.filter_cutoff_state,
+			p.filter_env_cutoff_states,
+			p.filter_key_track,
+			cutoff_ramp_samples(sample_rate),
+		)
+		v.cutoff_key = cutoff_key
+		v.cutoff_held = cutoff_index
+		// Finished, and on the target: the ramp's last step lands a sample before it
+		// reports itself done, and that step is not the target yet.
+		v.cutoff_settled =
+			v.cutoff_ramp.position >= cutoff_ramp_samples(sample_rate) && cutoff_index == target_index
+	}
 	// Every filter type runs on the position itself, one step of the axis at a
 	// time.
 	axis_index := dsp.floor_f32(cutoff_index)

@@ -183,3 +183,99 @@ test_filter_corner_follows_mid_note_knob_tracking_and_bend_edits :: proc(t: ^tes
 		testing.expectf(t, e.voices[0].axis_hz_cache == want, "after edit %v: corner %v, want %v", edit, e.voices[0].axis_hz_cache, want)
 	}
 }
+
+// A voice that reads its settled cutoff position back plays exactly what one that works
+// it out every sample does. Both engines get the same events one frame at a time, and
+// the second has its held position thrown away before each frame, so it always takes the
+// long way. The edits land after the envelopes have settled, since that is when the held
+// position is in use, and each one is something the position is derived from.
+//
+// The filter envelope has no attack or decay and a sustain of full level, so a note that
+// starts again on the same key and velocity begins on the very position the last one
+// ended on. That is the one case where the held position and the note's reset ramp are
+// both in play: the knob edit shortly after it must glide, because the new note's ramp
+// was armed, and it only does if starting a note clears the held position.
+@(test)
+test_held_cutoff_position_plays_what_working_it_out_does :: proc(t: ^testing.T) {
+	p := default_patch()
+	p.values[15] = 0 // filter attack
+	p.values[16] = 0 // filter decay
+	p.values[17] = 127 // filter sustain: full level
+	p.values[26] = 0 // amp decay
+	p.values[28] = 0 // amp release
+	p.values[21] = 80 // filter envelope amount: 64 is none, so this opens the filter
+	p.values[24] = 1 // filter velocity switch
+	p.values[19] = 30
+	p.values[57] = 1 // LFO 1 on the cutoff (stored 3; the default, 2, is pitch)
+	p.values[41] = 3
+	p.values[44] = 80
+	p.values[43] = 110
+
+	held, fresh: engine.Engine
+	engine.engine_load_patch(&held, p, SR)
+	engine.engine_load_patch(&fresh, p, SR)
+	defer engine.engine_destroy(&held)
+	defer engine.engine_destroy(&fresh)
+
+	Event :: struct {
+		at:            int,
+		index, stored: int,
+		note:          int,
+		bend:          f32,
+	}
+	NOTE_ON :: -1
+	BEND :: -2
+	NOTE_OFF :: -3
+	events := [?]Event {
+		{0, NOTE_ON, 0, 60, 0},
+		{12000, 19, 20, 0, 0},
+		{18000, 22, 70, 0, 0},
+		{24000, 21, 92, 0, 0},
+		{30000, 24, 0, 0, 0},
+		{36000, BEND, 0, 0, 1},
+		{42000, NOTE_ON, 0, 67, 0},
+		{48000, 19, 45, 0, 0},
+		{50000, NOTE_OFF, 0, 67, 0},
+		{51000, 44, 0, 0, 0},
+		{54000, NOTE_ON, 0, 60, 0},
+		{54300, 19, 35, 0, 0},
+	}
+	next := 0
+	hits := 0
+	left, right: [2][1]f32
+	for frame in 0 ..< 58000 {
+		for next < len(events) && events[next].at == frame {
+			ev := events[next]
+			next += 1
+			for e in ([?]^engine.Engine{&held, &fresh}) {
+				switch ev.index {
+				case NOTE_ON:
+					engine.engine_note_on(e, ev.note, 0.8)
+				case BEND:
+					engine.engine_set_pitch_bend(e, ev.bend)
+				case NOTE_OFF:
+					engine.engine_note_off(e, ev.note)
+				case:
+					engine.engine_set_stored(e, ev.index, ev.stored)
+				}
+			}
+		}
+		for i in 0 ..< len(fresh.voices) {
+			fresh.voices[i].cutoff_settled = false
+		}
+		for i in 0 ..< len(held.voices) {
+			if held.voices[i].active && held.voices[i].cutoff_settled {
+				hits += 1
+			}
+		}
+		engine.engine_process(&held, left[0][:], right[0][:])
+		engine.engine_process(&fresh, left[1][:], right[1][:])
+		same := transmute(u32)left[0][0] == transmute(u32)left[1][0] &&
+			transmute(u32)right[0][0] == transmute(u32)right[1][0]
+		if !same {
+			testing.expectf(t, false, "frame %v: held %v, worked out %v", frame, left[0][0], left[1][0])
+			return
+		}
+	}
+	testing.expectf(t, hits > 20000, "the held position was used on only %v voice-samples", hits)
+}
