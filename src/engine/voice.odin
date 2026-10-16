@@ -621,6 +621,41 @@ AMP_ENVELOPE_STEPS :: f32(2048.0)
 //
 // `lfo_value` carries the two free-running LFO values the engine advanced once
 // for the whole block; a key-synced LFO ignores them and advances its own.
+// One layer's filter, with the saturator after it.
+//
+// Each type is the reference's own section at the reference's own corner, so no
+// measured table or level correction sits in front of any of them: see
+// `dsp.Chamberlin`, `dsp.Moog_Ladder` and `dsp.Diode_Ladder`.
+//
+// It is a procedure of its own, and kept out of `voice_process`, for the compiler's
+// sake and not the reader's. A patch uses one of the three types, but all three were
+// inlined into the sample loop, and the extra code and live values in that one function
+// cost it about 40% of its time at eight notes, the same arithmetic run faster once the
+// types were called instead of compiled in. The call is made once per layer per sample.
+voice_filter_layer :: #force_no_inline proc(
+	u: ^Unison_Voice,
+	p: ^Engine_Params,
+	mixed, axis_hz, sample_rate: f32,
+) -> f32 {
+	filtered: f32
+	if p.filter_diode {
+		dsp.diode_ladder_set(&u.diode, axis_hz, p.filter_resonance, sample_rate)
+		filtered = dsp.diode_ladder_process(&u.diode, mixed)
+	} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
+		dsp.moog_ladder_set(&u.ladder, axis_hz, p.filter_resonance, sample_rate)
+		filtered = dsp.moog_ladder_process(&u.ladder, mixed)
+	} else {
+		dsp.chamberlin_set_cutoff(&u.chamberlin, axis_hz, sample_rate)
+		filtered = dsp.chamberlin_process(
+			&u.chamberlin,
+			mixed,
+			p.filter_resonance,
+			p.filter_mode,
+		)
+	}
+	return dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
+}
+
 voice_process :: proc(
 	v: ^Voice,
 	p: ^Engine_Params,
@@ -1140,26 +1175,7 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		// Each type is the reference's own section at the reference's own corner,
-		// so no measured table or level correction sits in front of any of them:
-		// see `dsp.Chamberlin`, `dsp.Moog_Ladder` and `dsp.Diode_Ladder`.
-		filtered: f32
-		if p.filter_diode {
-			dsp.diode_ladder_set(&u.diode, axis_hz, p.filter_resonance, sample_rate)
-			filtered = dsp.diode_ladder_process(&u.diode, mixed)
-		} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
-			dsp.moog_ladder_set(&u.ladder, axis_hz, p.filter_resonance, sample_rate)
-			filtered = dsp.moog_ladder_process(&u.ladder, mixed)
-		} else {
-			dsp.chamberlin_set_cutoff(&u.chamberlin, axis_hz, sample_rate)
-			filtered = dsp.chamberlin_process(
-				&u.chamberlin,
-				mixed,
-				p.filter_resonance,
-				p.filter_mode,
-			)
-		}
-		filtered = dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
+		filtered := voice_filter_layer(u, p, mixed, axis_hz, sample_rate)
 
 		sample := filtered * gain * stack_scale
 
