@@ -184,3 +184,94 @@ test_modulation_envelope_pulse_width_is_a_share_of_the_room_left :: proc(t: ^tes
 	}
 	testing.expect_value(t, engine.modulated_pulse_width(0.25, 0), f32(0.25))
 }
+
+// An envelope moved by `envelope_advance` is at every step the one moved by
+// `envelope_process`: the same stage, progress and level, through decays cut
+// short by a key release, releases from every level down to the floor, legato and
+// fresh restarts, edits of the sustain and the times in the middle of a decay or
+// release (one followed at once by a release), lookaheads and resets.
+@(test)
+test_envelope_advance_keeps_what_process_would :: proc(t: ^testing.T) {
+	eager, lazy: dsp.Envelope
+	set :: proc(e: ^dsp.Envelope, decay, sustain, release: f32) {
+		dsp.envelope_set_fade(e, 0.002, decay, sustain, release, SR)
+	}
+	set(&eager, 0.05, 0.3, 0.02)
+	set(&lazy, 0.05, 0.3, 0.02)
+	dsp.envelope_gate_on(&eager, true)
+	dsp.envelope_gate_on(&lazy, true)
+	seed: u32 = 11
+	next :: proc(seed: ^u32, below: int) -> int {
+		seed^ = seed^ * 1664525 + 1013904223
+		return int(seed^ >> 8) % below
+	}
+	decaying, releasing, endings := 0, 0, 0
+	for step in 0 ..< 400000 {
+		switch next(&seed, 1500) {
+		case 0:
+			dsp.envelope_gate_off(&eager)
+			dsp.envelope_gate_off(&lazy)
+		case 1, 2:
+			retrigger := next(&seed, 2) == 0
+			dsp.envelope_gate_on(&eager, retrigger)
+			dsp.envelope_gate_on(&lazy, retrigger)
+		case 3, 4, 5:
+			decay := f32(next(&seed, 100) + 1) * 0.001
+			sustain := f32(next(&seed, 128)) / 127
+			release := f32(next(&seed, 60) + 1) * 0.001
+			set(&eager, decay, sustain, release)
+			set(&lazy, decay, sustain, release)
+		case 6:
+			ahead := next(&seed, 300)
+			testing.expect_value(t, dsp.envelope_value_ahead(&lazy, ahead), dsp.envelope_value_ahead(&eager, ahead))
+		case 7:
+			dsp.envelope_reset(&eager)
+			dsp.envelope_reset(&lazy)
+		case 10:
+			// A reset and a legato start between the same two samples start from zero.
+			dsp.envelope_reset(&eager)
+			dsp.envelope_reset(&lazy)
+			dsp.envelope_gate_on(&eager, false)
+			dsp.envelope_gate_on(&lazy, false)
+		case 8, 9:
+			// An edit and a key release between the same two samples: the release
+			// starts from the level the old settings had reached.
+			sustain := f32(next(&seed, 128)) / 127
+			set(&eager, 0.04, sustain, 0.03)
+			set(&lazy, 0.04, sustain, 0.03)
+			dsp.envelope_gate_off(&eager)
+			dsp.envelope_gate_off(&lazy)
+		}
+		switch eager.stage {
+		case .Decay:
+			decaying += 1
+		case .Release:
+			releasing += 1
+		case .Idle, .Attack, .Sustain:
+		}
+		before := eager.stage
+		dsp.envelope_process(&eager)
+		dsp.envelope_advance(&lazy)
+		if before == .Release && eager.stage == .Idle {
+			endings += 1
+		}
+		same := lazy.stage == eager.stage && lazy.progress == eager.progress
+		if same && next(&seed, 50) == 0 {
+			level := dsp.envelope_level(&lazy)
+			same = transmute(u32)level == transmute(u32)eager.value
+		}
+		if !same {
+			testing.expectf(t, false, "step %v: advanced %v %v %v, processed %v %v %v",
+				step, lazy.stage, lazy.progress, dsp.envelope_level(&lazy), eager.stage, eager.progress, eager.value)
+			return
+		}
+	}
+	testing.expectf(
+		t,
+		decaying > 40000 && releasing > 40000 && endings >= 30,
+		"only %v steps in a decay, %v in a release and %v releases run out",
+		decaying,
+		releasing,
+		endings,
+	)
+}

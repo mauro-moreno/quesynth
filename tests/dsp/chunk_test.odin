@@ -3,6 +3,7 @@ package dsp_tests
 import "core:math"
 import "core:testing"
 
+import "../../src/dsp"
 import "../../src/engine"
 
 chunk_engine :: proc() -> engine.Engine {
@@ -53,7 +54,7 @@ test_first_chunk_of_a_note_follows_the_envelope_exactly :: proc(t: ^testing.T) {
 	engine.engine_note_on(&e, 60, 1.0)
 	render_frames(&e, 200)
 	v := &e.voices[0]
-	testing.expect_value(t, v.amp_now, v.amp_env.value)
+	testing.expect_value(t, v.amp_now, dsp.envelope_level(&v.amp_env))
 }
 
 // The envelope's own state is not touched by the lookahead, so a note-off between
@@ -65,9 +66,9 @@ test_note_off_between_calls_releases_from_the_current_level :: proc(t: ^testing.
 	engine.engine_note_on(&e, 60, 1.0)
 	render_frames(&e, 3000)
 	v := &e.voices[0]
-	before := v.amp_env.value
+	before := dsp.envelope_level(&v.amp_env)
 	engine.engine_note_off(&e, 60)
-	testing.expect_value(t, v.amp_env.value, before)
+	testing.expect_value(t, dsp.envelope_level(&v.amp_env), before)
 	render_frames(&e, 4)
-	testing.expect(t, v.amp_env.value <= before, "the release did not start from the level the note was at")
+	testing.expect(t, dsp.envelope_level(&v.amp_env) <= before, "the release did not start from the level the note was at")
 }

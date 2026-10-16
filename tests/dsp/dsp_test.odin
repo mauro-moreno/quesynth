@@ -330,9 +330,9 @@ test_lfo_retrigger_resets_phase :: proc(t: ^testing.T) {
 	for _ in 0 ..< 1000 {
 		dsp.lfo_process(&l)
 	}
-	testing.expect(t, l.phase > 0)
+	testing.expect(t, dsp.lfo_phase(&l) > 0)
 	dsp.lfo_retrigger(&l)
-	testing.expect_value(t, l.phase, 0.0)
+	testing.expect_value(t, dsp.lfo_phase(&l), 0.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1852,6 +1852,38 @@ test_delay_line_returns_what_went_in :: proc(t: ^testing.T) {
 	testing.expect(t, dsp.delay_line_read(&line, 100000) == dsp.delay_line_read(&line, f32(len(buffer) - 2)))
 }
 
+// A held tap reads exactly what a fresh read does, through every change of delay
+// time, an invalid time, and a move to a buffer of another length.
+@(test)
+test_delay_line_held_tap_reads_what_a_fresh_read_does :: proc(t: ^testing.T) {
+	long := make([]f32, 512)
+	short := make([]f32, 64)
+	defer delete(long)
+	defer delete(short)
+	line: dsp.Delay_Line
+	tap: dsp.Delay_Tap
+	dsp.delay_line_init(&line, long)
+	for i in 0 ..< 700 {
+		dsp.delay_line_write(&line, math.sin(f32(i) * 0.37))
+	}
+	delays := [?]f32{100, 100, 37.25, 37.25, 1, 0, -4, 5000, math.nan_f32(), math.inf_f32(1), 37.25, 500.5, 100}
+	for buffer in ([?][]f32{long, short}) {
+		if len(buffer) != len(line.buffer) {
+			dsp.delay_line_init(&line, buffer)
+			for i in 0 ..< 100 {
+				dsp.delay_line_write(&line, math.cos(f32(i) * 0.21))
+			}
+		}
+		for delay in delays {
+			held := dsp.delay_line_read_tap(&line, &tap, delay)
+			fresh := dsp.delay_line_read(&line, delay)
+			testing.expectf(t, transmute(u32)held == transmute(u32)fresh,
+				"length %v, delay %v: held tap %v, fresh read %v", len(buffer), delay, held, fresh)
+			dsp.delay_line_write(&line, held * 0.5 + 0.1)
+		}
+	}
+}
+
 // The modes differ in where the input enters and where feedback returns. Two
 // samples is long enough to make each repeat's channel explicit without an
 // engine render or a tolerance-sensitive spectral comparison.
@@ -2551,14 +2583,14 @@ test_legato_second_note_does_not_restart_amp_envelope :: proc(t: ^testing.T) {
 
 	engine.engine_note_on(&e, 60, 1.0)
 	engine.engine_process(&e, left, right)
-	before := e.voices[0].amp_env.value
+	before := dsp.envelope_level(&e.voices[0].amp_env)
 	testing.expectf(t, before > 0.001, "first note did not raise the envelope enough: %v", before)
 
 	engine.engine_note_on(&e, 64, 1.0)
 	after: f32 = 0
 	for i in 0 ..< len(e.voices) {
 		if e.voices[i].active && e.voices[i].gate && e.voices[i].note == 64 {
-			after = e.voices[i].amp_env.value
+			after = dsp.envelope_level(&e.voices[i].amp_env)
 		}
 	}
 	testing.expectf(t, after > before * 0.9, "legato note retriggered the amp envelope: before %v after %v", before, after)
@@ -5082,4 +5114,69 @@ test_other_pitch_controls_are_not_slid :: proc(t: ^testing.T) {
 	testing.expect_value(t, e.params.key_shift, f32(12))
 	engine.engine_process(&e, left, right)
 	testing.expect_value(t, e.params.key_shift, f32(12))
+}
+
+// The effect unit's high pass with its coefficients held gives what the section
+// gives deriving them fresh, through changes of rate and back.
+@(test)
+test_effect_ad_highpass_held_matches_fresh :: proc(t: ^testing.T) {
+	e: dsp.Effect
+	state: [2][2]f32
+	for sr in ([?]f32{48000, 48000, 44100, 96000, 48000}) {
+		for i in 0 ..< 64 {
+			x := f32(i % 7) * 0.1 - 0.3
+			hl, hr := dsp.effect_ad_highpass_held(&e, x, -x, dsp.EFFECT_AD_HIGHPASS_HZ, dsp.EFFECT_AD_HIGHPASS_Q, sr)
+			fl, fr := dsp.effect_ad_highpass(&state, x, -x, dsp.EFFECT_AD_HIGHPASS_HZ, dsp.EFFECT_AD_HIGHPASS_Q, sr)
+			if transmute(u32)hl != transmute(u32)fl || transmute(u32)hr != transmute(u32)fr {
+				testing.expectf(t, false, "rate %v sample %v: held %v %v, fresh %v %v", sr, i, hl, hr, fl, fr)
+				return
+			}
+		}
+	}
+}
+
+// The phaser's held sweep is the one its depth, rate and sample rate give, through
+// a change of each in turn.
+@(test)
+test_phaser_holds_the_sweep_its_settings_give :: proc(t: ^testing.T) {
+	fx: dsp.Effect
+	Step :: struct {
+		ctl1, ctl2, sample_rate: f32,
+	}
+	for s in ([?]Step{{0.5, 0.5, 48000}, {0.5, 0.5, 48000}, {0.9, 0.5, 48000}, {0.9, 0.95, 48000}, {0.9, 0.95, 44100}, {0.5, 0.5, 48000}}) {
+		p := effect_params_for(.Phaser_2, s.ctl1, s.ctl2, 0.5)
+		dsp.effect_process(&fx, 0.25, -0.25, &p, s.sample_rate)
+		want := dsp.phaser_sweep(p.phaser_span_oct, p.phaser_rate_hz, s.sample_rate)
+		testing.expectf(t, fx.sweep == want, "%v: held %v, settings give %v", s, fx.sweep, want)
+	}
+}
+
+// a.d.1's held coefficients and rest value are the ones its settings give, through
+// a change of each corner, the rest point and the rate, one at a time.
+@(test)
+test_analog1_holds_what_its_settings_give :: proc(t: ^testing.T) {
+	fx: dsp.Effect
+	base := effect_params_for(.Analog_1, 0.5, 0.5, 0.5)
+	Step :: struct {
+		shelf_hz, feedback_hz, rest, sample_rate: f32,
+	}
+	b := Step{base.ad1_shelf_hz, base.ad1_feedback_hz, base.ad1_rest, 48000}
+	steps := [?]Step {
+		b,
+		b,
+		{b.shelf_hz * 2, b.feedback_hz, b.rest, b.sample_rate},
+		{b.shelf_hz * 2, b.feedback_hz * 2, b.rest, b.sample_rate},
+		{b.shelf_hz * 2, b.feedback_hz * 2, b.rest * 0.5, b.sample_rate},
+		{b.shelf_hz * 2, b.feedback_hz * 2, b.rest * 0.5, 44100},
+		b,
+	}
+	for s in steps {
+		p := base
+		p.ad1_shelf_hz = s.shelf_hz
+		p.ad1_feedback_hz = s.feedback_hz
+		p.ad1_rest = s.rest
+		dsp.effect_process(&fx, 0.25, -0.25, &p, s.sample_rate)
+		want := dsp.analog1_held(&p, s.sample_rate)
+		testing.expectf(t, fx.ad1_held == want, "%v: held %v, settings give %v", s, fx.ad1_held, want)
+	}
 }

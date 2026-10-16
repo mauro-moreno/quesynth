@@ -618,6 +618,9 @@ usage :: proc() {
 	fmt.eprintln("                        [--note <n>] [--limit <n>] [--offset <n>] [--block <n>]")
 	fmt.eprintln("                        [--verbose] [--self] [--no-floor]")
 	fmt.eprintln("                        [--fmsub-gate <original|fm-off|fm-sub-off>]")
+	fmt.eprintln("  s1probe perf [dll] [--block <n>] [--repeats <n>] [--section voices|sections|filter|unison|bank]")
+	fmt.eprintln("                        [--bank <dir>] [--csv <path>]")
+	fmt.eprintln("                        -- CPU cost of the reference against ours, same patch and notes")
 	fmt.eprintln("  s1probe summarise <compare.csv>")
 	fmt.eprintln("  s1probe envprobe [dll] <attack|decay|release> [--values <list|all>]")
 	fmt.eprintln("                        [--hold <ms>] [--tail <ms>] [--note <n>]")
@@ -721,6 +724,10 @@ main :: proc() {
 	case "verify":
 		if len(rest) < 1 {usage()}
 		cmd_verify(dll, rest[0])
+	case "perf":
+		perf_opt, perf_ok := parse_perf_args(rest)
+		if !perf_ok {usage()}
+		cmd_perf(dll, perf_opt)
 	case "compare":
 		target, opt, opt_ok := parse_compare_args(rest)
 		if !opt_ok {usage()}

@@ -100,6 +100,11 @@ Rack slots initialize on first use, so opening the 4×4 page does not allocate
 sixteen complete effect buffers up front. Initialization happens on a control
 message or hit, never inside `synth_render`.
 
+The slots share one set of oscillator tables. They are about 650 KB, the same for
+every instrument, and built once in `synth_init`; each slot borrows them through
+`engine_share_wavetables`. Private copies cost about nine megabytes across a rack
+and sixteen builds on the first sixteen hits.
+
 `synth_render` sums them. A slot with no voices sounding is skipped entirely once
 its tail has run out, which is what makes sixteen affordable: a grid is mostly
 idle, and an idle slot that is skipped costs nothing rather than costing a whole
@@ -110,7 +115,9 @@ end off every hit.
 `node hosts/wasm/check-slots.js` is the guard on the arrangement. Getting it wrong
 is quiet -- drop the slot argument anywhere along the chain and every pad plays
 pad one, which sounds like a synth working perfectly -- so the check strikes one
-cell and asks the other fifteen whether they made a sound.
+cell and asks the other fifteen whether they made a sound. It also fails if the
+module's memory with every slot struck grows past what one shared set of tables
+needs.
 
 The rack mixer is host state rather than patch state: `synth_set_mix` applies
 per-slot volume and pan while summing. `synth_trigger` runs a patch's attack and

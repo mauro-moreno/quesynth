@@ -515,6 +515,11 @@ effect_ad_highpass :: proc "contextless" (
 ) -> (
 	out_l, out_r: f32,
 ) {
+	k := effect_ad_highpass_coefficients(fc, q, sr)
+	return effect_ad_highpass_run(state, l, r, &k)
+}
+
+effect_ad_highpass_coefficients :: proc "contextless" (fc, q, sr: f32) -> [5]f32 {
 	w := TAU * clamp32(fc, 1.0, sr * 0.45) / sr
 	cs := math.cos(w)
 	alpha := math.sin(w) / (2.0 * max(q, 0.01))
@@ -524,7 +529,22 @@ effect_ad_highpass :: proc "contextless" (
 	b2 := b0
 	a1 := -2.0 * cs / a0
 	a2 := (1.0 - alpha) / a0
+	return {b0, b1, b2, a1, a2}
+}
 
+// The same section with its coefficients held in `e` with the corner, Q and rate
+// they were derived for, which do not move from sample to sample.
+effect_ad_highpass_held :: proc "contextless" (e: ^Effect, l, r, fc, q, sr: f32) -> (out_l, out_r: f32) {
+	key := [3]f32{fc, q, sr}
+	if e.ad_highpass_key != key {
+		e.ad_highpass_coefficients = effect_ad_highpass_coefficients(fc, q, sr)
+		e.ad_highpass_key = key
+	}
+	return effect_ad_highpass_run(&e.ad_highpass, l, r, &e.ad_highpass_coefficients)
+}
+
+effect_ad_highpass_run :: proc "contextless" (state: ^[2][2]f32, l, r: f32, k: ^[5]f32) -> (out_l, out_r: f32) {
+	b0, b1, b2, a1, a2 := k[0], k[1], k[2], k[3], k[4]
 	step :: proc "contextless" (z: ^[2]f32, x, b0, b1, b2, a1, a2: f32) -> f32 {
 		y := b0 * x + z[0]
 		z[0] = flush_denormal(b1 * x - a1 * y + z[1])
@@ -1223,6 +1243,8 @@ Effect :: struct {
 	// The two-pole high pass the analogue types and d.d. share, two states per
 	// channel.
 	ad_highpass: [2][2]f32,
+	ad_highpass_key: [3]f32,
+	ad_highpass_coefficients: [5]f32,
 	// a.d.1's feedback loop: two poles of the output, per channel.
 	ad1_loop:    [2][2]f32,
 	// and the response after it, and the low pass the shelf is built from.
@@ -1232,6 +1254,11 @@ Effect :: struct {
 	// The running mean of the squared term, taken back out of it.
 	ad1_quadratic_mean: [2]f32,
 	ad1_shelf:    [2]f32,
+	// a.d.1's three one-pole coefficients and its curve's value at rest, with the
+	// corners, rest point and sample rate they came from.
+	ad1_held_key:   [4]f32,
+	ad1_held_valid: bool,
+	ad1_held:       Analog1_Held,
 	// The ring modulator's own oscillator.
 	ring_phase: f32,
 	// The decimator: the value being held and how much of the step is left.
@@ -1258,6 +1285,48 @@ Effect :: struct {
 	corner_rising: bool,
 	corner_set:    bool,
 	corner_tick:   int,
+	// What the sweep's limits and step come to, with the depth, rate and sample
+	// rate they came from.
+	sweep_key:     [3]f32,
+	sweep_valid:   bool,
+	sweep:         Phaser_Sweep,
+}
+
+Analog1_Held :: struct {
+	shelf:     f32,
+	feedback:  f32,
+	mean:      f32,
+	rest_tanh: f32,
+}
+
+analog1_held :: proc "contextless" (p: ^Effect_Params, sr: f32) -> Analog1_Held {
+	return {
+		shelf     = one_pole_coef(p.ad1_shelf_hz, sr),
+		feedback  = one_pole_coef(p.ad1_feedback_hz, sr),
+		mean      = one_pole_coef(EFFECT_ANALOG1_QUADRATIC_MEAN_HZ, sr),
+		rest_tanh = math.tanh(p.ad1_rest),
+	}
+}
+
+Phaser_Sweep :: struct {
+	rest_oct: f32,
+	top:      f32,
+	bottom:   f32,
+	slew:     f32,
+}
+
+// Where the phaser's corner rests, the limits it turns at and how far it moves a
+// sample, in octaves above one hertz.
+phaser_sweep :: proc "contextless" (span_oct, rate_hz, sr: f32) -> Phaser_Sweep {
+	up := span_oct * EFFECT_PHASER_SPAN_UP_SHARE
+	down := span_oct - up
+	centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
+	return {
+		rest_oct = math.log2(EFFECT_PHASER_CORNER_REST_HZ),
+		top      = centre + up,
+		bottom   = centre - down,
+		slew     = 2.0 * span_oct * effect_phaser_block_rate(rate_hz, sr) / sr,
+	}
 }
 
 effect_reset :: proc "contextless" (e: ^Effect) {
@@ -1287,8 +1356,16 @@ effect_shape_analog1 :: proc "contextless" (
 	// with the feedback settled, v = REST and the output is REST, so carrying
 	// (output - REST) leaves a loop that starts silent instead of thumping its way
 	// down from the rail.
+	return effect_shape_analog1_from(state, x, drive, gain, coef, loop_gain, rest, math.tanh(rest))
+}
+
+// The same with the curve's value at rest, `tanh(rest)`, already taken.
+effect_shape_analog1_from :: proc "contextless" (
+	state: ^[2]f32,
+	x, drive, gain, coef, loop_gain, rest, rest_tanh: f32,
+) -> f32 {
 	v := drive * x - loop_gain * state[0] + rest
-	y := math.tanh(v) - math.tanh(rest)
+	y := math.tanh(v) - rest_tanh
 	state[0] += (y - state[0]) * coef
 	state[0] = flush_denormal(state[0])
 	return gain * y
@@ -1365,7 +1442,13 @@ effect_process :: proc "contextless" (
 		// 2.84 dB to 5.30. Split, the response lands within 0.61 dB and the
 		// harmonics within 3.95, and the high pass is above 131 Hz by then so it
 		// barely touches them.
-		shelf := one_pole_coef(p.ad1_shelf_hz, sr)
+		ad1_key := [4]f32{p.ad1_shelf_hz, p.ad1_feedback_hz, p.ad1_rest, sr}
+		if !e.ad1_held_valid || e.ad1_held_key != ad1_key {
+			e.ad1_held = analog1_held(p, sr)
+			e.ad1_held_key = ad1_key
+			e.ad1_held_valid = true
+		}
+		shelf := e.ad1_held.shelf
 		e.ad1_shelf[0] += (wl - e.ad1_shelf[0]) * shelf
 		e.ad1_shelf[1] += (wr - e.ad1_shelf[1]) * shelf
 		e.ad1_shelf[0] = flush_denormal(e.ad1_shelf[0])
@@ -1374,12 +1457,12 @@ effect_process :: proc "contextless" (
 		wl = sg * wl + (1.0 - sg) * e.ad1_shelf[0]
 		wr = sg * wr + (1.0 - sg) * e.ad1_shelf[1]
 
-		coef := one_pole_coef(p.ad1_feedback_hz, sr)
-		wl = effect_shape_analog1(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
-		wr = effect_shape_analog1(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest)
+		coef := e.ad1_held.feedback
+		wl = effect_shape_analog1_from(&e.ad1_loop[0], wl, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest, e.ad1_held.rest_tanh)
+		wr = effect_shape_analog1_from(&e.ad1_loop[1], wr, p.drive, p.shape_gain, coef, p.ad1_loop_gain, p.ad1_rest, e.ad1_held.rest_tanh)
 
-		wl, wr = effect_ad_highpass(
-			&e.ad_highpass,
+		wl, wr = effect_ad_highpass_held(
+			e,
 			wl,
 			wr,
 			EFFECT_AD_HIGHPASS_HZ,
@@ -1389,7 +1472,7 @@ effect_process :: proc "contextless" (
 		// The squared term carries a constant, and the section after it has a pole under
 		// 1 Hz and a gain of tens at DC, so a constant here would be a slow thump on
 		// every note-on and note-off. Only its varying part is wanted.
-		mean_coef := one_pole_coef(EFFECT_ANALOG1_QUADRATIC_MEAN_HZ, sr)
+		mean_coef := e.ad1_held.mean
 		square_l := wl * wl
 		square_r := wr * wr
 		e.ad1_quadratic_mean[0] += (square_l - e.ad1_quadratic_mean[0]) * mean_coef
@@ -1404,8 +1487,8 @@ effect_process :: proc "contextless" (
 	case .Analog_2:
 		wl = effect_shape_analog2(wl, p.drive, p.shape_gain)
 		wr = effect_shape_analog2(wr, p.drive, p.shape_gain)
-		wl, wr = effect_ad_highpass(
-			&e.ad_highpass,
+		wl, wr = effect_ad_highpass_held(
+			e,
 			wl,
 			wr,
 			EFFECT_AD_HIGHPASS_HZ,
@@ -1417,8 +1500,8 @@ effect_process :: proc "contextless" (
 	case .Digital:
 		wl = effect_shape_digital(wl, p.drive, p.shape_gain)
 		wr = effect_shape_digital(wr, p.drive, p.shape_gain)
-		wl, wr = effect_ad_highpass(
-			&e.ad_highpass,
+		wl, wr = effect_ad_highpass_held(
+			e,
 			wl,
 			wr,
 			EFFECT_AD_HIGHPASS_HZ,
@@ -1480,12 +1563,15 @@ effect_process :: proc "contextless" (
 		wr *= gain
 
 	case .Phaser_1, .Phaser_2, .Phaser_3, .Phaser_4:
-		rest_oct := math.log2(EFFECT_PHASER_CORNER_REST_HZ)
-		up := p.phaser_span_oct * EFFECT_PHASER_SPAN_UP_SHARE
-		down := p.phaser_span_oct - up
-		centre := math.log2(EFFECT_PHASER_CORNER_CENTRE_HZ)
-		top := centre + up
-		bottom := centre - down
+		sweep_key := [3]f32{p.phaser_span_oct, p.phaser_rate_hz, sr}
+		if !e.sweep_valid || e.sweep_key != sweep_key {
+			e.sweep = phaser_sweep(p.phaser_span_oct, p.phaser_rate_hz, sr)
+			e.sweep_key = sweep_key
+			e.sweep_valid = true
+		}
+		rest_oct := e.sweep.rest_oct
+		top := e.sweep.top
+		bottom := e.sweep.bottom
 
 		if !e.corner_set {
 			e.corner_oct = rest_oct
@@ -1561,7 +1647,7 @@ effect_process :: proc "contextless" (
 			// at all. Here it needs none: the limit is where depth puts it, and
 			// whether a boundary lands just short of it or just past it turns over
 			// from one depth to the next.
-			slew := 2.0 * p.phaser_span_oct * effect_phaser_block_rate(p.phaser_rate_hz, sr) / sr
+			slew := e.sweep.slew
 			if e.corner_rising {
 				e.corner_oct += slew
 				if e.corner_oct >= top {

@@ -32,6 +32,42 @@ Unison_Voice :: struct {
 	detune:          f32,
 	// -1..1.
 	pan:             f32,
+	// What the oscillators' frequencies were last set from. A layer's pitch only
+	// changes when something moves it -- glide, bend, vibrato -- so while the
+	// inputs are the same the increments and table bands already in the
+	// oscillators are the answer, and the three `pow`s that produced them are
+	// skipped. Cleared wherever the oscillators are re-initialised.
+	pitch_key:       Pitch_Key,
+	pitch_key_valid: bool,
+}
+
+Pitch_Key :: struct {
+	note1:       f32,
+	note2:       f32,
+	osc1_detune: f32,
+	sub_octave:  f32,
+	sample_rate: f32,
+}
+
+Cutoff_Track_Key :: struct {
+	cutoff_state: f32,
+	key_track_ln: f32,
+	base_note:    f32,
+}
+
+// Everything the cutoff position is derived from once the ramp has finished: the knob
+// and tracking's contribution, the envelope level and its amount, the modulation, and
+// the parameters the ramp restarts on.
+Cutoff_Key :: struct {
+	filter_env:   f32,
+	mod_steps:    f32,
+	knob_index:   f32,
+	track_shift:  f32,
+	env_states:   f32,
+	env_velocity: f32,
+	cutoff_state: f32,
+	key_track:    f32,
+	sample_rate:  f32,
 }
 
 Voice :: struct {
@@ -64,6 +100,25 @@ Voice :: struct {
 	// steps and holds for many samples, and the frequency is a power.
 	axis_index_cache: f32,
 	axis_hz_cache: f32,
+	// The knob's position on the axis and keyboard tracking's shift from it, with
+	// what they were derived from: both only move with the knob, the tracking
+	// amount or the note.
+	cutoff_track_key:   Cutoff_Track_Key,
+	cutoff_track_valid: bool,
+	// The position the ramp finished on, and what it was worked out from. While the
+	// ramp is finished the position is a function of that key alone, so a held note
+	// reads it back instead of working it out again. Cleared with the ramp.
+	cutoff_key:         Cutoff_Key,
+	cutoff_held:        f32,
+	cutoff_settled:     bool,
+	knob_index:         f32,
+	track_shift:        f32,
+	// The velocity law is a power of ten of two quantities that only change with
+	// a new note or an edit of the knob.
+	velocity_gain_sens:     f32,
+	velocity_gain_velocity: f32,
+	velocity_gain:          f32,
+	velocity_gain_valid:    bool,
 	// The amplitude envelope as the render chunk sees it: it ramps linearly across
 	// the chunk to the whole 1/2048th it reaches at the chunk's last sample.
 	// `knots_valid` is false until the chunk this voice is in has been read, and
@@ -272,6 +327,7 @@ unison_stack_scale :: proc(count: int) -> f32 {
 voice_set_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) {
 	for i in 0 ..< MAX_UNISON {
 		u := &v.unison[i]
+		u.pitch_key_valid = false
 		dsp.oscillator_set_bank(&u.osc1, bank)
 		dsp.oscillator_set_bank(&u.osc2, bank)
 		dsp.oscillator_set_bank(&u.sub, bank)
@@ -315,6 +371,7 @@ voice_configure_unison :: proc(v: ^Voice, p: ^Engine_Params, seed: u32, reset_ph
 			}
 			fresh := i >= old_count
 
+			u.pitch_key_valid = false
 			dsp.oscillator_init(&u.osc1, voice_seed ~ 0x1)
 			dsp.oscillator_init(&u.osc2, voice_seed ~ 0x2)
 			dsp.oscillator_init(&u.sub, voice_seed ~ 0x3)
@@ -504,6 +561,7 @@ voice_note_on :: proc(
 	switch start {
 	case .Fresh:
 		cutoff_ramp_reset(&v.cutoff_ramp)
+		v.cutoff_settled = false
 		v.amp_now = 0
 		v.amp_step = 0
 		v.pan_lfo_gain = {1, 1}
@@ -585,6 +643,41 @@ AMP_ENVELOPE_STEPS :: f32(2048.0)
 //
 // `lfo_value` carries the two free-running LFO values the engine advanced once
 // for the whole block; a key-synced LFO ignores them and advances its own.
+// One layer's filter, with the saturator after it.
+//
+// Each type is the reference's own section at the reference's own corner, so no
+// measured table or level correction sits in front of any of them: see
+// `dsp.Chamberlin`, `dsp.Moog_Ladder` and `dsp.Diode_Ladder`.
+//
+// It is a procedure of its own, and kept out of `voice_process`, for the compiler's
+// sake and not the reader's. A patch uses one of the three types, but all three were
+// inlined into the sample loop, and the extra code and live values in that one function
+// cost it about 40% of its time at eight notes, the same arithmetic run faster once the
+// types were called instead of compiled in. The call is made once per layer per sample.
+voice_filter_layer :: #force_no_inline proc(
+	u: ^Unison_Voice,
+	p: ^Engine_Params,
+	mixed, axis_hz, sample_rate: f32,
+) -> f32 {
+	filtered: f32
+	if p.filter_diode {
+		dsp.diode_ladder_set(&u.diode, axis_hz, p.filter_resonance, sample_rate)
+		filtered = dsp.diode_ladder_process(&u.diode, mixed)
+	} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
+		dsp.moog_ladder_set(&u.ladder, axis_hz, p.filter_resonance, sample_rate)
+		filtered = dsp.moog_ladder_process(&u.ladder, mixed)
+	} else {
+		dsp.chamberlin_set_cutoff(&u.chamberlin, axis_hz, sample_rate)
+		filtered = dsp.chamberlin_process(
+			&u.chamberlin,
+			mixed,
+			p.filter_resonance,
+			p.filter_mode,
+		)
+	}
+	return dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
+}
+
 voice_process :: proc(
 	v: ^Voice,
 	p: ^Engine_Params,
@@ -640,11 +733,18 @@ voice_process :: proc(
 		case:
 			last_amp = dsp.envelope_value_ahead(&v.amp_env, remaining)
 		}
-		target := math.floor(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
+		target := dsp.floor_f32(last_amp * AMP_ENVELOPE_STEPS) / AMP_ENVELOPE_STEPS
 		v.amp_step = (target - v.amp_now) / f32(remaining)
 		v.knots_valid = true
 	}
-	exact_amp := dsp.envelope_process(&v.amp_env)
+	// The exact level is only heard in a note's first chunk; after it the ramp
+	// stands in for it, and the envelope only has to move.
+	exact_amp: f32
+	if v.first_chunk {
+		exact_amp = dsp.envelope_process(&v.amp_env)
+	} else {
+		dsp.envelope_advance(&v.amp_env)
+	}
 	filter_env := dsp.envelope_process(&v.filter_env)
 	mod_env: f32 = 0
 	if p.mod_env_on {
@@ -835,38 +935,67 @@ voice_process :: proc(
 	// here while the reference sounded.
 	//
 	// The tracking amount is not linear: see `filter_track_shift`.
-	knob_index := filter_knob_index(p.filter_cutoff_state)
-	track_shift := filter_track_shift_ln(knob_index, p.filter_key_track_ln, base_note)
-
-	// Each step of parameter 21 moves the envelope's endpoint by two stored
-	// states of the cutoff knob.
-	env_amount := p.filter_env_cutoff_states * FILTER_INDEX_STEPS / f32(FILTER_TABLE_SIZE)
-	if p.filter_velocity {
-		// Parameter 24: "Select whether the amount of envelope variation
-		// changes according to the velocity of the note played."
-		env_amount *= v.velocity
+	track_key := Cutoff_Track_Key{p.filter_cutoff_state, p.filter_key_track_ln, base_note}
+	if !v.cutoff_track_valid || track_key != v.cutoff_track_key {
+		v.knob_index = filter_knob_index(p.filter_cutoff_state)
+		v.track_shift = filter_track_shift_ln(v.knob_index, p.filter_key_track_ln, base_note)
+		v.cutoff_track_key = track_key
+		v.cutoff_track_valid = true
 	}
-	// The amount is held to the room left on the axis first, then the envelope
-	// level takes its fraction of what survives. The order is observable near
-	// either end of the knob: cutoff 44 with amount 31 asks for -64 states, the
-	// endpoint stops at the bottom, and a sustain of 73 takes 57.5% of the
-	// surviving 44-state trip.
-	env_shift := filter_env_shift(knob_index + track_shift, env_amount, filter_env)
-	target_index := filter_modulate_index(
-		knob_index + track_shift + env_shift,
+	knob_index := v.knob_index
+	track_shift := v.track_shift
+
+	cutoff_key := Cutoff_Key {
+		filter_env,
 		mod_cutoff_steps,
-	)
-	cutoff_index := cutoff_ramp_step(
-		&v.cutoff_ramp,
-		target_index,
-		p.filter_cutoff_state,
+		knob_index,
+		track_shift,
 		p.filter_env_cutoff_states,
+		p.filter_velocity ? v.velocity : 1,
+		p.filter_cutoff_state,
 		p.filter_key_track,
-		cutoff_ramp_samples(sample_rate),
-	)
+		sample_rate,
+	}
+	cutoff_index: f32
+	if v.cutoff_settled && cutoff_key == v.cutoff_key {
+		cutoff_index = v.cutoff_held
+	} else {
+		// Each step of parameter 21 moves the envelope's endpoint by two stored
+		// states of the cutoff knob.
+		env_amount := p.filter_env_cutoff_states * FILTER_INDEX_STEPS / f32(FILTER_TABLE_SIZE)
+		if p.filter_velocity {
+			// Parameter 24: "Select whether the amount of envelope variation
+			// changes according to the velocity of the note played."
+			env_amount *= v.velocity
+		}
+		// The amount is held to the room left on the axis first, then the envelope
+		// level takes its fraction of what survives. The order is observable near
+		// either end of the knob: cutoff 44 with amount 31 asks for -64 states, the
+		// endpoint stops at the bottom, and a sustain of 73 takes 57.5% of the
+		// surviving 44-state trip.
+		env_shift := filter_env_shift(knob_index + track_shift, env_amount, filter_env)
+		target_index := filter_modulate_index(
+			knob_index + track_shift + env_shift,
+			mod_cutoff_steps,
+		)
+		cutoff_index = cutoff_ramp_step(
+			&v.cutoff_ramp,
+			target_index,
+			p.filter_cutoff_state,
+			p.filter_env_cutoff_states,
+			p.filter_key_track,
+			cutoff_ramp_samples(sample_rate),
+		)
+		v.cutoff_key = cutoff_key
+		v.cutoff_held = cutoff_index
+		// Finished, and on the target: the ramp's last step lands a sample before it
+		// reports itself done, and that step is not the target yet.
+		v.cutoff_settled =
+			v.cutoff_ramp.position >= cutoff_ramp_samples(sample_rate) && cutoff_index == target_index
+	}
 	// Every filter type runs on the position itself, one step of the axis at a
 	// time.
-	axis_index := math.floor(cutoff_index)
+	axis_index := dsp.floor_f32(cutoff_index)
 	if v.axis_hz_cache == 0 || axis_index != v.axis_index_cache {
 		v.axis_index_cache = axis_index
 		v.axis_hz_cache = filter_index_hz(axis_index)
@@ -905,14 +1034,26 @@ voice_process :: proc(
 	// The old law was not merely shallow, it was wrong in both directions --
 	// at the top of the knob it reached 42 dB against the reference's 29.8.
 	VELOCITY_DEPTH_DB :: f32(29.77)
-	velocity_attenuation_db := VELOCITY_DEPTH_DB * p.amp_velocity_sens * (1.0 - v.velocity)
-	velocity_gain := math.pow(f32(10.0), -velocity_attenuation_db / 20.0)
+	if !v.velocity_gain_valid ||
+	   v.velocity_gain_sens != p.amp_velocity_sens ||
+	   v.velocity_gain_velocity != v.velocity {
+		velocity_attenuation_db := VELOCITY_DEPTH_DB * p.amp_velocity_sens * (1.0 - v.velocity)
+		v.velocity_gain = math.pow(f32(10.0), -velocity_attenuation_db / 20.0)
+		v.velocity_gain_sens = p.amp_velocity_sens
+		v.velocity_gain_velocity = v.velocity
+		v.velocity_gain_valid = true
+	}
+	velocity_gain := v.velocity_gain
 	gain := amp_env * p.amp_gain * velocity_gain * mod_amplitude
 
 	// Synth1 sums the unison layers at unity; there is no count trim.
 	stack_scale := unison_stack_scale(v.unison_count)
 
 	fm_position := dsp.clamp32(p.osc1_fm + mod_fm, 0, 1)
+	fm_depth: f32 = 0
+	if fm_position > 0 && !p.osc_ring {
+		fm_depth = fm_frequency_depth(fm_position)
+	}
 
 	// -- audio rate ----------------------------------------------------------
 
@@ -926,15 +1067,14 @@ voice_process :: proc(
 		note1 := base_note + layer_pitch +
 			u.detune / CENTS_PER_SEMITONE + mod_osc1_semitones
 
-		osc2_hz: f32
+		note2: f32
 		if p.osc2_key_track {
-			note2 :=
+			note2 =
 				base_note + layer_pitch +
 				u.detune / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones
-			osc2_hz = dsp.note_to_hz(note2)
 		} else {
 			// Tracking off fixes oscillator 2's base note, but unison pitch
 			// still separates the alternating layers -- and the fine tune and
@@ -946,14 +1086,13 @@ voice_process :: proc(
 			// reference's fixed pitch is 220 Hz and this one's is middle C is
 			// a separate finding, left alone here; see
 			// docs/synth1-behavior-errors.md.
-			note2 :=
+			note2 =
 				60.0 + layer_pitch +
 				u.detune / CENTS_PER_SEMITONE +
 				p.fine_tune_cents / CENTS_PER_SEMITONE +
 				p.osc2_semitones +
 				(p.osc2_cents / CENTS_PER_SEMITONE) +
 				mod_osc2_semitones
-			osc2_hz = dsp.note_to_hz(note2)
 		}
 
 		// Parameter 76 is inside every outer layer. Zero keeps the exact old
@@ -967,21 +1106,26 @@ voice_process :: proc(
 			component_limit = OSC1_COMPONENT_COUNT
 			component_gain = OSC1_COMPONENT_GAIN
 		}
-		for component in first_component ..< component_limit {
-			component_note := note1 +
-				osc1_component_cents(component, p.osc1_detune) / CENTS_PER_SEMITONE
-			dsp.oscillator_set_frequency(
-				osc1_component(u, component),
-				dsp.note_to_hz(component_note),
-				sample_rate,
-			)
-			dsp.oscillator_set_frequency(
-				sub_component(u, component),
-				dsp.note_to_hz(component_note + p.sub_octave),
-				sample_rate,
-			)
+		pitch_key := Pitch_Key{note1, note2, p.osc1_detune, p.sub_octave, sample_rate}
+		if !u.pitch_key_valid || pitch_key != u.pitch_key {
+			for component in first_component ..< component_limit {
+				component_note := note1 +
+					osc1_component_cents(component, p.osc1_detune) / CENTS_PER_SEMITONE
+				dsp.oscillator_set_frequency(
+					osc1_component(u, component),
+					dsp.note_to_hz(component_note),
+					sample_rate,
+				)
+				dsp.oscillator_set_frequency(
+					sub_component(u, component),
+					dsp.note_to_hz(component_note + p.sub_octave),
+					sample_rate,
+				)
+			}
+			dsp.oscillator_set_frequency(&u.osc2, dsp.note_to_hz(note2), sample_rate)
+			u.pitch_key = pitch_key
+			u.pitch_key_valid = true
 		}
-		dsp.oscillator_set_frequency(&u.osc2, osc2_hz, sample_rate)
 
 		// Oscillator 2 advances first because it is the FM modulator: its output
 		// displaces oscillator 1's phase within the same sample.
@@ -1027,7 +1171,7 @@ voice_process :: proc(
 			fm_offset: f32 = 0
 			sub_fm_offset: f32 = 0
 			if fm_position > 0 && !p.osc_ring {
-				depth := osc2_value * fm_frequency_depth(fm_position)
+				depth := osc2_value * fm_depth
 				fm_offset = depth * osc1.increment
 				sub_fm_offset = depth * sub_oscillator.increment
 			}
@@ -1035,8 +1179,8 @@ voice_process :: proc(
 			if p.sub_gain > 0 {
 				sub_value += dsp.oscillator_value(sub_oscillator, p.sub_shape, 0.5)
 			}
-			dsp.oscillator_advance_modulated(sub_oscillator, sub_fm_offset)
-			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset)
+			dsp.oscillator_advance_modulated(sub_oscillator, sub_fm_offset, p.sub_shape == .Noise)
+			wrapped, wrap_frac := dsp.oscillator_advance_modulated(osc1, fm_offset, p.osc1_shape == .Noise)
 			if component == OSC1_COMPONENT_CENTRE {
 				centre_wrapped = wrapped
 				centre_wrap_frac = wrap_frac
@@ -1075,26 +1219,7 @@ voice_process :: proc(
 			mixed = mixed * p.sub_carrier_gain + sub_value * p.sub_gain
 		}
 
-		// Each type is the reference's own section at the reference's own corner,
-		// so no measured table or level correction sits in front of any of them:
-		// see `dsp.Chamberlin`, `dsp.Moog_Ladder` and `dsp.Diode_Ladder`.
-		filtered: f32
-		if p.filter_diode {
-			dsp.diode_ladder_set(&u.diode, axis_hz, p.filter_resonance, sample_rate)
-			filtered = dsp.diode_ladder_process(&u.diode, mixed)
-		} else if p.filter_mode == .Low_Pass && p.filter_slope == .Slope_24 {
-			dsp.moog_ladder_set(&u.ladder, axis_hz, p.filter_resonance, sample_rate)
-			filtered = dsp.moog_ladder_process(&u.ladder, mixed)
-		} else {
-			dsp.chamberlin_set_cutoff(&u.chamberlin, axis_hz, sample_rate)
-			filtered = dsp.chamberlin_process(
-				&u.chamberlin,
-				mixed,
-				p.filter_resonance,
-				p.filter_mode,
-			)
-		}
-		filtered = dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
+		filtered := voice_filter_layer(u, p, mixed, axis_hz, sample_rate)
 
 		sample := filtered * gain * stack_scale
 

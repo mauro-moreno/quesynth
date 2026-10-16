@@ -31,6 +31,27 @@ clamp32 :: proc "contextless" (v, lo, hi: f32) -> f32 {
 	return v
 }
 
+// Odin's `math.floor` and `math.trunc` on f32 go through a software `modf`. Inside
+// the range an int32 holds, and every f32 at or above 2^23 is already whole, a
+// conversion does the same job in one instruction. Outside it, and for NaN, the
+// library's answer is kept.
+FAST_ROUND_LIMIT :: f32(8388608.0)
+
+trunc_f32 :: proc "contextless" (x: f32) -> f32 {
+	if abs(x) < FAST_ROUND_LIMIT {
+		return f32(i32(x))
+	}
+	return math.trunc(x)
+}
+
+floor_f32 :: proc "contextless" (x: f32) -> f32 {
+	if abs(x) < FAST_ROUND_LIMIT {
+		whole := f32(i32(x))
+		return whole > x ? whole - 1.0 : whole
+	}
+	return math.floor(x)
+}
+
 lerp32 :: proc "contextless" (a, b, t: f32) -> f32 {
 	return a + (b - a) * t
 }

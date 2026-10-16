@@ -106,6 +106,31 @@ jobs:
         shell: pwsh
         run: node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
 
+      # Quesynth Pad. Its rack rules, its .qkit format and its distribution
+      # bundle are plain JavaScript with Node tests, and the two shells have to
+      # load the same scripts in the same order; none of that is reached by the
+      # panel smoke test above, which only boots index.html.
+      - name: Quesynth Pad's rules, bundle and page scripts
+        shell: pwsh
+        run: |
+          node --test tests/ui/pad-model.test.cjs tests/ui/bundle-pad.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "the pad tests failed" }
+          node ui/check-pages.js
+          if ($LASTEXITCODE -ne 0) { throw "the two shells load different scripts" }
+
+      # The build above only proves the module compiles. This one is optimised
+      # as the shipped page is, and is run: a message has to reach the slot it
+      # names and no other, and sixteen slots have to share one wavetable bank.
+      - name: Quesynth Pad's engines are isolated and share their tables
+        shell: pwsh
+        run: |
+          odin build hosts/wasm -target:js_wasm32 -o:speed -out:hosts/wasm/synth.wasm
+          if ($LASTEXITCODE -ne 0) { throw "the wasm host did not build" }
+          node hosts/wasm/check-imports.js
+          if ($LASTEXITCODE -ne 0) { throw "the worklet is missing an import" }
+          node hosts/wasm/check-slots.js
+          if ($LASTEXITCODE -ne 0) { throw "the slot check failed" }
+
       # The measurement tool behind the sub-oscillator level section of
       # docs/null-test.md. It cannot run its own measurement here -- that needs
       # the reference plugin and a patch corpus, neither of which is in the

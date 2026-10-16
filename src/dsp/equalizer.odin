@@ -60,6 +60,10 @@ tone_reset :: proc "contextless" (t: ^Tone) {
 	t^ = {}
 }
 
+tone_is_silent :: proc "contextless" (t: ^Tone) -> bool {
+	return t.x_prev == 0 && t.y_prev == 0
+}
+
 tone_is_active :: proc "contextless" (s: Tone_Setting, sample_rate: f32) -> bool {
 	switch s.mode {
 	case .Off:
@@ -241,6 +245,23 @@ equalizer_reset :: proc "contextless" (e: ^Equalizer) {
 	biquad_reset(&e.peak[1])
 	tone_reset(&e.tilt[0])
 	tone_reset(&e.tilt[1])
+}
+
+// Whether the equaliser holds nothing for the sections `p` runs. Fed zero, such
+// an equaliser outputs zero and its state stays zero.
+equalizer_is_silent :: proc "contextless" (e: ^Equalizer, p: ^Equalizer_Params) -> bool {
+	if !tone_is_silent(&e.tilt[0]) || !tone_is_silent(&e.tilt[1]) {
+		return false
+	}
+	if p.gain_db == 0 {
+		return true
+	}
+	for b in e.peak {
+		if b.x1 != 0 || b.x2 != 0 || b.y1 != 0 || b.y2 != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Process one stereo sample. The peak runs first, then the tilt.
