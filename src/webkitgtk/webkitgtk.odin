@@ -70,6 +70,7 @@ Api :: struct {
 	g_object_unref:             proc "c" (object: rawptr),
 
 	// GDK
+	gdk_display_get_default:    proc "c" () -> rawptr,
 	gdk_set_allowed_backends:   proc "c" (backends: cstring),
 	gdk_window_show:            proc "c" (window: rawptr),
 	gdk_flush:                  proc "c" (),
@@ -186,6 +187,7 @@ load :: proc() -> bool {
 	a.g_signal_handler_disconnect = auto_cast symbol(gobject, "g_signal_handler_disconnect", &ok)
 	a.g_object_unref = auto_cast symbol(gobject, "g_object_unref", &ok)
 
+	a.gdk_display_get_default = auto_cast symbol(gdk, "gdk_display_get_default", &ok)
 	a.gdk_set_allowed_backends = auto_cast symbol(gdk, "gdk_set_allowed_backends", &ok)
 	a.gdk_window_show = auto_cast symbol(gdk, "gdk_window_show", &ok)
 	a.gdk_flush = auto_cast symbol(gdk, "gdk_flush", &ok)
@@ -241,11 +243,12 @@ symbol :: proc(lib: dynlib.Library, name: string, ok: ^bool) -> rawptr {
 // Initialise GTK, once per process and on the thread the host runs its
 // interface on, which is the only thread GTK may then be used from.
 //
-// X11 only. The host hands over an X11 window, and GtkPlug -- how the view gets
-// inside it -- exists only on X11; a Wayland session reaches this through
-// XWayland. setlocale is left alone: GTK would otherwise switch the host's whole
-// process to the user's locale, and a host that prints or parses numbers with a
-// decimal comma it did not ask for is a broken host.
+// X11 only, unless the host's SWELL brought GTK up (see init_gtk). The host
+// hands over an X11 window, and GtkPlug -- how the view gets inside it -- exists
+// only on X11; a Wayland session reaches this through XWayland. setlocale is
+// left alone: GTK would otherwise switch the host's whole process to the user's
+// locale, and a host that prints or parses numbers with a decimal comma it did
+// not ask for is a broken host.
 @(private)
 start_gtk :: proc() -> bool {
 	switch started {
@@ -265,12 +268,61 @@ start_gtk :: proc() -> bool {
 	// renderer off makes it paint. Set without overwrite, so a host or a user who
 	// already chose a value keeps it.
 	posix.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", false)
-	api.gdk_set_allowed_backends("x11")
-	api.gtk_disable_setlocale()
-	if !api.gtk_init_check(nil, nil) {
-		// No display to open: nowhere to show a view.
+	if !init_gtk(swell_get_func(), &api) {
+		// No display to open, or GDK is the host's and cannot be shared:
+		// nowhere to show a view.
 		return false
 	}
 	started = .Ready
 	return true
+}
+
+// SWELL's two C entry points, as WDL/swell declares them: the function table a
+// SWELL host exports (SWELLAPI_GetFunc, swell-modstub-generic.cpp) and the
+// extension call found through it (SWELL_ExtendedAPI, swell-functions.h).
+Swell_Get_Func :: #type proc "c" (name: cstring) -> rawptr
+Swell_Extended_Api :: #type proc "c" (key: cstring, value: rawptr) -> rawptr
+
+// The host's SWELL function table, or nil in a host without one. REAPER's
+// Linux executable exports it; it is how everything of SWELL's is reached.
+swell_get_func :: proc() -> Swell_Get_Func {
+	self := posix.dlopen(nil, {.LAZY})
+	if self == nil {
+		return nil
+	}
+	defer posix.dlclose(self)
+	return auto_cast posix.dlsym(self, "SWELLAPI_GetFunc")
+}
+
+// Initialise GTK without taking GDK's event handler from a host that has one.
+//
+// GDK hands every event in the process to a single handler, and GTK's first
+// initialisation sets that handler to GTK's own. REAPER on Linux draws itself
+// with SWELL on GDK, and SWELL's handler is the one its windows depend on: a
+// plain gtk_init_check there takes it over, REAPER stops answering, and it is
+// the host that has to be killed, not the editor. SWELL provides for plugins
+// that need GTK: asked for "LOAD_GTK", it initialises GTK itself and puts its
+// own handler back, which passes GTK's events on to GTK. So SWELL is asked
+// first, and when it says yes GTK is up and nothing more is done here.
+//
+// Without that, GDK already running means a host's handler that the same call
+// would replace, so there is no editor. Only where nobody has GDK running yet
+// is GTK initialised here, as it always was.
+//
+// Takes the host's table and the bound entry points as arguments so that
+// tests/panel can check the order with stand-ins, without a display or a host.
+init_gtk :: proc(get_func: Swell_Get_Func, a: ^Api) -> bool {
+	if get_func != nil {
+		extended: Swell_Extended_Api = auto_cast get_func("SWELL_ExtendedAPI")
+		if extended != nil && extended("LOAD_GTK", nil) != nil {
+			return true
+		}
+	}
+	if a.gdk_display_get_default() != nil {
+		fmt.eprintln("Quesynth: this host already runs GDK and gave no way to share it; the editor is off and the host's own controls are used instead")
+		return false
+	}
+	a.gdk_set_allowed_backends("x11")
+	a.gtk_disable_setlocale()
+	return bool(a.gtk_init_check(nil, nil))
 }
