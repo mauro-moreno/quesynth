@@ -322,8 +322,6 @@ unison_stack_scale :: proc(count: int) -> f32 {
 	return 1.0
 }
 
-// Point every oscillator in every layer at the engine's table bank. Done once per
-// voice when the pool is built; `oscillator_init` keeps it across notes.
 // Whether every oscillator of this voice plays from `bank`.
 voice_uses_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) -> bool {
 	for i in 0 ..< MAX_UNISON {
@@ -340,6 +338,8 @@ voice_uses_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) -> bool {
 	return true
 }
 
+// Point every oscillator in every layer at the engine's table bank. Done once per
+// voice when the pool is built; `oscillator_init` keeps it across notes.
 voice_set_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) {
 	for i in 0 ..< MAX_UNISON {
 		u := &v.unison[i]

@@ -89,9 +89,10 @@ SAMPLE_RATE :: f32(48000)
 BLOCK :: 128
 NOTES := [16]int{48, 52, 55, 59, 62, 65, 69, 72, 40, 44, 47, 51, 54, 57, 61, 64}
 
-// Room for about a minute of samples; sampling stops when it is full. The buffers are allocated before sampling
-// starts and never grown: the sampler suspends the render thread, which may hold
-// the heap's lock, so it must not allocate while the thread is stopped.
+// Room for about a minute of samples; sampling stops when it is full. The buffers
+// are allocated before sampling starts and never grown: the sampler suspends the
+// render thread, which may hold the heap's lock, so it must not allocate while
+// the thread is stopped.
 SAMPLE_CAPACITY :: 1 << 20
 
 Sampler :: struct {
@@ -298,6 +299,13 @@ main :: proc() {
 	}
 	sync.atomic_store(&sampler.stop, true)
 	thread.join(sampling)
+	if sampler.count == len(sampler.samples) {
+		fmt.eprintfln(
+			"profile: the sample buffer filled after %v samples; the rest of the %v s run is not in this report",
+			sampler.count,
+			seconds,
+		)
+	}
 
 	by_caller := make(map[string]int)
 	by_line := make(map[string]int)

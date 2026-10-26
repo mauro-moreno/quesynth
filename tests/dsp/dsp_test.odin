@@ -356,6 +356,24 @@ test_lfo_phase_is_where_the_last_sample_was_taken :: proc(t: ^testing.T) {
 	testing.expect_value(t, dsp.lfo_phase(&l), 0.0)
 }
 
+// A faster rate shortens the period, and the phase is kept in step with it rather
+// than reading past a whole cycle until the next sample.
+@(test)
+test_lfo_phase_stays_inside_a_cycle_when_the_rate_rises :: proc(t: ^testing.T) {
+	l: dsp.Lfo
+	dsp.lfo_init(&l, 5)
+	l.shape = .Sine
+	dsp.lfo_set_frequency(&l, 1.0, SR)
+	for _ in 0 ..< 40000 {
+		dsp.lfo_process(&l)
+	}
+	before := dsp.lfo_phase(&l)
+	dsp.lfo_set_frequency(&l, 40.0, SR)
+	after := dsp.lfo_phase(&l)
+	testing.expect(t, after < 1, "the phase read past one cycle after the period shortened")
+	testing.expectf(t, abs(after - before) < 0.001, "the rate change moved the phase from %v to %v", before, after)
+}
+
 // ---------------------------------------------------------------------------
 // Noise
 // ---------------------------------------------------------------------------

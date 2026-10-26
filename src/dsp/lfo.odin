@@ -90,6 +90,7 @@ lfo_set_frequency :: proc "contextless" (l: ^Lfo, hz, sample_rate: f32) {
 	l.grid = min(hz > LFO_FAST_HZ ? LFO_GRID_FAST : LFO_GRID_SLOW, max(1, l.period / 4))
 	if old > 1 && old != l.period {
 		l.position = int(f64(l.period) * f64(l.position) / f64(old))
+		l.sampled_at = int(f64(l.period) * f64(l.sampled_at) / f64(old))
 		l.update_at = 0
 	}
 }
