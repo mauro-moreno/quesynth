@@ -48,6 +48,7 @@ Moog_Ladder :: struct {
 	p_target: f32,
 	r_target: f32,
 	smooth:   f32,
+	smooth_rate: f32,
 	primed:   bool,
 
 	hz:        f32,
@@ -94,7 +95,10 @@ moog_ladder_set :: proc "contextless" (l: ^Moog_Ladder, hz, resonance, sample_ra
 	scale := math.exp((1.0 - shape * 0.5) * MOOG_LADDER_R_SCALE)
 	l.r_target = f32(scale) * clamp32(resonance, 0, 1)
 
-	l.smooth = f32(1.0 - math.pow(MOOG_LADDER_SMOOTH_REMAINDER, 1.0 / (MOOG_LADDER_SMOOTH_SECONDS * f64(sr))))
+	if l.smooth_rate != sample_rate || l.smooth == 0 {
+		l.smooth = f32(1.0 - math.pow(MOOG_LADDER_SMOOTH_REMAINDER, 1.0 / (MOOG_LADDER_SMOOTH_SECONDS * f64(sr))))
+		l.smooth_rate = sample_rate
+	}
 	if !l.primed {
 		l.k, l.p, l.r = l.k_target, l.p_target, l.r_target
 		l.primed = true

@@ -178,9 +178,17 @@ oscillator_advance :: proc "contextless" (o: ^Oscillator) -> (wrapped: bool, wra
 // `oscillator_advance` the phase can move backwards across the cycle boundary.
 // Both directions are wrapped. `wrapped` reports only a forward crossing, which
 // is what hard sync is defined against.
+//
+// `draw_noise` false leaves the noise generator where it is, for an oscillator
+// that is not playing `Noise` and is never synced, whose generator nothing reads.
+// The generator therefore stands still while another shape plays, so a shape
+// switched to `Noise` mid-note starts from a different draw than a build that
+// advanced it every sample: the output differs bit for bit from `main` there, and
+// from nowhere else.
 oscillator_advance_modulated :: proc "contextless" (
 	o: ^Oscillator,
 	phase_offset: f32,
+	draw_noise := true,
 ) -> (
 	wrapped: bool,
 	wrap_frac: f32,
@@ -210,7 +218,9 @@ oscillator_advance_modulated :: proc "contextless" (
 	if !is_finite(o.phase) {
 		o.phase = 0
 	}
-	o.noise = rng_next_bipolar(&o.rng)
+	if draw_noise {
+		o.noise = rng_next_bipolar(&o.rng)
+	}
 	return
 }
 

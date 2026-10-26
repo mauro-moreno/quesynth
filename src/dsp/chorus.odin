@@ -64,6 +64,46 @@ Chorus :: struct {
 	sine:    f32,
 	cosine:  f32,
 	enabled: bool,
+	sweep:   Chorus_Sweep,
+}
+
+// The sweep's centre, reach and oscillator step, with the settings they were
+// derived from: they only move with the delay, depth or rate knob.
+Chorus_Sweep :: struct {
+	delay_samples: f32,
+	depth:         f32,
+	rate_hz:       f32,
+	sample_rate:   f32,
+	valid:         bool,
+	centre:        f32,
+	scale:         f32,
+	step:          f32,
+}
+
+chorus_sweep :: proc "contextless" (c: ^Chorus, p: ^Chorus_Params, sample_rate: f32) -> ^Chorus_Sweep {
+	s := &c.sweep
+	if !s.valid ||
+	   p.delay_samples != s.delay_samples ||
+	   p.depth != s.depth ||
+	   p.rate_hz != s.rate_hz ||
+	   sample_rate != s.sample_rate {
+		centre_samples := int(p.delay_samples)
+		if centre_samples < 1 {
+			centre_samples = 1
+		}
+		s.centre = f32(centre_samples)
+		s.scale = f32(chorus_excursion(centre_samples, p.depth, p.rate_hz, sample_rate)) * 65536.0
+		s.step = 0
+		if sample_rate > 0 && is_finite(p.rate_hz) {
+			s.step = 2.0 * math.sin(math.PI * clamp32(abs(p.rate_hz), 0, sample_rate * 0.49) / sample_rate)
+		}
+		s.delay_samples = p.delay_samples
+		s.depth = p.depth
+		s.rate_hz = p.rate_hz
+		s.sample_rate = sample_rate
+		s.valid = true
+	}
+	return s
 }
 
 chorus_init :: proc "contextless" (c: ^Chorus, left, right: []f32) {
@@ -147,7 +187,24 @@ chorus_feed :: proc "contextless" (line: ^Delay_Line, amount: f32) {
 	if newest < 0 {
 		newest += n
 	}
-	line.buffer[newest] = sanitize(line.buffer[newest] + amount)
+	fed := sanitize(line.buffer[newest] + amount)
+	line.buffer[newest] = fed
+	if fed != 0 {
+		line.zero_run = 0
+	}
+}
+
+chorus_is_silent :: proc "contextless" (c: ^Chorus) -> bool {
+	return delay_line_is_silent(&c.line[0]) && delay_line_is_silent(&c.line[1])
+}
+
+// One sample of zero input through a chorus that `chorus_is_silent`: every tap
+// reads zero and every write leaves a zero where a zero was, so only the
+// oscillator moves, exactly as `chorus_process` moves it.
+chorus_process_silence :: proc "contextless" (c: ^Chorus, p: ^Chorus_Params, sample_rate: f32) {
+	step := chorus_sweep(c, p, sample_rate).step
+	c.sine = c.sine - step * c.cosine
+	c.cosine = c.sine * step + c.cosine
 }
 
 // Process one stereo sample.
@@ -162,18 +219,10 @@ chorus_process :: proc "contextless" (
 	level := clamp32(p.level, 0, 1)
 	feedback := clamp32(p.feedback, -0.99, 0.99)
 
-	centre_samples := int(p.delay_samples)
-	if centre_samples < 1 {
-		centre_samples = 1
-	}
-	centre := f32(centre_samples)
-	reach := chorus_excursion(centre_samples, p.depth, p.rate_hz, sample_rate)
-	scale := f32(reach) * 65536.0
-
-	step: f32 = 0
-	if sample_rate > 0 && is_finite(p.rate_hz) {
-		step = 2.0 * math.sin(math.PI * clamp32(abs(p.rate_hz), 0, sample_rate * 0.49) / sample_rate)
-	}
+	sweep := chorus_sweep(c, p, sample_rate)
+	centre := sweep.centre
+	scale := sweep.scale
+	step := sweep.step
 	c.sine = c.sine - step * c.cosine
 	c.cosine = c.sine * step + c.cosine
 	sweep_sine := f32(int(scale * c.sine)) / 65536.0

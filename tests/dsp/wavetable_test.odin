@@ -4,6 +4,7 @@ import "core:math"
 import "core:testing"
 
 import "../../src/dsp"
+import "../../src/engine"
 
 // ---------------------------------------------------------------------------
 // Wavetables
@@ -185,4 +186,48 @@ test_oscillator_plays_from_wavetables :: proc(t: ^testing.T) {
 	defer free(unbuilt)
 	dsp.oscillator_set_bank(&o, unbuilt)
 	testing.expect(t, o.bank == nil)
+}
+
+// Engines that borrow one bank sound exactly as engines that built their own,
+// every one of them reads the host's bank, and destroying an engine leaves a
+// bank it only borrowed alone.
+@(test)
+test_engines_share_one_wavetable_bank :: proc(t: ^testing.T) {
+	bank := build_bank()
+	defer free(bank)
+
+	render :: proc(e: ^engine.Engine) -> [512]f32 {
+		engine.engine_note_on(e, 60, 0.8)
+		left: [512]f32
+		right: [512]f32
+		engine.engine_process(e, left[:], right[:])
+		return left
+	}
+
+	p := default_patch()
+	own: engine.Engine
+	engine.engine_load_patch(&own, p, SR)
+	testing.expect(t, own.wavetables != bank && !own.wavetables_shared)
+
+	first, second: engine.Engine
+	engine.engine_share_wavetables(&first, bank)
+	engine.engine_load_patch(&first, p, SR)
+	engine.engine_load_patch(&second, p, SR)
+	engine.engine_share_wavetables(&second, bank)
+
+	testing.expect(t, first.wavetables == bank, "first engine built its own tables")
+	testing.expect(t, second.wavetables == bank, "second engine kept its own tables")
+	for i in 0 ..< len(second.voices) {
+		testing.expect(t, second.voices[i].unison[0].osc1.bank == bank, "a voice still points at the old bank")
+	}
+
+	want := render(&own)
+	testing.expect(t, render(&first) == want, "a shared bank changed the sound")
+	testing.expect(t, render(&second) == want, "re-pointing a built engine changed the sound")
+
+	engine.engine_destroy(&first)
+	engine.engine_destroy(&second)
+	engine.engine_destroy(&own)
+	testing.expect(t, bank.ready, "destroying a borrower touched the shared bank")
+	testing.expect(t, first.wavetables == nil)
 }

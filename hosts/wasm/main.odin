@@ -18,6 +18,7 @@
 package main
 
 import "base:runtime"
+import "../../src/dsp"
 import "../../src/engine"
 import "../../src/patch"
 
@@ -40,6 +41,12 @@ g_slot_volume: [MAX_SLOTS]f32
 g_slot_pan: [MAX_SLOTS]f32
 g_slots: int
 g_ready: bool
+
+// The oscillator tables, built once and played from by every slot. They are
+// about 650 KB and do not depend on the patch or the sample rate, so sixteen
+// private copies would cost ten megabytes of the page's memory and sixteen
+// builds on the first sixteen hits, for tables that are all the same.
+g_wavetables: ^dsp.Wavetable_Bank
 
 // How much longer a silent slot keeps being rendered.
 //
@@ -67,6 +74,7 @@ slot_ok :: proc "contextless" (slot: i32) -> bool {
 // for instruments it actually touches.
 slot_initialize :: proc(slot: int) {
 	if slot < 0 || slot >= g_slots || g_slot_initialized[slot] {return}
+	engine.engine_share_wavetables(&g_engines[slot], g_wavetables)
 	engine.engine_load_patch(&g_engines[slot], g_patches[slot], g_sample_rate)
 	g_slot_initialized[slot] = true
 }
@@ -100,6 +108,11 @@ synth_init :: proc "c" (sample_rate: f32, block: i32, slots: i32) -> [^]f32 {
 	g_audio = make([]f32, g_block * 2)
 	g_slot_left = make([]f32, g_block)
 	g_slot_right = make([]f32, g_block)
+
+	if g_wavetables == nil {
+		g_wavetables = new(dsp.Wavetable_Bank)
+		dsp.wavetable_build(g_wavetables)
+	}
 
 	g_slots = clamp(int(slots), 1, MAX_SLOTS)
 	g_tail_blocks = int(SLOT_TAIL_SECONDS * f64(sample_rate) / f64(max(g_block, 1))) + 1
@@ -307,6 +320,16 @@ synth_active_voices :: proc "c" (slot: i32) -> i32 {
 	context = wasm_context()
 	if !g_ready || !slot_ok(slot) || !g_slot_initialized[slot] {return 0}
 	return i32(engine.engine_active_voice_count(&g_engines[slot]))
+}
+
+// Whether a slot plays from the one wavetable bank the module built, rather than
+// from a copy of its own. A slot that has not been initialised has no engine to
+// ask and answers no.
+@(export)
+synth_slot_shares_tables :: proc "c" (slot: i32) -> i32 {
+	context = wasm_context()
+	if !g_ready || !slot_ok(slot) || !g_slot_initialized[slot] {return 0}
+	return engine.engine_shares_wavetables(&g_engines[slot], g_wavetables) ? 1 : 0
 }
 
 // A context for the exported entry points.

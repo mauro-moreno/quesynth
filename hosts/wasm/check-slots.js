@@ -17,6 +17,11 @@ const path = require("path");
 
 const bytes = fs.readFileSync(path.join(__dirname, "synth.wasm"));
 const SR = 48000, BLOCK = 128, SLOTS = 16;
+// That the slots share one wavetable bank is asked of the slots directly. The
+// memory limit is only a backstop against the page growing out of hand: sixteen
+// slots measure 51.7 MB today, and unrelated growth, a bigger voice pool or longer
+// delay buffers, should not trip it on a wavetable message.
+const MEMORY_LIMIT_MB = 64;
 
 function rms(a) {
   let s = 0;
@@ -106,6 +111,17 @@ WebAssembly.instantiate(bytes, {
   for (let b = 0; b < 32; b++) w.synth_render();
   const oneShotVoices = w.synth_active_voices(ONE_SHOT);
 
+  // Every slot struck, then the size of the module's memory. The oscillator
+  // tables are the same for every instrument, so the slots share one bank of
+  // them; sixteen private copies would add about nine megabytes to what the page
+  // holds, and nothing else here would notice.
+  for (let s = 0; s < SLOTS; s++) w.synth_note_on(s, 60, 100);
+  w.synth_render();
+  w.synth_all_notes_off(-1);
+  const memoryMB = w.memory.buffer.byteLength / (1024 * 1024);
+  const privateBanks = [];
+  for (let s = 0; s < SLOTS; s++) if (!w.synth_slot_shares_tables(s)) privateBanks.push(s);
+
   const lines = [
     "  slots reported            " + count,
     "  idle, nothing struck      " + quiet.toFixed(6),
@@ -115,6 +131,8 @@ WebAssembly.instantiate(bytes, {
     "  slot " + (SLOT + 1) + " with cutoff open  " + open.toFixed(6),
     "  slot " + (SLOT + 1) + " muted by mixer    " + muted.toFixed(6),
     "  one-shot voices after tail  " + oneShotVoices,
+    "  slots with a private bank   [" + privateBanks.join(", ") + "]",
+    "  memory, all slots struck    " + memoryMB.toFixed(1) + " MB (limit " + MEMORY_LIMIT_MB + ")",
   ];
   console.log(lines.join("\n"));
 
@@ -130,6 +148,12 @@ WebAssembly.instantiate(bytes, {
   }
   if (muted > 1e-6) fail.push("a zero-volume slot reached the rack output");
   if (oneShotVoices !== 0) fail.push("one-shot kept a voice gated without Note Off");
+  if (privateBanks.length) {
+    fail.push("slots " + JSON.stringify(privateBanks) + " hold a wavetable bank of their own instead of the shared one");
+  }
+  if (memoryMB > MEMORY_LIMIT_MB) {
+    fail.push("sixteen slots hold " + memoryMB.toFixed(1) + " MB, over the " + MEMORY_LIMIT_MB + " MB limit");
+  }
 
   if (fail.length) {
     console.error("\nFAILED:\n  " + fail.join("\n  "));

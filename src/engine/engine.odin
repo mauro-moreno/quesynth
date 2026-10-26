@@ -175,11 +175,14 @@ Engine :: struct {
 	key_clock:   u64,
 
 	// The reference's band-limited oscillator tables; see `dsp.Wavetable_Bank`.
-	// About 650 KB, built once on the first `engine_init` and kept across every
-	// later one -- a re-init can happen on the audio thread when the voice pool
-	// resizes, and building there would be both an allocation and a few
-	// milliseconds of work. Freed only by `engine_destroy`.
-	wavetables:  ^dsp.Wavetable_Bank,
+	// About 650 KB. By default the engine builds its own on the first
+	// `engine_init` and keeps it across every later one -- a re-init can happen
+	// on the audio thread when the voice pool resizes, and building there would
+	// be both an allocation and a few milliseconds of work. A host running
+	// several engines builds one bank and hands it to each with
+	// `engine_share_wavetables`; the engine then only borrows it.
+	wavetables:        ^dsp.Wavetable_Bank,
+	wavetables_shared: bool,
 }
 
 // Allocate and configure the engine. This is the only procedure here that
@@ -190,6 +193,7 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 	if e.wavetables == nil {
 		e.wavetables = new(dsp.Wavetable_Bank)
 		dsp.wavetable_build(e.wavetables)
+		e.wavetables_shared = false
 	}
 
 	e.sample_rate = sample_rate > 0 ? sample_rate : DEFAULT_SAMPLE_RATE
@@ -252,10 +256,46 @@ engine_init :: proc(e: ^Engine, params: Engine_Params, sample_rate: f32) {
 
 engine_destroy :: proc(e: ^Engine) {
 	engine_release_buffers(e)
-	if e.wavetables != nil {
-		free(e.wavetables)
-		e.wavetables = nil
+	engine_drop_wavetables(e)
+}
+
+// Borrow a bank the host built and owns, so that many engines play from one set
+// of tables rather than each holding its own copy. The bank must be built and
+// must outlive every engine that borrows it. Call it before `engine_init`, or
+// after: a pool that already exists is pointed at the bank straight away.
+engine_share_wavetables :: proc(e: ^Engine, bank: ^dsp.Wavetable_Bank) {
+	if bank == nil || !bank.ready || bank == e.wavetables {
+		return
 	}
+	engine_drop_wavetables(e)
+	e.wavetables = bank
+	e.wavetables_shared = true
+	for i in 0 ..< len(e.voices) {
+		voice_set_wavetables(&e.voices[i], bank)
+	}
+}
+
+// Whether this engine and every oscillator in its voice pool play from `bank`
+// without holding a copy of their own.
+engine_shares_wavetables :: proc(e: ^Engine, bank: ^dsp.Wavetable_Bank) -> bool {
+	if bank == nil || e.wavetables != bank || !e.wavetables_shared {
+		return false
+	}
+	for i in 0 ..< len(e.voices) {
+		if !voice_uses_wavetables(&e.voices[i], bank) {
+			return false
+		}
+	}
+	return true
+}
+
+// Free the engine's own bank. A borrowed one is only let go, never freed.
+engine_drop_wavetables :: proc(e: ^Engine) {
+	if e.wavetables != nil && !e.wavetables_shared {
+		free(e.wavetables)
+	}
+	e.wavetables = nil
+	e.wavetables_shared = false
 }
 
 // Everything `engine_init` reallocates. The wavetables are not among it: they do
@@ -1020,6 +1060,35 @@ engine_active_voice_count :: proc(e: ^Engine) -> int {
 	return n
 }
 
+// Whether any voice is active, stopping at the first one found.
+engine_any_voice_active :: proc(e: ^Engine) -> bool {
+	for i in 0 ..< len(e.voices) {
+		if e.voices[i].active {
+			return true
+		}
+	}
+	return false
+}
+
+// Whether every effect would return silence for silent input and leave nothing
+// behind: the effect unit is off, the equaliser and delay hold nothing, and the
+// chorus either is off or holds nothing. The effect unit carries state that runs
+// without input, so it has to be off. Both the block's silence shortcut and the
+// per-sample one ask this, so they cannot disagree.
+engine_effects_hold_nothing :: proc(
+	e: ^Engine,
+	params: ^Engine_Params,
+	fx_params: ^dsp.Effect_Params,
+	eq_params: ^dsp.Equalizer_Params,
+) -> bool {
+	return(
+		!fx_params.enabled &&
+		dsp.equalizer_is_silent(&e.equalizer, eq_params) &&
+		dsp.delay_is_silent(&e.delay) &&
+		(!params.chorus_on || dsp.chorus_is_silent(&e.chorus))
+	)
+}
+
 // The size of the voice pool -- the most voices this engine can sound at once.
 // Fixed in engine_init and never grown, so reading it as a metric is stable.
 engine_max_voices :: proc(e: ^Engine) -> int {
@@ -1109,6 +1178,61 @@ effect_params :: proc(
 	return
 }
 
+// What moves once a sample whether anything sounds or not: the smoothed gain, pan
+// and oscillator 2 pitch, the load fade, the bend, and the free-running LFOs, which
+// advance once a sample for the whole engine so every voice reads the same value.
+engine_step_controls :: proc(
+	e: ^Engine,
+	params: ^Engine_Params,
+) -> (
+	lfo_value: [2]f32,
+	lfo_ramped: [2]f32,
+	load_fade: f32,
+) {
+	for j in 0 ..< 2 {
+		lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
+		lfo_ramped[j] = e.global_lfo[j].ramped
+	}
+
+	params.amp_gain = ramp_process(&e.gain_smooth, e.params.amp_gain, CHUNK_FRAMES)
+	load_fade = smoother_process(&e.load_fade, 1)
+	params.pan = smoother_process(&e.pan_smooth, e.params.pan)
+	params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
+	bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
+	if abs(e.pitch_bend - e.pitch_bend_applied) <= bend_step {
+		e.pitch_bend_applied = e.pitch_bend
+	} else {
+		e.pitch_bend_applied += e.pitch_bend > e.pitch_bend_applied ? bend_step : -bend_step
+	}
+	return
+}
+
+// The whole of a block in which nothing can sound, going into effects that hold
+// nothing. Kept out of `engine_process` so that the loop that renders voices is
+// compiled as it was without it.
+engine_render_silence :: #force_no_inline proc(
+	e: ^Engine,
+	params: ^Engine_Params,
+	chorus_params: ^dsp.Chorus_Params,
+	left, right: []f32,
+	n: int,
+) {
+	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
+	for i in 0 ..< n {
+		if chunk.position >= chunk.length {
+			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
+			dsp.chorus_begin_chunk(&e.chorus)
+		}
+		_, _, load_fade := engine_step_controls(e, params)
+		if params.chorus_on {
+			dsp.chorus_process_silence(&e.chorus, chorus_params, e.sample_rate)
+		}
+		left[i] = dsp.soft_clip(0 * load_fade)
+		right[i] = dsp.soft_clip(0 * load_fade)
+		chunk.position += 1
+	}
+}
+
 engine_process :: proc(e: ^Engine, left, right: []f32) {
 	n := min(len(left), len(right))
 
@@ -1127,32 +1251,27 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	params := e.params
 
 	dsp.chorus_begin_block(&e.chorus, params.chorus_on)
+	// Only a note event or the arpeggiator starts a voice, so with the arpeggiator
+	// off and nothing sounding at the top of the block, nothing sounds in it and the
+	// pool is not scanned sample by sample.
+	sounding := params.arp_on || engine_any_voice_active(e)
 	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	dsp.chorus_begin_chunk(&e.chorus)
+
+	// A block in which nothing can sound, going into effects that hold nothing, is
+	// silence from end to end; see the same test below, sample by sample.
+	if !sounding && engine_effects_hold_nothing(e, &params, &fx_params, &eq_params) {
+		engine_render_silence(e, &params, &chorus_params, left, right, n)
+		return
+	}
+
 	for i in 0 ..< n {
 		if chunk.position >= chunk.length {
 			chunk = Chunk{0, min(CHUNK_FRAMES, n - i)}
 			dsp.chorus_begin_chunk(&e.chorus)
 		}
-		// The free-running LFOs advance once per sample for the whole engine,
-		// so every non-key-synced voice reads the same value.
-		lfo_value, lfo_ramped: [2]f32
-		for j in 0 ..< 2 {
-			lfo_value[j] = dsp.lfo_process(&e.global_lfo[j])
-			lfo_ramped[j] = e.global_lfo[j].ramped
-		}
-
-		params.amp_gain = ramp_process(&e.gain_smooth, e.params.amp_gain, CHUNK_FRAMES)
-		load_fade := smoother_process(&e.load_fade, 1)
-		params.pan = smoother_process(&e.pan_smooth, e.params.pan)
-		params.osc2_semitones = pitch_slide_step(&e.osc2_pitch, e.sample_rate)
-		bend_step := PITCH_BEND_SLEW_PER_SECOND / e.sample_rate
-		if abs(e.pitch_bend - e.pitch_bend_applied) <= bend_step {
-			e.pitch_bend_applied = e.pitch_bend
-		} else {
-			e.pitch_bend_applied += e.pitch_bend > e.pitch_bend_applied ? bend_step : -bend_step
-		}
+		lfo_value, lfo_ramped, load_fade := engine_step_controls(e, &params)
 
 		// Per sample, and only when it is switched on. A step boundary rounded
 		// to the block would land a 1/24-beat step up to a whole step late at
@@ -1172,12 +1291,17 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 
 		sum_l: f32 = 0
 		sum_r: f32 = 0
+		voiced := false
 
 		for vi in 0 ..< len(e.voices) {
+			if !sounding {
+				break
+			}
 			v := &e.voices[vi]
 			if !v.active {
 				continue
 			}
+			voiced = true
 			l, r := voice_process(v, &params, e.sample_rate, e.pitch_bend_applied, lfo_value, lfo_ramped, chunk)
 			sum_l += l
 			sum_r += r
@@ -1196,6 +1320,20 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// the tempo.
 		out_l := dsp.sanitize(sum_l)
 		out_r := dsp.sanitize(sum_r)
+
+		// Silence into effects that hold nothing: every section would return zero
+		// and write zeros into lines of zeros, which read the same from wherever
+		// their write heads stand, so only the chorus's oscillator has to move. The
+		// effect unit carries state that runs without input, so it has to be off.
+		if !voiced && engine_effects_hold_nothing(e, &params, &fx_params, &eq_params) {
+			if params.chorus_on {
+				dsp.chorus_process_silence(&e.chorus, &chorus_params, e.sample_rate)
+			}
+			left[i] = dsp.soft_clip(out_l * load_fade)
+			right[i] = dsp.soft_clip(out_r * load_fade)
+			chunk.position += 1
+			continue
+		}
 
 		// The effect unit comes first. The manual lists it after the equaliser,
 		// but the reference does not run it there: with a distortion on, an
