@@ -324,6 +324,22 @@ unison_stack_scale :: proc(count: int) -> f32 {
 
 // Point every oscillator in every layer at the engine's table bank. Done once per
 // voice when the pool is built; `oscillator_init` keeps it across notes.
+// Whether every oscillator of this voice plays from `bank`.
+voice_uses_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) -> bool {
+	for i in 0 ..< MAX_UNISON {
+		u := &v.unison[i]
+		if u.osc1.bank != bank || u.osc2.bank != bank || u.sub.bank != bank {
+			return false
+		}
+		for satellite in 0 ..< OSC1_SATELLITE_COUNT {
+			if u.osc1_satellites[satellite].bank != bank || u.sub_satellites[satellite].bank != bank {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 voice_set_wavetables :: proc(v: ^Voice, bank: ^dsp.Wavetable_Bank) {
 	for i in 0 ..< MAX_UNISON {
 		u := &v.unison[i]
@@ -639,10 +655,6 @@ CHUNK_FRAMES :: 256
 // The amplitude envelope is a whole number of 1/2048ths.
 AMP_ENVELOPE_STEPS :: f32(2048.0)
 
-// Render one sample of this voice into a stereo pair.
-//
-// `lfo_value` carries the two free-running LFO values the engine advanced once
-// for the whole block; a key-synced LFO ignores them and advances its own.
 // One layer's filter, with the saturator after it.
 //
 // Each type is the reference's own section at the reference's own corner, so no
@@ -678,6 +690,11 @@ voice_filter_layer :: #force_no_inline proc(
 	return dsp.sanitize(dsp.filter_saturate(filtered, p.filter_saturation_drive))
 }
 
+// Render one sample of this voice into a stereo pair.
+//
+// `global_lfo_value` and `global_lfo_ramped` carry the two free-running LFO
+// values the engine advanced once for the whole block; a key-synced LFO ignores
+// them and advances its own.
 voice_process :: proc(
 	v: ^Voice,
 	p: ^Engine_Params,

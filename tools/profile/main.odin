@@ -89,11 +89,17 @@ SAMPLE_RATE :: f32(48000)
 BLOCK :: 128
 NOTES := [16]int{48, 52, 55, 59, 62, 65, 69, 72, 40, 44, 47, 51, 54, 57, 61, 64}
 
+// Room for about a minute of samples; sampling stops when it is full. The buffers are allocated before sampling
+// starts and never grown: the sampler suspends the render thread, which may hold
+// the heap's lock, so it must not allocate while the thread is stopped.
+SAMPLE_CAPACITY :: 1 << 20
+
 Sampler :: struct {
 	target:  win.HANDLE,
 	stop:    bool,
-	samples: [dynamic]u64,
-	stacks:  [dynamic][STACK_WORDS]u64,
+	count:   int,
+	samples: []u64,
+	stacks:  [][STACK_WORDS]u64,
 }
 
 STACK_WORDS :: 40
@@ -102,16 +108,15 @@ sample_loop :: proc(t: ^thread.Thread) {
 	s := cast(^Sampler)t.data
 	ctx: win.CONTEXT
 	ctx.ContextFlags = CONTEXT_CONTROL
-	for !sync.atomic_load(&s.stop) {
+	for !sync.atomic_load(&s.stop) && s.count < len(s.samples) {
 		if SuspendThread(s.target) != ~u32(0) {
 			if GetThreadContext(s.target, &ctx) {
-				append(&s.samples, u64(ctx.Rip))
-				words: [STACK_WORDS]u64
 				stack := cast([^]u64)uintptr(ctx.Rsp)
 				for i in 0 ..< STACK_WORDS {
-					words[i] = stack[i]
+					s.stacks[s.count][i] = stack[i]
 				}
-				append(&s.stacks, words)
+				s.samples[s.count] = u64(ctx.Rip)
+				s.count += 1
 			}
 			ResumeThread(s.target)
 		}
@@ -280,8 +285,8 @@ main :: proc() {
 
 	sampler := Sampler {
 		target  = OpenThread(THREAD_ALL_ACCESS, false, win.GetCurrentThreadId()),
-		samples = make([dynamic]u64, 0, 1 << 20),
-		stacks  = make([dynamic][STACK_WORDS]u64, 0, 1 << 20),
+		samples = make([]u64, SAMPLE_CAPACITY),
+		stacks  = make([][STACK_WORDS]u64, SAMPLE_CAPACITY),
 	}
 	sampling := thread.create(sample_loop)
 	sampling.data = &sampler
@@ -297,7 +302,7 @@ main :: proc() {
 	by_caller := make(map[string]int)
 	by_line := make(map[string]int)
 	by_function := make(map[string]int)
-	for address, sample_index in sampler.samples {
+	for address, sample_index in sampler.samples[:sampler.count] {
 		symbol := Symbol_Info{}
 		symbol.size_of_struct = 88
 		symbol.max_name_len = 511
@@ -369,8 +374,8 @@ main :: proc() {
 		by_line[location] += 1
 	}
 
-	total := f64(len(sampler.samples))
-	fmt.printfln("%v samples, %v notes, %v", len(sampler.samples), notes, args[0])
+	total := f64(sampler.count)
+	fmt.printfln("%v samples, %v notes, %v", sampler.count, notes, args[0])
 	print_top :: proc(title: string, counts: map[string]int, total: f64, top: int) {
 		Entry :: struct {
 			name:  string,

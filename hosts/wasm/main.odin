@@ -322,6 +322,16 @@ synth_active_voices :: proc "c" (slot: i32) -> i32 {
 	return i32(engine.engine_active_voice_count(&g_engines[slot]))
 }
 
+// Whether a slot plays from the one wavetable bank the module built, rather than
+// from a copy of its own. A slot that has not been initialised has no engine to
+// ask and answers no.
+@(export)
+synth_slot_shares_tables :: proc "c" (slot: i32) -> i32 {
+	context = wasm_context()
+	if !g_ready || !slot_ok(slot) || !g_slot_initialized[slot] {return 0}
+	return engine.engine_shares_wavetables(&g_engines[slot], g_wavetables) ? 1 : 0
+}
+
 // A context for the exported entry points.
 //
 // Every `proc "c"` crossing the boundary needs one before it can touch anything

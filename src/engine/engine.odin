@@ -275,6 +275,20 @@ engine_share_wavetables :: proc(e: ^Engine, bank: ^dsp.Wavetable_Bank) {
 	}
 }
 
+// Whether this engine and every oscillator in its voice pool play from `bank`
+// without holding a copy of their own.
+engine_shares_wavetables :: proc(e: ^Engine, bank: ^dsp.Wavetable_Bank) -> bool {
+	if bank == nil || e.wavetables != bank || !e.wavetables_shared {
+		return false
+	}
+	for i in 0 ..< len(e.voices) {
+		if !voice_uses_wavetables(&e.voices[i], bank) {
+			return false
+		}
+	}
+	return true
+}
+
 // Free the engine's own bank. A borrowed one is only let go, never freed.
 engine_drop_wavetables :: proc(e: ^Engine) {
 	if e.wavetables != nil && !e.wavetables_shared {
@@ -1046,6 +1060,35 @@ engine_active_voice_count :: proc(e: ^Engine) -> int {
 	return n
 }
 
+// Whether any voice is active, stopping at the first one found.
+engine_any_voice_active :: proc(e: ^Engine) -> bool {
+	for i in 0 ..< len(e.voices) {
+		if e.voices[i].active {
+			return true
+		}
+	}
+	return false
+}
+
+// Whether every effect would return silence for silent input and leave nothing
+// behind: the effect unit is off, the equaliser and delay hold nothing, and the
+// chorus either is off or holds nothing. The effect unit carries state that runs
+// without input, so it has to be off. Both the block's silence shortcut and the
+// per-sample one ask this, so they cannot disagree.
+engine_effects_hold_nothing :: proc(
+	e: ^Engine,
+	params: ^Engine_Params,
+	fx_params: ^dsp.Effect_Params,
+	eq_params: ^dsp.Equalizer_Params,
+) -> bool {
+	return(
+		!fx_params.enabled &&
+		dsp.equalizer_is_silent(&e.equalizer, eq_params) &&
+		dsp.delay_is_silent(&e.delay) &&
+		(!params.chorus_on || dsp.chorus_is_silent(&e.chorus))
+	)
+}
+
 // The size of the voice pool -- the most voices this engine can sound at once.
 // Fixed in engine_init and never grown, so reading it as a metric is stable.
 engine_max_voices :: proc(e: ^Engine) -> int {
@@ -1211,18 +1254,14 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 	// Only a note event or the arpeggiator starts a voice, so with the arpeggiator
 	// off and nothing sounding at the top of the block, nothing sounds in it and the
 	// pool is not scanned sample by sample.
-	sounding := params.arp_on || engine_active_voice_count(e) > 0
+	sounding := params.arp_on || engine_any_voice_active(e)
 	pitch_slide_aim(&e.osc2_pitch, params.osc2_semitones)
 	chunk := Chunk{0, min(CHUNK_FRAMES, n)}
 	dsp.chorus_begin_chunk(&e.chorus)
 
 	// A block in which nothing can sound, going into effects that hold nothing, is
 	// silence from end to end; see the same test below, sample by sample.
-	if !sounding &&
-	   !fx_params.enabled &&
-	   dsp.equalizer_is_silent(&e.equalizer, &eq_params) &&
-	   dsp.delay_is_silent(&e.delay) &&
-	   (!params.chorus_on || dsp.chorus_is_silent(&e.chorus)) {
+	if !sounding && engine_effects_hold_nothing(e, &params, &fx_params, &eq_params) {
 		engine_render_silence(e, &params, &chorus_params, left, right, n)
 		return
 	}
@@ -1286,11 +1325,7 @@ engine_process :: proc(e: ^Engine, left, right: []f32) {
 		// and write zeros into lines of zeros, which read the same from wherever
 		// their write heads stand, so only the chorus's oscillator has to move. The
 		// effect unit carries state that runs without input, so it has to be off.
-		if !voiced &&
-		   !fx_params.enabled &&
-		   dsp.equalizer_is_silent(&e.equalizer, &eq_params) &&
-		   dsp.delay_is_silent(&e.delay) &&
-		   (!params.chorus_on || dsp.chorus_is_silent(&e.chorus)) {
+		if !voiced && engine_effects_hold_nothing(e, &params, &fx_params, &eq_params) {
 			if params.chorus_on {
 				dsp.chorus_process_silence(&e.chorus, &chorus_params, e.sample_rate)
 			}

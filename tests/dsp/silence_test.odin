@@ -6,6 +6,24 @@ import "../../src/dsp"
 import "../../src/engine"
 import "../../src/patch"
 
+// The count of zeros never runs past the buffer, so a line left over silence for
+// as long as it likes cannot wrap a 32-bit counter and lose its shortcut.
+@(test)
+test_delay_line_zero_run_stops_at_the_buffer_length :: proc(t: ^testing.T) {
+	buffer := make([]f32, 31)
+	defer delete(buffer)
+	line: dsp.Delay_Line
+	dsp.delay_line_init(&line, buffer)
+	line.zero_run = int(max(i32))
+	for _ in 0 ..< 1000 {
+		dsp.delay_line_write(&line, 0)
+	}
+	testing.expect_value(t, line.zero_run, len(buffer))
+	testing.expect(t, dsp.delay_line_is_silent(&line))
+	dsp.delay_line_write(&line, 0.5)
+	testing.expect(t, !dsp.delay_line_is_silent(&line))
+}
+
 // A line reads as silent only while every sample in it is zero, through writes
 // of every kind of value, feedback added to the newest sample, and clears; and a
 // buffer's length of zeros written makes it read as silent again.

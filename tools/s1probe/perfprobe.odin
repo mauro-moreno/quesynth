@@ -524,8 +524,14 @@ parse_perf_args :: proc(args: []string) -> (opt: Perf_Options, ok: bool) {
 		switch flag {
 		case "--block":
 			opt.block = strconv.parse_int(value) or_return
+			if opt.block < 1 {
+				return opt, false
+			}
 		case "--repeats":
 			opt.repeats = strconv.parse_int(value) or_return
+			if opt.repeats < 1 {
+				return opt, false
+			}
 		case "--bank":
 			append(&opt.banks, value)
 		case "--section":

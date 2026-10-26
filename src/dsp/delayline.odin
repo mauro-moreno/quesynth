@@ -43,7 +43,7 @@ delay_line_write :: proc "contextless" (d: ^Delay_Line, value: f32) {
 	}
 	clean := sanitize(value)
 	d.buffer[d.write] = clean
-	d.zero_run = clean != 0 ? 0 : d.zero_run + 1
+	d.zero_run = clean != 0 ? 0 : min(d.zero_run + 1, len(d.buffer))
 	d.write += 1
 	if d.write >= len(d.buffer) {
 		d.write = 0

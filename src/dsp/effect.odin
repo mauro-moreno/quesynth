@@ -536,9 +536,10 @@ effect_ad_highpass_coefficients :: proc "contextless" (fc, q, sr: f32) -> [5]f32
 // they were derived for, which do not move from sample to sample.
 effect_ad_highpass_held :: proc "contextless" (e: ^Effect, l, r, fc, q, sr: f32) -> (out_l, out_r: f32) {
 	key := [3]f32{fc, q, sr}
-	if e.ad_highpass_key != key {
+	if !e.ad_highpass_valid || e.ad_highpass_key != key {
 		e.ad_highpass_coefficients = effect_ad_highpass_coefficients(fc, q, sr)
 		e.ad_highpass_key = key
+		e.ad_highpass_valid = true
 	}
 	return effect_ad_highpass_run(&e.ad_highpass, l, r, &e.ad_highpass_coefficients)
 }
@@ -566,7 +567,7 @@ effect_analog1_post :: proc "contextless" (
 	out_l, out_r: f32,
 ) {
 	key := [8]f32{roots[0], roots[1], roots[2], roots[3], roots[4], roots[5], roots[6], sr}
-	if e.ad1_post_key != key {
+	if !e.ad1_post_valid || e.ad1_post_key != key {
 		tau := 2.0 * math.PI
 		sigma := tau * f64(roots[0])
 		omega := tau * f64(roots[1])
@@ -592,6 +593,7 @@ effect_analog1_post :: proc "contextless" (
 			f32((pole_3 - c) / first_den),
 		}
 		e.ad1_post_key = key
+		e.ad1_post_valid = true
 	}
 	k := e.ad1_post_coefficients
 	b0, b1, b2, a1, a2, f0, f1, fa1 := k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]
@@ -1237,19 +1239,23 @@ Effect :: struct {
 	// sample rate they were derived for: the settings move per block, not per sample.
 	lowpass:   [2][2]f32,
 	lowpass_key: [2]f32,
+	lowpass_valid: bool,
 	lowpass_coefficients: [4]f32,
 	// a.d.1's own pole, as the low content to subtract.
 	highpass:  [2]f32,
 	// The two-pole high pass the analogue types and d.d. share, two states per
 	// channel.
 	ad_highpass: [2][2]f32,
-	ad_highpass_key: [3]f32,
+	// Its coefficients, with the corner, Q and rate they came from.
+	ad_highpass_key:          [3]f32,
+	ad_highpass_valid:        bool,
 	ad_highpass_coefficients: [5]f32,
 	// a.d.1's feedback loop: two poles of the output, per channel.
 	ad1_loop:    [2][2]f32,
 	// and the response after it, and the low pass the shelf is built from.
 	ad1_post:    [2][3]f32,
 	ad1_post_key: [8]f32,
+	ad1_post_valid: bool,
 	ad1_post_coefficients: [8]f32,
 	// The running mean of the squared term, taken back out of it.
 	ad1_quadratic_mean: [2]f32,
@@ -1693,13 +1699,14 @@ effect_lowpass :: proc "contextless" (
 	f32,
 ) {
 	key := [2]f32{corner_hz, sample_rate}
-	if e.lowpass_key != key {
+	if !e.lowpass_valid || e.lowpass_key != key {
 		w := TAU * clamp32(corner_hz, 1.0, sample_rate * 0.45) / sample_rate
 		cs := math.cos(w)
 		alpha := math.sin(w) / (2.0 * EFFECT_LOWPASS_Q)
 		a0 := 1.0 + alpha
 		e.lowpass_coefficients = {(1.0 - cs) * 0.5 / a0, (1.0 - cs) / a0, -2.0 * cs / a0, (1.0 - alpha) / a0}
 		e.lowpass_key = key
+		e.lowpass_valid = true
 	}
 	b0, b1, a1, a2 := e.lowpass_coefficients[0], e.lowpass_coefficients[1], e.lowpass_coefficients[2], e.lowpass_coefficients[3]
 

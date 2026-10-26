@@ -335,6 +335,27 @@ test_lfo_retrigger_resets_phase :: proc(t: ^testing.T) {
 	testing.expect_value(t, dsp.lfo_phase(&l), 0.0)
 }
 
+// The phase is where the cycle stood when the last sample was taken, so a whole
+// number of periods does not read as zero and an LFO never given a period does not
+// read as NaN.
+@(test)
+test_lfo_phase_is_where_the_last_sample_was_taken :: proc(t: ^testing.T) {
+	never_set: dsp.Lfo
+	testing.expect_value(t, dsp.lfo_phase(&never_set), 0.0)
+
+	l: dsp.Lfo
+	dsp.lfo_init(&l, 5)
+	l.shape = .Sine
+	dsp.lfo_set_frequency(&l, 4.0, SR)
+	testing.expect_value(t, dsp.lfo_phase(&l), 0.0)
+	for _ in 0 ..< 3 * l.period {
+		dsp.lfo_process(&l)
+	}
+	testing.expect(t, dsp.lfo_phase(&l) > 0.99, "the phase wrapped to zero over a whole number of periods")
+	dsp.lfo_process(&l)
+	testing.expect_value(t, dsp.lfo_phase(&l), 0.0)
+}
+
 // ---------------------------------------------------------------------------
 // Noise
 // ---------------------------------------------------------------------------
