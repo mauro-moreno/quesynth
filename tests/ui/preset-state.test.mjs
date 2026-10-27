@@ -92,6 +92,40 @@ test("an archive preset has no slot and carries its two indexes", () => {
   assert.equal(page.window.SynthBank.index(), -1, "an archive patch is not an ordinary slot");
 });
 
+// The browser build remembers the sound and the factory bank, and nothing
+// else. A slot is a place in one bank, so a sound that came out of a bank that
+// is not remembered must not come back as the same slot of the factory bank:
+// that would give a preset somebody opened the factory's name, origin and slot.
+test("a reloaded browser page does not call an imported bank's sound a factory slot", () => {
+  const first = bootPanel({bank: FACTORY, host: null, store: true});
+  first.window.SynthPatchFile.importText(bankText("Third Party", ["Alpha", "Beta", "Gamma"], 30), "third.json");
+  const third = plain(first.window.SynthBank.list()).findIndex(b => b.label === "Third Party");
+  first.window.SynthBank.loadPreset({bank: third, slot: 2});
+  first.window.SynthStore.flush();
+  const reload = (text = first.files.get("quesynth.state.v1")) =>
+    bootPanel({bank: FACTORY, host: null, store: true, before: w => w.localStorage.setItem("quesynth.state.v1", text)});
+
+  const again = reload();
+  assert.deepEqual(again.values(), first.values(), "the sound is the one that was playing");
+  assert.equal(again.text("bank-patch"), "Gamma", "named, with no factory slot in front of it");
+  const selection = plain(again.window.SynthBank.selection());
+  assert.equal(selection.slot, null);
+  assert.notEqual(selection.origin, "factory", "an imported preset is not the factory's");
+  assert.notEqual(selection.bank, "Quesynth Factory");
+
+  // The factory bank is remembered, so a slot of it comes back as that slot.
+  first.window.SynthBank.loadPreset({bank: 0, slot: 1});
+  first.window.SynthStore.flush();
+  const factory = reload();
+  assert.deepEqual(plain(factory.window.SynthBank.selection()),
+    {origin: "factory", source: "bank", bank: "Quesynth Factory", slot: 1, presetName: "Brass", archive: null});
+
+  // A state written before it said which bank the slot was in keeps its slot.
+  const old = JSON.parse(first.files.get("quesynth.state.v1"));
+  delete old.current.bank;
+  assert.equal(reload(JSON.stringify(old)).window.SynthBank.selection().slot, 1);
+});
+
 test("origins: factory is the compiled-in bank, a bank somebody opens is imported, the host says its own", () => {
   const page = hostPage();
   const rows = plain(page.window.SynthBank.list());

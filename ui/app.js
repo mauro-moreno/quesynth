@@ -2734,7 +2734,12 @@
     if (kept && kept.current && kept.current.values) {
       window.SynthPatch.apply(kept.current.values, kept.current.name);
       var slot = kept.current.slot;
-      if (isSlot(slot)) {
+      // A slot is a place in one bank, and the factory bank is the only one
+      // remembered. A sound that came from another bank stays the sound it is
+      // rather than becoming a factory preset it never was. A state written
+      // before it recorded the bank has none to compare, and keeps its slot.
+      var from = kept.current.bank;
+      if (isSlot(slot) && (from === undefined || from === bank.label)) {
         setSelection(makeSelection(bank.origin, bank.label, slot, currentName));
       }
     }

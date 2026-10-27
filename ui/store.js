@@ -92,7 +92,13 @@
     if (!patch || !banks) return null;
     return {
       v: 1,
-      current: { name: patch.name(), values: patch.values(), slot: banks.index() },
+      // `bank` says which bank `slot` is a slot of: only the factory one is
+      // kept below, so without it a sound from any other bank came back
+      // named as the same slot of the factory bank.
+      current: {
+        name: patch.name(), values: patch.values(), slot: banks.index(),
+        bank: banks.selection().bank,
+      },
       // Only the factory bank, which is the first one and the one that came
       // with the page. Trailing empty slots are dropped; loading pads back.
       factory: banks.snapshot(0),
