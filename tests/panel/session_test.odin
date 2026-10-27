@@ -265,6 +265,20 @@ a_selection_replaces_a_failed_restore_and_a_discard_forgets_it :: proc(t: ^testi
 	}
 }
 
+// The preset is called what its bank is called, as the panel was told when the
+// bank was handed over: a state written while the bank was the factory one, read
+// where the same bank is the user's saved copy.
+@(test)
+a_restored_slot_has_the_origin_of_the_bank_it_is_in :: proc(t: ^testing.T) {
+	inst := new_instance(t, "Factory", {0, 7}, .Saved)
+	defer free(inst)
+
+	result := panel.session_restore(&inst.session, &inst.slots, saved_trailer(.Factory, 7, "Factory", "Factory 7"))
+
+	testing.expect(t, result.restored, "not restored")
+	testing.expect_value(t, inst.session.selection.origin, panel.Origin.User)
+}
+
 // -- trying again --------------------------------------------------------------
 
 @(test)

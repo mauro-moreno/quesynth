@@ -500,8 +500,11 @@ restore_failed :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error:
 @(private)
 restore_succeeded :: proc(s: ^Session, wanted: Selection) -> Restore_Result {
 	sel := wanted
-	// A trailer from a state that knew the identity but not the origin.
-	if sel.origin == .None && sel.has_slot {
+	// A slot of the bank being played is called what that bank is called. The
+	// state may say otherwise -- written when the bank was the factory one, read
+	// where it is the user's saved copy of it -- and the panel has been told the
+	// bank's origin, so two names for one bank would be two banks to it.
+	if sel.has_slot && s.bank_origin != .None {
 		sel.origin = s.bank_origin
 	}
 	// What the state names is the bank being played, by the checks above, so
