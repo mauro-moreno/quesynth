@@ -720,6 +720,151 @@ body:not(.keys-open) .bank { padding-bottom: env(safe-area-inset-bottom, 0px); }
   color: var(--ink-faint);
 }
 
+/* ------------------------------------------------------------ preset strip */
+
+/* Where the sound came from, beside the bank it is in. A sound that is not
+ * stored anywhere -- the current session, a file -- has a dashed edge: "not
+ * saved" is the one thing about it that has to read without the label. */
+.bank-origin {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 4px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.bank-origin:empty { display: none; }
+.bank-origin[data-origin="session"],
+.bank-origin[data-origin="file"] { border-style: dashed; }
+
+/* The edit marker. A separate element from the patch's name, so the name is
+ * only ever the name. */
+.bank-dirty {
+  flex: 0 0 auto;
+  margin-left: -8px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.bank-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 6px;
+}
+
+.bank-action {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+  color: var(--ink-dim);
+  font: inherit;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.bank-action:hover,
+.bank-action[aria-expanded="true"] { color: var(--ink); border-color: var(--metal-dark); }
+
+/* The menu opens upward off the bar at the foot, and downward off it where the
+ * bar has moved to the top of a phone. */
+.bank-menu { position: relative; }
+.bank-menu-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: #16161b;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+}
+.bank-menu-list button {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  text-align: left;
+  color: var(--ink-dim);
+  font: inherit;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bank-menu-list button:hover,
+.bank-menu-list button:focus-visible { color: var(--ink); background: #1e1e25; }
+
+/* What the strip has to say that is not the preset: how a restore went, and
+ * what Save, Export, Write and Import did. Laid over the page beside the bar,
+ * never in its flow, so a message cannot move the controls it is about. */
+.bank-notices {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 8px);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+.bank-notices > * { width: min(640px, 100%); pointer-events: auto; }
+
+.bank-status,
+.restore-banner {
+  margin: 0;
+  padding: 8px 12px;
+  background: #16161b;
+  border: 1px solid #2a2a31;
+  border-radius: 8px;
+  line-height: 1.4;
+  color: var(--ink-dim);
+}
+.bank-status[data-kind="warn"],
+.bank-status[data-kind="error"] { color: var(--ink); border-left: 3px solid var(--metal); }
+.restore-banner { color: var(--ink); border-left: 3px solid var(--metal); }
+
+.restore-line { margin: 0 0 6px; }
+/* Told apart from the sentence around it by weight alone: a box with padding
+ * puts a visible gap before the full stop that ends the sentence. */
+.restore-id {
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.restore-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.restore-banner > :last-child .restore-actions:last-child,
+.restore-actions:last-child { margin-bottom: 0; }
+.restore-failed + .restore-missing { margin-top: 8px; }
+.restore-actions button {
+  appearance: none;
+  padding: 3px 10px;
+  font: inherit;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.restore-actions button:hover:not(:disabled) { color: var(--ink); border-color: var(--metal-dark); }
+.restore-actions button:disabled { opacity: 0.5; cursor: default; }
+
 /* ---------------------------------------------------------------- keyboard */
 
 .keys-toggle {
@@ -1271,6 +1416,20 @@ body.modal-open { overflow: hidden; }
 }
 .modal-action:hover { color: var(--ink); border-color: var(--metal-dark); }
 .modal-action.primary { color: var(--ink); border-color: var(--metal-dark); }
+
+/* A question or an error over whatever is open: narrow, because it is a
+ * sentence and not a list, and opened in front of the browser rather than
+ * instead of it. */
+.modal.modal-confirm { width: min(440px, 100%); }
+.modal-message {
+  flex: 1 1 auto;
+  padding: 14px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+  overflow-y: auto;
+}
+.modal-message p { margin: 0 0 8px; }
+.modal-message p:last-child { margin-bottom: 0; }
 
 /* ----------------------------------------------------------- bank browser */
 
@@ -2050,13 +2209,14 @@ body.pad-body {
  * here, so it takes the body role instead; a line you actually read does not
  * belong at label size. */
 html, body { font-size: var(--type-body); }
-.rack-hint { font-size: var(--type-body); }
+.rack-hint, .bank-status, .restore-banner, .modal-message { font-size: var(--type-body); }
 .brand, .rack-kit-name input { font-size: var(--type-lead); }
 .panel > h2, .pad-inspector-head strong { font-size: var(--type-title); }
 .control .value, .stepper .num, .pad-cell-name { font-size: var(--type-read); }
 .nav-inner button, .group-label, .control .label, .control .value .unit,
 .radio button, .control .info, .popover-meta, .options, .bank-name,
-.bank-write, .keys-toggle, .oct-label, .wheel-label, .bank-vol label,
+.bank-write, .bank-action, .bank-origin, .bank-menu-list button, .restore-actions button,
+.keys-toggle, .oct-label, .wheel-label, .bank-vol label,
 .browser-save-label, .browser-group-label, .browser-source-count,
 .browser-bank-count, .browser-mini, .rack-toolbar label > span, .rack-field > span,
 .rack-slider > span, .pad-cell-index, .pad-cell-mode, .pad-cell-note,
@@ -2088,7 +2248,9 @@ html, body { font-size: var(--type-body); }
 .radio button { min-height: 28px; padding-block: 2px; }
 .control .info { top: -7px; right: -7px; width: 28px; height: 28px; }
 .pad-action, .rack-toggles button, .keys-toggle, .bank-write { min-height: 28px; padding-block: 3px; }
-.pad-action.primary, .bank-step, .oct, .stepper button { min-height: 34px; }
+.pad-action.primary, .bank-step, .bank-action, .oct, .stepper button { min-height: 34px; }
+.bank-menu-list button, .restore-actions button { min-height: 28px; }
+.bank-action { min-width: 34px; }
 /* The stepper's two are square: the ledger's 34px applies across as well as
  * down, or a 24px-wide mark misses the floor in the one dimension nothing
  * measured. Centred as a box, because the mark inside them is now an SVG. */
@@ -2113,7 +2275,8 @@ button:focus-visible, input:focus-visible, select:focus-visible,
 
 /* Flat selection: one border and colour, never a glow, shadow, or ornamental
  * radial layer. The lit pad uses one solid metal tone. */
-.popover, .modal, .bank-list, .midi-list { box-shadow: none; }
+.popover, .modal, .bank-list, .midi-list, .bank-menu-list,
+.bank-status, .restore-banner { box-shadow: none; }
 .pad-cell::before { display: none; }
 .pad-cell.sel { box-shadow: none; border-color: var(--accent); }
 .pad-cell.lit { background: var(--metal); }
@@ -2131,7 +2294,11 @@ button:focus-visible, input:focus-visible, select:focus-visible,
 /* On a phone the single transport moves to the top. Its identity is therefore
  * present once, above the instrument; the keyboard alone owns the bottom edge. */
 @media (max-width: 560px) {
-  :root { --head-h: 86px; }
+  /* The bar has two rows on a phone: the preset and its steps, then what can be
+   * done with it. One row cannot hold the steps, three actions and the volume
+   * at the width of a thumb, and hiding a label to make it fit would leave an
+   * icon with nothing to say what it does. */
+  :root { --bank-h: 84px; --head-h: calc(40px + var(--bank-h)); }
   body, body.pad-body { grid-template-rows: var(--head-h) minmax(0, 1fr); }
   #app-header .brand { font-size: var(--type-micro); }
   #app-header [data-icon] { gap: 3px; padding-inline: 4px; }
@@ -2150,9 +2317,14 @@ button:focus-visible, input:focus-visible, select:focus-visible,
   body:not(.keys-open) .bank { padding-bottom: 0; }
   #surface { padding-bottom: calc(7px + var(--keys-h, 0px)); }
   .rack-editor[data-mode="drawer"] { bottom: var(--keys-h, 0px); }
-  .bank-read { justify-content: flex-start; gap: 7px; padding-inline: 4px; }
+  .bank { flex-wrap: wrap; align-content: center; row-gap: 2px; }
+  .bank-read { flex: 1 1 0; justify-content: flex-start; gap: 7px; padding-inline: 4px; }
   .bank-name { flex-basis: auto; }
   .bank-step { padding-inline: 5px; }
+  .bank-actions { order: 3; }
+  .bank-vol { order: 4; margin-left: auto; }
   .bank-vol input[type="range"] { width: 52px; }
+  .bank-menu-list { top: calc(100% + 8px); bottom: auto; }
+  .bank-notices { top: calc(100% + 8px); bottom: auto; flex-direction: column; }
   .keyboard { bottom: 0; }
 }

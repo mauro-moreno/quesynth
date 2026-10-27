@@ -81,12 +81,12 @@ test("the real panel runs hosted on the daemon: synced, live both ways, and neve
   await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
   await sleep(150);
 
-  // (a) Startup writes nothing but the volume; the page's echo of the bank
-  // it was sent is dropped by the adapter.
+  // (a) Startup writes nothing but the volume. Adopting the daemon's bank
+  // used to select its slot 0 and send that sound back, which the adapter had
+  // to recognise and drop; the page now sends nothing for it at all.
   assert.deepEqual(writes(daemon), ["volume 640"]);
-  assert.deepEqual(page.sent.map(m => m.type), ["sync", "volume", "state"],
-    "one sync, the startup volume, and the adoption echo");
-  assert.deepEqual(page.sent[2].values, daemon.bank.slots[0].values, "the echo is slot 0");
+  assert.deepEqual(page.sent.map(m => m.type), ["sync", "volume"],
+    "one sync and the startup volume: no state, no echo of the bank it was sent");
 
   // (e) The daemon's bank is the page's bank.
   assert.equal(w.SynthBank.label(), "My Bank");
@@ -136,7 +136,7 @@ test("a fresh daemon plays Init, and the strip says so instead of the bank's fir
   await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
   await sleep(150);
   assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1});
-  assert.equal(shown(), "Untitled", "not 000:Strings, which is what adopting the bank selected");
+  assert.equal(shown(), "Untitled", "the daemon names no sound, and adopting its bank selects none");
   assert.deepEqual(Array.from(page.window.SynthPatch.values()), env.daemon.published.values);
 });
 

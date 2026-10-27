@@ -62,10 +62,15 @@
     return (base || "patch") + extension;
   }
 
-  function bankDoc() {
+  // The bank at `which` -- the one in view when absent -- as the document the
+  // format describes.
+  function bankDoc(which) {
     var slots = window.SynthBank;
     var api = window.SynthPatch;
     if (!slots || !api) return null;
+    var at = which === undefined ? slots.current() : which;
+    var stored = slots.snapshot(at);
+    if (!stored) return null;
 
     // Position is meaning. A patch in slot 41 has to come back in slot 41, or
     // every reference to it by number -- a set list, a program change -- points
@@ -75,21 +80,19 @@
     // Trailing empties are dropped. A bank whose last sound is in slot 20
     // writes 21 entries and loading pads it back to 128; there is nothing to
     // preserve about an empty slot at the end.
-    var here = slots.index();
+    var here = at === slots.current() ? slots.index() : -1;
     // Including an edit in progress: the live parameters replace the entry
     // they were loaded from, so saving after a tweak keeps the tweak. Anything
     // else would quietly discard it.
     var current = api.values();
-    var patches = slots.used().map(function (p, i) {
-      if (i === here) return patchObject(p ? p.n : api.name(), current);
-      return p ? patchObject(p.n, p.v) : null;
-    });
-
     return {
       format: FORMAT_BANK,
       version: FORMAT_VERSION,
-      name: slots.label(),
-      patches: patches,
+      name: slots.label(at),
+      patches: stored.map(function (p, i) {
+        if (i === here) return patchObject(p ? p.n : api.name(), current);
+        return p ? patchObject(p.n, p.v) : null;
+      }),
     };
   }
 
@@ -231,6 +234,22 @@
       default:
         return loadText(textOf(bytes));
     }
+  }
+
+  // A `quesynth.bank` document as `{ label, patches }`, for the panel to adopt
+  // from a host. Read completely or not at all: a bank with one bad patch in it
+  // is refused, not half there.
+  function parseBank(text) {
+    var doc = JSON.parse(text);
+    checkHeader(doc, FORMAT_BANK);
+    if (!Array.isArray(doc.patches) || !doc.patches.length) {
+      throw new Error("the bank has no patches");
+    }
+    var patches = doc.patches.map(function (p) {
+      if (!p) return null;
+      return { n: p.name || "Patch", v: valuesFrom(p.parameters || {}) };
+    });
+    return { label: doc.name || "Bank", patches: patches };
   }
 
   function loadText(text) {
@@ -387,10 +406,13 @@
   // somebody checks it. A host that wants to hand the panel a patch it got from
   // somewhere else can use it too.
   window.SynthPatchFile = {
-    bankText: function () {
-      var doc = bankDoc();
+    // The bank at `which` (the one in view without it) as the text of its file.
+    bankText: function (which) {
+      var doc = bankDoc(which);
       return doc ? JSON.stringify(doc, null, 2) + "\n" : "";
     },
+    // A host's bank as `{ label, patches }`.
+    parseBank: parseBank,
     saveBank: saveBank,
     load: loadText,
     loadBytes: loadBytes,

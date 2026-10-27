@@ -173,8 +173,11 @@ what keeps the label and the sound in agreement.
 | `style.css` | black ground, silver controls, one responsive grid |
 | `params.js` | **generated** — every parameter, its positions, and each position's value |
 | `layout.js` | hand written — panels, groups, both names per control, descriptions, option names |
-| `bridge.js` | host transport; absorbs every platform difference |
-| `app.js` | builds the panel and keeps it in step with the host |
+| `bridge.js` | host transport; absorbs every platform difference, and the version-1 handshake |
+| `app.js` | builds the panel and keeps it in step with the host; owns the selection, the banks and the restore banner |
+| `patchfile.js` | `.json`, `.zip`, folder and `.sy1` in and out; import validates before it adds |
+| `modal.js` | the dialog shell and its confirm and alert questions |
+| `browser.js` | the bank and slot browser |
 | `midi.js` | Web MIDI: a controller plays the panel and lights its keys; under a host that claims MIDI input (`window.SynthHostMidi`), never Web MIDI, only the host's input selection |
 | `bank.js` | **generated**, optional — the patch bank; see the note in .gitignore |
 
@@ -218,6 +221,11 @@ To the interface:
 {"type":"param","index":19,"value":80}
 {"type":"patch","name":"Computer","bank":"soundbank00"}
 ```
+
+A host that keeps a program of its own adds version-1 messages -- `restore`,
+`bank-saved`, and `v`, `origin` and `readOnly` on `bank` and `patch` -- and the
+page may then send `select`, `restore-retry` and `restore-discard`. See
+[Presets and banks](#presets-and-banks) and the header of `bridge.js`.
 
 `edit` brackets a gesture so a host recording automation records one move rather
 than the few hundred values a drag passes through.
@@ -294,6 +302,111 @@ Once one `archive` has arrived (`SynthBank.archive()` is not null):
 
 A host that never sends `archive` (a plugin, the browser build, the page on
 its own) keeps its own banks and reads a zip in the page as before.
+
+## Presets and banks
+
+The strip at the foot (at the top on a phone) says which preset the sound is,
+where it came from, and whether it has been changed:
+
+```text
+[PREV]  IMPORTED  042:Glass Pad *  Alfmeister Bank  [NEXT]  [Browser] [Save] [More]
+```
+
+`#bank-patch` is `NNN:Name` or the bare name and `#bank-name` is the bank's
+label, exactly as they always were. The origin chip (`#bank-origin`) and the
+edit marker (`#bank-dirty`) are their own elements, so nothing that reads the
+name has to know about them.
+
+### What the panel knows about the sound
+
+`SynthBank.selection()` is the one answer to "which preset is this": its
+`origin`, `source`, `bank`, `slot`, `presetName` and, for an archive preset,
+`archive: { bank, patch }`. It is kept apart from three things it used to be
+mistaken for -- the bank the browser is *looking at* (`current()`), the slot a
+Write is *aimed at*, and the live parameters.
+
+| origin | what it is | a slot? |
+|---|---|---|
+| `factory` | the bank compiled into the page, or the one a host calls that | yes |
+| `user` | a bank made here, or the one a host keeps for this instrument | yes |
+| `imported` | a bank opened from a file, a zip or a folder | yes |
+| `archive` | a bank inside the host's shared archive | never: `archive` carries its indexes |
+| `file` | one patch opened from a file | never |
+| `session` | the sound as it is, with nothing behind it ("Unsaved") | never |
+
+`SynthBank.status()` is one of `loading`, `unavailable`, `dirty`, `readonly`
+or `clean`, the first that applies. **`dirty` means the sound differs from what
+the selection was stored as and nothing more**: it is not, and nothing in the
+interface may say it is, the host's project having unsaved changes. A sound with
+no slot is measured against what it was loaded or last exported with.
+`SynthBank.readOnly()` says the last part separately.
+
+The factory bank is read-only wherever nothing keeps what is written to it:
+anywhere but the browser build (which has `store.js`) or a host that sends
+`"readOnly":false`. An archive bank always is. Save on anything read-only, or
+imported, or with no slot, opens Save As and never overwrites its source.
+
+### Opening the editor is not an edit
+
+Issue #13: reopening a plugin's editor, or toggling a project offline and
+online, reset the program and the bank, because the page loaded slot 0 of its
+own bank and sent that sound to the host. Two rules came out of it, and both
+have tests (`tests/ui/preset-reopen.test.mjs`):
+
+- A page whose host holds the sound -- every plugin and the standalone
+  daemon's page, which is `SynthBank.hosted()` with the engine *not* in the
+  page (`SynthBridge.inPage` is false) -- never loads a patch and never sends a
+  `state` when it starts. A page whose engine is in the page (the browser build
+  and Quesynth Pad, where `host.js` claims `SynthVolume`) has been told nothing
+  and keeps selecting slot 0, as it always did.
+- Adopting a bank the host sends changes the list of banks and nothing else. It
+  does not load a slot, change the sound, or send a `state`, a `select` or a
+  `bank` back. Which preset is playing is the host's `state`, `patch` and
+  `restore`.
+
+### Restoring what the host asked for
+
+A host that restored a program and bank when the project loaded says how that
+went (`restore`, in the header of `bridge.js`). A failure keeps the sound, the
+bank and the program, and the banner (`#restore-banner`, `role="alert"`) says so:
+
+> Could not restore `Alfmeister Bank / 042`. The current sound was kept.
+> [Retry] [Choose bank]
+
+and, for a missing bank only,
+
+> The saved bank is unavailable. Load Factory / Init instead?
+> [Load Factory / Init] [Keep current sound]
+
+Those words are in `index.html` and `pad.html` and are the contract; `app.js`
+fills in only the bank and slot. **Nothing ever substitutes the factory bank for
+one that could not be found unless the person presses Load Factory / Init.**
+Retry sends `restore-retry`, Keep current sound `restore-discard`, Choose bank
+opens the browser; choosing any preset replaces the identity the host was
+holding. A failure that cannot be retried (`recoverable: false`) disables Retry,
+and one that is not a missing bank gets a Dismiss button instead of the second
+line. `SynthBank.restoreState()` is `{ state: "notRequested" | "restoring" |
+"restored" | "failed", error, recoverable, origin, bank, slot, name }`.
+
+### Version 1 of the protocol
+
+`"v":1` is the whole of the handshake: the page sends `select`,
+`restore-retry`, `restore-discard` and the new fields of `bank` only after it has
+received a host message that carries a `v`, so a legacy host (the standalone
+daemon's adapter answers an unknown type with an `error`) never hears one.
+Nothing that existed is renamed or dropped. The messages are written out in the
+header of `bridge.js`; `SynthBridge.PROTOCOL`, `version()` and `sendV1()` are
+how the rest of the panel uses them, and a transport that throws makes `send()`
+return `false` with the reason in `SynthBridge.error()`.
+
+### Dialogs
+
+`modal.js` stacks: `SynthModal.confirm({ title, message, confirmLabel })` and
+`SynthModal.alert(...)` open *in front of* a dialog that is already up instead of
+closing it, because a question that closed the browser would lose the
+destination it was asked about. Escape, the close mark, the backdrop and Cancel
+all answer no, focus starts on Cancel, Tab cannot leave, and focus goes back to
+whatever opened it.
 
 ## Using it
 
