@@ -74,6 +74,9 @@ AU :: struct {
 	// The bank the panel shows, read when the editor first opens.
 	slots:         patch.Slots,
 	slots_loaded:  bool,
+	// Which preset of it the unit is on and where the bank came from, as in the
+	// VST3 and CLAP plugins. Main-thread only, like the bank.
+	session:       panel.Session,
 }
 
 Listener :: struct {

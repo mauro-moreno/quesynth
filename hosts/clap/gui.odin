@@ -83,23 +83,34 @@ gui_create :: proc "c" (plugin: ^clap.Plugin, api: cstring, is_floating: bool) -
 	s.editor.height = panel.HEIGHT
 	s.editor.ctx = context
 	s.editor.view.content_dir = content
-	s.editor.host = panel.Host {
-		user        = rawptr(s),
-		param_count = PARAM_COUNT,
-		read_values = gui_read_values,
-		set_param   = gui_set_param,
-		set_state   = gui_set_state,
-		edit        = gui_edit,
-		note        = gui_note,
-		bend        = gui_bend,
-		control     = gui_control,
-		volume      = gui_volume,
-		set_bank    = gui_set_bank,
-		read_bank   = gui_read_bank,
-	}
+	s.editor.host = gui_host(s)
 	gui_prepare_loop(s)
 	s.panel_ready = true
 	return true
+}
+
+// What the panel asks of this instance. Apart from gui_create so that the
+// protocol can be driven against the real callbacks without a web view under
+// it, which is how the reopen and restore paths are checked.
+gui_host :: proc(s: ^Synth) -> panel.Host {
+	return panel.Host {
+		user            = rawptr(s),
+		param_count     = PARAM_COUNT,
+		read_values     = gui_read_values,
+		set_param       = gui_set_param,
+		set_state       = gui_set_state,
+		edit            = gui_edit,
+		note            = gui_note,
+		bend            = gui_bend,
+		control         = gui_control,
+		volume          = gui_volume,
+		set_bank        = gui_set_bank,
+		read_bank       = gui_read_bank,
+		read_session    = gui_read_session,
+		select          = gui_select,
+		restore_retry   = gui_restore_retry,
+		restore_discard = gui_restore_discard,
+	}
 }
 
 gui_destroy :: proc "c" (plugin: ^clap.Plugin) {
@@ -221,25 +232,13 @@ gui_hide :: proc "c" (plugin: ^clap.Plugin) -> bool {
 //
 // [main-thread]: this arrives from the web view, which is the main thread,
 // and both the file and the parse want an allocator.
-gui_set_bank :: proc(user: rawptr, text: string, save: bool) {
+gui_set_bank :: proc(user: rawptr, text: string, save: bool, origin: panel.Origin) -> panel.Bank_Result {
 	s := (^Synth)(user)
 	if s == nil || text == "" {
-		return
+		return .Invalid_Bank
 	}
-
-	parsed, err := patch.parse_bank_json(transmute([]u8)text)
-	if err != .None {
-		// Refused rather than written. A bank that will not parse would
-		// come back as no bank at all on the next start.
-		return
-	}
-	defer patch.destroy_bank(parsed)
-
 	// Always played, only sometimes kept; see the note on set_bank.
-	patch.slots_load(&s.slots, parsed)
-	if save {
-		panel.bank_write(text)
-	}
+	return panel.session_set_bank(&s.session, &s.slots, text, save, origin, panel.bank_write)
 }
 
 // The bank this instance is playing out of, for the panel to show.
@@ -251,6 +250,48 @@ gui_read_bank :: proc(user: rawptr) -> string {
 	return patch.slots_write_json(&s.slots, context.temp_allocator)
 }
 
+
+// Which preset this instance is on, and how the last restore stands, for the
+// panel to be told. Borrowed from the instance.
+gui_read_session :: proc(user: rawptr) -> panel.Instance_View {
+	s := (^Synth)(user)
+	if s == nil {
+		return {}
+	}
+	return {&s.session, &s.slots}
+}
+
+// The panel loaded a preset. Only a slot of the bank this instance is playing
+// moves its program: a preset from anywhere else has no slot here.
+gui_select :: proc(user: rawptr, selection: panel.Selection) {
+	s := (^Synth)(user)
+	if s == nil {
+		return
+	}
+	if panel.session_select(&s.session, &s.slots, selection) && s.session.selection.bound {
+		s.program = s.session.selection.slot
+	}
+}
+
+gui_restore_retry :: proc(user: rawptr) -> bool {
+	s := (^Synth)(user)
+	if s == nil {
+		return false
+	}
+	result, bank_changed := panel.session_retry_saved(&s.session, &s.slots)
+	if result.has_program {
+		s.program = result.program
+	}
+	return bank_changed
+}
+
+gui_restore_discard :: proc(user: rawptr) {
+	s := (^Synth)(user)
+	if s == nil {
+		return
+	}
+	panel.session_discard(&s.session)
+}
 
 gui_read_values :: proc(user: rawptr, out: []i32) {
 	s := (^Synth)(user)

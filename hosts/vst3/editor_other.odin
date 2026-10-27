@@ -7,7 +7,7 @@ package synth_vst3
 // This file exists for the same reason hosts/standalone/platform_other.odin
 // does: to keep the shape of the port visible, and to keep the rest of the
 // plugin from having to know which platform it is on. plugin.odin calls
-// `make_editor` and the three send procedures by name and never learns that here
+// `make_editor` and the send procedures by name and never learns that here
 // they do nothing.
 //
 // A macOS port replaces this with an editor_darwin.odin hosting a WKWebView in
@@ -29,6 +29,6 @@ make_editor :: proc(p: ^Plugin) -> ^Editor {
 
 editor_send_state :: proc(ed: ^Editor) {}
 
-editor_send_patch :: proc(ed: ^Editor, program: int) {}
+editor_send_selection :: proc(ed: ^Editor) {}
 
 editor_send_param :: proc(ed: ^Editor, index: int, stored: i32) {}

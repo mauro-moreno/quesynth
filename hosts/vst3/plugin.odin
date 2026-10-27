@@ -95,6 +95,9 @@ Plugin :: struct {
 	// The bank this instance is playing out of; see the note on the CLAP
 	// one. Loaded in make_plugin, which is main-thread and may allocate.
 	slots:           patch.Slots,
+	// Which preset of it the instance is on and where the bank came from;
+	// see the note on the CLAP one.
+	session:         panel.Session,
 
 	// The host's handler, kept only so `setComponentHandler` has somewhere to
 	// put it. Nothing here calls back into it: this plugin never changes a
@@ -856,7 +859,7 @@ controller_set_param_normalized :: proc "c" (this: rawptr, id: u32, value: f64) 
 		// host does to keep its own generic panel in step.
 		if p.editor != nil {
 			editor_send_state(p.editor)
-			editor_send_patch(p.editor, int(p.program))
+			editor_send_selection(p.editor)
 		}
 		return vst3.RESULT_OK
 	}
@@ -1042,7 +1045,7 @@ make_plugin :: proc() -> ^Plugin {
 	// not. It parses once per process however many instances are made.
 	patch.factory_prepare()
 	// And the saved bank over the top of it, if this machine has one.
-	panel.bank_load(&p.slots)
+	panel.session_init(&p.session, panel.bank_load(&p.slots))
 	p.component_vtbl = &COMPONENT_VTBL
 	p.processor_vtbl = &PROCESSOR_VTBL
 	p.controller_vtbl = &CONTROLLER_VTBL

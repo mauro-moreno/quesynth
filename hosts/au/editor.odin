@@ -259,18 +259,22 @@ editor_open :: proc(s: ^AU) -> ^NS.View {
 	ed.panel.ctx = context
 	ed.panel.view.content_dir = content
 	ed.panel.host = panel.Host {
-		user        = rawptr(ed),
-		param_count = PARAM_COUNT,
-		read_values = editor_read_values,
-		set_param   = editor_set_param,
-		set_state   = editor_set_state,
-		edit        = editor_edit,
-		note        = editor_note,
-		bend        = editor_bend,
-		control     = editor_control,
-		volume      = editor_volume,
-		set_bank    = editor_set_bank,
-		read_bank   = editor_read_bank,
+		user            = rawptr(ed),
+		param_count     = PARAM_COUNT,
+		read_values     = editor_read_values,
+		set_param       = editor_set_param,
+		set_state       = editor_set_state,
+		edit            = editor_edit,
+		note            = editor_note,
+		bend            = editor_bend,
+		control         = editor_control,
+		volume          = editor_volume,
+		set_bank        = editor_set_bank,
+		read_bank       = editor_read_bank,
+		read_session    = editor_read_session,
+		select          = editor_select,
+		restore_retry   = editor_restore_retry,
+		restore_discard = editor_restore_discard,
 	}
 
 	frame := NS.Rect{size = {NS.Float(panel.WIDTH), NS.Float(panel.HEIGHT)}}
@@ -548,25 +552,24 @@ editor_volume :: proc(user: rawptr, amount: f32) {
 // panel's own. The text is written as it arrived, as the VST3 and CLAP editors
 // write it.
 @(private = "file")
-editor_set_bank :: proc(user: rawptr, text: string, save: bool) {
+editor_set_bank :: proc(user: rawptr, text: string, save: bool, origin: panel.Origin) -> panel.Bank_Result {
 	s := editor_au(user)
 	if s == nil || text == "" {
-		return
+		return .Invalid_Bank
 	}
-	parsed, err := patch.parse_bank_json(transmute([]u8)text)
-	if err != .None {
-		// Refused rather than written: a bank that will not parse would come
-		// back as no bank at all next time.
-		return
+	result := panel.session_set_bank(&s.session, &s.slots, text, save, origin, au_write_bank)
+	if result != .Invalid_Bank {
+		s.slots_loaded = true
 	}
-	defer patch.destroy_bank(parsed)
-	patch.slots_load(&s.slots, parsed)
-	s.slots_loaded = true
-	if save {
-		if path := au_bank_path(context.temp_allocator); path != "" {
-			panel.bank_write_to(path, text)
-		}
-	}
+	return result
+}
+
+// The per-user bank file, which is where the Audio Unit keeps it and not where
+// the other formats do.
+@(private = "file")
+au_write_bank :: proc(text: string) -> bool {
+	path := au_bank_path(context.temp_allocator)
+	return path != "" && panel.bank_write_to(path, text)
 }
 
 @(private = "file")
@@ -578,6 +581,50 @@ editor_read_bank :: proc(user: rawptr) -> string {
 	return patch.slots_write_json(&s.slots, context.temp_allocator)
 }
 
+// Which preset this unit is on, and how the last restore stands, for the panel
+// to be told. Borrowed from the unit.
+@(private = "file")
+editor_read_session :: proc(user: rawptr) -> panel.Instance_View {
+	s := editor_au(user)
+	if s == nil || !s.slots_loaded {
+		return {}
+	}
+	return {&s.session, &s.slots}
+}
+
+@(private = "file")
+editor_select :: proc(user: rawptr, selection: panel.Selection) {
+	s := editor_au(user)
+	if s == nil || !s.slots_loaded {
+		return
+	}
+	panel.session_select(&s.session, &s.slots, selection)
+}
+
+@(private = "file")
+editor_restore_retry :: proc(user: rawptr) -> bool {
+	s := editor_au(user)
+	if s == nil || !s.slots_loaded {
+		return false
+	}
+	path := au_bank_path(context.temp_allocator)
+	if path == "" {
+		_, changed := panel.session_retry(&s.session, &s.slots, nil)
+		return changed
+	}
+	_, changed := panel.session_retry_from(&s.session, &s.slots, path)
+	return changed
+}
+
+@(private = "file")
+editor_restore_discard :: proc(user: rawptr) {
+	s := editor_au(user)
+	if s == nil {
+		return
+	}
+	panel.session_discard(&s.session)
+}
+
 // The bank, read when the editor first opens rather than when the unit is made:
 // nothing else in the AU selects out of it yet, and a unit a host only scans
 // should not read a file for a panel it never shows.
@@ -587,11 +634,13 @@ editor_load_bank :: proc(s: ^AU) {
 		return
 	}
 	patch.factory_prepare()
+	source := panel.Bank_Source.Built_In
 	if path := au_bank_path(context.temp_allocator); path != "" {
-		panel.bank_load_from(path, &s.slots)
+		source = panel.bank_load_from(path, &s.slots)
 	} else {
 		patch.slots_load_factory(&s.slots)
 	}
+	panel.session_init(&s.session, source)
 	s.slots_loaded = true
 }
 
