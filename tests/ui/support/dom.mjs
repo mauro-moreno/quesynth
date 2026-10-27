@@ -15,8 +15,8 @@ export class Event {
     Object.assign(this, init);
   }
   preventDefault() { this.defaultPrevented = true; }
-  stopPropagation() {}
-  stopImmediatePropagation() {}
+  stopPropagation() { this.propagationStopped = true; }
+  stopImmediatePropagation() { this.propagationStopped = true; this.immediateStopped = true; }
 }
 
 class Listeners {
@@ -34,7 +34,10 @@ class Listeners {
   dispatch(target, event) {
     if (!event.target) event.target = target;
     event.currentTarget = target;
-    for (const fn of [...(this.byType.get(event.type) || [])]) fn.call(target, event);
+    for (const fn of [...(this.byType.get(event.type) || [])]) {
+      fn.call(target, event);
+      if (event.immediateStopped) break;
+    }
     return !event.defaultPrevented;
   }
   count(type) { return (this.byType.get(type) || []).length; }
@@ -193,6 +196,18 @@ function queryAll(root, selector) {
   return descendants(root).filter(el => chains.some(chain => matchesChain(el, chain)));
 }
 
+// An event that bubbles goes up through the parents until a listener stops it,
+// which is what lets a test press a key on the focused element and have the
+// dialog behind it hear Escape only if nothing in between took it.
+function dispatchThrough(target, event) {
+  if (!event.target) event.target = target;
+  for (let node = target; node; node = event.bubbles ? node.parentNode : null) {
+    if (node.listeners) node.listeners.dispatch(node, event);
+    if (event.propagationStopped) break;
+  }
+  return !event.defaultPrevented;
+}
+
 class Element extends Node {
   constructor(ownerDocument, namespaceURI, qualifiedName) {
     super(ownerDocument);
@@ -265,7 +280,7 @@ class Element extends Node {
 
   addEventListener(type, fn) { this.listeners.add(type, fn); }
   removeEventListener(type, fn) { this.listeners.remove(type, fn); }
-  dispatchEvent(event) { return this.listeners.dispatch(this, event); }
+  dispatchEvent(event) { return dispatchThrough(this, event); }
 
   querySelector(selector) { return queryAll(this, selector)[0] || null; }
   querySelectorAll(selector) { return queryAll(this, selector); }

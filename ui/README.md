@@ -457,6 +457,67 @@ destination it was asked about. Escape, the close mark, the backdrop and Cancel
 all answer no, focus starts on Cancel, Tab cannot leave, and focus goes back to
 whatever opened it.
 
+### The preset browser
+
+`SynthBrowser.open()` opens the **preset view**; `SynthBrowser.open({ view:
+"slots" })`, or the Slots tab, opens the bank and slot view, which is the browser
+as it was before there was a preset view (`.browser-source`, `.browser-slot`,
+`.browser-slot.on`, `.browser-archive-path` and the rest are unchanged). The two
+are tabs of one dialog, `role="tablist"`, and the arrows move between them.
+
+The preset view is for finding a sound by name:
+
+- **Search** is over the names of the presets the panel already knows
+  (`SynthBank.presets()`), case-insensitively, as you type. A bank that is listed
+  but not opened -- one row of a zip of banks, or an archive bank the host has
+  not opened -- contributes no names, **is never opened by searching**, and the
+  list says so in a note, with how to open it. Opening a bank is a click on it in
+  Banks.
+- **Filters** are toggle buttons (`aria-pressed`): Factory, User, Imported,
+  Archives, Current session (which includes a single patch opened from a file),
+  then Favorites and Recent. None pressed means everything; several sources
+  pressed show their union; Favorites and Recent narrow what is left.
+- The order is the panel's and does not move: origin, then the order the banks
+  were opened, then slot. Recent is its own, most recent first.
+- Each row has the slot number, the name, where it is from (`Imported /
+  Alfmeister Bank`) and a star. An empty slot is not a preset, so it is not
+  listed here; it is always listed in the slot view.
+
+A click, or Enter, **loads** the preset through `SynthBank.loadPreset`, and the
+row that says it is playing (`aria-selected`) follows `SynthBank.selection()`:
+it moves when the sound has. An archive preset is asked of the host and shows
+`Loading…` until the host answers; a refusal is read in the dialog with its name.
+What the view can be in is always said in words: an empty list says why it is
+empty; `Read-only`, `Loading…` and `Unavailable` are on the row or in the line
+that says what is playing (`SynthBank.status()`); the last thing the panel
+reported is in `.browser-feedback`, `role="status"`.
+
+**Favorites and Recent are the person's, not the instrument's** (the spec's
+UI-only decision). They are never in a bank, never in an export, never in the
+plugin's state and never in a message to a host. With `store.js` -- the browser
+build -- they are kept under `quesynth.prefs.v1`, apart from `quesynth.state.v1`,
+through `SynthStore.prefs()` and `SynthStore.setPrefs({ favorites, recent })`:
+lists of preset keys, `origin NUL bank NUL slot-or-archive-position NUL name`
+(`presets()[].key`), Recent most recent first and at most 20. Without it, which
+is every plugin, they last as long as the editor does. A key is the preset's
+whole address, so a slot that was rewritten, or a bank that was renamed or closed,
+makes the favorite **unavailable**: still listed, with that word on it, never
+loadable, and never replaced by another preset that happens to have the same
+name. Recent records every load a person makes -- a click, NEXT or PREV, a call
+to `loadPreset` -- when it has happened (`SynthBank.onLoad`), and an archive
+preset when the host has answered.
+
+By keyboard: Arrow Down from the search box enters the list at the preset that is
+playing; Up and Down, Home and End move between rows, Enter or Space loads, and
+the list is one tab stop with the star of its current row next. Escape clears the
+search first and closes the dialog second; Tab cannot leave the dialog and focus
+returns to whatever opened it. Every control has an accessible name; the star is
+`Favorite <name>`.
+
+In write mode (`SynthBrowser.write()`) there is no preset view: a destination is
+a slot, so it is the slot view, and a click chooses where to write and loads
+nothing.
+
 ## Using it
 
 Drag a knob vertically. Hold shift for fine adjustment, double click to return a

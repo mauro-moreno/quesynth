@@ -176,6 +176,7 @@
     solo: ["M22 68c10 10 46 10 56-5 8-13-3-20-20-22l-16-2c-17-2-24-15-13-24 12-10 47-8 61 2"],
     edit: ["M18 72l8-25 39-39 19 19-39 39z", "M26 47l19 19"],
     close: ["M22 22l56 56M78 22L22 78"],
+    star: ["M50 10l12 27 29 3-22 20 6 29-25-15-25 15 6-29-22-20 29-3z"],
     previous: ["M64 18L32 50l32 32"], next: ["M36 18l32 32-32 32"],
     // The stepper's two, so a whole number's controls are drawn in the same hand
     // as everything else rather than set in whatever the font has at "−".
@@ -1509,6 +1510,7 @@
   // Banks sent with "save": true that the host has not yet answered for.
   var pendingSaves = [];
   var resultListeners = [];
+  var loadListeners = [];
   var lastResult = null;
   var statusTimer = null;
   var statusSerial = 0;
@@ -1760,6 +1762,16 @@
     return report({ ok: false, action: action, error: { code: code, message: message } });
   }
 
+  // A person chose a preset and it is now the sound. Said to whoever asked --
+  // the browser's recently used list -- and not through `report`, because
+  // stepping with PREV and NEXT is a load too and says nothing in the strip.
+  function announceLoaded() {
+    var chosen = window.SynthBank.selection();
+    loadListeners.slice().forEach(function (fn) {
+      try { fn(chosen); } catch (e) { console.error("load listener:", e.message); }
+    });
+  }
+
   // -- restoring what the host asked for
 
   // What a restore was after, as the banner names it: `Alfmeister Bank / 042`.
@@ -1933,6 +1945,10 @@
   }
 
   function receivePatch(msg) {
+    // The host answering a load this panel asked for, as opposed to a program
+    // change somebody else made: only the first is the person's own choice.
+    var answered = !!pendingLoad && msg.source === "archive" && !!msg.archive &&
+      msg.archive.bank === pendingLoad.bank && msg.archive.patch === pendingLoad.patch;
     // Which patch a *host* says is loaded, after something other than this
     // panel changed it -- a MIDI program change, most often.
     //
@@ -1949,6 +1965,7 @@
     if (restoreState.state === "restored") restoreState = { state: "notRequested" };
     paintRestore();
     paintStrip();
+    if (answered) announceLoaded();
     refreshBrowser();
   }
 
@@ -2067,6 +2084,7 @@
     ensurePlaying(rec);
     loadPatch(index, rec);
     announceSelection();
+    announceLoaded();
   }
 
   // The preset a host plays, asked for through the archive: the host answers
@@ -2830,6 +2848,15 @@
       return function () {
         var at = resultListeners.indexOf(fn);
         if (at >= 0) resultListeners.splice(at, 1);
+      };
+    },
+    // Told with the selection each time a person's choice becomes the sound:
+    // a slot loaded, or the host's answer to an archive patch asked for.
+    onLoad: function (fn) {
+      loadListeners.push(fn);
+      return function () {
+        var at = loadListeners.indexOf(fn);
+        if (at >= 0) loadListeners.splice(at, 1);
       };
     },
 

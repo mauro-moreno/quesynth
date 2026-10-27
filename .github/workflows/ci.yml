@@ -115,7 +115,7 @@ jobs:
       - name: The panel's presets, banks and restore behave
         shell: pwsh
         run: |
-          node --test tests/ui/preset-reopen.test.mjs tests/ui/preset-restore.test.mjs tests/ui/preset-state.test.mjs tests/ui/preset-strip.test.mjs tests/ui/preset-markup.test.mjs tests/ui/preset-modal.test.mjs tests/ui/preset-bridge.test.mjs tests/ui/preset-persistence.test.mjs tests/ui/preset-import.test.mjs
+          node --test tests/ui/preset-reopen.test.mjs tests/ui/preset-restore.test.mjs tests/ui/preset-state.test.mjs tests/ui/preset-strip.test.mjs tests/ui/preset-markup.test.mjs tests/ui/preset-modal.test.mjs tests/ui/preset-bridge.test.mjs tests/ui/preset-persistence.test.mjs tests/ui/preset-import.test.mjs tests/ui/preset-browser-view.test.mjs tests/ui/preset-browser-keys.test.mjs tests/ui/preset-browser-prefs.test.mjs
           if ($LASTEXITCODE -ne 0) { throw "the preset tests failed" }
 
       # Quesynth Pad. Its rack rules, its .qkit format and its distribution

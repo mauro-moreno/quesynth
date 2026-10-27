@@ -19,11 +19,22 @@
 //   everything else     no. Banks opened from a file are on disk already, and
 //                       a browser is a demo of the instrument rather than the
 //                       place a library should live.
+//
+// And one thing that is not the instrument at all: the preset browser's
+// favourites and recently used list, kept under a key of their own. They are
+// the person's habits, not the sound's, so they never go in the state above,
+// never in a bank, and never to a host. See prefs() below.
 
 (function () {
   "use strict";
 
   var KEY = "quesynth.state.v1";
+  var PREFS_KEY = "quesynth.prefs.v1";
+  // Recently used is a short list on purpose: it is for getting back to what
+  // you were just playing, and a long one is a second library. Favourites are
+  // capped too, only so a bug elsewhere cannot fill the quota.
+  var RECENT_MAX = 20;
+  var FAVORITES_MAX = 1000;
 
   // Long enough that dragging a knob writes once at the end of the gesture
   // rather than sixty times through it, short enough that a reload a moment
@@ -96,6 +107,41 @@
     if (state) write(state);
   }
 
+  // A list of preset keys: text only, no repeats, in the order given. Whatever
+  // was stored may have been written by anything, and a key is only ever
+  // compared with others, never interpreted, so text is all that has to hold.
+  function keysOf(list, max) {
+    var out = [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length && out.length < max; i++) {
+      if (typeof list[i] === "string" && list[i] !== "" && out.indexOf(list[i]) < 0) {
+        out.push(list[i]);
+      }
+    }
+    return out;
+  }
+
+  function cleanPrefs(raw) {
+    return {
+      favorites: keysOf(raw && raw.favorites, FAVORITES_MAX),
+      recent: keysOf(raw && raw.recent, RECENT_MAX),
+    };
+  }
+
+  // What the browser last said, so that a browser that cannot write still
+  // remembers it until the page goes.
+  var prefsNow = null;
+
+  function readPrefs() {
+    if (!usable) return cleanPrefs(null);
+    try {
+      var text = window.localStorage.getItem(PREFS_KEY);
+      return cleanPrefs(text ? JSON.parse(text) : null);
+    } catch (e) {
+      return cleanPrefs(null);
+    }
+  }
+
   window.SynthStore = {
     // What was remembered, for app.js to apply while it is starting up.
     restore: function () { return stored(); },
@@ -120,6 +166,34 @@
       try { window.localStorage.removeItem(KEY); } catch (e) {}
       read = null;
       loaded = false;
+    },
+
+    // Favourites and recently used presets, `{ favorites: [key], recent:
+    // [key] }`, most recent first.
+    //
+    // Under their own key, and nothing in the state above reads or writes it.
+    // That separation is the whole design: the state is what the instrument
+    // is, and travels with the project in a plugin; this is what the person
+    // likes, and belongs to nothing but the browser they use. Neither the
+    // bank, an export, nor any message to a host ever carries it, and in a
+    // plugin -- which does not load this file -- it lasts as long as the
+    // editor does, which is the right amount of memory for a preference the
+    // host has nowhere to keep.
+    prefs: function () {
+      if (!prefsNow) prefsNow = readPrefs();
+      return cleanPrefs(prefsNow);
+    },
+
+    // Returns whether it was kept for good; either way it is kept for now.
+    setPrefs: function (next) {
+      prefsNow = cleanPrefs(next);
+      if (!usable) return false;
+      try {
+        window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefsNow));
+        return true;
+      } catch (e) {
+        return false;
+      }
     },
   };
 

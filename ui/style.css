@@ -1622,6 +1622,16 @@ body.modal-open { overflow: hidden; }
   }
 }
 
+/* The preset view is about the list, so on a phone the banks it draws on come
+ * after it rather than taking the top third of the dialog. */
+@media (max-width: 620px) {
+  .browser[data-view="presets"] .browser-sources {
+    order: 2;
+    border-bottom: 0;
+    border-top: 1px solid var(--panel-edge);
+  }
+}
+
 /* New and Add, beside the "Banks" heading. Small, because they are the two
  * least frequent things in the dialog and the list is the point. */
 /* The label on one line and the three actions on the next.
@@ -1739,6 +1749,193 @@ body.modal-open { overflow: hidden; }
   overflow-wrap: anywhere;
   border-bottom: 1px solid var(--panel-edge);
 }
+
+/* ------------------------------------------------------- preset browser */
+
+/* The two views, as tabs above both panes. */
+.browser-views {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 0;
+  border-bottom: 1px solid var(--panel-edge);
+}
+.browser-tab {
+  appearance: none;
+  padding: 0 14px;
+  font: inherit;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+}
+.browser-tab:hover { color: var(--ink); }
+.browser-tab[aria-selected="true"] {
+  color: var(--ink);
+  background: #16161b;
+  border-color: var(--panel-edge);
+}
+
+.browser-presets {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The search box and the filters under it. The box is the one thing in here
+ * that is typed into, so it takes the whole width and the filters wrap. */
+.browser-toolbar {
+  flex: 0 0 auto;
+  padding: 10px 14px 6px;
+  border-bottom: 1px solid var(--panel-edge);
+}
+.browser-toolbar .browser-search { margin-bottom: 6px; }
+.browser-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.browser-chip {
+  appearance: none;
+  padding: 0 10px;
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.browser-chip:hover { color: var(--ink); border-color: var(--metal-dark); }
+.browser-chip[aria-pressed="true"] {
+  color: var(--ink);
+  background: #23232b;
+  border-color: var(--metal-dark);
+}
+
+/* What is playing, and what the list leaves out and why. Prose, so it wraps. */
+.browser-now {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 14px;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--panel-edge);
+}
+.browser-now[data-status="unavailable"] { color: var(--ink); }
+.browser-notes:empty { display: none; }
+.browser-note {
+  margin: 0;
+  padding: 6px 14px;
+  line-height: 1.35;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+.browser-note[data-kind="error"] { color: var(--ink); }
+.browser-count {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 14px 2px;
+  color: var(--ink-faint);
+}
+
+.browser-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 8px 8px;
+}
+.browser-row { display: flex; align-items: center; gap: 2px; }
+
+.browser-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  color: var(--ink-dim);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.browser-result:hover { background: #16161b; color: var(--ink); }
+.browser-result.on { background: #23232b; color: var(--ink); }
+.browser-result.unavailable { color: var(--ink-faint); cursor: default; }
+.browser-result-num {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+.browser-result-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-result-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-faint);
+}
+.browser-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border: 1px solid var(--panel-edge);
+  border-radius: 3px;
+}
+.browser-result.loading .browser-badge { color: var(--ink); }
+
+/* The star is drawn in the page's one icon hand: an outline until it is
+ * pressed, solid after. */
+.browser-star {
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 0;
+  color: var(--ink-faint);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.browser-star:hover { color: var(--ink); background: #16161b; }
+.browser-star[aria-pressed="true"] { color: var(--ink); }
+.browser-star[aria-pressed="true"] .icon-stroke { fill: currentColor; }
+
+.browser-empty {
+  margin: 0;
+  padding: 16px 14px;
+  color: var(--ink-faint);
+}
+
+/* What the last thing that happened said. An error reads in the brightest tier
+ * and carries a rule beside it, so it is not mistaken for the quiet text
+ * around it; no new colour, the words carry the meaning. */
+.browser-feedback {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 14px;
+  line-height: 1.35;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--panel-edge);
+  overflow-wrap: anywhere;
+}
+.browser-feedback[data-kind="error"],
+.browser-feedback[data-kind="warn"] { color: var(--ink); }
+.browser-feedback[data-kind="error"] { border-left: 3px solid var(--metal); padding-left: 11px; }
 
 /* --------------------------------------------------------------- configure */
 
@@ -2218,7 +2415,8 @@ html, body { font-size: var(--type-body); }
 .bank-write, .bank-action, .bank-origin, .bank-menu-list button, .restore-actions button,
 .keys-toggle, .oct-label, .wheel-label, .bank-vol label,
 .browser-save-label, .browser-group-label, .browser-source-count,
-.browser-bank-count, .browser-mini, .rack-toolbar label > span, .rack-field > span,
+.browser-bank-count, .browser-mini, .browser-tab, .browser-chip, .browser-badge,
+.browser-result-meta, .browser-count, .browser-note, .rack-toolbar label > span, .rack-field > span,
 .rack-slider > span, .pad-cell-index, .pad-cell-mode, .pad-cell-note,
 .rack-field output, .rack-slider output, .rack-toggles button,
 .pad-action, .rack-editor-title { font-size: var(--type-micro); }
@@ -2265,10 +2463,15 @@ html, body { font-size: var(--type-body); }
 input[type="range"] { min-height: 28px; }
 .modal-close { min-height: 28px; font-size: var(--type-micro); letter-spacing: .1em; }
 .modal-action { min-height: 34px; }
+.browser-mini, .browser-chip, .browser-source, .browser-slot,
+.browser-archive-path, .browser-search { min-height: 28px; }
+.browser-tab, .browser-result, .browser-star { min-height: 34px; }
+.browser-star { min-width: 28px; }
+.browser-slot, .browser-source, .browser-mini { align-items: center; }
 
 button:focus-visible, input:focus-visible, select:focus-visible,
 .knob:focus-visible, .options:focus, .browser-save-name:focus,
-.browser-search:focus, .options-target:focus {
+.browser-search:focus, .options-target:focus, .browser-result:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

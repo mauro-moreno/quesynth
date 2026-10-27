@@ -185,7 +185,7 @@ test("the hosted bank dialog browses the shared archive without replacing the or
   const w = page.window, doc = w.document;
   await until(() => page.got.some(m => m.type === "archive"), 5000, "archive capability");
   assert.deepEqual(Array.from(w.SynthBank.list(), b => b.label), ["My Bank"], "no placeholder bank");
-  w.SynthBrowser.open();
+  w.SynthBrowser.open({view: "slots"});
   const sources = () => doc.querySelectorAll(".browser-source");
   const slots = () => doc.querySelectorAll(".browser-slot");
   const shown = () => doc.getElementById("bank-patch").textContent;
@@ -275,7 +275,7 @@ test("the hosted WRITE dialog targets only the ordinary bank while an archive pa
   t.after(() => page.close());
   const w = page.window, doc = w.document;
   await until(() => page.got.some(m => m.type === "archive"), 5000, "archive capability");
-  w.SynthBrowser.open();
+  w.SynthBrowser.open({view: "slots"});
   doc.querySelectorAll(".browser-source")[2].click();
   await until(() => w.SynthBank.browsing().bank === 1 && !w.SynthBank.browsing().loading, 3000);
   w.SynthBrowser.write();
