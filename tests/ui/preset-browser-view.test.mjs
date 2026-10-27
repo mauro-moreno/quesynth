@@ -68,6 +68,11 @@ test("open({ view: \"slots\" }) goes straight to the slot view", () => {
   assert.equal(options(page).length, 0);
 });
 
+test("the browser offers open, write, saveAs, importBank and refresh, and nothing else", () => {
+  const page = browser();
+  assert.deepEqual(Object.keys(page.window.SynthBrowser).sort(), ["importBank", "open", "refresh", "saveAs", "write"]);
+});
+
 test("any request that is not for the slot view opens the preset view", () => {
   const page = browser();
   for (const asked of [undefined, {}, {view: "presets"}, {view: "bogus"}, null]) {

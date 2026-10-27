@@ -2039,6 +2039,9 @@
     var v1 = bridge.version() >= 1;
     var others = [];
     recs.forEach(function (r) {
+      // From here on the bank is not just the file it was opened from, which
+      // is what closing it would otherwise be able to claim.
+      if (r) r.edited = true;
       if (r && r !== current && others.indexOf(r) < 0 && v1 && r.persisted) others.push(r);
     });
     others.forEach(function (r) { publishBank(r); });
@@ -2323,6 +2326,7 @@
       readOnly: bankReadOnly(b),
       closable: bankClosable(b),
       persisted: b.persisted === true,
+      edited: b.edited === true,
       saveError: b.saveError || "",
       current: i === currentBank,
       playing: selection.origin !== "archive" && selection.bank === b.label,
@@ -2918,7 +2922,7 @@
             index: i + 1, label: name, origin: "archive", kind: "archive",
             used: archive.bank === i ? archive.patches.length : null,
             loading: archiveWaiting === i, unavailable: false, error: "", leftOut: 0,
-            readOnly: true, closable: false, persisted: false, saveError: "",
+            readOnly: true, closable: false, persisted: false, edited: false, saveError: "",
             current: browsedArchive === i,
             playing: selection.origin === "archive" && !!selection.archive && selection.archive.bank === i,
           };

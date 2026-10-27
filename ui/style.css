@@ -1937,6 +1937,100 @@ body.modal-open { overflow: hidden; }
 .browser-feedback[data-kind="warn"] { color: var(--ink); }
 .browser-feedback[data-kind="error"] { border-left: 3px solid var(--metal); padding-left: 11px; }
 
+/* ------------------------------------------------------ bank management */
+
+/* A bank's row says where it came from and whether it can be written to, on a
+ * line of its own under the name, so a long name keeps the width it has. */
+.browser-source { flex-wrap: wrap; }
+.browser-source-badges {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* The one small form the sources pane ever shows: a bank's name. */
+.browser-form-host:empty { display: none; }
+.browser-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 8px;
+}
+.browser-form-label {
+  flex: 1 0 100%;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+}
+.browser-form-name {
+  flex: 1 1 100%;
+  min-width: 0;
+  appearance: none;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: #0a0a0d;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+}
+.browser-form .browser-mini { flex: 1 1 0; }
+
+/* What can be done to the bank in view. */
+.browser-bank-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0 8px;
+}
+.browser-bank-tools[hidden] { display: none; }
+.browser-bank-tools-name {
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-bank-tools .browser-heading-actions { flex-wrap: wrap; }
+.browser-bank-tools .browser-mini { flex: 1 1 40%; }
+.browser-mini[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+
+/* A slot, and the two things that can be done to what is in it. The tools
+ * lie over the end of the row and show when the row is pointed at, has focus
+ * or is the one that is playing; where nothing points they are always shown. */
+.browser-cell { position: relative; display: flex; min-width: 0; }
+.browser-cell .browser-slot { flex: 1 1 auto; min-width: 0; }
+.browser-slot-tools {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  display: flex;
+  gap: 2px;
+  transform: translateY(-50%);
+  opacity: 0;
+}
+.browser-cell:hover .browser-slot-tools,
+.browser-cell:focus-within .browser-slot-tools,
+.browser-cell .browser-slot.on ~ .browser-slot-tools { opacity: 1; }
+.browser-slot-tool { background: #16161b; }
+@media (hover: none) {
+  .browser-slot-tools { opacity: 1; }
+}
+
+/* The slot a copy or a move is of, in the dialog that chooses where it goes. */
+.browser-slot.source { outline: 1px dashed var(--metal-dark); }
+
+/* What a copy or a move would do, read before it is asked for. */
+.browser-transfer {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 14px;
+  line-height: 1.35;
+  color: var(--ink-dim);
+  border-top: 1px solid var(--panel-edge);
+  background: #121216;
+  overflow-wrap: anywhere;
+}
+
 /* --------------------------------------------------------------- configure */
 
 .options {
@@ -2415,7 +2509,7 @@ html, body { font-size: var(--type-body); }
 .bank-write, .bank-action, .bank-origin, .bank-menu-list button, .restore-actions button,
 .keys-toggle, .oct-label, .wheel-label, .bank-vol label,
 .browser-save-label, .browser-group-label, .browser-source-count,
-.browser-bank-count, .browser-mini, .browser-tab, .browser-chip, .browser-badge,
+.browser-bank-count, .browser-mini, .browser-form-label, .browser-bank-tools-name, .browser-tab, .browser-chip, .browser-badge,
 .browser-result-meta, .browser-count, .browser-note, .rack-toolbar label > span, .rack-field > span,
 .rack-slider > span, .pad-cell-index, .pad-cell-mode, .pad-cell-note,
 .rack-field output, .rack-slider output, .rack-toggles button,
@@ -2464,14 +2558,15 @@ input[type="range"] { min-height: 28px; }
 .modal-close { min-height: 28px; font-size: var(--type-micro); letter-spacing: .1em; }
 .modal-action { min-height: 34px; }
 .browser-mini, .browser-chip, .browser-source, .browser-slot,
-.browser-archive-path, .browser-search { min-height: 28px; }
+.browser-archive-path, .browser-search, .browser-form-name { min-height: 28px; }
 .browser-tab, .browser-result, .browser-star { min-height: 34px; }
 .browser-star { min-width: 28px; }
 .browser-slot, .browser-source, .browser-mini { align-items: center; }
 
 button:focus-visible, input:focus-visible, select:focus-visible,
 .knob:focus-visible, .options:focus, .browser-save-name:focus,
-.browser-search:focus, .options-target:focus, .browser-result:focus-visible {
+.browser-search:focus, .browser-form-name:focus, .options-target:focus,
+.browser-result:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

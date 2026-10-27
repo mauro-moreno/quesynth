@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
-import {all, body, chip, dialog, feedback, focused, label, names, open, option, options, press, pressed, searchBox, selected, star, tab, type} from "./support/browser.mjs";
+import {all, body, chip, dialog, feedback, focused, heading, label, names, open, option, options, press, pressed, searchBox, selected, slotTool, star, tab, type} from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
 const browser = () => bootPanel({bank: FACTORY, host: null, store: true});
@@ -39,8 +39,18 @@ test("every control in the browser has a name, in both views and in the destinat
   assert.deepEqual(nameless(), [], "preset view");
   tab(page, "Slots").click();
   assert.deepEqual(nameless(), [], "slot view");
+  heading(page, "New bank...").click();
+  assert.deepEqual(nameless(), [], "the form that names a bank");
   page.window.SynthBrowser.write();
   assert.deepEqual(nameless(), [], "write dialog");
+  page.window.SynthBrowser.saveAs();
+  assert.deepEqual(nameless(), [], "save as dialog");
+  page.window.SynthBank.newBank("Third");
+  open(page, {view: "slots"});
+  page.window.SynthBank.writePreset({bank: "Third", slot: 0, name: "Alpha"});
+  slotTool(page, "Copy", "Alpha").click();
+  assert.deepEqual(nameless(), [], "the dialog that chooses where a copy goes");
+  assert.ok(all(page, ".browser-slot-tool").length > 0);
 });
 
 test("each filter says whether it is pressed, each star says which preset it is for, and the statuses are status regions", () => {

@@ -3,6 +3,7 @@
 // script happens to build it.
 
 import {Event} from "./dom.mjs";
+import {FakeFileReader} from "./files.mjs";
 
 export const dialog = page => page.document.querySelector(".modal");
 export const body = page => page.document.querySelector(".browser");
@@ -48,3 +49,38 @@ export const settle = () => new Promise(resolve => setImmediate(resolve));
 // The text of every status region in the dialog, for "was it said".
 export const said = page => all(page, '.modal [role="status"]').map(label).filter(Boolean);
 export const feedback = page => page.document.querySelector(".browser-feedback");
+
+// ------------------------------------------------------------ banks and files
+
+export const sourceRow = (page, name) => all(page, ".browser-source")
+  .find(r => r.querySelector(".browser-source-name").textContent === name);
+export const sourceNames = page => all(page, ".browser-source").map(r => r.querySelector(".browser-source-name").textContent);
+export const badges = row => [...row.querySelectorAll(".browser-badge")].map(label);
+export const tool = (page, text) => all(page, ".browser-bank-tools button").find(b => label(b) === text);
+export const heading = (page, text) => all(page, ".browser-heading .browser-heading-actions button").find(b => label(b) === text);
+export const slotTool = (page, kind, name) => page.document.querySelector(`[aria-label="${kind} ${name} to..."]`);
+export const disabled = el => el.getAttribute("aria-disabled") === "true";
+export const dialogs = page => all(page, ".modal");
+export const front = page => dialogs(page).at(-1);
+export const submit = form => form.dispatchEvent(new Event("submit"));
+export const wait = (ms = 15) => new Promise(resolve => setTimeout(resolve, ms));
+
+// The file and download plumbing a browser gives the page, for the tests that
+// open a file or export a bank.
+export function withFiles(page) {
+  page.downloads = [];
+  page.window.Blob = Blob;
+  page.window.URL = {createObjectURL: blob => { page.downloads.push(blob); return `blob:${page.downloads.length}`; }, revokeObjectURL() {}};
+  page.window.FileReader = FakeFileReader;
+  return page;
+}
+
+// Hand the picker a file, the way the browser's own dialog would, once the
+// page has asked for one by clicking `button`.
+export async function choose(page, button, file, input = 'input[type="file"]:not([webkitdirectory])') {
+  button.click();
+  const field = page.document.querySelector(input);
+  field.files = Array.isArray(file) ? file : [file];
+  field.onchange();
+  await wait();
+}

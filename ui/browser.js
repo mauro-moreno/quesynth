@@ -221,35 +221,66 @@
 
   // ---------------------------------------------------------------- the body
 
-  // `mode` is "load" or "write"; `startView` is "presets" or "slots" and only
-  // means something to load, since a destination is always a slot.
-  function build(mode, startView) {
-    var writing = mode === "write";
-    var view = writing || startView === "slots" ? "slots" : "presets";
+  // How a slot is called when it is named in a sentence.
+  function slotWords(label, slot) {
+    return label + " / " + pad3(slot);
+  }
+
+  // `mode` is what the dialog is for:
+  //
+  //   load     choosing a sound to play, in the preset view or the slot view
+  //   write    choosing where to put the sound that is playing, the legacy way:
+  //            starting on its own slot, every bank listed, the read-only ones
+  //            marked and refused by the panel in its own words
+  //   saveas   the same, for a sound that has no home yet: banks that can take
+  //            it, starting on the first empty slot
+  //   copy     choosing where a preset in a slot is copied to
+  //   move     ... or moved to
+  //
+  // `startView` is "presets" or "slots" and only means something to load; every
+  // other mode is choosing a slot. `job` is what a copy or a move is of:
+  // `{ from: { bank, slot }, name }`.
+  function build(mode, startView, job) {
+    // Choosing a place for something, as against choosing something to play.
+    var picking = mode !== "load";
+    var forms = mode === "write" || mode === "saveas";
+    var transfer = mode === "copy" || mode === "move";
+    var view = picking || startView === "slots" ? "slots" : "presets";
+
+    // The bank a destination is chosen in is the bank in view; these two modes
+    // begin by looking at one that can take what is being put there.
+    if (mode === "saveas" || transfer) arrive();
+
     // In write mode this is the destination, and it starts where you already
     // are, so writing back to the same slot takes no navigation at all. It can
     // be -1 -- after switching banks nothing in this one is loaded -- and the
-    // top of the bank is the sensible place to start from then.
-    var target = Math.max(0, api().index());
-    var field = null, where = null;
+    // top of the bank is the sensible place to start from then. The others
+    // start on the first empty slot, which is where a new sound belongs.
+    var target = mode === "write" ? Math.max(0, api().index()) : firstEmpty();
+    var field = null, where = null, commitButton = null, edited = false;
+    var wrote = false;
 
     // Move the destination, and everything that shows it, together.
     function setTarget(i) {
       target = i;
-      if (where) where.textContent = "Slot " + pad3(i);
-      if (field) {
+      if (forms) {
+        where.textContent = "Slot " + pad3(i);
         // The name of the sound being written, not of the one being replaced.
         //
         // The other way round is a trap: pick a slot holding "Strings", write
         // an organ into it without reading the field, and the bank now has an
         // organ called Strings. Re-saving a patch over itself still offers its
-        // own name, because in that case they are the same name.
-        field.value = window.SynthPatch.name() || "Untitled";
+        // own name, because in that case they are the same name. A name that
+        // somebody has typed is theirs, though, and clicking another slot does
+        // not take it back.
+        if (!edited) field.value = window.SynthPatch.name() || "Untitled";
       }
+      if (transfer) paintTransfer();
     }
 
     var wrap = element("div", "browser");
     wrap.setAttribute("data-view", view);
+    wrap.setAttribute("data-mode", mode);
 
     var tabs = null;
     var panes = element("div", "browser-panes");
@@ -268,6 +299,50 @@
       feedback.textContent = text || "";
       feedback.hidden = !text;
       feedback.setAttribute("data-kind", kind || "ok");
+    }
+
+    // The bank the dialog is looking at, as `list()` describes it, or null.
+    // Choosing a destination never looks at an archive bank, which is not
+    // one: the page's own bank is the only one `slots()` reads then.
+    function viewRow() {
+      var rows = api().list();
+      if (picking && api().archive()) return rows[0] || null;
+      for (var i = 0; i < rows.length; i++) if (rows[i].current) return rows[i];
+      return null;
+    }
+
+    // Is the bank this dialog is looking at somewhere its job can go?
+    function canTarget() {
+      var row = viewRow();
+      if (!row || !picking) return true;
+      return mode !== "saveas" || (!row.readOnly && row.used !== null);
+    }
+
+    // Does the sources list offer this bank in this mode?
+    function offered(b) {
+      if (picking && b.kind === "archive") return false;
+      return mode !== "saveas" || !b.readOnly;
+    }
+
+    // Where a destination is chosen first: a bank in view that can take it.
+    function arrive() {
+      var banks = api().list();
+      if (api().archive()) return;
+      var ok = function (r) { return r && r.kind === "bank" && !r.readOnly && r.used !== null; };
+      var here = banks.filter(function (r) { return r.current; })[0];
+      // A copy or a move starts in the bank the preset is in; Save As in the
+      // bank that is playing, if the one in view cannot take it.
+      var chosen = transfer
+        ? banks.filter(function (r) { return r.label === job.from.bank; })[0]
+        : banks.filter(function (r) { return r.playing; })[0];
+      var pick = ok(here) ? here : ok(chosen) ? chosen : banks.filter(ok)[0];
+      if (pick && !pick.current) api().select(pick.index, true);
+    }
+
+    function firstEmpty() {
+      var slots = api().slots();
+      for (var i = 0; i < slots.length; i++) if (!slots[i]) return i;
+      return 0;
     }
 
     // What has been typed into the bank search box, lower-cased once.
@@ -306,7 +381,7 @@
 
     function paintArchive() {
       var a = api().archive();
-      archiveArea.hidden = writing || !a;
+      archiveArea.hidden = picking || !a;
       if (!a) return;
       // A peer's change updates the remembered path, but a patch poll must
       // not wipe out a path the user is still typing.
@@ -336,6 +411,180 @@
       if (kid && kid.focus) kid.focus();
     }
 
+    // ---------------------------------------------------- naming a bank
+
+    // One small form at a time, in the sources pane, for the two things that
+    // need a name: a new bank and a renamed one. Inline rather than a dialog
+    // of its own because the dialog it would stack on is the one the person is
+    // working in, and a bank's name is one line. It stays open when the panel
+    // refuses the name, with the reason beside it, and closes when it is
+    // accepted. Escape and Cancel put focus back on what opened it.
+    var formHost = element("div", "browser-form-host");
+    var openForm = null;
+
+    function closeForm(refocus) {
+      if (!openForm) return;
+      var opener = openForm.opener;
+      if (openForm.form.parentNode) openForm.form.parentNode.removeChild(openForm.form);
+      openForm = null;
+      if (refocus && opener && opener.focus) opener.focus();
+    }
+
+    // `config`: { label, value, submit, opener, onSubmit(name) -> result }.
+    function showForm(config) {
+      closeForm(false);
+      var form = element("form", "browser-form");
+      form.appendChild(element("span", "browser-form-label", config.label));
+      var name = element("input", "browser-form-name");
+      name.type = "text";
+      name.value = config.value;
+      name.setAttribute("aria-label", config.label);
+      var go = element("button", "browser-mini", config.submit);
+      go.type = "submit";
+      var cancel = button("browser-mini", "Cancel");
+      form.appendChild(name);
+      form.appendChild(go);
+      form.appendChild(cancel);
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var result = config.onSubmit(name.value);
+        // Only a name can be put right by trying another one: a bank that
+        // belongs to the host is refused whatever it is called.
+        if (result && !result.ok && result.error.code === "InvalidName") name.focus();
+        else closeForm(true);
+      });
+      cancel.addEventListener("click", function () { closeForm(true); });
+      // Before the dialog hears it: Escape here means "never mind the name".
+      form.addEventListener("keydown", function (e) {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+        closeForm(true);
+      });
+      openForm = { form: form, opener: config.opener };
+      formHost.appendChild(form);
+      name.focus();
+      name.select();
+    }
+
+    // ----------------------------------------------- importing from files
+
+    // Say how an import went, in the dialog as well as in the strip: the
+    // typed refusal comes through `onResult` with its code, and a bank that did
+    // not fit gets the sentence that says what that means.
+    function imported(err, what) {
+      if (!err) {
+        var left = /\((\d+) left out\)/.exec(what || "");
+        if (left) {
+          say("Opened " + what + ". " + left[1] + (left[1] === "1" ? " patch" : " patches") +
+            " did not fit a bank's " + api().SLOTS + " slots and " + (left[1] === "1" ? "was" : "were") +
+            " left out.", "warn");
+        }
+      }
+      paintAll();
+    }
+
+    function pickWith(name) {
+      if (!files() || !files()[name]) {
+        say("This build cannot open files.", "error");
+        return;
+      }
+      files()[name](imported);
+    }
+
+    // -------------------------------------------------------- bank tools
+
+    // What can be done to the bank in view. Built once, so that the form that
+    // one of them opens is not taken from under the person's hands by a
+    // repaint; `paintTools` only says which of them apply.
+    var tools = element("div", "browser-bank-tools");
+    tools.setAttribute("role", "group");
+    tools.setAttribute("aria-label", "Bank actions");
+    var toolsName = element("span", "browser-bank-tools-name");
+    var toolRename = button("browser-mini", "Rename...");
+    var toolDuplicate = button("browser-mini", "Duplicate");
+    var toolExport = button("browser-mini", "Export bank");
+    var toolClose = button("browser-mini", "Close bank");
+    var toolRow = element("div", "browser-heading-actions");
+    [toolRename, toolDuplicate, toolExport, toolClose].forEach(function (b) { toolRow.appendChild(b); });
+    tools.appendChild(toolsName);
+    tools.appendChild(toolRow);
+
+    // A tool that does not apply looks it, and says why on hover; it is not
+    // taken out of reach. The panel decides what is allowed and answers a press
+    // in its own words, which is the one place those words are written.
+    function applies(b, ok, why) {
+      b.setAttribute("aria-disabled", ok ? "false" : "true");
+      b.title = ok ? "" : why;
+    }
+
+    function paintTools() {
+      var row = viewRow();
+      tools.hidden = picking || !row || row.kind === "archive";
+      if (tools.hidden) return;
+      toolsName.textContent = row.label;
+      applies(toolRename, row.origin !== "factory", "The factory bank belongs to the instrument and cannot be renamed.");
+      applies(toolDuplicate, row.used !== null, "Open this bank before copying it.");
+      applies(toolExport, row.used !== null, "Open this bank before exporting it.");
+      applies(toolClose, row.closable, api().list().length < 2
+        ? "The last bank cannot be closed." : row.label + " cannot be closed.");
+    }
+
+    toolRename.addEventListener("click", function () {
+      var row = viewRow();
+      if (!row) return;
+      // The two it can never be are refused by asking, which is where the
+      // reason is written; the others get the form.
+      if (row.origin === "factory") { api().renameBank(row.label, row.label); return; }
+      showForm({
+        label: "New name for " + row.label, value: row.label, submit: "Rename", opener: toolRename,
+        onSubmit: function (name) {
+          var result = api().renameBank(row.label, name);
+          paintAll();
+          return result;
+        },
+      });
+    });
+    toolDuplicate.addEventListener("click", function () {
+      var row = viewRow();
+      if (!row) return;
+      api().duplicateBank(row.label);
+      paintAll();
+    });
+    toolExport.addEventListener("click", function () {
+      var row = viewRow();
+      if (!row) return;
+      if (files() && files().saveBank) files().saveBank(row.index);
+    });
+    toolClose.addEventListener("click", function () {
+      var row = viewRow();
+      if (!row) return;
+      // What is in a bank of the person's own, or put into one they opened,
+      // is in no file: closing it is the only way to lose it here, so it is
+      // asked. A bank that is still only what its file said is not.
+      var theirs = row.origin === "user" ? row.used > 0 : row.edited;
+      if (theirs && row.closable) {
+        window.SynthModal.confirm({
+          title: "Close " + row.label + "?",
+          message: [
+            row.origin === "user"
+              ? row.label + " has " + row.used + (row.used === 1 ? " preset" : " presets") + " and is not saved anywhere else."
+              : row.label + " was opened from a file, and what has been written into it since is not saved anywhere else.",
+            "Closing it removes it from this session. The sound that is playing does not change.",
+            "Export it first if you want to keep it.",
+          ],
+          confirmLabel: "Close bank",
+        }).then(function (yes) {
+          if (!yes) return;
+          api().removeBank(row.label);
+          paintAll();
+        });
+        return;
+      }
+      api().removeBank(row.label);
+      paintAll();
+    });
+
     function buildHeader() {
       var head = element("div", "browser-heading");
       head.appendChild(element("span", null, "Banks"));
@@ -343,48 +592,41 @@
       var actions = element("span", "browser-heading-actions");
 
       // Somewhere to write to that is not the factory bank.
-      var make = button("browser-mini", "New");
+      var make = button("browser-mini", "New bank...");
       make.title = "A new empty bank";
       make.addEventListener("click", function () {
-        api().create("New Bank");
-        if (writing) setTarget(0);
-        paintAll();
-      });
-
-      // A bank from a file, joining the list rather than replacing it.
-      var add = button("browser-mini", "Add");
-      add.title = "Open a .json bank, a .zip of patches, or one .sy1 patch";
-      add.addEventListener("click", function () {
-        if (files() && files().pick) {
-          files().pick(function (err, what) {
-            if (err) { showStatus(err.message || "could not open that file", false); return; }
-            showStatus(what ? "Opened " + what : "", true);
+        showForm({
+          label: "Name for the new bank", value: "New Bank", submit: "Create", opener: make,
+          onSubmit: function (name) {
+            var made = api().newBank(name);
+            // The new bank is the one in view, and an empty one: the first slot.
+            if (made.ok && picking) setTarget(firstEmpty());
             paintAll();
-          });
-        }
+            return made;
+          },
+        });
       });
-
-      // And the third shape a bank comes in: a folder of .sy1 files, which is
-      // how the reference keeps its own. Its own button rather than something
-      // the file picker guesses at, because a folder and a file are chosen in
-      // different dialogs and the browser has to be told which to open.
-      var folder = button("browser-mini", "Folder");
-      folder.title = "Open a folder of .sy1 patches";
-      folder.addEventListener("click", function () {
-        if (files() && files().pickFolder) {
-          files().pickFolder(function (err, what) {
-            if (err) { showStatus(err.message || "could not open that folder", false); return; }
-            showStatus(what ? "Opened " + what : "", true);
-            paintAll();
-          });
-        }
-      });
-
       actions.appendChild(make);
-      actions.appendChild(add);
-      actions.appendChild(folder);
+
+      if (!picking) {
+        // A bank from a file, joining the list rather than replacing it.
+        var add = button("browser-mini", "Import file...");
+        add.title = "Open a .json bank, a .zip of patches, or one .sy1 patch";
+        add.addEventListener("click", function () { pickWith("pick"); });
+
+        // And the third shape a bank comes in: a folder of .sy1 files, which is
+        // how the reference keeps its own. Its own button rather than something
+        // the file picker guesses at, because a folder and a file are chosen in
+        // different dialogs and the browser has to be told which to open.
+        var folder = button("browser-mini", "Import folder...");
+        folder.title = "Open a folder of .sy1 patches";
+        folder.addEventListener("click", function () { pickWith("pickFolder"); });
+        actions.appendChild(add);
+        actions.appendChild(folder);
+      }
       head.appendChild(actions);
       left.appendChild(head);
+      left.appendChild(formHost);
       left.appendChild(archiveArea);
 
       // Bank names, not patch names.
@@ -414,36 +656,26 @@
         }
       });
       left.appendChild(find);
-
-      // A place for the file pickers to say what happened. They fail quietly
-      // otherwise -- a patch that will not parse loaded nothing and said
-      // nothing, which is the one way a load can go wrong that leaves the
-      // player with no idea why.
-      var status = element("div", "browser-status");
-      status.setAttribute("role", "status");
-      status.hidden = true;
-      left.appendChild(status);
-      function showStatus(message, ok) {
-        status.textContent = message || "";
-        status.hidden = !message;
-        status.className = "browser-status" + (ok ? " ok" : " error");
-      }
+      left.appendChild(tools);
       left.appendChild(rows);
       left.appendChild(empty);
     }
 
     function paintSources() {
       paintArchive();
+      paintTools();
       var held = keep(rows);
       rows.textContent = "";
       var shown = 0;
 
       api().list().forEach(function (b, i) {
-        if (writing && b.kind === "archive") return;
+        if (!offered(b)) return;
         if (query && b.label.toLowerCase().indexOf(query) < 0) return;
         shown++;
-        var row = button("browser-source" + (b.current ? " on" : "") +
+        var here = picking && api().archive() ? i === 0 : b.current;
+        var row = button("browser-source" + (here ? " on" : "") +
                          (b.used === null && !b.loading ? " unopened" : ""));
+        if (here) row.setAttribute("aria-current", "true");
         var name = element("span", "browser-source-name", b.label);
         var count = element("span", "browser-source-count");
         // A bank out of a zip of banks has not been read yet, so there is no
@@ -451,12 +683,20 @@
         count.textContent = b.loading ? "…" : (b.used === null ? "" : b.used);
         row.appendChild(name);
         row.appendChild(count);
+        // Where it came from, and whether it can be written to.
+        var badges = element("span", "browser-source-badges");
+        badges.appendChild(element("span", "browser-badge", api().originLabel(b.origin)));
+        if (b.readOnly) badges.appendChild(element("span", "browser-badge", "Read-only"));
+        row.appendChild(badges);
         row.addEventListener("click", function () {
-          // Quietly when writing: choosing which bank to save into must not
-          // load anything, or the sound being saved is the one it replaces.
-          // The preset view is quiet too: there a click on a bank is looking
-          // at it, and a sound is chosen from the list of presets.
-          api().select(i, writing || view === "presets", function (err, state) {
+          // In the page's own bank list an archive bank is never a destination,
+          // and there is only the one bank to be in.
+          if (picking && api().archive()) { setTarget(mode === "write" ? 0 : firstEmpty()); paintAll(); return; }
+          // Quietly when picking a destination: choosing which bank to save
+          // into must not load anything, or the sound being saved is the one it
+          // replaces. The preset view is quiet too: there a click on a bank is
+          // looking at it, and a sound is chosen from the list of presets.
+          api().select(i, picking || view === "presets", function (err, state) {
             if (err) {
               count.textContent = "!";
               row.title = err.message;
@@ -465,7 +705,7 @@
             // "loading" comes back straight away for a bank that has to be
             // read first; the real answer arrives on the second call.
             if (state === "loading") { paintSources(); return; }
-            if (writing) setTarget(0);
+            if (picking) setTarget(mode === "write" ? 0 : firstEmpty());
             paintAll();
           });
         });
@@ -478,12 +718,71 @@
 
     // ---------------------------------------------------------- slot view
 
+    // Say what a copy or a move would do, where it can be read before it is
+    // asked for: the destination, and what is in it.
+    function paintTransfer() {
+      if (!where) return;
+      var label = api().label();
+      var there = api().slots()[target];
+      where.textContent = (mode === "copy" ? "Copy " : "Move ") + job.name + " from " +
+        slotWords(job.from.bank, job.from.slot) + " to " + slotWords(label, target) + ", which " +
+        (there ? "holds " + there.name + " and would be replaced." : "is empty.");
+    }
+
+    // The preset in a slot, taken somewhere else. Opened from the slot, over
+    // the browser, and asks the person to choose where.
+    function slotTools(cell, i, slot, bankLabel) {
+      var tl = element("span", "browser-slot-tools");
+      [["copy", "Copy"], ["move", "Move"]].forEach(function (kind) {
+        var b = button("browser-mini browser-slot-tool", kind[1]);
+        b.setAttribute("aria-label", kind[1] + " " + slot.name + " to...");
+        b.setAttribute("data-slot", String(i));
+        b.setAttribute("data-tool", kind[0]);
+        b.addEventListener("click", function () {
+          openTransfer(kind[0], { bank: bankLabel, slot: i }, slot.name);
+        });
+        tl.appendChild(b);
+      });
+      cell.appendChild(tl);
+    }
+
+    // A repaint rebuilds every slot, so the one that had the focus is found
+    // again afterwards, and the tool on it if that is what had it.
+    function heldSlot() {
+      var el = document.activeElement;
+      if (!el || !el.getAttribute || !right.contains(el) || el.getAttribute("data-slot") === null) return null;
+      return { slot: el.getAttribute("data-slot"), tool: el.getAttribute("data-tool") };
+    }
+
+    function giveSlot(held) {
+      if (!held) return;
+      var mine = right.querySelectorAll('[data-slot="' + held.slot + '"]');
+      var goal = null;
+      for (var i = 0; i < mine.length; i++) {
+        if (mine[i].getAttribute("data-tool") === held.tool) goal = mine[i];
+        else if (!goal && mine[i].getAttribute("data-tool") === null) goal = mine[i];
+      }
+      if (goal) goal.focus();
+    }
+
     function paintSlots() {
+      var held = heldSlot();
       right.textContent = "";
+
+      // A bank that cannot take what is being put there is not shown as if it
+      // could: the slots of a read-only bank in Save As would be 128 targets
+      // that all refuse.
+      if (picking && !canTarget()) {
+        right.appendChild(element("p", "browser-empty",
+          "No bank here can take a new preset yet. Make one with New bank..., or choose another on the left."));
+        if (commitButton) commitButton.disabled = true;
+        return;
+      }
+      if (commitButton) commitButton.disabled = false;
 
       var head = element("div", "browser-slots-head");
       var title = element("span", "browser-bank-name");
-      var browsing = !writing ? api().browsing() : null;
+      var browsing = !picking ? api().browsing() : null;
       title.textContent = browsing ? "Browsing: " + browsing.label : api().label();
       var count = element("span", "browser-bank-count");
       var slots = browsing ? browsing.slots : api().slots();
@@ -492,7 +791,7 @@
       head.appendChild(title);
       head.appendChild(count);
       right.appendChild(head);
-      if (api().archive()) {
+      if (!picking && api().archive()) {
         var provenance = api().playing();
         var line = element("div", "browser-playing");
         var position = provenance && provenance.source === "archive"
@@ -506,19 +805,28 @@
 
       var grid = element("div", "browser-grid");
       var here = browsing ? browsing.index : api().index();
+      // Copy and Move are of the page's own banks: a patch in the host's
+      // archive is not held here to take anywhere.
+      var movable = !picking && (!browsing || browsing.bank < 0);
+      var bankLabel = browsing ? browsing.label : api().label();
 
       slots.forEach(function (slot, i) {
-        var marked = writing ? i === target : i === here;
+        var marked = picking ? i === target : i === here;
+        var cell = element("div", "browser-cell");
         var b = button("browser-slot" + (slot ? "" : " empty") +
-                       (marked ? (writing ? " target" : " on") : ""));
+                       (marked ? (picking ? " target" : " on") : ""));
         if (marked) b.setAttribute("aria-current", "true");
+        if (transfer && bankLabel === job.from.bank && i === job.from.slot) {
+          b.classList.add("source");
+          b.title = "This is the slot being " + (mode === "copy" ? "copied" : "moved") + ".";
+        }
         b.setAttribute("data-slot", String(i));
 
         b.appendChild(element("span", "browser-slot-num", pad3(i)));
         b.appendChild(element("span", "browser-slot-name", slot ? slot.name : "—"));
 
         b.addEventListener("click", function () {
-          if (writing) {
+          if (picking) {
             setTarget(i);
             paintSlots();
           } else {
@@ -527,14 +835,16 @@
             paintSlots();
           }
         });
-        if (!writing) {
+        if (!picking) {
           b.addEventListener("dblclick", function () {
             if (browsing) api().loadBrowsed(i);
             else api().load(i);
             window.SynthModal.close();
           });
         }
-        grid.appendChild(b);
+        cell.appendChild(b);
+        if (movable && slot) slotTools(cell, i, slot, bankLabel);
+        grid.appendChild(cell);
       });
 
       right.appendChild(grid);
@@ -542,6 +852,8 @@
 
       var on = grid.querySelector(".browser-slot.on, .browser-slot.target");
       if (on) setTimeout(function () { on.scrollIntoView({ block: "center" }); }, 0);
+      if (transfer) paintTransfer();
+      giveSlot(held);
     }
 
     // -------------------------------------------------------- preset view
@@ -952,7 +1264,7 @@
       paintRight();
     }
 
-    if (!writing) {
+    if (!picking) {
       tabs = element("div", "browser-views");
       tabs.setAttribute("role", "tablist");
       tabs.setAttribute("aria-label", "Browser view");
@@ -981,35 +1293,96 @@
     }
     wrap.appendChild(panes);
 
+    // Put the sound that is playing in the slot that is chosen, or ask first.
+    //
+    // The panel refuses to write over a sound unless it is told a person
+    // agreed, so the person is asked, here, before it is told. Writing over the
+    // preset's own slot is not asking for anything: that is Save, and Save does
+    // not ask either. Anything else that holds a sound is somebody's, and the
+    // question names it.
+    function commitWrite() {
+      var label = api().label();
+      var old = api().slots()[target];
+      var chosen = api().selection();
+      var own = chosen.slot === target && chosen.bank === label;
+      var name = field.value;
+      function write(overwrite) {
+        var result = api().writePreset({ bank: label, slot: target, name: name, overwrite: overwrite });
+        wrote = result.ok;
+        if (result.ok) window.SynthModal.close();
+        else field.focus();
+        return result;
+      }
+      if (!old || own) { write(!!old); return; }
+      window.SynthModal.confirm({
+        title: "Overwrite slot " + pad3(target) + "?",
+        message: [
+          slotWords(label, target) + " already holds " + old.name + ".",
+          "Writing " + (name.trim() || "this sound") + " there will replace it.",
+        ],
+        confirmLabel: "Overwrite",
+      }).then(function (yes) { if (yes) write(true); });
+    }
+
+    // A copy or a move, once somewhere has been chosen: the question comes
+    // first, naming both ends and what is already at the far one, and nothing
+    // is changed unless it is answered yes.
+    function commitTransfer() {
+      var label = api().label();
+      var there = api().slots()[target];
+      var to = { bank: label, slot: target };
+      var verb = mode === "copy" ? "Copy" : "Move";
+      var message = [
+        verb + " " + job.name + " from " + slotWords(job.from.bank, job.from.slot) + " to " + slotWords(label, target) + ".",
+        there ? slotWords(label, target) + " already holds " + there.name + ". It will be replaced."
+          : slotWords(label, target) + " is empty.",
+      ];
+      if (mode === "move") message.push(slotWords(job.from.bank, job.from.slot) + " will be emptied.");
+      window.SynthModal.confirm({
+        title: verb + " " + job.name + "?",
+        message: message,
+        confirmLabel: there ? "Overwrite" : verb,
+      }).then(function (yes) {
+        if (!yes) return;
+        var result = mode === "copy"
+          ? api().copySlot(job.from, to, { overwrite: !!there })
+          : api().moveSlot(job.from, to, { overwrite: !!there });
+        if (result.ok) window.SynthModal.close();
+      });
+    }
+
     // The write row: present the whole time in write mode, because it is the
     // point of the dialog rather than something hidden behind a button.
-    if (writing) {
+    if (forms) {
       var row = element("form", "browser-save");
       where = element("span", "browser-save-slot", "Slot " + pad3(target));
       field = element("input", "browser-save-name");
       field.type = "text";
       field.setAttribute("aria-label", "Patch name");
       var at = api().slots()[target];
-      field.value = at ? at.name : (window.SynthPatch.name() || "Untitled");
-      var go = element("button", "modal-action primary", "Write");
-      go.type = "submit";
+      field.value = mode === "write" && at ? at.name : (window.SynthPatch.name() || "Untitled");
+      field.addEventListener("input", function () { edited = true; });
+      commitButton = element("button", "modal-action primary", mode === "write" ? "Write" : "Save");
+      commitButton.type = "submit";
       row.appendChild(where);
       row.appendChild(field);
-      row.appendChild(go);
+      row.appendChild(commitButton);
       row.addEventListener("submit", function (e) {
         e.preventDefault();
-        var name = field.value.trim();
-        if (!name) { field.focus(); return; }
-        api().store(target, name);
-        window.SynthModal.close();
+        commitWrite();
       });
       wrap.appendChild(row);
+    }
+    if (transfer) {
+      where = element("p", "browser-transfer");
+      where.setAttribute("role", "status");
+      wrap.appendChild(where);
     }
     wrap.appendChild(feedback);
 
     // Anything the panel reports while the dialog is up -- a load that the host
-    // refused, a bank that would not open -- is said here as well as in the
-    // strip behind it.
+    // refused, a bank that would not open, a copy that was refused -- is said
+    // here as well as in the strip behind it.
     var stopListening = api().onResult ? api().onResult(function (result) {
       say(result.ok ? result.message : result.error.message + " (" + result.error.code + ")",
         result.ok ? (result.warning ? "warn" : "ok") : "error");
@@ -1036,12 +1409,14 @@
     wrap.dispose = function () { stopListening(); };
     wrap.focusField = function () { if (field) { field.focus(); field.select(); } };
     wrap.focusSearch = function () { if (parts && parts.search) parts.search.focus(); };
+    wrap.commit = commitTransfer;
+    wrap.wrote = function () { return wrote; };
     return wrap;
   }
 
   // -------------------------------------------------------------------- open
 
-  function open(options) {
+  function openBrowser(options) {
     if (!api()) return;
     var view = options && options.view === "slots" ? "slots" : "presets";
     var body = build("load", view);
@@ -1085,12 +1460,73 @@
     if (view === "presets") body.focusSearch();
   }
 
-  function openWrite() {
+  // Write and Save As: the dialog that chooses where the sound goes. Replaces
+  // the browser if it is open, as Write always did.
+  //
+  // Choosing looks at other banks, and the bank in view is the one NEXT and
+  // PREV step through, so a dialog that was cancelled puts it back: leaving it
+  // where Save As arrived would change what the arrows do after nothing was
+  // saved. A write that happened leaves it, because the sound is there now.
+  function openDestination(mode) {
     if (!api()) return;
-    var body = build("write");
-    window.SynthModal.show("Write", body,
-      [{ label: "Cancel", onClick: function (close) { close(); } }], { onClose: body.dispose });
+    var was = api().current();
+    var inPage = !api().archive();
+    var body = build(mode);
+    window.SynthModal.show(mode === "saveas" ? "Save As" : "Write", body,
+      [{ label: "Cancel", onClick: function (close) { close(); } }], {
+        onClose: function () {
+          body.dispose();
+          if (inPage && !body.wrote() && api().current() !== was) api().select(was, true);
+        },
+      });
     body.focusField();
+  }
+
+  // Copy or Move of one slot: a dialog over the browser, which stays under it,
+  // for choosing where it goes. Looking at other banks to choose moves the bank
+  // the browser is in; it is put back, so that what is under this is what was
+  // there.
+  function openTransfer(mode, from, name) {
+    if (!api()) return;
+    var was = api().current();
+    var inPage = !api().archive();
+    var body = build(mode, "slots", { from: from, name: name });
+    var verb = mode === "copy" ? "Copy" : "Move";
+    window.SynthModal.show(verb + " " + name + " to...", body, [
+      { label: "Cancel", onClick: function (close) { close(); } },
+      { label: verb + " here", primary: true, onClick: function () { body.commit(); } },
+    ], {
+      stacked: true,
+      onClose: function () {
+        body.dispose();
+        if (inPage && api().current() !== was) api().select(was, true);
+        window.SynthBrowser.refresh();
+        // What had the focus is a button that was rebuilt under it.
+        var again = document.querySelector('.browser-slot-tool[data-slot="' + from.slot + '"][data-tool="' + mode + '"]') ||
+          document.querySelector('.browser-slot[data-slot="' + from.slot + '"]');
+        if (again) again.focus();
+      },
+    });
+  }
+
+  // Open a file as a bank, from the strip's menu. The dialog does the same
+  // from its own button and says the result in its own words; here there is no
+  // dialog, and a refusal is something that must not be missed.
+  function importBank() {
+    if (!files() || !files().pick) {
+      if (api() && api().announce) api().announce("This build cannot open files.", "error");
+      return;
+    }
+    files().pick(function (err) {
+      if (err && window.SynthModal) {
+        window.SynthModal.alert({
+          title: "Could not open that file",
+          message: [err.message || "The file could not be opened.",
+            "Nothing was changed. (" + (err.code || "InvalidBank") + ")"],
+        });
+      }
+      window.SynthBrowser.refresh();
+    });
   }
 
   listen();
@@ -1103,7 +1539,11 @@
       }
     },
     // The preset view unless `{ view: "slots" }` asks for the bank and slot view.
-    open: open,
-    write: openWrite,
+    open: openBrowser,
+    // Where to put the sound that is playing: on its own slot, any bank...
+    write: function () { openDestination("write"); },
+    // ... or a bank that can take it, starting on the first empty slot.
+    saveAs: function () { openDestination("saveas"); },
+    importBank: importBank,
   };
 })();
