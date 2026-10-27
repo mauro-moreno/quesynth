@@ -404,9 +404,15 @@ dict_set_string :: proc "c" (dict: rawptr, key_name: cstring, value: cstring) {
 }
 
 // The unit's state as a CFDictionary the host can save and hand back: the
-// component identity plus a data blob of the stored parameter integers. The
-// caller owns the returned dictionary and releases it.
+// component identity plus a data blob of the stored parameter integers, and,
+// when the unit knows which preset they are, the selection trailer that the
+// VST3 and CLAP plugins write after their values (hosts/panel/trailer.odin).
+// It is a key of its own here rather than bytes after the data, because this
+// dictionary is how a build from before reads it, by key: that build reads
+// "data" and never looks at "selection". The caller owns the returned
+// dictionary and releases it.
 class_info_dict :: proc "c" (s: ^AU) -> au.CF_Dictionary_Ref {
+	context = runtime.default_context()
 	dict := au.CFDictionaryCreateMutable(nil, 0, &au.kCFTypeDictionaryKeyCallBacks, &au.kCFTypeDictionaryValueCallBacks)
 	if dict == nil {
 		return nil
@@ -422,10 +428,26 @@ class_info_dict :: proc "c" (s: ^AU) -> au.CF_Dictionary_Ref {
 	au.CFDictionarySetValue(dict, key, data)
 	au.CFRelease(key)
 	au.CFRelease(data)
+
+	// A unit whose editor was never opened has not loaded its bank, and has
+	// never been told what it is on: there is nothing to say.
+	if s.slots_loaded {
+		if trailer := panel.session_trailer(&s.session, &s.slots); trailer != nil {
+			defer delete(trailer)
+			selection_key := au.CFStringCreateWithCString(nil, SELECTION_KEY, au.CF_STRING_ENCODING_UTF8)
+			selection := au.CFDataCreate(nil, raw_data(trailer), au.CF_Index(len(trailer)))
+			au.CFDictionarySetValue(dict, selection_key, selection)
+			au.CFRelease(selection_key)
+			au.CFRelease(selection)
+		}
+	}
 	return dict
 }
 
-// Restore the parameter values from a state dictionary's data blob.
+SELECTION_KEY :: "selection"
+
+// Restore the parameter values from a state dictionary's data blob, and then
+// which preset they are.
 class_info_restore :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
 	key := au.CFStringCreateWithCString(nil, "data", au.CF_STRING_ENCODING_UTF8)
 	data := au.CFDictionaryGetValue(dict, key)
@@ -443,7 +465,36 @@ class_info_restore :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
 		s.values[i] = src[i]
 	}
 	mark_params_dirty(s)
+	restore_selection(s, dict)
 	mark_state_for_panel(s)
+}
+
+// Which preset the values are, by the same restore the other formats run.
+// Main thread, like everything that touches the bank.
+//
+// A state with no selection key is a state from before there was one. The
+// bank is not loaded for it unless it has been already: reading a file for a
+// project that has nothing to restore would be for nothing.
+@(private = "file")
+restore_selection :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
+	context = runtime.default_context()
+	key := au.CFStringCreateWithCString(nil, SELECTION_KEY, au.CF_STRING_ENCODING_UTF8)
+	selection := au.CFDictionaryGetValue(dict, key)
+	au.CFRelease(key)
+
+	tail: []u8
+	if selection != nil {
+		if ptr := au.CFDataGetBytePtr(selection); ptr != nil {
+			tail = ptr[:int(au.CFDataGetLength(selection))]
+		}
+		editor_load_bank(s)
+	} else if !s.slots_loaded {
+		return
+	}
+	// The bytes are borrowed from the dictionary for the length of this call,
+	// which is as long as the restore reads them. The sound is not an input and
+	// is not touched.
+	panel.session_restore(&s.session, &s.slots, tail)
 }
 
 // A stereo, non-interleaved, 32-bit float stream at the current rate: the layout

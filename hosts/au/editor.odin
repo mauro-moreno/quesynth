@@ -390,7 +390,13 @@ editor_tick :: proc "c" (timer: au.CF_Run_Loop_Timer_Ref, info: rawptr) {
 		dirty[w] = intrinsics.atomic_exchange_explicit(&s.panel_dirty[w], 0, .Acquire)
 		count += int(intrinsics.count_ones(dirty[w]))
 	}
-	if reload || count > PANEL_PARAM_BURST {
+	if reload {
+		// The whole state was replaced, and with it which preset it is: the
+		// bank, the sound, the selection and how the restore went.
+		panel.send_sync(&ed.panel)
+		return
+	}
+	if count > PANEL_PARAM_BURST {
 		panel.send_state(&ed.panel)
 		return
 	}
@@ -628,7 +634,6 @@ editor_restore_discard :: proc(user: rawptr) {
 // The bank, read when the editor first opens rather than when the unit is made:
 // nothing else in the AU selects out of it yet, and a unit a host only scans
 // should not read a file for a panel it never shows.
-@(private = "file")
 editor_load_bank :: proc(s: ^AU) {
 	if s.slots_loaded {
 		return
