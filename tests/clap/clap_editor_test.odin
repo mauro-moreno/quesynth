@@ -168,3 +168,93 @@ test_reopening_the_editor_is_told_the_same_thing_again :: proc(t: ^testing.T) {
 panel_select_message :: proc(bank: string, slot: int, name: string) -> string {
 	return fmt.tprintf(`{{"type":"select","v":1,"origin":"user","bank":"%s","slot":%d,"name":"%s"}}`, bank, slot, name)
 }
+
+// -- what the reopened editor is told after a state load -----------------------
+//
+// The panel asks for everything when it opens, and the answer comes from the
+// instance. After a project is loaded -- or the plugin comes back online -- it
+// has to be the imported bank, the program and the name that were saved, with
+// the restore said out loud; not Factory, and not slot 0.
+
+@(test)
+test_the_editor_opened_after_a_state_load_is_told_the_bank_the_program_and_the_restore :: proc(t: ^testing.T) {
+	before, _ := work_in_progress(t, "Alfmeister Bank", {0, 7, 42}, 42, .Adopted)
+	if before == nil {return}
+	defer before.destroy(before)
+	saved := save_state(t, before)
+	defer delete(saved)
+
+	after := make_plugin(t)
+	if after == nil {return}
+	defer after.destroy(after)
+	testing.expect(t, load_saved(after, saved), "the saved state was refused")
+	host := synth.gui_host(synth.synth_of(after))
+
+	replies := panel.handle_message(&host, `{"type":"sync"}`)
+
+	testing.expect_value(t, len(replies), 4)
+	if len(replies) != 4 {return}
+	testing.expect(t, strings.has_prefix(replies[0], `{"type":"bank","text":"{`), replies[0])
+	testing.expect(t, strings.has_suffix(replies[0], `,"v":1,"origin":"imported","readOnly":false}`), replies[0])
+	testing.expect(t, strings.has_prefix(replies[1], `{"type":"state","values":[`), replies[1])
+	testing.expect_value(
+		t,
+		replies[2],
+		`{"type":"patch","name":"Alfmeister Bank 42","index":42,"bank":"Alfmeister Bank","v":1,"origin":"imported"}`,
+	)
+	testing.expect_value(
+		t,
+		replies[3],
+		`{"type":"restore","v":1,"state":"restored","origin":"imported","bank":"Alfmeister Bank","slot":42,"name":"Alfmeister Bank 42"}`,
+	)
+
+	// Closing the editor and opening it again is the same question, and the same
+	// answer: it lives on the instance.
+	again := panel.handle_message(&host, `{"type":"sync"}`)
+	testing.expect_value(t, len(again), len(replies))
+	for i in 0 ..< min(len(again), len(replies)) {
+		testing.expect_value(t, again[i], replies[i])
+	}
+}
+
+@(test)
+test_a_failed_restore_reaches_the_panel_and_a_retry_that_finds_nothing_changes_nothing :: proc(t: ^testing.T) {
+	before, _ := work_in_progress(t, "Issue 13 Lost Bank", {0, 7}, 7, .Saved)
+	if before == nil {return}
+	defer before.destroy(before)
+	saved := save_state(t, before)
+	defer delete(saved)
+
+	after := make_plugin(t)
+	if after == nil {return}
+	defer after.destroy(after)
+	b := synth.synth_of(after)
+	testing.expect(t, load_saved(after, saved), "the saved state was refused")
+	host := synth.gui_host(b)
+	slots_before := b.slots
+
+	replies := panel.handle_message(&host, `{"type":"sync"}`)
+
+	// The bank that is playing, the sound, and what went wrong: and no patch,
+	// because the instance is on none.
+	testing.expect_value(t, len(replies), 3)
+	if len(replies) != 3 {return}
+	testing.expect(t, strings.has_prefix(replies[2], `{"type":"restore","v":1,"state":"failed","error":"MissingBank","recoverable":true,`), replies[2])
+	testing.expect(t, strings.has_suffix(replies[2], `"origin":"user","bank":"Issue 13 Lost Bank","slot":7,"name":"Issue 13 Lost Bank 7"}`), replies[2])
+
+	// Retry: the saved bank on this machine is not it either.
+	retried := panel.handle_message(&host, `{"type":"restore-retry","v":1}`)
+	testing.expect_value(t, len(retried), 1)
+	if len(retried) == 1 {
+		testing.expect_value(t, retried[0], replies[2])
+	}
+	testing.expect(t, b.slots == slots_before, "a retry changed the bank")
+	testing.expect(t, all_values(t, before) == all_values(t, after), "a retry changed the sound")
+
+	// Dismissed: it is gone, and the state saved next carries no memory of it.
+	panel.handle_message(&host, `{"type":"restore-discard","v":1}`)
+	testing.expect_value(t, len(panel.handle_message(&host, `{"type":"sync"}`)), 2)
+	resaved := save_state(t, after)
+	defer delete(resaved)
+	testing.expect_value(t, len(resaved), synth.STATE_SIZE)
+}
