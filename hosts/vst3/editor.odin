@@ -220,8 +220,17 @@ editor_restore_discard :: proc(user: rawptr) {
 	panel.session_discard(&ed.plugin.session)
 }
 
-// The whole parameter set, after a state load: the panel is showing the patch
-// from before it and has no way to know otherwise.
+// Everything the panel asks for when it loads, sent unasked: after a state load
+// the panel is showing the bank, the sound and the preset from before it, and
+// has no way to know otherwise.
+editor_send_sync :: proc(ed: ^Editor) {
+	if ed == nil {
+		return
+	}
+	panel.send_sync(&ed.panel)
+}
+
+// The whole parameter set, after the host set the program on the controller.
 editor_send_state :: proc(ed: ^Editor) {
 	if ed == nil {
 		return

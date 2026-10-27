@@ -29,6 +29,8 @@ make_editor :: proc(p: ^Plugin) -> ^Editor {
 
 editor_send_state :: proc(ed: ^Editor) {}
 
+editor_send_sync :: proc(ed: ^Editor) {}
+
 editor_send_selection :: proc(ed: ^Editor) {}
 
 editor_send_param :: proc(ed: ^Editor, index: int, stored: i32) {}
