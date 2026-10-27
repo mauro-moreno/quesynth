@@ -169,6 +169,14 @@ test("a restore that contradicts the retry in flight is reported, not silently a
   assert.equal(page.window.SynthBank.restoreState().state, "restored", "the host is authoritative");
 });
 
+test("loading a preset while a retry is in flight is refused as a conflict", () => {
+  const {page} = missingBank();
+  page.window.SynthBank.restore.retry();
+  const result = page.window.SynthBank.loadPreset({bank: 0, slot: 1});
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "RestorationConflict");
+});
+
 test("an unknown restore error code is shown as the host rejecting the state, never as a made-up reason", () => {
   const {page} = missingBank({error: "Surprise", recoverable: undefined});
   assert.equal(page.window.SynthBank.restoreState().error, "HostStateRejected");

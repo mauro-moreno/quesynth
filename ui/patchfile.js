@@ -19,6 +19,8 @@
   var FORMAT_PATCH = "quesynth.patch";
   var FORMAT_BANK = "quesynth.bank";
   var FORMAT_VERSION = 1;
+  // The slots in a bank; the same number app.js holds.
+  var BANK_SLOTS = 128;
 
   function params() {
     return window.SYNTH1_PARAMS || [];
@@ -62,15 +64,40 @@
     return (base || "patch") + extension;
   }
 
+  // Every way an import can go wrong carries one of four codes, so a caller
+  // can tell "that is not one of ours" from "that is ours and damaged" from
+  // "that does not fit" from "the file could not be read" without matching
+  // on prose. The prose stays what it always was, for people.
+  //
+  //   UnsupportedFormat  not a format this build reads: a different `format`,
+  //                      a newer `version`, a container it cannot open
+  //   InvalidBank        it is one of ours and cannot be used: it does not
+  //                      parse, holds nothing, or names a parameter that does
+  //                      not exist
+  //   TooManySlots       a JSON bank with more than 128 patches
+  //   ReadFailed         the file could not be read at all
+  function failure(code, message) {
+    var err = new Error(message);
+    err.code = code;
+    return err;
+  }
+
   // The bank at `which` -- the one in view when absent -- as the document the
-  // format describes.
+  // format describes, or null when there is nothing honest to write.
+  //
+  // Only what is stored. The sound being edited used to be substituted for the
+  // slot it was loaded from, so that saving after a tweak kept the tweak; it
+  // also meant a bank written to disk, or sent to a host to keep, held a sound
+  // nobody had chosen to put there. Writing a sound into a bank is a Save or a
+  // Write, and says so; an export or a keep is of the bank as it is.
   function bankDoc(which) {
     var slots = window.SynthBank;
-    var api = window.SynthPatch;
-    if (!slots || !api) return null;
+    if (!slots) return null;
     var at = which === undefined ? slots.current() : which;
-    var stored = slots.snapshot(at);
-    if (!stored) return null;
+    var info = slots.bankInfo(at);
+    // A bank that is listed but not read has no patches to write, and a file
+    // of 128 empty slots would pass for the real bank.
+    if (!info || info.kind === "archive" || info.used === null) return null;
 
     // Position is meaning. A patch in slot 41 has to come back in slot 41, or
     // every reference to it by number -- a set list, a program change -- points
@@ -80,26 +107,73 @@
     // Trailing empties are dropped. A bank whose last sound is in slot 20
     // writes 21 entries and loading pads it back to 128; there is nothing to
     // preserve about an empty slot at the end.
-    var here = at === slots.current() ? slots.index() : -1;
-    // Including an edit in progress: the live parameters replace the entry
-    // they were loaded from, so saving after a tweak keeps the tweak. Anything
-    // else would quietly discard it.
-    var current = api.values();
+    var stored = slots.snapshot(at);
+    if (!stored) return null;
     return {
       format: FORMAT_BANK,
       version: FORMAT_VERSION,
       name: slots.label(at),
-      patches: stored.map(function (p, i) {
-        if (i === here) return patchObject(p ? p.n : api.name(), current);
-        return p ? patchObject(p.n, p.v) : null;
-      }),
+      patches: stored.map(function (p) { return p ? patchObject(p.n, p.v) : null; }),
     };
   }
 
-  function saveBank() {
-    var doc = bankDoc();
-    if (!doc) return;
-    download(safeName(doc.name || "bank", ".json"), JSON.stringify(doc, null, 2) + "\n");
+  // Said once, in the strip, and handed back as the object it describes.
+  function reportOf(result) {
+    var slots = window.SynthBank;
+    return slots && slots.report ? slots.report(result) : result;
+  }
+
+  function exportFailed(action, code, message) {
+    return reportOf({ ok: false, action: action, error: { code: code, message: message } });
+  }
+
+  // Write the bank at `which` to a file: the stored slots, interior empties
+  // kept as null, and a plain statement of anything the file does not hold.
+  function saveBank(which) {
+    var slots = window.SynthBank;
+    var doc = bankDoc(which);
+    if (!doc) {
+      return exportFailed("export-bank", "UnavailableSource",
+        "That bank has not been opened, so there is nothing to export yet.");
+    }
+    try {
+      download(safeName(doc.name || "bank", ".json"), JSON.stringify(doc, null, 2) + "\n");
+    } catch (err) {
+      return exportFailed("export-bank", "ExportFailed", "Could not write the file: " + err.message);
+    }
+    var count = doc.patches.filter(Boolean).length;
+    // A person looking at an edited sound and pressing Export is owed knowing
+    // the edit is not in the file.
+    var unsaved = slots && slots.status && slots.status() === "dirty";
+    var name = slots && slots.selection ? slots.selection().presetName : "";
+    return reportOf({
+      ok: true, action: "export-bank", name: doc.name, count: count, unsaved: !!unsaved,
+      warning: !!unsaved,
+      message: "Exported " + doc.name + " (" + count + (count === 1 ? " patch" : " patches") + ")." +
+        (unsaved ? " Unsaved changes to " + (name || "the sound") + " were not included." : ""),
+    });
+  }
+
+  // Write the sound that is playing as a `quesynth.patch` file.
+  function savePatch() {
+    var api = window.SynthPatch;
+    var slots = window.SynthBank;
+    if (!api) return exportFailed("export-patch", "UnavailableSource", "There is no sound to export.");
+    var one = patchObject(api.name(), api.values());
+    var doc = { format: FORMAT_PATCH, version: FORMAT_VERSION, name: one.name, parameters: one.parameters };
+    try {
+      download(safeName(one.name, ".json"), JSON.stringify(doc, null, 2) + "\n");
+    } catch (err) {
+      return exportFailed("export-patch", "ExportFailed", "Could not write the file: " + err.message);
+    }
+    // Only a sound with no slot is now "as saved". One that came from a slot is
+    // still not what that slot holds, however many files it has been written
+    // to.
+    var cleared = !!(slots && slots.patchExported && slots.patchExported());
+    return reportOf({
+      ok: true, action: "export-patch", name: one.name, cleared: cleared,
+      message: "Exported " + one.name + ".",
+    });
   }
 
   // -- reading ---------------------------------------------------------------
@@ -118,7 +192,7 @@
     for (var key in object) {
       if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
       if (known[key] === undefined) {
-        throw new Error("unknown parameter: " + key);
+        throw failure("InvalidBank", "unknown parameter: " + key);
       }
     }
 
@@ -132,10 +206,10 @@
 
   function checkHeader(doc, expected) {
     if (!doc || doc.format !== expected) {
-      throw new Error("not a " + expected + " file");
+      throw failure("UnsupportedFormat", "not a " + expected + " file");
     }
     if (doc.version !== undefined && doc.version > FORMAT_VERSION) {
-      throw new Error("written by a newer version (" + doc.version + ")");
+      throw failure("UnsupportedFormat", "written by a newer version (" + doc.version + ")");
     }
   }
 
@@ -163,14 +237,83 @@
     return out;
   }
 
-  // A whole file, in whichever of the three formats it is.
+  // A JSON bank, read completely or refused. Nothing is added to the panel
+  // until every patch in it has been read, so a bank with one bad entry in the
+  // middle is not half there.
   //
-  // A zip becomes a bank, because that is what one is: the patch banks people
-  // share are archives of `.sy1` files, and loading one patch out of forty
-  // would be answering a question nobody asked.
-  async function loadBytes(bytes, filename) {
+  // `strict` is for a bank somebody opened: more than a bank's 128 patches is
+  // refused, not cut off, because a bank that silently lost its tail is not the
+  // bank in the file. A bank a host hands over has only ever had 128.
+  function parseBankDoc(doc, strict) {
+    checkHeader(doc, FORMAT_BANK);
+    if (!Array.isArray(doc.patches) || !doc.patches.length) {
+      throw failure("InvalidBank", "the bank has no patches");
+    }
+    if (strict && doc.patches.length > BANK_SLOTS) {
+      throw failure("TooManySlots", "the bank has " + doc.patches.length +
+        " patches and a bank holds " + BANK_SLOTS);
+    }
+    // A null entry is an empty slot, and it is kept rather than compacted
+    // away: dropping it would shift every patch after it down by one and
+    // silently renumber the bank.
+    var patches = doc.patches.map(function (p) {
+      if (!p) return null;
+      return { n: p.name || "Patch", v: valuesFrom(p.parameters || {}) };
+    });
+    return { label: doc.name || "Bank", patches: patches };
+  }
+
+  function parseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw failure("InvalidBank", err.message);
+    }
+  }
+
+  // The bank in a `quesynth.bank` document, as `{ label, patches }`, for the
+  // panel to adopt from a host or for `load` to add. Throws with a code.
+  function parseBank(text) {
+    return parseBankDoc(parseJson(text), false);
+  }
+
+  // Add a bank that was read, and nothing else: the bank in view, the
+  // selection, the sound and the host stay exactly as they were. The bank is a
+  // row in the list until somebody chooses something in it.
+  function addBank(label, patches, leftOut) {
+    var slots = window.SynthBank;
+    if (!slots || !slots.importBank) throw failure("UnsupportedFormat", "this build cannot hold several banks");
+    var added = slots.importBank(label, patches);
+    if (!added.ok) throw failure(added.error.code, added.error.message);
+    var count = patches.filter(Boolean).length;
+    return {
+      kind: "bank", label: added.label, count: count, leftOut: leftOut || 0, index: added.index,
+      message: count + " patches" + (leftOut ? " (" + leftOut + " left out)" : ""),
+    };
+  }
+
+  function zipFailure(err) {
+    if (err && err.code) return err;
+    var message = err && err.message ? err.message : String(err);
+    return failure(/cannot decompress/.test(message) ? "UnsupportedFormat" : "InvalidBank", message);
+  }
+
+  function sy1Failure(err) {
+    if (err && err.code) return err;
+    var message = err && err.message ? err.message : String(err);
+    // Not recognisably the format at all, as opposed to the format damaged.
+    return failure(/^(not a \.sy1 file|empty file)$/.test(message) ? "UnsupportedFormat" : "InvalidBank", message);
+  }
+
+  // A whole file, in whichever of the three formats it is, and what became of
+  // it: `{ kind, message, ... }`. A bank is *added* -- see addBank -- and a
+  // single patch becomes the sound, as a file's patch always has.
+  //
+  // Everything is read and checked before the panel is touched, so a file that
+  // turns out to be damaged on its last patch leaves the panel as it found it.
+  async function importBytes(bytes, filename) {
     var api = window.SynthPatch;
-    if (!api) return "";
+    if (!api) return { kind: "none", message: "" };
 
     switch (sniff(bytes)) {
       case "zip":
@@ -178,21 +321,33 @@
         // decoded zip as `bank` would replace the ordinary bank and leave
         // every other client without the archive it came from.
         if (window.SynthBank && window.SynthBank.archive && window.SynthBank.archive()) {
-          throw new Error("Open this ZIP by its path in the Archive field in Patches.");
+          throw failure("UnsupportedFormat", "Open this ZIP by its path in the Archive field in Patches.");
         }
-        if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
-        var found = await window.SynthSy1.readZip(bytes);
+        if (!window.SynthSy1) throw failure("UnsupportedFormat", "the .sy1 reader is not loaded");
+        var found;
+        try {
+          found = await window.SynthSy1.readZip(bytes);
+        } catch (err) {
+          throw zipFailure(err);
+        }
 
         // Patches straight inside: one bank, read now.
         if (found.length) {
+          // A bank holds 128. A zip with more fills the bank, in the order the
+          // archive lists them, and says how many were left out rather than
+          // dropping them without a word.
+          var over = Math.max(0, found.length - BANK_SLOTS);
           var base = defaults();
-          var patches = found.map(function (entry) {
-            var p = window.SynthSy1.parse(entry.bytes, base);
-            return { n: p.name || entry.name, v: p.values };
+          var patches = found.slice(0, BANK_SLOTS).map(function (entry) {
+            try {
+              var p = window.SynthSy1.parse(entry.bytes, base);
+              return { n: p.name || entry.name, v: p.values };
+            } catch (err) {
+              throw sy1Failure(err);
+            }
           });
           var label = String(filename || "Bank").replace(/\.zip$/i, "");
-          api.setBank(label, patches);
-          return patches.length + " patches";
+          return addBank(label, patches, over);
         }
 
         // No patches, but archives inside: a zip of banks, which is how the
@@ -204,11 +359,16 @@
         // hundred and seventy-five names, and only one is ever wanted at a
         // time. Each row keeps the bytes of its own archive and opens it when
         // it is picked.
-        var inner = await window.SynthSy1.readZippedBanks(bytes);
-        if (!inner.length) throw new Error("no .sy1 patches in the archive");
+        var inner;
+        try {
+          inner = await window.SynthSy1.readZippedBanks(bytes);
+        } catch (err) {
+          throw zipFailure(err);
+        }
+        if (!inner.length) throw failure("InvalidBank", "no .sy1 patches in the archive");
 
         var slots = window.SynthBank;
-        if (!slots || !slots.addLazy) throw new Error("this build cannot hold several banks");
+        if (!slots || !slots.addLazy) throw failure("UnsupportedFormat", "this build cannot hold several banks");
 
         inner.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
         inner.forEach(function (entry) {
@@ -223,59 +383,48 @@
             });
           });
         });
-        return inner.length + " banks";
+        return { kind: "banks", count: inner.length, leftOut: 0, message: inner.length + " banks" };
 
       case "sy1":
-        if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
-        var one = window.SynthSy1.parse(bytes, defaults());
+        if (!window.SynthSy1) throw failure("UnsupportedFormat", "the .sy1 reader is not loaded");
+        var one;
+        try {
+          one = window.SynthSy1.parse(bytes, defaults());
+        } catch (err) {
+          throw sy1Failure(err);
+        }
         api.apply(one.values, one.name || String(filename || "Patch").replace(/\.sy1$/i, ""));
-        return one.name || "patch";
+        return { kind: "patch", name: one.name, message: one.name || "patch" };
 
       default:
-        return loadText(textOf(bytes));
+        return importText(textOf(bytes));
     }
   }
 
-  // A `quesynth.bank` document as `{ label, patches }`, for the panel to adopt
-  // from a host. Read completely or not at all: a bank with one bad patch in it
-  // is refused, not half there.
-  function parseBank(text) {
-    var doc = JSON.parse(text);
-    checkHeader(doc, FORMAT_BANK);
-    if (!Array.isArray(doc.patches) || !doc.patches.length) {
-      throw new Error("the bank has no patches");
-    }
-    var patches = doc.patches.map(function (p) {
-      if (!p) return null;
-      return { n: p.name || "Patch", v: valuesFrom(p.parameters || {}) };
-    });
-    return { label: doc.name || "Bank", patches: patches };
-  }
-
-  function loadText(text) {
+  function importText(text) {
     var api = window.SynthPatch;
-    if (!api) return;
-    var doc = JSON.parse(text);
+    if (!api) return { kind: "none", message: "" };
+    var doc = parseJson(text);
 
-    if (doc.format === FORMAT_BANK) {
-      checkHeader(doc, FORMAT_BANK);
-      if (!Array.isArray(doc.patches) || !doc.patches.length) {
-        throw new Error("the bank has no patches");
-      }
-      // A null entry is an empty slot, and it is kept rather than compacted
-      // away: dropping it would shift every patch after it down by one and
-      // silently renumber the bank.
-      var patches = doc.patches.map(function (p) {
-        if (!p) return null;
-        return { n: p.name || "Patch", v: valuesFrom(p.parameters || {}) };
-      });
-      api.setBank(doc.name || "Bank", patches);
-      return patches.filter(Boolean).length + " patches";
+    if (doc && doc.format === FORMAT_BANK) {
+      var parsed = parseBankDoc(doc, true);
+      return addBank(parsed.label, parsed.patches, 0);
     }
 
     checkHeader(doc, FORMAT_PATCH);
-    api.apply(valuesFrom(doc.parameters || {}), doc.name);
-    return doc.name || "patch";
+    var values = valuesFrom(doc.parameters || {});
+    api.apply(values, doc.name);
+    return { kind: "patch", name: doc.name, message: doc.name || "patch" };
+  }
+
+  // What the three file formats have always answered with: a line saying what
+  // was opened.
+  async function loadBytes(bytes, filename) {
+    return (await importBytes(bytes, filename)).message;
+  }
+
+  function loadText(text) {
+    return importText(text).message;
   }
 
   // One hidden input, reused. Created on demand so a build that never opens the
@@ -297,53 +446,87 @@
     ? new window.Intl.Collator(undefined, { numeric: true, sensitivity: "base" })
     : null;
 
+  // The name, then where in the folder it was, so that two files that compare
+  // equal -- "A.sy1" and "a.sy1" -- are not left in whatever order the browser
+  // happened to list them. The same folder has to make the same bank twice.
   function byName(a, b) {
-    if (collator) return collator.compare(a.name, b.name);
-    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    var order = collator ? collator.compare(a.name, b.name) : 0;
+    if (order) return order;
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    var pa = a.webkitRelativePath || "", pb = b.webkitRelativePath || "";
+    return pa < pb ? -1 : pa > pb ? 1 : 0;
   }
 
   function readOne(file) {
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
       reader.onload = function () { resolve(new Uint8Array(reader.result)); };
-      reader.onerror = function () { reject(new Error("could not read " + file.name)); };
+      reader.onerror = function () { reject(failure("ReadFailed", "could not read " + file.name)); };
       reader.readAsArrayBuffer(file);
     });
   }
 
-  async function loadFolder(fileList) {
+  async function importFolder(fileList) {
     var api = window.SynthPatch;
-    if (!api) return "";
-    if (!window.SynthSy1) throw new Error("the .sy1 reader is not loaded");
+    if (!api) return { kind: "none", message: "" };
+    if (!window.SynthSy1) throw failure("UnsupportedFormat", "the .sy1 reader is not loaded");
 
     var all = [].slice.call(fileList);
     var found = all.filter(function (f) { return /\.sy1$/i.test(f.name); });
-    if (!found.length) throw new Error("no .sy1 patches in that folder");
+    if (!found.length) throw failure("InvalidBank", "no .sy1 patches in that folder");
+
+    found.sort(byName);
 
     // The folder's own name, off the relative path the browser gives with each
     // file. Falls back to the first path segment, then to something generic.
+    // Taken from the first file *in order*, so that a folder with subfolders is
+    // named the same whichever file the browser listed first.
     var label = "Bank";
     var path = found[0].webkitRelativePath || "";
     var parts = path.split("/");
     if (parts.length > 1) label = parts[parts.length - 2] || parts[0] || label;
 
-    found.sort(byName);
-
     // A bank holds 128, so a folder with more than that in it fills the bank
     // and says how many were left out rather than silently dropping them.
-    var over = Math.max(0, found.length - 128);
-    if (over) found = found.slice(0, 128);
+    var over = Math.max(0, found.length - BANK_SLOTS);
+    if (over) found = found.slice(0, BANK_SLOTS);
 
     var base = defaults();
     var patches = [];
     for (var i = 0; i < found.length; i++) {
       var bytes = await readOne(found[i]);
-      var one = window.SynthSy1.parse(bytes, base);
+      var one;
+      try {
+        one = window.SynthSy1.parse(bytes, base);
+      } catch (err) {
+        throw sy1Failure(err);
+      }
       patches.push({ n: one.name || found[i].name.replace(/\.sy1$/i, ""), v: one.values });
     }
 
-    api.setBank(label, patches);
-    return patches.length + " patches" + (over ? " (" + over + " left out)" : "");
+    return addBank(label, patches, over);
+  }
+
+  async function loadFolder(fileList) {
+    return (await importFolder(fileList)).message;
+  }
+
+  // Say how an import went, where it is seen, whichever way: the dialog that
+  // asked has its own line, but it is not always on screen when the answer is.
+  function announceImport(err, what) {
+    var slots = window.SynthBank;
+    if (!slots || !slots.report) return;
+    if (err) {
+      slots.report({
+        ok: false, action: "import",
+        error: { code: err.code || "InvalidBank", message: err.message || "could not open that file" },
+      });
+    } else {
+      slots.report({
+        ok: true, action: "import", warning: /left out/.test(what || ""),
+        message: what ? "Opened " + what + "." : "Opened.",
+      });
+    }
   }
 
   // One hidden directory input, beside the file one. `webkitdirectory` is the
@@ -366,8 +549,8 @@
     folderInput.onchange = function () {
       if (!folderInput.files || !folderInput.files.length) return;
       loadFolder(folderInput.files)
-        .then(function (what) { onDone(null, what); })
-        .catch(function (err) { onDone(err); });
+        .then(function (what) { announceImport(null, what); onDone(null, what); })
+        .catch(function (err) { announceImport(err); onDone(err); });
     };
     folderInput.click();
   }
@@ -389,10 +572,14 @@
       // first would corrupt it before anything got the chance to look.
       reader.onload = function () {
         loadBytes(new Uint8Array(reader.result), file.name)
-          .then(function (what) { onDone(null, what); })
-          .catch(function (err) { onDone(err); });
+          .then(function (what) { announceImport(null, what); onDone(null, what); })
+          .catch(function (err) { announceImport(err); onDone(err); });
       };
-      reader.onerror = function () { onDone(new Error("could not read the file")); };
+      reader.onerror = function () {
+        var err = failure("ReadFailed", "could not read the file");
+        announceImport(err);
+        onDone(err);
+      };
       reader.readAsArrayBuffer(file);
     };
     input.click();
@@ -407,15 +594,23 @@
   // somewhere else can use it too.
   window.SynthPatchFile = {
     // The bank at `which` (the one in view without it) as the text of its file.
+    // Only what is stored in its slots; see bankDoc.
     bankText: function (which) {
       var doc = bankDoc(which);
       return doc ? JSON.stringify(doc, null, 2) + "\n" : "";
     },
-    // A host's bank as `{ label, patches }`.
+    // A host's bank as `{ label, patches }`, or a thrown error with a `code`.
     parseBank: parseBank,
     saveBank: saveBank,
+    savePatch: savePatch,
+    // Opening, as the line a person reads: "128 patches (3 left out)".
     load: loadText,
     loadBytes: loadBytes,
+    loadFolder: loadFolder,
+    // The same, as the object: what kind of thing it was, and how many.
+    importText: importText,
+    importBytes: importBytes,
+    importFolder: importFolder,
     sniff: sniff,
     // Exposed so the bank browser can offer these without owning its own file
     // inputs, and so every way in ends up in one place.

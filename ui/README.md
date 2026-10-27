@@ -399,6 +399,55 @@ header of `bridge.js`; `SynthBridge.PROTOCOL`, `version()` and `sendV1()` are
 how the rest of the panel uses them, and a transport that throws makes `send()`
 return `false` with the reason in `SynthBridge.error()`.
 
+### Writing, saving and moving
+
+`SynthBank.writePreset({ bank, slot, name, overwrite })` is the one door
+through which a sound becomes part of a bank. It writes exactly that slot or
+refuses and changes nothing; it never asks a question, and never assumes the
+answer -- `overwrite: true` is the caller saying a person agreed. `copySlot`
+and `moveSlot` take `{ bank, slot }` for both ends and the same flag. Every
+refusal is `{ ok: false, error: { code, message } }`:
+
+| code | when |
+|---|---|
+| `InvalidSlot` | not an integer 0..127, or not a bank that is open |
+| `ReadOnlyBank` | factory with nothing to keep it, archive, a bank not yet read, a move out of a read-only bank |
+| `InvalidName` | empty, control characters, or over 48 UTF-8 bytes (the host's limit: it truncates silently, so the panel refuses) |
+| `OverwriteDenied` | the slot holds a sound and `overwrite` was not `true` |
+| `PersistenceFailed` | the host answered `bank-saved` with `ok: false`; the sound is in the bank here, the message says it is kept for this session only |
+
+`loadPreset` refuses with `UnavailableSource`, `InvalidPreset`, `HostRejected`
+or `RestorationConflict` and never loads a bank to find out. Results are shown in
+the strip (`#bank-status`, `role="status"`) and handed to whoever asked to hear
+(`SynthBank.onResult`).
+
+`bankText()` and Export write **what is stored**. The sound being edited is no
+longer substituted for its slot, so an export or a keep never contains something
+nobody chose to put there, and an export of a dirty sound says "Unsaved changes
+to Glass Pad were not included." Interior empty slots are written as `null`, so
+every patch comes back at the slot it left.
+
+### Opening files
+
+An import validates the whole file before it touches anything, then adds one
+`imported` bank under a name that is not already taken (`Name 2`, `Name 3`), and
+that is all: not the bank in view, not the selection, not the sound, and nothing
+is sent to the host. A bad file leaves all of those as they were and fails with a
+code, and the message it always had:
+
+| code | for |
+|---|---|
+| `UnsupportedFormat` | another `format`, a newer `version`, a container or reader this build lacks, text that is not a patch |
+| `InvalidBank` | it does not parse, holds nothing, names a parameter that does not exist, a damaged patch |
+| `TooManySlots` | a JSON bank with more than 128 patches: refused, not cut |
+| `ReadFailed` | the file could not be read |
+
+A zip or a folder with more than 128 patches fills a bank with the first 128 --
+the archive's own order for a zip, the file names as numbers for a folder -- and
+reports "(N left out)". A zip of zips stays a list: no inner archive is read
+until somebody opens it. One `.sy1` or patch `.json` is not a bank; it becomes
+the sound, as a `file`. `tests/ui/preset-import.test.mjs` covers every row.
+
 ### Dialogs
 
 `modal.js` stacks: `SynthModal.confirm({ title, message, confirmLabel })` and
