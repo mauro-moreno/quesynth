@@ -83,6 +83,17 @@ test("a patch in the host's archive is not held here to copy, so none of them of
   assert.equal(all(page, ".browser-slot-tool").length, 0);
 });
 
+test("the picker for a copy or a move lists the page's own banks and never an archive's", () => {
+  const page = bootPanel({bank: FACTORY});
+  page.send({type: "archive", rev: 1, open: true, path: "/p.zip", banks: ["a.zip", "b.zip"], bank: 0, patches: ["Pad"]});
+  open(page, {view: "slots"});
+  assert.deepEqual(within(page.document, ".browser-source").map(r => r.querySelector(".browser-source-name").textContent),
+    ["Quesynth Factory", "a.zip", "b.zip"], "the browser itself lists them");
+  slotTool(page, "Copy", "Strings").click();
+  assert.deepEqual(within(picker(page), ".browser-source").map(r => r.querySelector(".browser-source-name").textContent),
+    ["Quesynth Factory"]);
+});
+
 // ------------------------------------------------------------------------ copy
 
 test("Copy to... asks where, then asks whether, and only then writes", async () => {

@@ -80,6 +80,8 @@ test("an archive is never offered as somewhere to save", () => {
   page.window.SynthBrowser.saveAs();
   assert.deepEqual(sourceNames(page), ["Hosted"]);
   assert.equal(page.document.querySelector(".browser-archive").hidden, true);
+  page.window.SynthBrowser.write();
+  assert.deepEqual(sourceNames(page), ["Hosted"], "nor is it in Write, which lists every bank that is not one");
 });
 
 test("Save As writes to an empty slot with no question, says so, and clears the edit marker", () => {

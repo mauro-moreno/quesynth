@@ -599,7 +599,7 @@
           label: "Name for the new bank", value: "New Bank", submit: "Create", opener: make,
           onSubmit: function (name) {
             var made = api().newBank(name);
-            // The new bank is the one in view, and an empty one: the first slot.
+            // The new bank is in view and empty: its first slot is the start.
             if (made.ok && picking) setTarget(firstEmpty());
             paintAll();
             return made;

@@ -514,9 +514,67 @@ search first and closes the dialog second; Tab cannot leave the dialog and focus
 returns to whatever opened it. Every control has an accessible name; the star is
 `Favorite <name>`.
 
-In write mode (`SynthBrowser.write()`) there is no preset view: a destination is
-a slot, so it is the slot view, and a click chooses where to write and loads
-nothing.
+#### Banks
+
+The Banks pane lists every open bank with where it came from (`Factory`,
+`User`, `Imported`, `Archive`) and `Read-only` where nothing can be written to
+it. The buttons beside it act on the bank in view and leave the sound, the
+selection and the host alone:
+
+- **New bank...** asks for a name and opens an empty bank of your own. The name
+  is a small form in the pane; Escape or Cancel closes the form and not the
+  dialog, and a name the panel refuses is said beside it with the form kept.
+- **Import file...** and **Import folder...** add an `imported` bank (see
+  [Opening files](#opening-files)). A refusal is read in the dialog with its
+  code, and a bank that did not fit says how many patches were left out.
+  `SynthBrowser.importBank()` is the same file picker for the strip's menu,
+  where a refusal is an alert. The archive path field and its Open and Close
+  are as they were.
+- **Rename...** is for a bank of your own or one you opened. The factory bank,
+  a bank the host keeps, and an archive refuse in the panel's words.
+- **Duplicate** makes a writable `User` copy called `<name> copy` of a bank
+  that has been opened, a read-only one included.
+- **Export bank** writes the stored slots of a bank that has been opened,
+  interior empties kept, and says so when the sound has unsaved changes.
+- **Close bank** takes a bank out of the session: never the last one, never one
+  the host keeps, and never the sound that is playing, which stays as it is
+  with no slot behind it. A bank whose content is in no file -- one you made,
+  or one you opened and then wrote into -- is asked about first.
+
+#### Where a sound is put
+
+`SynthBrowser.saveAs()` and `write()` open one destination dialog. Both choose
+a slot and a name and go through `SynthBank.writePreset`, and neither loads
+anything.
+
+- **Save As** (what Save opens for a sound with nowhere to go back to) lists
+  the banks that can take a preset, never an archive and never a read-only
+  bank, plus New bank.... It starts on the first empty slot of the bank in
+  view, with the name in focus.
+- **Write** keeps its old default, the sound's own slot, and lists every
+  ordinary bank with the read-only ones marked: writing into one is refused
+  with the panel's `ReadOnlyBank` message and the dialog stays open.
+
+A slot that holds another preset is asked about first; the sound's own slot is
+not. Cancelling puts back the bank that was in view, because NEXT and PREV
+step through it.
+
+#### Copy and move
+
+In the slot view each filled slot has **Copy** and **Move**, which open a
+picker over the browser: choose a bank and a slot, which may be empty, in the
+same bank or another that can be written to. The picker says what will happen
+and what is already there, and then asks, naming both ends, **before** anything
+is written; Cancel, Escape and the backdrop change nothing. It calls
+`SynthBank.copySlot` or `moveSlot` once, so a move is one change, and shows
+what the panel answered: a read-only destination, the same slot, or a move out
+of a read-only bank is refused in words and the picker stays for another try.
+A move of the preset that is playing takes the selection to its new slot. There
+is no undo afterwards, which is why the question comes first.
+
+In the preset view there is no Copy or Move, and in write mode there is no
+preset view: a destination is a slot, so it is the slot view, and a click
+chooses where to write and loads nothing.
 
 ## Using it
 

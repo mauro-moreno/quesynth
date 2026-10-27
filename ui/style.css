@@ -1994,6 +1994,28 @@ body.modal-open { overflow: hidden; }
 .browser-bank-tools .browser-mini { flex: 1 1 40%; }
 .browser-mini[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 
+/* New bank..., Import file... and Import folder... are longer than the New,
+ * Add and Folder they replaced, and three of them side by side overflow the
+ * pane again: the horizontal scrollbar that the heading's comment above says
+ * it was made to avoid. They wrap instead. */
+.browser-heading .browser-heading-actions { flex-wrap: wrap; }
+.browser-heading .browser-heading-actions .browser-mini { flex: 1 1 40%; }
+
+/* A phone's pane is as wide as the dialog and a third of the screen high, so
+ * what took a line of its own down the side goes across: the badges beside the
+ * name, the bank's actions in a row. The list of banks is what the pane is for,
+ * and with each row two lines tall and the actions in a block it was out of
+ * sight below them. */
+@media (max-width: 620px) {
+  .browser-source { flex-wrap: nowrap; align-items: center; }
+  .browser-source-badges { order: 1; flex: 0 0 auto; flex-wrap: nowrap; }
+  .browser-source-count { order: 2; }
+  .browser-heading .browser-heading-actions,
+  .browser-bank-tools .browser-heading-actions { flex-wrap: nowrap; }
+  .browser-heading .browser-heading-actions .browser-mini,
+  .browser-bank-tools .browser-mini { flex: 1 1 0; min-width: 0; }
+}
+
 /* A slot, and the two things that can be done to what is in it. The tools
  * lie over the end of the row and show when the row is pointed at, has focus
  * or is the one that is playing; where nothing points they are always shown. */

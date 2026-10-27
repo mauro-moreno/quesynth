@@ -199,9 +199,16 @@ function queryAll(root, selector) {
 // An event that bubbles goes up through the parents until a listener stops it,
 // which is what lets a test press a key on the focused element and have the
 // dialog behind it hear Escape only if nothing in between took it.
+//
+// The path is fixed before the first listener runs, as a browser fixes it: a
+// handler that takes its own element out of the page (a form that closes on
+// Escape) does not thereby keep the event from the dialog above it, and a test
+// that let it would pass for a page that lets Escape through.
 function dispatchThrough(target, event) {
   if (!event.target) event.target = target;
-  for (let node = target; node; node = event.bubbles ? node.parentNode : null) {
+  const path = [];
+  for (let node = target; node; node = event.bubbles ? node.parentNode : null) path.push(node);
+  for (const node of path) {
     if (node.listeners) node.listeners.dispatch(node, event);
     if (event.propagationStopped) break;
   }

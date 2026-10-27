@@ -106,10 +106,11 @@ puts every Unicode scalar value to the schema patterns and the binary, so it
 takes about 15 s and uses up to 8 worker processes.
 
 The panel smoke test above boots `ui/` in a stand-in DOM and needs nothing but
-Node, and so do the `preset-*` tests beside it: they boot the same scripts against
-a fake host that speaks the wire protocol of `ui/bridge.js`, and cover the
-preset, bank and restore behaviour (issue #13 among it). The macOS job goes further: it checks that the macOS editor -- the
-WKWebView in `hosts/panel/panel_macos.odin` and the AU's Cocoa view in
+Node, and so do the `preset-*` tests beside it: they boot the same scripts
+against a fake host that speaks the wire protocol of `ui/bridge.js`, and cover
+the preset, bank and restore behaviour (issue #13 among it). The macOS job goes
+further: it checks that the macOS editor -- the WKWebView in
+`hosts/panel/panel_macos.odin` and the AU's Cocoa view in
 `hosts/au/editor.odin` -- compiles, then renders the panel in headless WebKit
 with `tools/ui-screenshot.mjs`, fails if the page did not build, and keeps the
 screenshot as a `macos-ui-panel-screenshot-<runner>` artifact. `pluginval` opens

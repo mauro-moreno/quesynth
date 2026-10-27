@@ -10,11 +10,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
+import {bootPanel, compiledBank, plain, sound, syncAnswer} from "./support/panel.mjs";
 import {folder, patches, sy1, zip} from "./support/files.mjs";
 import {
   all, badges, body, choose, dialog, dialogs, disabled, feedback, focused, front, heading, label, open, press, settle, sourceNames,
-  sourceRow, submit, tool, type, wait, withFiles,
+  sourceRow, star, submit, tool, type, wait, withFiles,
 } from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
@@ -355,6 +355,22 @@ test("the last bank cannot be closed, nor can the factory bank, and pressing the
   assert.equal(sourceNames(page).length, 2);
 });
 
+test("the last bank cannot be closed even when it is one of the person's own", () => {
+  // Nothing compiled in, so the one bank there is at first is a user bank.
+  const page = bootPanel({host: null});
+  page.window.SynthBank.newBank("Solo");
+  open(page);
+  sourceRow(page, "Bank").click();
+  tool(page, "Close bank").click();
+  assert.deepEqual(sourceNames(page), ["Solo"], "an empty bank of one's own closes without a question");
+
+  assert.ok(disabled(tool(page, "Close bank")));
+  assert.match(tool(page, "Close bank").title, /last bank cannot be closed/);
+  tool(page, "Close bank").click();
+  assert.match(feedback(page).textContent, /The last bank cannot be closed\. \(ReadOnlyBank\)/);
+  assert.deepEqual(sourceNames(page), ["Solo"]);
+});
+
 // -------------------------------------------------------------------- importing
 
 test("Import file... adds a bank and does nothing else: not the bank in view, not the sound, nothing sent", async () => {
@@ -488,4 +504,70 @@ test("the archive area is as it was: a path, Open and Close, and what the host s
   assert.deepEqual(page.sent, [{type: "archive-close"}]);
   page.window.SynthBrowser.write();
   assert.equal(body(page).querySelector(".browser-archive").hidden, true, "never offered where a destination is chosen");
+});
+
+// ------------------------------------------------- what stays the person's own
+
+// Favorites and recents are the person's, not the instrument's: whatever a bank
+// action writes, exports or says to a host, they are not in it.
+const NUL = "\u0000";
+const carries = text => /favorit|recent/i.test(text) || text.includes(NUL) || text.includes("\\u0000");
+
+test("no bank action writes the person's favorites or recents anywhere but their own key, or puts them in an export", async () => {
+  const page = banks();
+  open(page);
+  star(page, "Zither").click();
+  star(page, "Warm Keys").click();
+  const kept = page.files.get("quesynth.prefs.v1");
+  assert.ok(kept && kept.includes("Zither"), "they are in their own key");
+
+  sourceRow(page, "My Bank").click();
+  tool(page, "Duplicate").click();
+  tool(page, "Export bank").click();
+  heading(page, "New bank...").click();
+  type(page, page.document.querySelector(".browser-form-name"), "Pads");
+  submit(page.document.querySelector(".browser-form"));
+  sourceRow(page, "Alfmeister Bank").click();
+  tool(page, "Rename...").click();
+  type(page, page.document.querySelector(".browser-form-name"), "Alfie");
+  submit(page.document.querySelector(".browser-form"));
+  tool(page, "Close bank").click();
+  page.window.SynthBank.copySlot({bank: "My Bank", slot: 1}, {bank: "Pads", slot: 0});
+  page.window.SynthBank.moveSlot({bank: "My Bank", slot: 3}, {bank: "Pads", slot: 5});
+  page.window.SynthStore.flush();
+
+  assert.equal(page.files.get("quesynth.prefs.v1"), kept, "and nothing else rewrote that key");
+  assert.deepEqual([...page.files.keys()].filter(key => key.startsWith("quesynth.")).sort(), ["quesynth.prefs.v1", "quesynth.state.v1"]);
+  const state = page.files.get("quesynth.state.v1");
+  assert.deepEqual(Object.keys(JSON.parse(state)).sort(), ["current", "factory", "midi", "v"]);
+  assert.ok(!carries(state), "the stored state");
+  assert.ok(page.downloads.length > 0);
+  for (const download of page.downloads) {
+    const text = await download.text();
+    assert.deepEqual(Object.keys(JSON.parse(text)), ["format", "version", "name", "patches"]);
+    assert.ok(!carries(text), "an export");
+  }
+});
+
+test("no bank action says a word about them to a host", () => {
+  const page = bootPanel({bank: FACTORY});
+  for (const m of syncAnswer({label: "My Bank", names: ["Alpha", "Bravo", null, "Delta"], origin: "user", state: sound(10), slot: 0, name: "Alpha"})) page.send(m);
+  open(page);
+  star(page, "Alpha").click();
+  star(page, "Delta").click();
+  page.forget();
+
+  page.window.SynthBank.importBank("Theirs", [patch("Zither", 5)]);
+  heading(page, "New bank...").click();
+  submit(page.document.querySelector(".browser-form"));
+  tool(page, "Duplicate").click();
+  page.window.SynthBank.writePreset({bank: "New Bank copy", slot: 0, name: "Fresh"});
+  page.window.SynthBank.copySlot({bank: "My Bank", slot: 1}, {bank: "New Bank", slot: 2});
+  page.window.SynthBank.moveSlot({bank: "My Bank", slot: 3}, {bank: "New Bank", slot: 4});
+  sourceRow(page, "Theirs").click();
+  tool(page, "Close bank").click();
+
+  assert.ok(page.sent.length > 0, "the host was told about the banks that changed");
+  assert.ok(!carries(JSON.stringify(page.sent)));
+  assert.deepEqual([...page.files.keys()].filter(key => key.startsWith("quesynth.")), []);
 });
