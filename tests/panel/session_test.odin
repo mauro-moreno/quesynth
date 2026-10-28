@@ -50,12 +50,24 @@ a_state_is_restored_or_refused_for_a_stated_reason :: proc(t: ^testing.T) {
 		{name = "an empty slot", playing = "Playing", trailer = saved_trailer(.User, 5, "Playing", "Playing 5"), requested = true, error = .Invalid_Program, program = -1},
 		{name = "a slot beyond the bank", playing = "Playing", trailer = saved_trailer(.User, 4000, "Playing", "Far"), requested = true, error = .Invalid_Program, program = -1},
 
+		// A slot with nothing in it is still a slot: the page selects one when
+		// somebody steps onto it, and it is restorable when the state says it
+		// was empty when it was saved. A state that named a filled slot, as the
+		// two cases above do, is about a sound that is gone.
+		{name = "an empty slot that was selected when it was saved", playing = "Playing", trailer = saved_trailer(.User, 5, "Playing", "Init", slot_empty = true), requested = true, program = 5},
+		{name = "the last slot, empty when it was saved", playing = "Playing", trailer = saved_trailer(.User, 127, "Playing", "Init", slot_empty = true), requested = true, program = 127},
+		{name = "an empty slot beyond the last", playing = "Playing", trailer = saved_trailer(.User, 128, "Playing", "Init", slot_empty = true), requested = true, error = .Invalid_Program, program = -1},
+		{name = "an empty slot far beyond the last", playing = "Playing", trailer = saved_trailer(.User, 4000, "Playing", "Init", slot_empty = true), requested = true, error = .Invalid_Program, program = -1},
+		{name = "an empty slot of a bank that is not playing", playing = "Playing", trailer = saved_trailer(.Imported, 5, "Elsewhere", "Init", slot_empty = true), requested = true, error = .Missing_Bank, program = -1},
+		{name = "an empty slot that has a sound in it now", playing = "Playing", trailer = saved_trailer(.User, 7, "Playing", "Init", slot_empty = true), requested = true, program = 7},
+
 		// A sound with no slot behind it names no bank to look for.
 		{name = "a live sound", playing = "Playing", trailer = saved_trailer(.Session, -1, "", "Untitled"), requested = true, program = -1},
 		{name = "a file", playing = "Playing", trailer = saved_trailer(.File, -1, "Elsewhere", "From A File"), requested = true, program = -1},
 
 		// A bank carried in the state.
 		{name = "an embedded bank that holds the slot", playing = "Playing", trailer = saved_trailer(.Imported, 42, "Alfmeister Bank", "Alfmeister Bank 42", embedded_ok), requested = true, program = 42},
+		{name = "an embedded bank with the empty slot that was selected", playing = "Playing", trailer = saved_trailer(.Imported, 71, "Alfmeister Bank", "Init", embedded_ok, slot_empty = true), requested = true, program = 71},
 		{name = "an embedded bank without the slot", playing = "Playing", trailer = saved_trailer(.Imported, 42, "Alfmeister Bank", "Alfmeister Bank 42", embedded_without_the_slot), requested = true, error = .Invalid_Program, program = -1},
 		{name = "an embedded bank that is not a bank", playing = "Playing", trailer = saved_trailer(.Imported, 2, "Alfmeister Bank", "x", "{ this is not a bank"), requested = true, error = .Host_State_Rejected, program = -1},
 		{name = "an embedded bank under another name", playing = "Playing", trailer = saved_trailer(.Imported, 42, "Alfmeister Bank", "x", embedded_mislabelled), requested = true, error = .Host_State_Rejected, program = -1},
@@ -191,6 +203,150 @@ an_imported_bank_and_its_program_survive_a_new_instance :: proc(t: ^testing.T) {
 	testing.expect_value(t, view.slot, 42)
 	testing.expect_value(t, view.name, "Alfmeister Bank 42")
 	testing.expect_value(t, view.origin, panel.Origin.Imported)
+}
+
+// -- an empty slot is a slot --------------------------------------------------
+//
+// The page lets a person select one -- the arrows step onto it, a click lands on
+// it, clearing the selected slot leaves the selection there -- and the strip
+// reads "071:Init". An instance saved then has to come back on it, with its bank:
+// refusing the slot before the embedded bank is taken discarded a bank that was
+// all there, and the next save had nothing to carry.
+
+// The page's own selection of a slot, as the message that reports it says it.
+select_slot :: proc(t: ^testing.T, inst: ^Instance, origin: panel.Origin, label: string, slot: int) {
+	selected := panel.session_select(
+		&inst.session,
+		&inst.slots,
+		panel.Selection{origin = origin, has_slot = true, slot = slot, label = named(label), name = named(patch.slots_name(&inst.slots, slot))},
+	)
+	testing.expect(t, selected, "the selection was refused")
+}
+
+@(test)
+an_empty_slot_of_an_imported_bank_comes_back_with_the_bank_and_is_saved_again :: proc(t: ^testing.T) {
+	before := new_instance(t, "Factory", {0, 1, 2}, .Built_In)
+	defer free(before)
+	imported := bank_text("Alfmeister Bank", {0, 2, 42})
+	testing.expect_value(t, panel.session_set_bank(&before.session, &before.slots, imported, false, .Imported, nil), panel.Bank_Result.Adopted)
+	select_slot(t, before, .Imported, "Alfmeister Bank", 71)
+	testing.expect(t, !before.slots.filled[71], "slot 71 is not empty, so this proves nothing")
+
+	saved := panel.session_trailer(&before.session, &before.slots)
+	defer delete(saved)
+	written, status := panel.trailer_decode(saved)
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, written.has_slot && written.slot == 71, "the slot was not written")
+	testing.expect(t, written.slot_empty, "the state does not say the slot was empty")
+	testing.expect(t, written.embedded, "the imported bank was not carried")
+
+	after := new_instance(t, "Factory", {0, 1, 2}, .Built_In)
+	defer free(after)
+	result := panel.session_restore(&after.session, &after.slots, saved)
+
+	testing.expect_value(t, result.error, panel.Restore_Error.None)
+	testing.expect(t, result.restored, "the restore failed")
+	testing.expect(t, result.has_program && result.program == 71, "the program is not 71")
+	testing.expect(t, after.slots == before.slots, "the imported bank was not adopted")
+	testing.expect_value(t, after.session.bank_source, panel.Bank_Source.Adopted)
+	testing.expect_value(t, after.session.bank_origin, panel.Origin.Imported)
+	testing.expect_value(t, after.session.restore, panel.Restore_State.Restored)
+	view := panel.selection_view(&after.session.selection, &after.slots)
+	testing.expect_value(t, view.origin, panel.Origin.Imported)
+	testing.expect_value(t, view.slot, 71)
+	testing.expect_value(t, view.label, "Alfmeister Bank")
+	// What an empty slot is called, here as in the page and in the bank.
+	testing.expect_value(t, view.name, "Init")
+
+	// And the next save is what this one was, bank included, so that doing it
+	// again -- offline/online is something people do repeatedly -- is no
+	// different from the first time.
+	again := panel.session_trailer(&after.session, &after.slots)
+	defer delete(again)
+	next, next_status := panel.trailer_decode(again)
+	testing.expect_value(t, next_status, panel.Trailer_Status.Ok)
+	testing.expect(t, next.embedded && next.slot_empty && next.slot == 71, "the next save lost the bank or the slot")
+
+	third := new_instance(t, "Factory", {0, 1, 2}, .Built_In)
+	defer free(third)
+	testing.expect(t, panel.session_restore(&third.session, &third.slots, again).restored, "the second restore failed")
+	testing.expect(t, third.slots == before.slots, "the bank did not survive the second time")
+}
+
+@(test)
+an_empty_slot_of_the_users_saved_bank_is_restored_by_name :: proc(t: ^testing.T) {
+	before := new_instance(t, "My Bank", {0, 7}, .Saved)
+	defer free(before)
+	select_slot(t, before, .User, "My Bank", 3)
+
+	saved := panel.session_trailer(&before.session, &before.slots)
+	defer delete(saved)
+	written, _ := panel.trailer_decode(saved)
+	testing.expect(t, written.slot_empty && !written.embedded && written.bank_saved, "the saved bank is not named by an empty slot")
+
+	after := new_instance(t, "My Bank", {0, 7}, .Saved)
+	defer free(after)
+	result := panel.session_restore(&after.session, &after.slots, saved)
+
+	testing.expect_value(t, result.error, panel.Restore_Error.None)
+	testing.expect(t, result.has_program && result.program == 3, "the program is not 3")
+	testing.expect_value(t, after.session.restore, panel.Restore_State.Restored)
+	testing.expect_value(t, after.session.restore_error, panel.Restore_Error.None)
+}
+
+// What the strip says is what is saved, whenever it is saved: a slot that was
+// filled when it was selected and has been cleared since is an empty one now,
+// and one that was written into is not.
+@(test)
+what_is_saved_is_whether_the_slot_is_empty_when_it_is_saved :: proc(t: ^testing.T) {
+	// Cleared after it was selected: a state that comes back.
+	cleared := new_instance(t, "My Bank", {0, 7}, .Saved)
+	defer free(cleared)
+	select_slot(t, cleared, .User, "My Bank", 7)
+	panel.session_set_bank(&cleared.session, &cleared.slots, bank_text("My Bank", {0}), true, .User, write_ok)
+	saved := panel.session_trailer(&cleared.session, &cleared.slots)
+	defer delete(saved)
+	written, _ := panel.trailer_decode(saved)
+	testing.expect(t, written.slot_empty, "a slot cleared after it was selected is not saved as empty")
+	away := new_instance(t, "My Bank", {0}, .Saved)
+	defer free(away)
+	testing.expect(t, panel.session_restore(&away.session, &away.slots, saved).restored, "a cleared slot was not restored")
+
+	// Written into after it was selected: a sound, so if the sound is gone
+	// from where the state is read the restore says so.
+	filled := new_instance(t, "My Bank", {0}, .Saved)
+	defer free(filled)
+	select_slot(t, filled, .User, "My Bank", 7)
+	panel.session_set_bank(&filled.session, &filled.slots, bank_text("My Bank", {0, 7}), true, .User, write_ok)
+	kept := panel.session_trailer(&filled.session, &filled.slots)
+	defer delete(kept)
+	written, _ = panel.trailer_decode(kept)
+	testing.expect(t, !written.slot_empty, "a slot written into after it was selected is saved as empty")
+	gone := new_instance(t, "My Bank", {0}, .Saved)
+	defer free(gone)
+	testing.expect_value(t, panel.session_restore(&gone.session, &gone.slots, kept).error, panel.Restore_Error.Invalid_Program)
+}
+
+// A failed restore writes back what it was given, and that includes the slot
+// having been empty: otherwise saving the project while the bank is away turns
+// a selection that could be restored into one that cannot.
+@(test)
+an_empty_slot_that_could_not_be_restored_yet_is_kept_for_the_retry :: proc(t: ^testing.T) {
+	away := new_instance(t, "Elsewhere", {0, 1}, .Saved)
+	defer free(away)
+	result := panel.session_restore(&away.session, &away.slots, saved_trailer(.User, 5, "My Bank", "Init", slot_empty = true, bank_saved = true))
+	testing.expect_value(t, result.error, panel.Restore_Error.Missing_Bank)
+
+	resaved := panel.session_trailer(&away.session, &away.slots)
+	defer delete(resaved)
+	written, _ := panel.trailer_decode(resaved)
+	testing.expect(t, written.slot_empty && written.slot == 5, "the empty slot was not written back")
+
+	back := new_instance(t, "My Bank", {0, 7}, .Saved)
+	defer free(back)
+	retried, changed := panel.session_retry(&away.session, &away.slots, &back.slots)
+	testing.expect(t, retried.restored && changed, "the retry did not put the empty slot of the bank back")
+	testing.expect_value(t, retried.program, 5)
 }
 
 // -- a refusal is remembered, and the next save keeps it ----------------------

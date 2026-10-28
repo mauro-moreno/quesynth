@@ -22,11 +22,27 @@ import "core:unicode/utf8"
 //   payload, version 1:
 //     origin u8     0 none, 1 factory, 2 user, 3 imported, 4 archive, 5 file,
 //                   6 session
-//     flags u8      bit 0 slot present, bit 1 bank embedded, bit 2 bank saved
+//     flags u8      bit 0 slot present, bit 1 bank embedded, bit 2 bank saved,
+//                   bit 3 slot was empty (read only with bit 0)
 //     slot u16 LE   ignored without bit 0
 //     label_len u8, label     the bank's name
 //     name_len u8, name       the patch's name
 //     [bank_len u32 LE, bank] a quesynth.bank document, only with bit 1
+//
+// Bit 3 says that the slot the trailer names had nothing in it, in the bank
+// being played, when the state was saved. The page lets a person select an
+// empty slot -- stepping onto it, clicking it, clearing the selected one -- and
+// an instance saved there has to come back there; but a state that named a
+// slot with a sound in it, now empty, is a sound that went missing, and the
+// restore says so. Only the writer knows which it was, so the writer says.
+// An empty slot is called "Init", as in the page and in src/patch.
+//
+// A flag bit and not a new version: a build from before the bit masks it off
+// (every unnamed bit is ignored) and reads the trailer as it always did, which
+// is the refusal that empty slots met then; and a trailer from before it has
+// the bit clear, which is "the slot was not empty", what it always meant. Only
+// a state saved on an empty slot is written differently. Builds of main never
+// read this trailer, and stop reading a state at its last value.
 //
 // Nothing in a state blob is to be trusted, and this is the one part of it
 // that carries lengths. The payload length is capped, every read is bounds
@@ -48,6 +64,7 @@ Trailer_Flag :: enum u8 {
 	Slot       = 0,
 	Embedded   = 1,
 	Bank_Saved = 2,
+	Slot_Empty = 3,
 }
 
 Trailer_Flags :: bit_set[Trailer_Flag;u8]
@@ -62,6 +79,9 @@ Trailer :: struct {
 	// The playing bank was the saved user bank. Only identity is written then;
 	// the flag is kept so a failed restore writes back what it was given.
 	bank_saved: bool,
+	// The slot was empty in the playing bank when this was written. Only with
+	// a slot.
+	slot_empty: bool,
 	// A slice of the bytes that were decoded, never a copy: valid while they
 	// are. Empty unless `embedded`.
 	bank_json:  []u8,
@@ -155,12 +175,13 @@ trailer_decode :: proc(bytes: []u8) -> (t: Trailer, status: Trailer_Status) {
 	t.origin = Origin(payload[0])
 	// Bits this build does not know are ignored, not refused: the version is
 	// what says the layout changed.
-	flags := transmute(Trailer_Flags)(payload[1] & 0b111)
+	flags := transmute(Trailer_Flags)(payload[1] & 0b1111)
 	t.has_slot = .Slot in flags
 	t.embedded = .Embedded in flags
 	t.bank_saved = .Bank_Saved in flags
 	if t.has_slot {
 		t.slot = int(get_u16(payload[2:]))
+		t.slot_empty = .Slot_Empty in flags
 	}
 
 	at := 4
@@ -238,6 +259,9 @@ trailer_encode :: proc(t: ^Trailer, allocator := context.allocator) -> []u8 {
 	if t.has_slot {
 		flags += {.Slot}
 		put_u16(payload[2:], u16(t.slot))
+		if t.slot_empty {
+			flags += {.Slot_Empty}
+		}
 	}
 	if embedded {
 		flags += {.Embedded}

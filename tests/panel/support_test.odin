@@ -83,12 +83,14 @@ saved_trailer :: proc(
 	name: string,
 	embedded_bank: string = "",
 	bank_saved := false,
+	slot_empty := false,
 ) -> []u8 {
 	trailer: panel.Trailer
 	trailer.origin = origin
 	trailer.has_slot = slot >= 0
 	trailer.slot = max(slot, 0)
 	trailer.bank_saved = bank_saved
+	trailer.slot_empty = slot_empty
 	panel.text_set(&trailer.label, label)
 	panel.text_set(&trailer.name, name)
 	if embedded_bank != "" {

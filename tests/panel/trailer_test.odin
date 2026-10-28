@@ -53,6 +53,62 @@ GOLDEN_SLOTLESS := [?]u8 {
 	0x03, 'P', 'a', 'd',
 }
 
+// The same slot of the same kind of bank, empty when it was saved: the fourth
+// flag bit, beside slot present. "Init" is what an empty slot is called.
+GOLDEN_EMPTY_SLOT := [?]u8 {
+	'Q', 'S', 'E', 'L',
+	0x01, 0x00, 0x00, 0x00,
+	0x11, 0x00, 0x00, 0x00, // payload of 17 bytes
+	0x03, // origin: imported
+	0x09, // flags: slot present, slot was empty
+	0x47, 0x00, // slot 71
+	0x07, 'M', 'y', ' ', 'B', 'a', 'n', 'k',
+	0x04, 'I', 'n', 'i', 't',
+}
+
+@(test)
+the_empty_slot_golden_decodes_to_what_it_says :: proc(t: ^testing.T) {
+	decoded, status := panel.trailer_decode(GOLDEN_EMPTY_SLOT[:])
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, decoded.has_slot, "the slot flag was not read")
+	testing.expect_value(t, decoded.slot, 71)
+	testing.expect(t, decoded.slot_empty, "the slot-empty flag was not read")
+	testing.expect_value(t, panel.text_get(&decoded.name), "Init")
+	testing.expect(t, !decoded.embedded && !decoded.bank_saved, "another flag appeared beside it")
+}
+
+// What a trailer written before the bit existed says is what it said: the slot
+// was not marked empty, so a slot with nothing in it is the bank's fault.
+@(test)
+the_older_goldens_do_not_say_the_slot_was_empty :: proc(t: ^testing.T) {
+	for blob in ([][]u8{GOLDEN_SLOT[:], GOLDEN_EMBEDDED[:], GOLDEN_SLOTLESS[:]}) {
+		decoded, status := panel.trailer_decode(blob)
+		testing.expect_value(t, status, panel.Trailer_Status.Ok)
+		testing.expect(t, !decoded.slot_empty, "the slot-empty flag appeared from nowhere")
+	}
+}
+
+// Like the slot field, the bit means nothing without a slot: a selection with
+// no slot cannot have an empty one.
+@(test)
+the_empty_flag_without_a_slot_is_not_read :: proc(t: ^testing.T) {
+	bytes := GOLDEN_SLOTLESS
+	bytes[13] = 0x08 // flags: slot was empty, and no slot
+	decoded, status := panel.trailer_decode(bytes[:])
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, !decoded.slot_empty, "an empty slot appeared on a trailer with no slot")
+}
+
+// The bits after it are still free for a later build to use, and are ignored.
+@(test)
+flag_bits_nobody_has_named_yet_are_ignored :: proc(t: ^testing.T) {
+	bytes := GOLDEN_EMPTY_SLOT
+	bytes[13] = 0x09 | 0xF0
+	decoded, status := panel.trailer_decode(bytes[:])
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, decoded.has_slot && decoded.slot_empty && !decoded.embedded && !decoded.bank_saved, "an unnamed bit changed what was read")
+}
+
 @(test)
 the_slot_golden_decodes_to_what_it_says :: proc(t: ^testing.T) {
 	decoded, status := panel.trailer_decode(GOLDEN_SLOT[:])
@@ -121,11 +177,25 @@ the_encoder_writes_the_goldens_byte_for_byte :: proc(t: ^testing.T) {
 	slotless.bank_saved = true
 	panel.text_set(&slotless.name, "Pad")
 
+	empty: panel.Trailer
+	empty.origin = .Imported
+	empty.has_slot = true
+	empty.slot = 71
+	empty.slot_empty = true
+	panel.text_set(&empty.label, "My Bank")
+	panel.text_set(&empty.name, "Init")
+
+	// The bit with no slot is not written either.
+	slotless_empty := slotless
+	slotless_empty.slot_empty = true
+
 	cases := [?]struct {
 		name:     string,
 		trailer:  ^panel.Trailer,
 		expected: []u8,
 	} {
+		{"an empty slot", &empty, GOLDEN_EMPTY_SLOT[:]},
+		{"an empty flag and no slot", &slotless_empty, GOLDEN_SLOTLESS[:]},
 		{"a slot", &slot, GOLDEN_SLOT[:]},
 		{"an embedded bank", &embedded, GOLDEN_EMBEDDED[:]},
 		{"a file", &slotless, GOLDEN_SLOTLESS[:]},
@@ -160,6 +230,7 @@ a_trailer_survives_its_own_round_trip_in_every_shape :: proc(t: ^testing.T) {
 					source.slot = 127 if has_slot else 0
 					source.embedded = embedded
 					source.bank_saved = !embedded
+					source.slot_empty = has_slot && origin != .User
 					source.bank_json = transmute([]u8)string("{\"bank\": true}") if embedded else nil
 					panel.text_set(&source.label, name)
 					panel.text_set(&source.name, name)
@@ -175,6 +246,7 @@ a_trailer_survives_its_own_round_trip_in_every_shape :: proc(t: ^testing.T) {
 					testing.expect_value(t, panel.text_get(&back.name), panel.text_get(&source.name))
 					testing.expect_value(t, back.embedded, embedded)
 					testing.expect_value(t, back.bank_saved, source.bank_saved)
+					testing.expect_value(t, back.slot_empty, source.slot_empty)
 					testing.expect_value(t, string(back.bank_json), string(source.bank_json))
 				}
 			}

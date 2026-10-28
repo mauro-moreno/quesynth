@@ -97,9 +97,9 @@ text_get :: proc "contextless" (t: ^Text) -> string {
 Selection :: struct {
 	// None: nothing is known. A state from before the trailer, or an instance
 	// nobody has selected anything on. It is never read as slot 0.
-	origin:   Origin,
-	has_slot: bool,
-	slot:     int,
+	origin:     Origin,
+	has_slot:   bool,
+	slot:       int,
 	// A selection the instance made itself -- a program change, a restore --
 	// names a slot of the bank it is playing out of, and its label and name
 	// are read from that bank when they are asked for. They are not copied:
@@ -108,9 +108,15 @@ Selection :: struct {
 	//
 	// One that came from the panel carries its own, and is bound only while
 	// the bank it names is the bank being played.
-	bound:    bool,
-	label:    Text,
-	name:     Text,
+	bound:      bool,
+	// The slot had nothing in it, in its bank, when the state this came out of
+	// was saved. Only a selection read from a trailer has it, which is what a
+	// failed restore holds on to; a live one is asked of the bank when it is
+	// saved, because a slot can be written into or cleared after it is
+	// selected, and the state has to say what was true when it was written.
+	slot_empty: bool,
+	label:      Text,
+	name:       Text,
 }
 
 selection_known :: proc "contextless" (sel: ^Selection) -> bool {
@@ -346,6 +352,7 @@ session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.a
 		t.slot = p.slot
 		t.label = p.label
 		t.name = p.name
+		t.slot_empty = p.has_slot && p.slot_empty
 		if p.has_slot && text_get(&p.label) != label {
 			// It names a bank this instance is not playing, so what the
 			// instance is playing is not the bank this identity belongs to.
@@ -366,6 +373,11 @@ session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.a
 			t.slot = view.slot
 			text_set(&t.label, view.label)
 			text_set(&t.name, view.name)
+			// Asked of the bank being saved and not of the selection, which
+			// may have been made before the slot was written into or
+			// cleared. An empty slot reads as "Init", as it does in the
+			// page, so the name written is the one the strip shows.
+			t.slot_empty = view.has_slot && !slot_is_filled(slots, view.slot)
 		}
 	} else if s.bank_source == .Adopted {
 		// No selection, but a bank nothing else will bring back. The origin
@@ -416,7 +428,12 @@ Restore_Result :: struct {
 //   embedded bank       parsed and, if it holds the slot, played from now on,
 //                       and never written to disk
 //   a bank by name      the playing bank must be that bank, else MissingBank
-//   a slot              must be in the bank and filled, else InvalidProgram
+//   a slot              must be one of the 128, and filled unless the state
+//                       says it was empty when it was saved, else
+//                       InvalidProgram. An empty slot is a slot the page can
+//                       select, so that selection comes back too: the bank
+//                       is adopted and the program is the slot, the sound
+//                       staying what the host restored
 session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restore_Result {
 	t, status := trailer_decode(bytes)
 
@@ -456,7 +473,10 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 		return restore_failed(s, &wanted, t.bank_saved, .Missing_Bank)
 	}
 
-	if t.has_slot && !slot_is_filled(target, t.slot) {
+	// After the bank was looked at and not before: an embedded bank is what
+	// the project carries, and refusing the slot first threw it away with the
+	// bank that was all there.
+	if t.has_slot && !slot_restorable(target, t.slot, t.slot_empty) {
 		return restore_failed(s, &wanted, t.bank_saved, .Invalid_Program)
 	}
 
@@ -473,18 +493,34 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 @(private)
 selection_of :: proc(t: ^Trailer) -> Selection {
 	sel := Selection {
-		origin   = t.origin,
-		has_slot = t.has_slot,
-		slot     = t.slot,
-		label    = t.label,
-		name     = t.name,
+		origin     = t.origin,
+		has_slot   = t.has_slot,
+		slot       = t.slot,
+		label      = t.label,
+		name       = t.name,
+		slot_empty = t.slot_empty,
 	}
 	return sel
 }
 
 @(private)
-slot_is_filled :: proc(slots: ^patch.Slots, slot: int) -> bool {
+slot_is_filled :: proc "contextless" (slots: ^patch.Slots, slot: int) -> bool {
 	return slot >= 0 && slot < patch.FACTORY_SLOTS && slots.filled[slot]
+}
+
+// Whether a state that named `slot` can be put back on `slots`.
+//
+// A slot with nothing in it is a slot all the same -- interior empty slots stay
+// addressable -- and a state saved while one was selected says so. What it must
+// not do is excuse a state that named a sound: that slot being empty now is a
+// sound that went missing, which is what InvalidProgram is for. A number that
+// is no slot at all is never restorable, whatever the state says of it.
+@(private)
+slot_restorable :: proc "contextless" (slots: ^patch.Slots, slot: int, was_empty: bool) -> bool {
+	if slot < 0 || slot >= patch.FACTORY_SLOTS {
+		return false
+	}
+	return was_empty || slots.filled[slot]
 }
 
 @(private)
@@ -510,6 +546,7 @@ restore_succeeded :: proc(s: ^Session, wanted: Selection) -> Restore_Result {
 	// What the state names is the bank being played, by the checks above, so
 	// the label and name are the bank's from here on.
 	sel.bound = sel.has_slot
+	sel.slot_empty = false
 	s.selection = sel
 	s.has_pending = false
 	s.pending = {}
@@ -551,7 +588,7 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 		target = saved
 		from_file = true
 	}
-	if wanted.has_slot && !slot_is_filled(target, wanted.slot) {
+	if wanted.has_slot && !slot_restorable(target, wanted.slot, wanted.slot_empty) {
 		return restore_failed(s, &wanted, s.pending_saved, .Invalid_Program), false
 	}
 
