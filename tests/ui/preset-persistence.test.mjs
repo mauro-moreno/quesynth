@@ -470,6 +470,29 @@ test("a read-only source may be copied from but not moved from, and a read-only 
   assert.equal(storedAt(page, free, 9).name, "Brass", "a refused move did not clear it");
 });
 
+test("a copy or move that breaks several rules gives the same refusal every time: what is taken, then where it goes, then the overwrite", () => {
+  const page = bootPanel({bank: FACTORY, host: null});
+  const api = page.window.SynthBank;
+  const mine = api.newBank("Mine").index;
+  api.writePreset({bank: mine, slot: 0, name: "Zero"});
+  api.writePreset({bank: mine, slot: 1, name: "One"});
+  api.addLazy("Unopened", () => Promise.reject(new Error("must not be read")));
+  const factory = bankIndex(page, "Quesynth Factory");
+  const message = result => result.ok ? "ok" : result.error.message;
+
+  // The source is judged before the read-only destination it is going to.
+  assert.equal(errorCode(api.copySlot({bank: "Unopened", slot: 0}, {bank: factory, slot: 40})), "UnavailableSource");
+  assert.equal(errorCode(api.copySlot({bank: mine, slot: 2}, {bank: factory, slot: 40})), "InvalidPreset", "slot 2 is empty");
+  // The destination before the overwrite it would have asked about.
+  assert.equal(errorCode(api.copySlot({bank: mine, slot: 0}, {bank: factory, slot: 1})), "ReadOnlyBank");
+  assert.match(message(api.copySlot({bank: mine, slot: 0}, {bank: "Unopened", slot: 1})), /^Open Unopened before writing/);
+  // A move's own rule, that it may not leave a read-only bank, comes after the
+  // destination is judged and before the overwrite.
+  assert.match(message(api.moveSlot({bank: factory, slot: 1}, {bank: "Unopened", slot: 0})), /^Open Unopened before writing/);
+  assert.match(message(api.moveSlot({bank: factory, slot: 1}, {bank: mine, slot: 0})), /so nothing can be moved out of it/);
+  assert.equal(errorCode(api.moveSlot({bank: mine, slot: 0}, {bank: mine, slot: 1})), "OverwriteDenied");
+});
+
 test("a bank not yet read, and a patch in the archive, are not there to copy from or to", () => {
   const page = plugin();
   page.window.SynthBank.addLazy("Unopened", () => Promise.reject(new Error("must not be read")));

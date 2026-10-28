@@ -2432,6 +2432,55 @@
 
   // -- writing, copying, moving
 
+  // Every refusal a write of a slot can give, in the order they are given.
+  // The write is the live sound going into a slot (`from` is null) or a patch
+  // copied or moved there from another slot (`from` names it).
+  //
+  // One function because the rules are one set -- what an archive, a read-only
+  // or an unopened bank takes, and when an occupied slot may be written over --
+  // and two copies of them would be free to disagree about a bank. The order is
+  // part of what the doors promise when more than one refusal applies: what is
+  // being taken, then where it is going, and for a move only then whether it
+  // may leave.
+  //
+  // Answers { refusal: { code, message } }, or what it resolved: { src, dst,
+  // p, name, there } -- the banks, the patch being copied, the checked name of
+  // a live sound, and what the destination slot holds now.
+  function checkSlotWrite(action, from, to, name, overwrite) {
+    var no = function (code, message) { return { refusal: { code: code, message: message } }; };
+    var src = from ? resolveBank(from.bank) : null;
+    var dst = resolveBank(to.bank);
+    if (!dst || !isSlot(to.slot) || (from && (!src || !isSlot(from.slot)))) {
+      return no("InvalidSlot", "That is not a slot of a bank that is open.");
+    }
+    if (src && src.archive) {
+      return no(action === "move" ? "ReadOnlyBank" : "UnavailableSource",
+        "A patch in the shared archive is not held here to " + action + ".");
+    }
+    if (dst.archive) return no("ReadOnlyBank", "Archive banks are read-only.");
+    if (src && src.rec === dst.rec && from.slot === to.slot) {
+      return no("InvalidSlot", "That is the same slot.");
+    }
+    if (src && bankUnopened(src.rec)) return no("UnavailableSource", src.rec.label + " has not been opened.");
+    var p = src ? src.rec.patches[from.slot] : null;
+    if (src && !p) return no("InvalidPreset", "Slot " + slotWords(src.rec, from.slot) + " is empty.");
+    if (bankReadOnly(dst.rec)) return no("ReadOnlyBank", dst.rec.label + " is read-only.");
+    if (bankUnopened(dst.rec)) return no("ReadOnlyBank", "Open " + dst.rec.label + " before writing to it.");
+    var checked = null;
+    if (!from) {
+      checked = checkName(name);
+      if (checked.error) return no("InvalidName", checked.error);
+    }
+    if (action === "move" && bankReadOnly(src.rec)) {
+      return no("ReadOnlyBank", src.rec.label + " is read-only, so nothing can be moved out of it.");
+    }
+    var there = dst.rec.patches[to.slot];
+    if (there && overwrite !== true) {
+      return no("OverwriteDenied", "Slot " + slotWords(dst.rec, to.slot) + " already holds " + there.n + ".");
+    }
+    return { src: src, dst: dst, p: p, name: checked ? checked.name : null, there: there };
+  }
+
   // The one door through which a sound becomes part of a bank. It writes the
   // live sound to exactly the slot asked for, or refuses and changes nothing.
   //
@@ -2446,21 +2495,10 @@
   // InvalidSlot, ReadOnlyBank, InvalidName, OverwriteDenied.
   function writeSlot(req, action) {
     req = req || {};
-    var bad = function (code, message) { return refusal(action, code, message); };
-    var found = resolveBank(req.bank);
-    if (!found || !isSlot(req.slot)) {
-      return bad("InvalidSlot", "That is not a slot of a bank that is open.");
-    }
-    if (found.archive) return bad("ReadOnlyBank", "Archive banks are read-only.");
-    var rec = found.rec;
-    if (bankReadOnly(rec)) return bad("ReadOnlyBank", rec.label + " is read-only.");
-    if (bankUnopened(rec)) return bad("ReadOnlyBank", "Open " + rec.label + " before writing to it.");
-    var checked = checkName(req.name === undefined ? (currentName || "Untitled") : req.name);
-    if (checked.error) return bad("InvalidName", checked.error);
-    var old = rec.patches[req.slot];
-    if (old && req.overwrite !== true) {
-      return bad("OverwriteDenied", "Slot " + slotWords(rec, req.slot) + " already holds " + old.n + ".");
-    }
+    var checked = checkSlotWrite(action, null, { bank: req.bank, slot: req.slot },
+      req.name === undefined ? (currentName || "Untitled") : req.name, req.overwrite);
+    if (checked.refusal) return refusal(action, checked.refusal.code, checked.refusal.message);
+    var found = checked.dst, rec = found.rec, old = checked.there;
 
     rec.patches[req.slot] = { n: checked.name, v: liveValues() };
     settleRestore();
@@ -2485,33 +2523,11 @@
   // so does a move, except that the sound that *was* the moved one is now at
   // its new address and the selection goes with it.
   function transfer(action, from, to, options) {
-    var bad = function (code, message) { return refusal(action, code, message); };
     from = from || {};
     to = to || {};
-    var src = resolveBank(from.bank), dst = resolveBank(to.bank);
-    if (!src || !dst || !isSlot(from.slot) || !isSlot(to.slot)) {
-      return bad("InvalidSlot", "That is not a slot of a bank that is open.");
-    }
-    if (src.archive) {
-      return bad(action === "move" ? "ReadOnlyBank" : "UnavailableSource",
-        "A patch in the shared archive is not held here to " + action + ".");
-    }
-    if (dst.archive) return bad("ReadOnlyBank", "Archive banks are read-only.");
-    if (src.rec === dst.rec && from.slot === to.slot) {
-      return bad("InvalidSlot", "That is the same slot.");
-    }
-    if (bankUnopened(src.rec)) return bad("UnavailableSource", src.rec.label + " has not been opened.");
-    var p = src.rec.patches[from.slot];
-    if (!p) return bad("InvalidPreset", "Slot " + slotWords(src.rec, from.slot) + " is empty.");
-    if (bankReadOnly(dst.rec)) return bad("ReadOnlyBank", dst.rec.label + " is read-only.");
-    if (bankUnopened(dst.rec)) return bad("ReadOnlyBank", "Open " + dst.rec.label + " before writing to it.");
-    if (action === "move" && bankReadOnly(src.rec)) {
-      return bad("ReadOnlyBank", src.rec.label + " is read-only, so nothing can be moved out of it.");
-    }
-    var there = dst.rec.patches[to.slot];
-    if (there && !(options && options.overwrite === true)) {
-      return bad("OverwriteDenied", "Slot " + slotWords(dst.rec, to.slot) + " already holds " + there.n + ".");
-    }
+    var checked = checkSlotWrite(action, from, to, null, !!(options && options.overwrite === true));
+    if (checked.refusal) return refusal(action, checked.refusal.code, checked.refusal.message);
+    var src = checked.src, dst = checked.dst, p = checked.p, there = checked.there;
 
     // Both ends are changed before anything is announced, so a host is told
     // about a move once and never sees a copy that has not lost its source yet.
