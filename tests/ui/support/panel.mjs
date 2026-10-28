@@ -144,9 +144,15 @@ export function bootPanel({host = "generic", bank, store = false, scripts = PANE
 
 // The messages a plugin host answers `sync` with, in the order the protocol
 // fixes: bank, state, patch, then restore if one was requested.
+//
+// `kept` is the host saying the bank is the one it keeps. By default a bank
+// called user or factory is, and an imported one is not: that is what a plugin
+// says of its saved bank, of the compiled-in one while it has no saved bank,
+// and of a bank it was handed from a file. A bank the person made is called
+// user and is not kept, which is what a test of that says for itself.
 export function syncAnswer({label = "Alfmeister Bank", names, origin = "imported", readOnly = false,
-  state, slot, name, restore} = {}) {
-  const out = [{type: "bank", text: bankText(label, names), v: 1, origin, readOnly}];
+  kept = origin === "user" || origin === "factory", state, slot, name, restore} = {}) {
+  const out = [{type: "bank", text: bankText(label, names), v: 1, origin, readOnly, kept}];
   if (state) out.push({type: "state", values: state});
   if (slot !== undefined) out.push({type: "patch", name, index: slot, bank: label, v: 1, origin});
   if (restore) out.push(restore);

@@ -2036,8 +2036,9 @@
   //                     under their own names, and overwriting the saved bank
   //                     by browsing somebody else's would be a poor trade.
   //                     A host that speaks version 1 says which one that is
-  //                     (`persisted`); an older one is taken to keep bank zero,
-  //                     which was the only bank it ever kept.
+  //                     (`kept` on its `bank`, `persisted` here); an older one
+  //                     is taken to keep bank zero, which was the only bank it
+  //                     ever kept.
   //
   // Playing a bank is not writing it, so `keep` is whether this send is a
   // person's write of the bank's content. Only that may ask the host to save,
@@ -2419,12 +2420,14 @@
     var made = makeBank({ label: parsed.label, patches: parsed.patches }, origin);
     made.hostOwned = true;
     made.readOnly = msg.readOnly === true;
-    // Only a version-1 host says which bank it keeps, and it says it by
-    // calling it factory or user. One that was sent from somebody's file and
-    // merely embedded in the project is not on its disk, and a bank with no
-    // origin to speak of must not be saved over the one that is.
-    var keeps = !made.readOnly && bridge.version() >= 1 &&
-      (msg.origin === "factory" || msg.origin === "user");
+    // Only a version-1 host says which bank it keeps, and it says so itself:
+    // `kept`. What the bank is called does not tell. A New bank or a Duplicate
+    // made here is origin user too, and the host only plays it -- as it does an
+    // embedded copy of one, or of somebody's file -- so taking every user bank
+    // for the kept one offered the scratch bank as the saved bank after the
+    // editor was reopened, and the next Write into it replaced the file the
+    // user kept. Not said is not kept.
+    var keeps = !made.readOnly && bridge.version() >= 1 && msg.kept === true;
     if (archive) {
       banks = [made];
       currentBank = 0;

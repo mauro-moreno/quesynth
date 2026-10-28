@@ -45,6 +45,7 @@ WIRE_SCENARIOS :: [?]string {
 	"program-change-ends-a-failed-restore",
 	"retry-after-the-host-dropped-the-failed-restore",
 	"a-selection-and-a-failed-restore-arrive-together",
+	"reopen-on-a-bank-the-page-made",
 }
 
 // `using` and first, so that the pointer the callbacks of fake_host receive is
@@ -155,6 +156,11 @@ a_retry_after_a_silent_program_change_is_answered_with_the_patch_and_no_restore 
 @(test)
 a_patch_is_followed_by_the_failure_the_host_still_holds :: proc(t: ^testing.T) {
 	play_wire(t, "a-selection-and-a-failed-restore-arrive-together")
+}
+
+@(test)
+a_bank_the_page_made_is_announced_as_played_and_not_kept :: proc(t: ^testing.T) {
+	play_wire(t, "reopen-on-a-bank-the-page-made")
 }
 
 // -- playing one scenario -----------------------------------------------------
@@ -441,6 +447,8 @@ WIRE_HOST_EFFECT_KEYS :: [?]string {
 	"banks",
 	"bank_label",
 	"bank_origin",
+	"bank_source",
+	"embedded",
 	"values",
 	"patches",
 }
@@ -537,6 +545,26 @@ wire_expect_host :: proc(t: ^testing.T, place: string, w: ^Wire, effect: json.Ob
 	}
 	if want, has := effect["bank_origin"].(json.String); has {
 		testing.expect_value(t, panel.origin_word(w.inst.session.bank_origin), string(want))
+	}
+	// Where the playing bank comes from, which is what decides whether a saved
+	// state carries it: built_in and saved name it, adopted embeds it.
+	if want, has := effect["bank_source"].(json.String); has {
+		got: string
+		switch w.inst.session.bank_source {
+		case .Built_In:
+			got = "built_in"
+		case .Saved:
+			got = "saved"
+		case .Adopted:
+			got = "adopted"
+		}
+		testing.expect_value(t, got, string(want))
+	}
+	if want, has := effect["embedded"].(json.Boolean); has {
+		state := panel.session_trailer(&w.inst.session, &w.inst.slots)
+		defer delete(state)
+		trailer, _ := panel.trailer_decode(state)
+		testing.expectf(t, trailer.embedded == bool(want), "%s: a saved state carries the bank: %v, not %v", place, trailer.embedded, bool(want))
 	}
 
 	if values, has := effect["values"].(json.Array); has {

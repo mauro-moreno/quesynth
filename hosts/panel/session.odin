@@ -214,6 +214,17 @@ Session :: struct {
 	pending_saved:   bool,
 }
 
+// Whether the bank being played is the one this instance keeps, which is what
+// the panel is told so that it knows which bank a write may ask to have saved.
+//
+// Not what it is called: a bank the person made, or an embedded copy of one, is
+// announced as the user's too, and the host only plays it. The panel cannot
+// tell those apart from the saved file by their names, and taking one for the
+// other let a write into a scratch bank replace the user's whole file.
+session_bank_kept :: proc "contextless" (s: ^Session) -> bool {
+	return s.bank_source != .Adopted
+}
+
 // A new instance, after it has loaded the bank it starts with.
 session_init :: proc "contextless" (s: ^Session, source: Bank_Source) {
 	s^ = {}
@@ -326,6 +337,7 @@ session_set_bank :: proc(
 		s.bank_origin = .User
 		return .Saved
 	}
+
 	s.bank_source = .Adopted
 	s.bank_origin = origin if origin != .None else .Imported
 	return .Persistence_Failed if save else .Adopted

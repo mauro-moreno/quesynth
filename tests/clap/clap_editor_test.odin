@@ -195,7 +195,7 @@ test_the_editor_opened_after_a_state_load_is_told_the_bank_the_program_and_the_r
 	testing.expect_value(t, len(replies), 4)
 	if len(replies) != 4 {return}
 	testing.expect(t, strings.has_prefix(replies[0], `{"type":"bank","text":"{`), replies[0])
-	testing.expect(t, strings.has_suffix(replies[0], `,"v":1,"origin":"imported","readOnly":false}`), replies[0])
+	testing.expect(t, strings.has_suffix(replies[0], `,"v":1,"origin":"imported","readOnly":false,"kept":false}`), replies[0])
 	testing.expect(t, strings.has_prefix(replies[1], `{"type":"state","values":[`), replies[1])
 	testing.expect_value(
 		t,

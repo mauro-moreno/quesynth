@@ -227,7 +227,7 @@ test("an older host is sent a bank to keep only for bank zero, as it always was"
 
 test("a bank the host sends with no origin to speak of is never one the panel asks it to save over its own", () => {
   const page = bootPanel({bank: FACTORY});
-  page.send({type: "bank", text: bankText("Odd", MINE), v: 1, origin: "session", readOnly: false});
+  page.send({type: "bank", text: bankText("Odd", MINE), v: 1, origin: "session", readOnly: false, kept: false});
   page.send({type: "patch", name: "Alpha", index: 0, bank: "Odd", v: 1, origin: "session"});
   page.forget();
   assert.equal(page.window.SynthBank.bankInfo(1).persisted, false);

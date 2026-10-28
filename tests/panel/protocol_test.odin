@@ -25,6 +25,9 @@ Fake :: struct {
 	file:      ^Instance,
 	// Whether the file can be written.
 	disk_full: bool,
+	// A per-user bank file the host really writes, when a test has to see
+	// whether it was. Empty: a write succeeds and goes nowhere.
+	saved_path: string,
 	selected:  [dynamic]panel.Selection,
 	banks:     [dynamic]Bank_Call,
 	retries:   int,
@@ -34,6 +37,16 @@ Fake :: struct {
 Bank_Call :: struct {
 	save:   bool,
 	origin: panel.Origin,
+}
+
+// Where this test's per-user bank file is, for the host's write to find. One
+// per test thread, so no other test sees it.
+@(private = "file", thread_local)
+fake_saved_path: string
+
+@(private = "file")
+write_fake_saved_bank :: proc(text: string) -> bool {
+	return panel.bank_write_to(fake_saved_path, text)
 }
 
 fake_host :: proc(f: ^Fake, with_session := true) -> panel.Host {
@@ -54,6 +67,10 @@ fake_host :: proc(f: ^Fake, with_session := true) -> panel.Host {
 			f := (^Fake)(user)
 			append(&f.banks, Bank_Call{save, origin})
 			write := refuse_to_write if f.disk_full else write_ok
+			if f.saved_path != "" {
+				fake_saved_path = f.saved_path
+				write = write_fake_saved_bank
+			}
 			return panel.session_set_bank(&f.inst.session, &f.inst.slots, text, save, origin, write)
 		},
 	}
@@ -115,7 +132,7 @@ sync_answers_bank_then_state_then_patch_then_restore :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(replies), 4)
 	if len(replies) != 4 {return}
 	testing.expect(t, starts_with(replies[0], `{"type":"bank","text":"{`), "the first message is not the bank")
-	testing.expect(t, ends_with(replies[0], `,"v":1,"origin":"imported","readOnly":false}`), replies[0])
+	testing.expect(t, ends_with(replies[0], `,"v":1,"origin":"imported","readOnly":false,"kept":false}`), replies[0])
 	testing.expect_value(t, replies[1], `{"type":"state","values":[5,6,7]}`)
 	testing.expect_value(
 		t,
@@ -143,7 +160,7 @@ sync_with_no_selection_sends_no_patch_and_no_restore :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(replies), 2)
 	if len(replies) != 2 {return}
-	testing.expect(t, ends_with(replies[0], `,"v":1,"origin":"factory","readOnly":false}`), replies[0])
+	testing.expect(t, ends_with(replies[0], `,"v":1,"origin":"factory","readOnly":false,"kept":true}`), replies[0])
 	testing.expect_value(t, replies[1], `{"type":"state","values":[5,6,7]}`)
 }
 
@@ -332,7 +349,7 @@ a_retry_that_finds_the_bank_answers_with_the_bank_the_patch_and_the_restore :: p
 	testing.expect_value(t, len(replies), 3)
 	if len(replies) != 3 {return}
 	testing.expect(t, starts_with(replies[0], `{"type":"bank","text":"{`), replies[0])
-	testing.expect(t, ends_with(replies[0], `,"v":1,"origin":"user","readOnly":false}`), replies[0])
+	testing.expect(t, ends_with(replies[0], `,"v":1,"origin":"user","readOnly":false,"kept":true}`), replies[0])
 	testing.expect_value(
 		t,
 		replies[1],

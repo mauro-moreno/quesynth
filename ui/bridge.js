@@ -81,11 +81,20 @@
 // existed is renamed or dropped; v1 only adds fields and messages.
 //
 //   to interface  {"type":"bank","text":"<quesynth.bank>","v":1,
-//                  "origin":"factory|user|imported","readOnly":false}
-//                     `origin` and `readOnly` are new on the existing message.
-//                     Adopting it never selects a slot, loads a patch, or
-//                     answers with a `state`: it is the host saying what it
-//                     holds, not a request to change what is playing.
+//                  "origin":"factory|user|imported","readOnly":false,
+//                  "kept":true}
+//                     `origin`, `readOnly` and `kept` are new on the existing
+//                     message. Adopting it never selects a slot, loads a
+//                     patch, or answers with a `state`: it is the host saying
+//                     what it holds, not a request to change what is playing.
+//                     `kept` is whether this is the bank the host keeps -- its
+//                     saved bank, or the compiled-in one while it has none --
+//                     and so the only one a `bank` with "save":true may be
+//                     sent for. It is false for a bank the host only plays: one
+//                     the page made and sent, one opened from a file, one the
+//                     project embedded. `origin` is only what to call it, and
+//                     a bank the person made is the user's too. A message
+//                     without `kept` is read as false.
 //                 {"type":"patch","name":"Glass Pad","index":42,
 //                  "bank":"My Bank","v":1,"origin":"user"}
 //                     `index` null and no `name` when the host has nothing to

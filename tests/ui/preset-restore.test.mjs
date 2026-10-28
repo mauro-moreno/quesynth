@@ -91,7 +91,7 @@ test("Retry asks the host again and shows nothing final until it answers", () =>
   assert.deepEqual(page.values(), hostSound, "waiting does not touch the sound");
 
   // The bank came back: the host answers with the restore and its selection.
-  page.send({type: "bank", text: syncAnswer({names: NAMES})[0].text, v: 1, origin: "imported", readOnly: false});
+  page.send({type: "bank", text: syncAnswer({names: NAMES})[0].text, v: 1, origin: "imported", readOnly: false, kept: false});
   page.send({type: "patch", name: "Foo", index: 42, bank: "Alfmeister Bank", v: 1, origin: "imported"});
   page.send({type: "restore", v: 1, state: "restored", ...WANTED});
   assert.equal(page.window.SynthBank.restoreState().state, "restored");

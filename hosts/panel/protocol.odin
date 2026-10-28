@@ -362,9 +362,12 @@ message_param :: proc(index: int, stored: i32) -> string {
 // would have used. Without this the panel would show the factory bank while
 // a program change played something else -- which is what it did.
 //
-// With a session it also says where the bank came from and that it is the
-// host's to write to: a plugin keeps whatever the panel asks it to, so nothing
-// the host sends is read-only.
+// With a session it also says where the bank came from, that it is the
+// host's to write to -- a plugin keeps whatever the panel asks it to, so
+// nothing the host sends is read-only -- and whether it is the bank the host
+// keeps. That is not what `origin` says: a bank the person made is the user's
+// too, and the host only plays it. A page that took it for the kept one saved
+// it over the user's own bank at its next Write.
 message_bank :: proc(text: string, view: ^Instance_View) -> string {
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, `{"type":"bank","text":`)
@@ -372,7 +375,8 @@ message_bank :: proc(text: string, view: ^Instance_View) -> string {
 	if view != nil && view.session != nil {
 		strings.write_string(&builder, `,"v":1,"origin":`)
 		write_json_string(&builder, origin_word(view.session.bank_origin))
-		strings.write_string(&builder, `,"readOnly":false`)
+		strings.write_string(&builder, `,"readOnly":false,"kept":`)
+		strings.write_string(&builder, "true" if session_bank_kept(view.session) else "false")
 	}
 	strings.write_byte(&builder, '}')
 	return strings.to_string(builder)

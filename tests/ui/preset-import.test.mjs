@@ -501,7 +501,7 @@ test("a file name from a patch name never carries what a file system objects to"
 test("a bank from the host is adopted as it always was: more than 128 patches are cut, and a bad one changes nothing", () => {
   const page = bootPanel({bank: FACTORY});
   const names = Array.from({length: 130}, (_, i) => `N${i}`);
-  page.send({type: "bank", text: bankText("Long", names), v: 1, origin: "user", readOnly: false});
+  page.send({type: "bank", text: bankText("Long", names), v: 1, origin: "user", readOnly: false, kept: false});
   assert.equal(page.window.SynthBank.bankInfo(1).used, 128);
 
   const before = plain(page.window.SynthBank.list());

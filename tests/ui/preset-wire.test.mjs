@@ -36,7 +36,7 @@ const FACTORY = compiledBank("Quesynth Factory", ["Strings", "Brass", "Bells"], 
 // messages, which a reader of a captured log depends on; the page's are held as
 // sets, because the page's own JSON.stringify decides their order.
 const TO_PAGE = {
-  bank: [["type", "text"], ["type", "text", "v", "origin", "readOnly"]],
+  bank: [["type", "text"], ["type", "text", "v", "origin", "readOnly", "kept"]],
   state: [["type", "values"]],
   patch: [["type", "name", "index", "bank", "v", "origin"]],
   restore: [
@@ -80,6 +80,7 @@ function holdsToWritten(table, side, {ordered}) {
     if ("error" in message && message.type === "restore") assert.ok(RESTORE_ERRORS.includes(message.error), `${where}: ${message.error}`);
     if ("slot" in message) assert.ok(message.slot === null || Number.isInteger(message.slot), `${where}: slot ${message.slot}`);
     if ("v" in message) assert.equal(message.v, 1, `${where}: v`);
+    if ("kept" in message) assert.equal(typeof message.kept, "boolean", `${where}: kept`);
   }
 }
 
@@ -104,8 +105,12 @@ test("the fixture covers every message of the contract, so removing a scenario c
   assert.ok(from("restore-discard"));
   assert.ok(from("bank", m => m.save === true && m.origin === "user"), "bank to be kept");
   assert.ok(from("bank", m => m.save === false && m.origin === "imported"), "bank to be played and not kept");
+  assert.ok(from("bank", m => m.save === false && m.origin === "user"), "a user bank to be played and not kept");
 
   assert.ok(to("bank", m => m.v === 1));
+  assert.ok(to("bank", m => m.kept === true), "the saved bank, announced as the one the host keeps");
+  assert.ok(to("bank", m => m.kept === false && m.origin === "user"), "a user bank the host only plays");
+  assert.ok(to("bank", m => m.kept === false && m.origin === "imported"), "an imported bank the host only plays");
   assert.ok(to("bank", m => m.v === undefined), "a bank a legacy host sends");
   assert.ok(to("state"));
   assert.ok(to("patch"));
@@ -185,6 +190,11 @@ function expectPage(page, scenario, effect, at) {
       case "banner": expectBanner(page, want, at); break;
       case "sound": assert.deepEqual(page.values(), want === "host" ? scenario.host.values : want, `${at}: the sound`); break;
       case "index": assert.equal(bank.index(), want, `${at}: index()`); break;
+      // The banks a write may ask the host to save: at most one, and the one
+      // the host said it keeps.
+      case "persisted":
+        assert.deepEqual(plain(bank.list()).filter(r => r.persisted).map(r => r.label), want, `${at}: the persisted banks`);
+        break;
       case "status_line":
         assert.equal(page.text("bank-status"), want.text, `${at}: the line under the strip`);
         assert.equal(page.$("bank-status").getAttribute("data-kind"), want.kind, `${at}: its kind`);

@@ -42,7 +42,7 @@ test("a bank that arrives after the host's state leaves the host's sound alone",
   const page = bootPanel({bank: FACTORY});
   const hostSound = sound(99);
   page.send({type: "state", values: hostSound});
-  page.send({type: "bank", text: bankText("Alfmeister Bank", NAMES), v: 1, origin: "imported", readOnly: false});
+  page.send({type: "bank", text: bankText("Alfmeister Bank", NAMES), v: 1, origin: "imported", readOnly: false, kept: false});
   assert.deepEqual(page.values(), hostSound);
   assert.deepEqual(writes(page), []);
 });

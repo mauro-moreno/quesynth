@@ -449,13 +449,28 @@ every patch comes back at the slot it left.
 
 A host keeps one saved bank per instrument, and a `bank` with `"save":true`
 replaces it whole, so at most one bank has `persisted: true` in
-`SynthBank.list()`: the one a version-1 host last sent as origin `factory` or
-`user` and not read-only, or last answered `bank-saved` with `ok: true`. Taking
-the standing leaves every other bank open to play and edit and never sends it
-to be saved. A Retry is how two banks come to claim it: an instance whose saved
-bank was missing started on the compiled-in `Factory`, and when the file came
-back the host sent the user's bank beside it. Before this, a plain click on a
+`SynthBank.list()`: the one a version-1 host last sent with `"kept":true` and
+not read-only, or last answered `bank-saved` with `ok: true`. Taking the
+standing leaves every other bank open to play and edit and never sends it to be
+saved. A Retry is how two banks come to claim it: an instance whose saved bank
+was missing started on the compiled-in `Factory`, and when the file came back
+the host sent the user's bank beside it. Before this, a plain click on a
 `Factory` preset then replaced the user's bank file with `Factory`.
+
+`kept` is the host saying which bank it keeps, and nothing else says it:
+
+```json
+{"type":"bank","text":"...","v":1,"origin":"user","readOnly":false,"kept":true}
+```
+
+It is true for the host's saved bank, and for the compiled-in one while there
+is no saved file (writing it is what creates one), and false for a bank the host
+only plays: one the page made with New bank or Duplicate, one opened from a
+file, one embedded in the project. `origin` is a name to show and no help here,
+since a bank the person made is `user` too. Taking every `user` bank for the
+kept one made `Scratch` persisted after the editor was reopened, and its next
+Write replaced the user's whole saved bank. A version-1 `bank` without `kept` is
+not persisted, and a host without `"v":1` keeps bank zero, as it always did.
 
 Only a write asks the host to save. A load, a switch of bank, Load Factory /
 Init and the answer to a restore send the bank with `"save":false`, even when
