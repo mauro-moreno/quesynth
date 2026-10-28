@@ -259,3 +259,34 @@ a_save_moves_which_bank_is_recognised_when_it_comes_back :: proc(t: ^testing.T) 
 	panel.session_set_bank(&inst.session, &inst.slots, bank_text("Factory", {0, 1}), false, .Factory, nil)
 	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Adopted)
 }
+
+// A project that embedded a bank replaces the bank the instance started on,
+// and the one it started on is the one the host keeps. It has to be known by
+// then, or sending it back -- the page learns of it from a Retry, or has it
+// open from before -- would be taken for a bank the host was handed.
+@(test)
+the_kept_bank_is_remembered_across_a_restore_that_replaced_it :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	original := bank_text("Alfmeister Bank", {0, 2, 7})
+	put_file(t, files.saved, original)
+
+	f: Fake
+	f.saved_path = files.saved
+	f.inst = kept_instance(files.saved)
+	defer fake_destroy(&f)
+	host := fake_host(&f)
+
+	scratch := bank_text("Scratch", {0, 1})
+	restored := panel.session_restore(&f.inst.session, &f.inst.slots, saved_trailer(.User, 1, "Scratch", "Scratch 1", scratch))
+	testing.expect(t, restored.restored, "the embedded bank was not restored")
+	testing.expect_value(t, f.inst.session.bank_source, panel.Bank_Source.Adopted)
+
+	panel.handle_message(&host, bank_message(original, false, "user"))
+
+	testing.expect_value(t, f.inst.session.bank_source, panel.Bank_Source.Saved)
+	announced := bank_announced(t, &host)
+	testing.expect(t, ends_with(announced, `"origin":"user","readOnly":false,"kept":true}`), announced)
+	testing.expect_value(t, bytes_of(files.saved), original)
+}
