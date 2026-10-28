@@ -415,7 +415,9 @@ Restore_Result :: struct {
 //                       trailer from a newer build
 //   embedded bank       parsed and, if it holds the slot, played from now on,
 //                       and never written to disk
-//   a bank by name      the playing bank must be that bank, else MissingBank
+//   a bank by name      the playing bank must be that bank, else MissingBank;
+//                       except the compiled-in one, which is in every binary
+//                       and is played from now on, and never written to disk
 //   a slot              must be in the bank and filled, else InvalidProgram
 session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restore_Result {
 	t, status := trailer_decode(bytes)
@@ -438,6 +440,7 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 	target := slots
 	candidate: ^patch.Slots
 	defer free(candidate)
+	built_in := false
 	if t.embedded {
 		parsed, err := patch.parse_bank_json(t.bank_json)
 		if err != .None {
@@ -453,7 +456,16 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 			return restore_failed(s, &wanted, t.bank_saved, .Host_State_Rejected)
 		}
 	} else if t.has_slot && patch.slots_label(slots) != label {
-		return restore_failed(s, &wanted, t.bank_saved, .Missing_Bank)
+		// Not the bank being played, and not one a file can be asked for the
+		// way a user's can. The compiled-in bank is never missing, though,
+		// and a project that was playing it asked for exactly that: putting
+		// it back is a restore, not the fallback this is here to refuse.
+		candidate = built_in_bank_named(t.origin, label)
+		if candidate == nil {
+			return restore_failed(s, &wanted, t.bank_saved, .Missing_Bank)
+		}
+		target = candidate
+		built_in = true
 	}
 
 	if t.has_slot && !slot_is_filled(target, t.slot) {
@@ -466,8 +478,43 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 		// What the page called it when it handed it over is not in the state;
 		// an adopted bank that held a slot is somebody's imported bank.
 		s.bank_origin = t.origin if t.origin == .User || t.origin == .Imported else .Imported
+	} else if built_in {
+		play_built_in(s, slots, candidate)
 	}
 	return restore_succeeded(s, wanted)
+}
+
+// The compiled-in bank, when what a state names is that bank, or nil.
+//
+// Origin and label both. A user's own bank may be called Factory as well, and
+// says what it is with its origin; and a bank the page calls something else
+// is not the one in the binary, whatever it was made from.
+//
+// On the heap, for the caller to free: a bank is fifty-odd kilobytes, which is
+// too much to keep on a host thread's stack.
+@(private)
+built_in_bank_named :: proc(origin: Origin, label: string) -> ^patch.Slots {
+	if origin != .Factory {
+		return nil
+	}
+	patch.factory_prepare()
+	bank := new(patch.Slots)
+	patch.slots_load_factory(bank)
+	if patch.slots_label(bank) != label {
+		free(bank)
+		return nil
+	}
+	return bank
+}
+
+// Play the compiled-in bank from now on. Unlike the saved bank it has no file
+// to come from or to go to, so it is neither read nor written here, and a
+// state made afterwards names it again instead of carrying it.
+@(private)
+play_built_in :: proc(s: ^Session, slots: ^patch.Slots, bank: ^patch.Slots) {
+	slots^ = bank^
+	s.bank_source = .Built_In
+	s.bank_origin = .Factory
 }
 
 @(private)
@@ -533,7 +580,8 @@ restore_succeeded :: proc(s: ^Session, wanted: Selection) -> Restore_Result {
 // A bank that was missing may have come back, either in the file or in the
 // panel having handed it over since, and an instance has to be able to say so.
 // The saved bank is taken only if it is the bank that was asked for: the
-// retry is the user asking for that bank, not for whatever the file holds.
+// retry is the user asking for that bank, not for whatever the file holds. The
+// compiled-in bank is taken the same way, when that is what was asked for.
 // Returns whether the bank being played changed.
 session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> (result: Restore_Result, bank_changed: bool) {
 	if s.restore != .Failed || !s.has_pending || !restore_error_recoverable(s.restore_error) {
@@ -544,12 +592,21 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 	label := text_get(&wanted.label)
 	target := slots
 	from_file := false
+	built_in: ^patch.Slots
+	defer free(built_in)
 	if wanted.has_slot && patch.slots_label(slots) != label {
-		if saved == nil || patch.slots_label(saved) != label {
+		// The compiled-in bank is tried first, as in a restore, so that a slot
+		// it does not have is said to be the problem and the bank is not said
+		// to be missing.
+		built_in = built_in_bank_named(wanted.origin, label)
+		if built_in != nil {
+			target = built_in
+		} else if saved == nil || patch.slots_label(saved) != label {
 			return restore_failed(s, &wanted, s.pending_saved, .Missing_Bank), false
+		} else {
+			target = saved
+			from_file = true
 		}
-		target = saved
-		from_file = true
 	}
 	if wanted.has_slot && !slot_is_filled(target, wanted.slot) {
 		return restore_failed(s, &wanted, s.pending_saved, .Invalid_Program), false
@@ -559,6 +616,9 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 		slots^ = saved^
 		s.bank_source = .Saved
 		s.bank_origin = .User
+		bank_changed = true
+	} else if built_in != nil {
+		play_built_in(s, slots, built_in)
 		bank_changed = true
 	}
 	return restore_succeeded(s, wanted), bank_changed

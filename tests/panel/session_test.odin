@@ -279,6 +279,109 @@ a_restored_slot_has_the_origin_of_the_bank_it_is_in :: proc(t: ^testing.T) {
 	testing.expect_value(t, inst.session.selection.origin, panel.Origin.User)
 }
 
+// -- the built-in factory bank is never missing --------------------------------
+
+// A project saved while an instance played the compiled-in bank names exactly
+// that: factory, labelled as that bank is, and carrying nothing. Opened where
+// the saved user bank is some other bank, it asks for a bank that is in every
+// binary, so putting it back is a restore and not a fallback -- and calling it
+// MissingBank sends the page to "Load Factory / Init instead?" about Factory
+// itself, with a Retry that could never succeed.
+@(test)
+a_built_in_factory_selection_is_restored_whatever_bank_is_saved :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	inst := new_instance(t, "My Bank", {0, 1, 7}, .Saved)
+	defer free(inst)
+	expected := new(patch.Slots)
+	defer free(expected)
+	patch.slots_load_factory(expected)
+
+	result := panel.session_restore(&inst.session, &inst.slots, saved_trailer(.Factory, 7, "Factory", patch.factory_name(7)))
+
+	testing.expect(t, result.restored, "the built-in factory bank was reported missing")
+	testing.expect_value(t, result.error, panel.Restore_Error.None)
+	testing.expect_value(t, result.program, 7)
+	testing.expect_value(t, inst.session.restore, panel.Restore_State.Restored)
+	testing.expect(t, !inst.session.has_pending, "a restore that worked is still holding something back")
+
+	// The compiled-in bank is the playing bank from here on, as it was when
+	// the project was saved; and it is still the compiled-in one, which is not
+	// the user's saved bank and is not kept in its place.
+	testing.expect(t, inst.slots == expected^, "the playing bank is not the compiled-in one")
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Built_In)
+	testing.expect_value(t, inst.session.bank_origin, panel.Origin.Factory)
+	view := panel.selection_view(&inst.session.selection, &inst.slots)
+	testing.expect_value(t, view.origin, panel.Origin.Factory)
+	testing.expect_value(t, view.slot, 7)
+	testing.expect_value(t, view.label, "Factory")
+	testing.expect_value(t, view.name, patch.factory_name(7))
+
+	// And saved again it is still only a name: nothing is embedded for a bank
+	// every binary has, and nothing claims a file that is not there.
+	saved := panel.session_trailer(&inst.session, &inst.slots)
+	defer delete(saved)
+	trailer, status := panel.trailer_decode(saved)
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, !trailer.embedded, "the compiled-in bank was embedded in the state")
+	testing.expect(t, !trailer.bank_saved, "the state says the compiled-in bank is the saved one")
+	testing.expect_value(t, trailer.origin, panel.Origin.Factory)
+	testing.expect_value(t, trailer.slot, 7)
+	testing.expect_value(t, panel.text_get(&trailer.label), "Factory")
+}
+
+// The slot is still checked: the bank is there, and what the project asked for
+// in it may not be.
+@(test)
+a_built_in_factory_slot_that_is_empty_is_an_invalid_program_and_moves_nothing :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	inst := new_instance(t, "My Bank", {0, 1, 7}, .Saved)
+	defer free(inst)
+	before := inst.slots
+
+	// Past the sixteen sounds the compiled-in bank has.
+	result := panel.session_restore(&inst.session, &inst.slots, saved_trailer(.Factory, 40, "Factory", "Init"))
+
+	testing.expect_value(t, result.error, panel.Restore_Error.Invalid_Program)
+	testing.expect(t, !result.restored && !result.has_program, "a slot with nothing in it was restored")
+	testing.expect(t, inst.slots == before, "a refused restore changed the playing bank")
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Saved)
+
+	// Trying again changes nothing about why: it is the slot, and the bank is
+	// not what is missing.
+	again, moved := panel.session_retry(&inst.session, &inst.slots, nil)
+	testing.expect_value(t, again.error, panel.Restore_Error.Invalid_Program)
+	testing.expect(t, !moved && inst.slots == before, "a retry moved the playing bank")
+}
+
+// Only the compiled-in bank is never missing. A user's own bank is called what
+// the user called it, which can be Factory, and says so with its origin; a
+// state that names some other label for the factory bank is not asking for the
+// one in the binary.
+@(test)
+only_the_compiled_in_bank_is_restored_without_a_file :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	cases := [?]struct {
+		name:  string,
+		trailer: []u8,
+	} {
+		{"a user's bank called Factory", saved_trailer(.User, 7, "Factory", "Brass", bank_saved = true)},
+		{"an imported bank called Factory", saved_trailer(.Imported, 7, "Factory", "Brass")},
+		{"the factory origin under another label", saved_trailer(.Factory, 7, "Quesynth Factory", "Brass")},
+		{"the factory origin and no label", saved_trailer(.Factory, 7, "", "Brass")},
+	}
+	for c in cases {
+		inst := new_instance(t, "My Bank", {0, 1, 7}, .Saved)
+		defer free(inst)
+		before := inst.slots
+
+		result := panel.session_restore(&inst.session, &inst.slots, c.trailer)
+
+		testing.expectf(t, result.error == .Missing_Bank, "%s: error is %v", c.name, result.error)
+		testing.expectf(t, inst.slots == before, "%s: the playing bank changed", c.name)
+		testing.expectf(t, inst.session.bank_source == .Saved, "%s: the bank source changed", c.name)
+	}
+}
+
 // -- trying again --------------------------------------------------------------
 
 @(test)
