@@ -1,5 +1,6 @@
 package panel_tests
 
+import "core:encoding/json"
 import "core:os"
 import "core:path/filepath"
 import "core:testing"
@@ -357,4 +358,124 @@ a_save_after_a_load_from_the_old_place_goes_to_the_new_place_and_leaves_the_old_
 	defer free(again)
 	testing.expect_value(t, panel.bank_load_from(files.saved, again, files.legacy), panel.Bank_Source.Saved)
 	testing.expect_value(t, patch.slots_name(again, 9), "My Linux Bank 9")
+}
+
+// -- a project that names the built-in bank, opened beside a saved one -------
+//
+// A project saved while an instance played the compiled-in Factory names it
+// and carries nothing. Opened where this machine's saved bank is another one,
+// that is a bank the instance is not playing: MissingBank, with the user's
+// bank still the one played and the one the panel is handed. Playing Factory
+// instead made the panel take Factory for the bank the host keeps, and its
+// next write of a single slot replaced the user's whole bank file with it.
+
+// Where this test's saved bank is, for the host's write to find. One per test
+// thread, so no other test sees it.
+@(private = "file", thread_local)
+saved_bank_path: string
+
+@(private = "file")
+write_saved_bank :: proc(text: string) -> bool {
+	return panel.bank_write_to(saved_bank_path, text)
+}
+
+@(test)
+a_project_naming_the_built_in_bank_leaves_the_saved_bank_whole_through_a_write :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	original := bank_text("Alfmeister Bank", {0, 2, 7})
+	put_file(t, files.saved, original)
+	saved_bank_path = files.saved
+
+	// An instance starts with the user's bank, as CLAP and VST3 make one.
+	inst := new(Instance)
+	defer free(inst)
+	panel.session_init(&inst.session, panel.bank_load_from(files.saved, &inst.slots))
+	user := new(patch.Slots)
+	defer free(user)
+	user^ = inst.slots
+	testing.expect_value(t, patch.slots_label(user), "Alfmeister Bank")
+	host := panel.Host {
+		user = rawptr(inst),
+		read_bank = proc(user: rawptr) -> string {
+			inst := (^Instance)(user)
+			return patch.slots_write_json(&inst.slots, context.temp_allocator)
+		},
+		set_bank = proc(user: rawptr, text: string, save: bool, origin: panel.Origin) -> panel.Bank_Result {
+			inst := (^Instance)(user)
+			return panel.session_set_bank(&inst.session, &inst.slots, text, save, origin, write_saved_bank)
+		},
+		read_session = proc(user: rawptr) -> panel.Instance_View {
+			inst := (^Instance)(user)
+			return {&inst.session, &inst.slots}
+		},
+	}
+
+	// The project names the compiled-in bank by the label and origin it has.
+	result := panel.session_restore(&inst.session, &inst.slots, saved_trailer(.Factory, 5, "Factory", patch.factory_name(5)))
+	testing.expect_value(t, result.error, panel.Restore_Error.Missing_Bank)
+	testing.expect(t, !result.restored && !result.has_program, "the restore put another bank in")
+	testing.expect(t, inst.slots == user^, "the user's bank is no longer the one played")
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Saved)
+	testing.expect_value(t, inst.session.bank_origin, panel.Origin.User)
+
+	// The editor opens, and the bank it is handed is the user's own.
+	replies := panel.handle_message(&host, `{"type":"sync"}`)
+	if !testing.expect(t, len(replies) > 0, "the editor was handed nothing") {
+		return
+	}
+	message, err := json.parse_string(replies[0], allocator = context.temp_allocator)
+	testing.expect_value(t, err, nil)
+	fields, _ := message.(json.Object)
+	kind, _ := fields["type"].(json.String)
+	origin, _ := fields["origin"].(json.String)
+	handed, _ := fields["text"].(json.String)
+	testing.expect_value(t, kind, "bank")
+	testing.expect_value(t, origin, "user")
+	page := new(patch.Slots)
+	defer free(page)
+	if bank, bad := patch.parse_bank_json(transmute([]u8)handed); testing.expect_value(t, bad, patch.Json_Error.None) {
+		patch.slots_load(page, bank)
+		patch.destroy_bank(bank)
+	}
+	testing.expect_value(t, patch.slots_label(page), "Alfmeister Bank")
+	testing.expect_value(t, bytes_of(files.saved), original)
+
+	// The panel writes a sound into an empty slot of the bank it was handed and
+	// asks for that bank to be kept, which is what a write sends.
+	WRITTEN :: 20
+	testing.expect(t, !page.filled[WRITTEN], "the slot written to was not empty")
+	sound := user.values[2]
+	put_slot(page, WRITTEN, sound, "Written Pad")
+	post, _ := json.marshal(
+		struct {
+			type:   string,
+			text:   string,
+			save:   bool,
+			v:      int,
+			origin: string,
+		}{"bank", patch.slots_write_json(page, context.temp_allocator), true, 1, origin},
+		allocator = context.temp_allocator,
+	)
+	panel.handle_message(&host, string(post))
+
+	// What the file holds is the user's bank with that one slot written, and
+	// it is what the next instance starts with.
+	expected := new(patch.Slots)
+	defer free(expected)
+	expected^ = user^
+	put_slot(expected, WRITTEN, sound, "Written Pad")
+	next := new(patch.Slots)
+	defer free(next)
+	testing.expect_value(t, panel.bank_load_from(files.saved, next), panel.Bank_Source.Saved)
+	testing.expect_value(t, patch.slots_label(next), "Alfmeister Bank")
+	testing.expect(t, next^ == expected^, "the saved bank is not the user's bank with the one slot written")
+}
+
+@(private = "file")
+put_slot :: proc(s: ^patch.Slots, slot: int, values: [patch.PARAMETER_COUNT]i32, name: string) {
+	s.values[slot] = values
+	s.filled[slot] = true
+	s.name_len[slot] = copy(s.names[slot][:], name)
 }
