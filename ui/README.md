@@ -447,6 +447,16 @@ nobody chose to put there, and an export of a dirty sound says "Unsaved changes
 to Glass Pad were not included." Interior empty slots are written as `null`, so
 every patch comes back at the slot it left.
 
+A host keeps one saved bank per instrument, and a `bank` with `"save":true`
+replaces it whole, so at most one bank has `persisted: true` in
+`SynthBank.list()`: the one a version-1 host last sent as origin `factory` or
+`user` and not read-only, or last answered `bank-saved` with `ok: true`. Taking
+the standing leaves every other bank open to play and edit and never sends it
+to be saved. A Retry is how two banks come to claim it: an instance whose saved
+bank was missing started on the compiled-in `Factory`, and when the file came
+back the host sent the user's bank beside it. Before this, a plain click on a
+`Factory` preset then replaced the user's bank file with `Factory`.
+
 ### Opening files
 
 An import validates the whole file before it touches anything, then adds one

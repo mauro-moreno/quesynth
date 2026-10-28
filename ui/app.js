@@ -1425,6 +1425,17 @@
     return made;
   }
 
+  // The host keeps one saved bank, and a write that asks it to save replaces
+  // that file whole. So no more than one bank here may say it is that one: the
+  // one the host last called its own, or last confirmed it kept. Every place
+  // that gives a bank the standing goes through here, so a second one cannot
+  // be left behind to be saved over the first -- as the compiled-in Factory
+  // was, beside the user's bank a Retry brought back.
+  function markPersisted(rec) {
+    banks.forEach(function (b) { b.persisted = false; });
+    rec.persisted = true;
+  }
+
   // Every bank that is open, not just the one being played.
   //
   // Loading a file used to replace the bank outright, so the list down the side
@@ -1905,8 +1916,7 @@
     if (msg.ok === true) {
       if (rec) {
         // Kept: this is now the bank the host comes back to.
-        banks.forEach(function (b) { b.persisted = false; });
-        rec.persisted = true;
+        markPersisted(rec);
         rec.saveError = "";
       }
       return;
@@ -2402,7 +2412,7 @@
     // calling it factory or user. One that was sent from somebody's file and
     // merely embedded in the project is not on its disk, and a bank with no
     // origin to speak of must not be saved over the one that is.
-    made.persisted = !made.readOnly && bridge.version() >= 1 &&
+    var keeps = !made.readOnly && bridge.version() >= 1 &&
       (msg.origin === "factory" || msg.origin === "user");
     if (archive) {
       banks = [made];
@@ -2417,6 +2427,9 @@
         currentBank = banks.length - 1;
       }
     }
+    // A host that sends a second bank it keeps has moved on from the first,
+    // which stays here to be played and edited but is no longer what it saves.
+    if (keeps) markPersisted(made);
     bank = made;
     hostBank = made;
     hostPlaying = made;
