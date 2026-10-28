@@ -474,8 +474,11 @@ not persisted, and a host without `"v":1` keeps bank zero, as it always did.
 
 Only a write asks the host to save. A load, a switch of bank, Load Factory /
 Init and the answer to a restore send the bank with `"save":false`, even when
-it is the bank the host keeps: the host plays it and embeds it in the project
-state, which is larger but restores the same, and its file is not touched.
+it is the bank the host keeps: the host plays the page's copy and its file is
+not touched. It knows the bank it keeps by its name, so that copy is not
+embedded in the project: the state still names the file, and a reload plays the
+file as it is then and not a snapshot of what the page showed. A bank of any
+other name is one the host was handed, and travels with the project.
 `"save":true` is sent for the kept bank by Write, Save, copy, move, clear and
 Keep, and by renaming it while it plays, because the name is stored with it.
 A host with no `"v":1` is still taken to keep bank zero, and is sent that bank

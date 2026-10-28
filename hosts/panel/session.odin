@@ -204,6 +204,12 @@ Session :: struct {
 	// What the bank being played is called on the wire.
 	bank_origin:     Origin,
 	bank_source:     Bank_Source,
+	// The bank this instance keeps -- the per-user file, or the compiled-in
+	// bank while there is none -- by name, for as long as another bank is the
+	// one being played. While the bank being played is the kept one it is
+	// that bank, and nothing here is read: see session_note_kept.
+	kept:            Text,
+	kept_source:     Bank_Source,
 	restore:         Restore_State,
 	restore_error:   Restore_Error,
 	// What a failed restore was asked for, kept until something replaces it so
@@ -223,6 +229,21 @@ Session :: struct {
 // other let a write into a scratch bank replace the user's whole file.
 session_bank_kept :: proc "contextless" (s: ^Session) -> bool {
 	return s.bank_source != .Adopted
+}
+
+// Remember which bank is kept, before the bank being played stops being it.
+//
+// Called at the two places the playing bank is swapped for one that is only
+// played, while the old one is still in `slots`: that is the last time its name
+// can be had without a file to read it from, and it spares session_init a bank
+// to look at. Nothing to remember when the bank being played is already a
+// borrowed one -- the kept one was remembered when it was left.
+@(private)
+session_note_kept :: proc(s: ^Session, slots: ^patch.Slots) {
+	if s.bank_source != .Adopted {
+		text_set(&s.kept, patch.slots_label(slots))
+		s.kept_source = s.bank_source
+	}
 }
 
 // A new instance, after it has loaded the bank it starts with.
@@ -327,6 +348,7 @@ session_set_bank :: proc(
 	// bank the panel is not showing means one program number is two sounds;
 	// writing to disk is the separate question, and only the panel's own bank
 	// answers yes to it.
+	session_note_kept(s, slots)
 	patch.slots_load(slots, parsed)
 	selection_bind(sel, slots)
 
@@ -338,6 +360,20 @@ session_set_bank :: proc(
 		return .Saved
 	}
 
+	// The kept bank coming back. The page sends a switch of bank to be played
+	// and not saved, even when it is to the bank the host keeps, so this is
+	// told from a bank the host was merely handed by its name -- the identity
+	// the trailer and a restore already use, and the page keeps its banks'
+	// names unique. It plays the page's copy, which may be older than the file;
+	// that is the last-writer-wins bank.odin documents, and it is not widened
+	// here. What is not done is treating the copy as a bank nothing else has:
+	// embedded in the project it replaced the file in every reload after it,
+	// and was then offered as the bank to save over it.
+	if !save && s.kept.len > 0 && text_get(&s.kept) == patch.slots_label(slots) {
+		s.bank_source = s.kept_source
+		s.bank_origin = .User if s.kept_source == .Saved else .Factory
+		return .Adopted
+	}
 	s.bank_source = .Adopted
 	s.bank_origin = origin if origin != .None else .Imported
 	return .Persistence_Failed if save else .Adopted
@@ -493,6 +529,7 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 	}
 
 	if t.embedded {
+		session_note_kept(s, slots)
 		slots^ = candidate^
 		s.bank_source = .Adopted
 		// What the page called it when it handed it over is not in the state;

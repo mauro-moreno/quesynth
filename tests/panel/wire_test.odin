@@ -46,6 +46,7 @@ WIRE_SCENARIOS :: [?]string {
 	"retry-after-the-host-dropped-the-failed-restore",
 	"a-selection-and-a-failed-restore-arrive-together",
 	"reopen-on-a-bank-the-page-made",
+	"return-to-the-kept-bank-after-another",
 }
 
 // `using` and first, so that the pointer the callbacks of fake_host receive is
@@ -161,6 +162,11 @@ a_patch_is_followed_by_the_failure_the_host_still_holds :: proc(t: ^testing.T) {
 @(test)
 a_bank_the_page_made_is_announced_as_played_and_not_kept :: proc(t: ^testing.T) {
 	play_wire(t, "reopen-on-a-bank-the-page-made")
+}
+
+@(test)
+the_kept_bank_coming_back_is_recognised_and_not_embedded :: proc(t: ^testing.T) {
+	play_wire(t, "return-to-the-kept-bank-after-another")
 }
 
 // -- playing one scenario -----------------------------------------------------

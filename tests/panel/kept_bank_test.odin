@@ -136,3 +136,126 @@ a_bank_that_was_saved_is_the_one_the_host_keeps_from_then_on :: proc(t: ^testing
 	announced = bank_announced(t, &host)
 	testing.expect(t, ends_with(announced, `"origin":"user","readOnly":false,"kept":true}`), announced)
 }
+
+// -- going back to the bank the host keeps -------------------------------------
+
+// What the review reproduced: a Write to slot 52 reverted slot 0 from what a
+// newer file said to what the project had embedded.
+@(test)
+returning_to_the_kept_bank_plays_it_again_and_embeds_nothing :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	original := bank_text("Alfmeister Bank", {0, 2, 7})
+	put_file(t, files.saved, original)
+
+	f: Fake
+	f.saved_path = files.saved
+	f.inst = kept_instance(files.saved)
+	defer fake_destroy(&f)
+	host := fake_host(&f)
+
+	// A preset of an imported bank is played, and then one of the kept bank
+	// again: what the page sends for a switch of bank, each time to be played.
+	panel.handle_message(&host, bank_message(bank_text("Third Party", {0, 1}), false, "imported"))
+	testing.expect_value(t, f.inst.session.bank_source, panel.Bank_Source.Adopted)
+	panel.handle_message(&host, bank_message(original, false, "user"))
+	panel.handle_message(&host, select_message("user", "Alfmeister Bank", 2, "Alfmeister Bank 2"))
+
+	testing.expect_value(t, f.inst.session.bank_source, panel.Bank_Source.Saved)
+	testing.expect_value(t, f.inst.session.bank_origin, panel.Origin.User)
+	announced := bank_announced(t, &host)
+	testing.expect(t, ends_with(announced, `"origin":"user","readOnly":false,"kept":true}`), announced)
+	testing.expect_value(t, bytes_of(files.saved), original)
+
+	// The project names the bank and carries nothing of it.
+	state := panel.session_trailer(&f.inst.session, &f.inst.slots)
+	defer delete(state)
+	trailer, status := panel.trailer_decode(state)
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, !trailer.embedded, "a snapshot of the kept bank was put in the project")
+	testing.expect(t, trailer.bank_saved && trailer.has_slot && trailer.slot == 2, "the project does not name the kept bank and its slot")
+
+	// The file moves on elsewhere. What a reload plays is the file as it is
+	// then, not what the page showed.
+	newer := bank_text("Alfmeister Bank", {0, 2, 7, 52})
+	put_file(t, files.saved, newer)
+	g: Fake
+	g.saved_path = files.saved
+	g.inst = kept_instance(files.saved)
+	defer fake_destroy(&g)
+	testing.expect(t, !f.inst.slots.filled[52], "the playing copy already has slot 52, so this proves nothing")
+	restored := panel.session_restore(&g.inst.session, &g.inst.slots, state)
+	testing.expect(t, restored.restored, "the state was not restored")
+	testing.expect_value(t, restored.program, 2)
+	testing.expect(t, g.inst.slots.filled[52], "a slot the file gained is empty after a reload")
+	testing.expect_value(t, g.inst.session.bank_source, panel.Bank_Source.Saved)
+	testing.expect_value(t, bytes_of(files.saved), newer)
+}
+
+// The rule is the label, which is the identity the trailer and a restore use,
+// and it is the page's to keep unique: it renames a second bank of a name that
+// is taken. A bank of any other name is a bank the host was handed.
+@(test)
+only_the_bank_the_host_keeps_is_recognised_when_it_comes_back :: proc(t: ^testing.T) {
+	Case :: struct {
+		name:     string,
+		start:    panel.Bank_Source,
+		// Between the start and the bank that comes back.
+		between:  string,
+		save:     bool,
+		breaks:   bool,
+		returns:  string,
+		expected: panel.Bank_Source,
+		// What the bank is called after: the kept bank's own, or what the page
+		// said it was when the host was only handed it.
+		origin:   panel.Origin,
+	}
+	cases := [?]Case {
+		{name = "the user's bank, after another", start = .Saved, between = "Third Party", returns = "Alfmeister Bank", expected = .Saved, origin = .User},
+		{name = "the compiled-in bank, after another", start = .Built_In, between = "Third Party", returns = "Factory", expected = .Built_In, origin = .Factory},
+		{name = "a bank of another name", start = .Saved, between = "Third Party", returns = "Somebody Else", expected = .Adopted, origin = .User},
+		{name = "the same name in another case", start = .Saved, between = "Third Party", returns = "alfmeister bank", expected = .Adopted, origin = .User},
+		{name = "the compiled-in bank when a file is what is kept", start = .Saved, between = "Third Party", returns = "Factory", expected = .Adopted, origin = .User},
+		{name = "the user's bank when no file is", start = .Built_In, between = "Third Party", returns = "Alfmeister Bank", expected = .Adopted, origin = .User},
+		{name = "a save the disk refused", start = .Saved, between = "Third Party", save = true, breaks = true, returns = "Alfmeister Bank", expected = .Saved, origin = .User},
+	}
+	for c in cases {
+		start := "Alfmeister Bank" if c.start == .Saved else "Factory"
+		inst := new_instance(t, start, {0, 1, 7}, c.start)
+		defer free(inst)
+		write := refuse_to_write if c.breaks else write_ok
+
+		panel.session_set_bank(&inst.session, &inst.slots, bank_text(c.between, {0, 1}), c.save, .Imported, write)
+		testing.expectf(t, inst.session.bank_source == .Adopted, "%s: %s is not being played as a bank the host was handed", c.name, c.between)
+
+		result := panel.session_set_bank(&inst.session, &inst.slots, bank_text(c.returns, {0, 1, 7}), false, .User, nil)
+		testing.expectf(t, result == .Adopted, "%s: the answer is %v", c.name, result)
+		testing.expectf(t, inst.session.bank_source == c.expected, "%s: the bank is %v, not %v", c.name, inst.session.bank_source, c.expected)
+		testing.expectf(t, inst.session.bank_origin == c.origin, "%s: the origin is %v, not %v", c.name, inst.session.bank_origin, c.origin)
+		// The page's copy is what plays, whichever it was.
+		testing.expect_value(t, patch.slots_label(&inst.slots), c.returns)
+
+		state := panel.session_trailer(&inst.session, &inst.slots)
+		defer delete(state)
+		trailer, _ := panel.trailer_decode(state)
+		testing.expectf(t, trailer.embedded == (c.expected == .Adopted), "%s: embedded is %v", c.name, trailer.embedded)
+	}
+}
+
+// Saving a bank makes it the kept one, and the one that was is a bank like any
+// other from then on.
+@(test)
+a_save_moves_which_bank_is_recognised_when_it_comes_back :: proc(t: ^testing.T) {
+	inst := new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer free(inst)
+
+	panel.session_set_bank(&inst.session, &inst.slots, bank_text("My Bank", {0, 7}), true, .User, write_ok)
+	panel.session_set_bank(&inst.session, &inst.slots, bank_text("Third Party", {0, 1}), false, .Imported, nil)
+	panel.session_set_bank(&inst.session, &inst.slots, bank_text("My Bank", {0, 7}), false, .User, nil)
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Saved)
+
+	panel.session_set_bank(&inst.session, &inst.slots, bank_text("Third Party", {0, 1}), false, .Imported, nil)
+	panel.session_set_bank(&inst.session, &inst.slots, bank_text("Factory", {0, 1}), false, .Factory, nil)
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Adopted)
+}

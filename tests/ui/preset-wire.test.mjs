@@ -149,6 +149,13 @@ function act(page, does) {
   } else if (does.call) {
     const [owner, name] = does.call.split(".");
     page.window[owner][name](...does.args);
+  } else if (does.calls) {
+    // Several things done in a row, for what takes more than one to set up: a
+    // bank made, then a preset chosen in it.
+    for (const {call, args} of does.calls) {
+      const [owner, name] = call.split(".");
+      page.window[owner][name](...args);
+    }
   } else {
     assert.fail(`the fixture asks the page to do something this test cannot: ${JSON.stringify(does)}`);
   }
