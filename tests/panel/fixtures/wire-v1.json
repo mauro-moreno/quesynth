@@ -12,13 +12,21 @@
     "",
     "A scenario's `host` says how the host's instance is set up. An exchange is",
     "one thing the page does (`page_does`: boot, click a button, call a",
-    "SynthBank method, or `injected`, a request no page can be made to send),",
+    "SynthBank method, `injected`, a request no page can be made to send, or",
+    "`idle`, nothing, which is the host's turn),",
     "the strings that puts on the wire (`page_to_host`), the strings the host",
     "answers with, in order (`host_to_page`), and what each side must be",
     "afterwards (`host_effect`, `page_effect`). A string is the bytes sent, so a",
     "quote inside a message is \\\" here. Key order in the page's messages is",
     "JSON.stringify's own, and is pinned only because the host is fed these",
     "bytes. Any key an effect has that the tests do not read is a failure.",
+    "",
+    "host_does: what the host does by itself first, before it hears the page.",
+    "`program_change` is a MIDI Program Change reaching the instance, which",
+    "selects the slot and posts nothing; `announce` is the main thread telling",
+    "an open editor, as send_selection does, and what it posts is the start of",
+    "host_to_page. A host's `selected_slot` is a Program Change that came before",
+    "its saved state did.",
     "",
     "host_effect: selected (select calls received this exchange), selection and",
     "program (what the instance plays now, null for nothing known), restore,",
@@ -1521,6 +1529,458 @@
             "strip": {"bank-patch": "000:Strings", "bank-name": "Factory", "bank-origin": "User"},
             "banner": {"visible": false},
             "sound": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+            "index": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "program-change-ends-a-failed-restore",
+      "about": [
+        "The bank the project was saved with is missing, and then a MIDI Program",
+        "Change moves the instance. The host's session lets the failure go, as a",
+        "person choosing a preset would end it, and tells the page which preset it",
+        "is on; a page that kept the banner would offer a Retry for something the",
+        "host no longer holds."
+      ],
+      "host": {
+        "values": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+        "bank": {
+          "label": "Factory",
+          "source": "built_in",
+          "patches": [
+            {"slot": 0, "name": "Strings"}
+          ]
+        },
+        "saved_state": {"origin": "user", "slot": 7, "bank": "My Bank", "name": "Glass Pad", "bank_saved": true}
+      },
+      "exchanges": [
+        {
+          "page_does": {"boot": true},
+          "page_to_host": ["{\"type\":\"sync\"}"],
+          "host_to_page": [
+            "{\"type\":\"bank\",\"text\":\"{\\n  \\\"format\\\": \\\"quesynth.bank\\\",\\n  \\\"version\\\": 1,\\n  \\\"name\\\": \\\"Factory\\\",\\n  \\\"patches\\\": [\\n    {\\n      \\\"name\\\": \\\"Strings\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 0,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 81,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 20,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    }\\n  ]\\n}\\n\",\"v\":1,\"origin\":\"factory\",\"readOnly\":false}",
+            "{\"type\":\"state\",\"values\":[0,1,64,81,1,64,0,0,64,0,0,64,0,0,1,0,64,32,64,81,14,128,64,0,1,64,64,107,64,20,64,1,0,11,64,8,40,20,0,0,12,2,1,64,0,0,5,1,64,64,74,74,64,64,50,64,40,1,1,0,64,64,64,64,2,1,1,0,0,0,0,0,64,0,0,22,0,0,0,64,64,64,0,66,64,24,45057,44,45057,43,64,0,0,2,16,0,1,1,64]}",
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"failed\",\"error\":\"MissingBank\",\"recoverable\":true,\"message\":\"The bank this sound was saved from is not available.\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":7,\"name\":\"Glass Pad\"}"
+          ],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": null,
+            "program": null,
+            "restore": "failed",
+            "error": "MissingBank",
+            "pending": true,
+            "bank_label": "Factory",
+            "values": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+            "bank_origin": "factory"
+          },
+          "page_effect": {
+            "protocol": 1,
+            "selection": {
+              "origin": "session",
+              "source": "none",
+              "bank": "",
+              "slot": null,
+              "presetName": "",
+              "archive": null
+            },
+            "status": "unavailable",
+            "restore": {
+              "state": "failed",
+              "error": "MissingBank",
+              "recoverable": true,
+              "message": "The bank this sound was saved from is not available.",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {"bank-patch": "Untitled", "bank-name": "", "bank-origin": "Unsaved"},
+            "banner": {
+              "visible": true,
+              "ok": null,
+              "failed": "Could not restore My Bank / 007. The current sound was kept.",
+              "buttons": ["Retry", "Choose bank"],
+              "missing": "The saved bank is unavailable. Load Factory / Init instead?",
+              "missing_buttons": ["Load Factory / Init", "Keep current sound"],
+              "retry_disabled": false
+            },
+            "sound": "host",
+            "index": -1
+          }
+        },
+        {
+          "page_does": {"idle": true},
+          "host_does": {"program_change": 0, "announce": true},
+          "page_to_host": [],
+          "host_to_page": [
+            "{\"type\":\"patch\",\"name\":\"Strings\",\"index\":0,\"bank\":\"Factory\",\"v\":1,\"origin\":\"factory\"}"
+          ],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": {"origin": "factory", "bank": "Factory", "slot": 0, "name": "Strings"},
+            "program": 0,
+            "restore": "notRequested",
+            "pending": false,
+            "bank_label": "Factory"
+          },
+          "page_effect": {
+            "selection": {
+              "origin": "factory",
+              "source": "bank",
+              "bank": "Factory",
+              "slot": 0,
+              "presetName": "Strings",
+              "archive": null
+            },
+            "status": "clean",
+            "restore": {"state": "notRequested"},
+            "strip": {"bank-patch": "000:Strings", "bank-name": "Factory", "bank-origin": "Factory"},
+            "banner": {"visible": false},
+            "sound": "host",
+            "index": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "retry-after-the-host-dropped-the-failed-restore",
+      "about": [
+        "The same, but the page has not heard of the Program Change (the host's",
+        "notification is still on its way, or a host never sends one). Retry is",
+        "answered all the same, with where the instance is and that it is",
+        "restoring nothing, so the banner is not left waiting."
+      ],
+      "host": {
+        "values": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+        "bank": {
+          "label": "Factory",
+          "source": "built_in",
+          "patches": [
+            {"slot": 0, "name": "Strings"}
+          ]
+        },
+        "saved_state": {"origin": "user", "slot": 7, "bank": "My Bank", "name": "Glass Pad", "bank_saved": true}
+      },
+      "exchanges": [
+        {
+          "page_does": {"boot": true},
+          "page_to_host": ["{\"type\":\"sync\"}"],
+          "host_to_page": [
+            "{\"type\":\"bank\",\"text\":\"{\\n  \\\"format\\\": \\\"quesynth.bank\\\",\\n  \\\"version\\\": 1,\\n  \\\"name\\\": \\\"Factory\\\",\\n  \\\"patches\\\": [\\n    {\\n      \\\"name\\\": \\\"Strings\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 0,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 81,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 20,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    }\\n  ]\\n}\\n\",\"v\":1,\"origin\":\"factory\",\"readOnly\":false}",
+            "{\"type\":\"state\",\"values\":[0,1,64,81,1,64,0,0,64,0,0,64,0,0,1,0,64,32,64,81,14,128,64,0,1,64,64,107,64,20,64,1,0,11,64,8,40,20,0,0,12,2,1,64,0,0,5,1,64,64,74,74,64,64,50,64,40,1,1,0,64,64,64,64,2,1,1,0,0,0,0,0,64,0,0,22,0,0,0,64,64,64,0,66,64,24,45057,44,45057,43,64,0,0,2,16,0,1,1,64]}",
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"failed\",\"error\":\"MissingBank\",\"recoverable\":true,\"message\":\"The bank this sound was saved from is not available.\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":7,\"name\":\"Glass Pad\"}"
+          ],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": null,
+            "program": null,
+            "restore": "failed",
+            "error": "MissingBank",
+            "pending": true,
+            "bank_label": "Factory",
+            "values": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+            "bank_origin": "factory"
+          },
+          "page_effect": {
+            "protocol": 1,
+            "selection": {
+              "origin": "session",
+              "source": "none",
+              "bank": "",
+              "slot": null,
+              "presetName": "",
+              "archive": null
+            },
+            "status": "unavailable",
+            "restore": {
+              "state": "failed",
+              "error": "MissingBank",
+              "recoverable": true,
+              "message": "The bank this sound was saved from is not available.",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {"bank-patch": "Untitled", "bank-name": "", "bank-origin": "Unsaved"},
+            "banner": {
+              "visible": true,
+              "ok": null,
+              "failed": "Could not restore My Bank / 007. The current sound was kept.",
+              "buttons": ["Retry", "Choose bank"],
+              "missing": "The saved bank is unavailable. Load Factory / Init instead?",
+              "missing_buttons": ["Load Factory / Init", "Keep current sound"],
+              "retry_disabled": false
+            },
+            "sound": "host",
+            "index": -1
+          }
+        },
+        {
+          "page_does": {"idle": true},
+          "host_does": {"program_change": 0},
+          "page_to_host": [],
+          "host_to_page": [],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": {"origin": "factory", "bank": "Factory", "slot": 0, "name": "Strings"},
+            "program": 0,
+            "restore": "notRequested",
+            "pending": false,
+            "bank_label": "Factory"
+          },
+          "page_effect": {
+            "selection": {
+              "origin": "session",
+              "source": "none",
+              "bank": "",
+              "slot": null,
+              "presetName": "",
+              "archive": null
+            },
+            "status": "unavailable",
+            "restore": {
+              "state": "failed",
+              "error": "MissingBank",
+              "recoverable": true,
+              "message": "The bank this sound was saved from is not available.",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {"bank-patch": "Untitled", "bank-name": "", "bank-origin": "Unsaved"},
+            "banner": {
+              "visible": true,
+              "ok": null,
+              "failed": "Could not restore My Bank / 007. The current sound was kept.",
+              "buttons": ["Retry", "Choose bank"],
+              "missing": "The saved bank is unavailable. Load Factory / Init instead?",
+              "missing_buttons": ["Load Factory / Init", "Keep current sound"],
+              "retry_disabled": false
+            },
+            "sound": "host",
+            "index": -1
+          }
+        },
+        {
+          "page_does": {"click": "#restore-retry"},
+          "page_to_host": ["{\"v\":1,\"type\":\"restore-retry\"}"],
+          "host_to_page": [
+            "{\"type\":\"patch\",\"name\":\"Strings\",\"index\":0,\"bank\":\"Factory\",\"v\":1,\"origin\":\"factory\"}",
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"notRequested\"}"
+          ],
+          "host_effect": {
+            "retries": 1,
+            "selected": [],
+            "banks": [],
+            "selection": {"origin": "factory", "bank": "Factory", "slot": 0, "name": "Strings"},
+            "program": 0,
+            "restore": "notRequested",
+            "pending": false,
+            "bank_label": "Factory"
+          },
+          "page_effect": {
+            "selection": {
+              "origin": "factory",
+              "source": "bank",
+              "bank": "Factory",
+              "slot": 0,
+              "presetName": "Strings",
+              "archive": null
+            },
+            "status": "clean",
+            "restore": {"state": "notRequested"},
+            "strip": {"bank-patch": "000:Strings", "bank-name": "Factory", "bank-origin": "Factory"},
+            "banner": {"visible": false},
+            "sound": "host",
+            "index": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-selection-and-a-failed-restore-arrive-together",
+      "about": [
+        "A Program Change came first and the saved state failed to restore after",
+        "it, so the host holds a preset and a failure at once. The answer to sync",
+        "puts the patch before the restore, and the failure stays up: a patch ends",
+        "a failure on the page, so the restore after it is what says it still",
+        "stands. The same follows a patch the host announces, and a retry that",
+        "fails again answers with the failure alone."
+      ],
+      "host": {
+        "values": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+        "selected_slot": 0,
+        "bank": {
+          "label": "Factory",
+          "source": "built_in",
+          "patches": [
+            {"slot": 0, "name": "Strings"}
+          ]
+        },
+        "saved_state": {"origin": "user", "slot": 7, "bank": "My Bank", "name": "Glass Pad", "bank_saved": true}
+      },
+      "exchanges": [
+        {
+          "page_does": {"boot": true},
+          "page_to_host": ["{\"type\":\"sync\"}"],
+          "host_to_page": [
+            "{\"type\":\"bank\",\"text\":\"{\\n  \\\"format\\\": \\\"quesynth.bank\\\",\\n  \\\"version\\\": 1,\\n  \\\"name\\\": \\\"Factory\\\",\\n  \\\"patches\\\": [\\n    {\\n      \\\"name\\\": \\\"Strings\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 0,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 81,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 20,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    }\\n  ]\\n}\\n\",\"v\":1,\"origin\":\"factory\",\"readOnly\":false}",
+            "{\"type\":\"state\",\"values\":[0,1,64,81,1,64,0,0,64,0,0,64,0,0,1,0,64,32,64,81,14,128,64,0,1,64,64,107,64,20,64,1,0,11,64,8,40,20,0,0,12,2,1,64,0,0,5,1,64,64,74,74,64,64,50,64,40,1,1,0,64,64,64,64,2,1,1,0,0,0,0,0,64,0,0,22,0,0,0,64,64,64,0,66,64,24,45057,44,45057,43,64,0,0,2,16,0,1,1,64]}",
+            "{\"type\":\"patch\",\"name\":\"Strings\",\"index\":0,\"bank\":\"Factory\",\"v\":1,\"origin\":\"factory\"}",
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"failed\",\"error\":\"MissingBank\",\"recoverable\":true,\"message\":\"The bank this sound was saved from is not available.\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":7,\"name\":\"Glass Pad\"}"
+          ],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": {"origin": "factory", "bank": "Factory", "slot": 0, "name": "Strings"},
+            "program": 0,
+            "restore": "failed",
+            "error": "MissingBank",
+            "pending": true,
+            "bank_label": "Factory",
+            "values": [0, 1, 64, 81, 1, 64, 0, 0, 64, 0, 0, 64, 0, 0, 1, 0, 64, 32, 64, 81, 14, 128, 64, 0, 1, 64, 64, 107, 64, 20, 64, 1, 0, 11, 64, 8, 40, 20, 0, 0, 12, 2, 1, 64, 0, 0, 5, 1, 64, 64, 74, 74, 64, 64, 50, 64, 40, 1, 1, 0, 64, 64, 64, 64, 2, 1, 1, 0, 0, 0, 0, 0, 64, 0, 0, 22, 0, 0, 0, 64, 64, 64, 0, 66, 64, 24, 45057, 44, 45057, 43, 64, 0, 0, 2, 16, 0, 1, 1, 64],
+            "bank_origin": "factory"
+          },
+          "page_effect": {
+            "protocol": 1,
+            "selection": {
+              "origin": "factory",
+              "source": "bank",
+              "bank": "Factory",
+              "slot": 0,
+              "presetName": "Strings",
+              "archive": null
+            },
+            "status": "unavailable",
+            "restore": {
+              "state": "failed",
+              "error": "MissingBank",
+              "recoverable": true,
+              "message": "The bank this sound was saved from is not available.",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {"bank-patch": "000:Strings", "bank-name": "Factory", "bank-origin": "Factory"},
+            "banner": {
+              "visible": true,
+              "ok": null,
+              "failed": "Could not restore My Bank / 007. The current sound was kept.",
+              "buttons": ["Retry", "Choose bank"],
+              "missing": "The saved bank is unavailable. Load Factory / Init instead?",
+              "missing_buttons": ["Load Factory / Init", "Keep current sound"],
+              "retry_disabled": false
+            },
+            "sound": "host",
+            "index": 0
+          }
+        },
+        {
+          "page_does": {"idle": true},
+          "host_does": {"announce": true},
+          "page_to_host": [],
+          "host_to_page": [
+            "{\"type\":\"patch\",\"name\":\"Strings\",\"index\":0,\"bank\":\"Factory\",\"v\":1,\"origin\":\"factory\"}",
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"failed\",\"error\":\"MissingBank\",\"recoverable\":true,\"message\":\"The bank this sound was saved from is not available.\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":7,\"name\":\"Glass Pad\"}"
+          ],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": {"origin": "factory", "bank": "Factory", "slot": 0, "name": "Strings"},
+            "program": 0,
+            "restore": "failed",
+            "error": "MissingBank",
+            "pending": true
+          },
+          "page_effect": {
+            "selection": {
+              "origin": "factory",
+              "source": "bank",
+              "bank": "Factory",
+              "slot": 0,
+              "presetName": "Strings",
+              "archive": null
+            },
+            "status": "unavailable",
+            "restore": {
+              "state": "failed",
+              "error": "MissingBank",
+              "recoverable": true,
+              "message": "The bank this sound was saved from is not available.",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {"bank-patch": "000:Strings", "bank-name": "Factory", "bank-origin": "Factory"},
+            "banner": {
+              "visible": true,
+              "ok": null,
+              "failed": "Could not restore My Bank / 007. The current sound was kept.",
+              "buttons": ["Retry", "Choose bank"],
+              "missing": "The saved bank is unavailable. Load Factory / Init instead?",
+              "missing_buttons": ["Load Factory / Init", "Keep current sound"],
+              "retry_disabled": false
+            },
+            "sound": "host",
+            "index": 0
+          }
+        },
+        {
+          "page_does": {"click": "#restore-retry"},
+          "page_to_host": ["{\"v\":1,\"type\":\"restore-retry\"}"],
+          "host_to_page": [
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"failed\",\"error\":\"MissingBank\",\"recoverable\":true,\"message\":\"The bank this sound was saved from is not available.\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":7,\"name\":\"Glass Pad\"}"
+          ],
+          "host_effect": {
+            "retries": 1,
+            "selected": [],
+            "banks": [],
+            "selection": {"origin": "factory", "bank": "Factory", "slot": 0, "name": "Strings"},
+            "program": 0,
+            "restore": "failed",
+            "error": "MissingBank",
+            "pending": true
+          },
+          "page_effect": {
+            "selection": {
+              "origin": "factory",
+              "source": "bank",
+              "bank": "Factory",
+              "slot": 0,
+              "presetName": "Strings",
+              "archive": null
+            },
+            "status": "unavailable",
+            "restore": {
+              "state": "failed",
+              "error": "MissingBank",
+              "recoverable": true,
+              "message": "The bank this sound was saved from is not available.",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {"bank-patch": "000:Strings", "bank-name": "Factory", "bank-origin": "Factory"},
+            "banner": {
+              "visible": true,
+              "ok": null,
+              "failed": "Could not restore My Bank / 007. The current sound was kept.",
+              "buttons": ["Retry", "Choose bank"],
+              "missing": "The saved bank is unavailable. Load Factory / Init instead?",
+              "missing_buttons": ["Load Factory / Init", "Keep current sound"],
+              "retry_disabled": false
+            },
+            "sound": "host",
             "index": 0
           }
         }

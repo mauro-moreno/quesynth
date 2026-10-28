@@ -258,3 +258,56 @@ test_a_failed_restore_reaches_the_panel_and_a_retry_that_finds_nothing_changes_n
 	defer delete(resaved)
 	testing.expect_value(t, len(resaved), synth.STATE_SIZE)
 }
+
+// The project's bank is missing, and then a MIDI Program Change arrives -- a
+// sequencer that sends one at the top of a song does exactly this. The
+// instance drops the failed restore, because choosing a program is a choice,
+// and the panel that was showing it has to be able to find that out. Asking
+// again used to get no answer at all, which left the banner waiting on it.
+//
+// Through the real callbacks and a real block: the Program Change is an event
+// process() consumes, and the panel's messages are the ones the host answers.
+@(test)
+test_a_retry_after_a_program_change_dropped_a_failed_restore_is_answered :: proc(t: ^testing.T) {
+	before, _ := work_in_progress(t, "Issue 13 Lost Bank", {0, 7}, 7, .Saved)
+	if before == nil {return}
+	defer before.destroy(before)
+	saved := save_state(t, before)
+	defer delete(saved)
+
+	after := active_plugin(t)
+	if after == nil {return}
+	defer finish(after)
+	b := synth.synth_of(after)
+	panel.session_set_bank(&b.session, &b.slots, bank_document("Playing Meanwhile", {0, 1}), false, .Imported, nil)
+	testing.expect(t, load_saved(after, saved), "the saved state was refused")
+	host := synth.gui_host(b)
+
+	shown := panel.handle_message(&host, `{"type":"sync"}`)
+	testing.expect_value(t, len(shown), 3)
+	if len(shown) != 3 {return}
+	testing.expect(t, strings.has_prefix(shown[2], `{"type":"restore","v":1,"state":"failed","error":"MissingBank"`), shown[2])
+
+	send_midi(after, midi_event(0, 0xC0, 1, 0))
+	testing.expect_value(t, b.program, 1)
+	testing.expect_value(t, b.session.restore, panel.Restore_State.Not_Requested)
+
+	// What the main thread then tells an open editor: the patch, and nothing
+	// about a failure the host no longer holds.
+	patch_message := `{"type":"patch","name":"Playing Meanwhile 1","index":1,"bank":"Playing Meanwhile","v":1,"origin":"imported"}`
+	told := panel.selection_replies(&host)
+	testing.expect_value(t, len(told), 1)
+	if len(told) == 1 {
+		testing.expect_value(t, told[0], patch_message)
+	}
+
+	// A page that missed that and asks again is answered with where the
+	// instance is and that it is restoring nothing.
+	retried := panel.handle_message(&host, `{"type":"restore-retry","v":1}`)
+	testing.expect_value(t, len(retried), 2)
+	if len(retried) != 2 {return}
+	testing.expect_value(t, retried[0], patch_message)
+	testing.expect_value(t, retried[1], `{"type":"restore","v":1,"state":"notRequested"}`)
+	testing.expect_value(t, b.program, 1)
+	testing.expect_value(t, patch.slots_label(&b.slots), "Playing Meanwhile")
+}

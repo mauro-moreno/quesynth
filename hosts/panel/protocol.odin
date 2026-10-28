@@ -205,6 +205,11 @@ handle_message :: proc(h: ^Host, text: string) -> [dynamic]string {
 		// Answered with what the page needs to show the result: the bank if it
 		// moved, where the instance now is, and how the restore stands. A
 		// retry that failed again is the last of those alone.
+		//
+		// Always answered. The page marks the banner busy when it asks and
+		// shows nothing final until it hears, so a retry with nothing left to
+		// retry -- a Program Change let the failure go before the page was
+		// told -- has to say so, or the banner waits for good.
 		view, versioned := session_view(h)
 		if !versioned {
 			return replies
@@ -214,12 +219,15 @@ handle_message :: proc(h: ^Host, text: string) -> [dynamic]string {
 				append(&replies, message_bank(text, &view))
 			}
 		}
-		if view.session.restore == .Restored {
+		// Where the instance is, whenever the restore is over: restored, or
+		// not held any more. A failure that stands leaves the sound and the
+		// selection as the page already has them.
+		if view.session.restore != .Failed {
 			if message, ok := message_patch(view); ok {
 				append(&replies, message)
 			}
 		}
-		if message, ok := message_restore(view); ok {
+		if message, ok := message_restore_answer(view); ok {
 			append(&replies, message)
 		}
 
@@ -250,6 +258,29 @@ sync_replies :: proc(h: ^Host) -> [dynamic]string {
 	replies := make([dynamic]string, context.temp_allocator)
 	if h != nil && h.user != nil {
 		append_sync(h, &replies)
+	}
+	return replies
+}
+
+// What a host that moved the instance to another preset itself -- a MIDI
+// Program Change -- tells an open panel after the sound: which preset it is
+// on, in a message of its own.
+//
+// The page takes a patch as the host having moved on, and lets go of a failed
+// restore it was showing. A failure the host still holds -- the state load
+// that failed can land between the Program Change and this message -- is said
+// again after the patch, so that the page does not believe it gone.
+selection_replies :: proc(h: ^Host) -> [dynamic]string {
+	replies := make([dynamic]string, context.temp_allocator)
+	if view, versioned := session_view(h); versioned {
+		if message, ok := message_patch(view); ok {
+			append(&replies, message)
+			if view.session.restore == .Failed {
+				if again, held := message_restore(view); held {
+					append(&replies, again)
+				}
+			}
+		}
 	}
 	return replies
 }
@@ -434,6 +465,24 @@ message_restore :: proc(view: Instance_View) -> (message: string, ok: bool) {
 	}
 	strings.write_byte(&builder, '}')
 	return strings.to_string(builder), true
+}
+
+// The answer to a retry: how the restore stands, and, when nothing is being
+// restored, that.
+//
+// A host holds nothing to restore when none was asked for or when the
+// instance has moved to another preset since -- a Program Change lets go of a
+// failure. That is an answer the page is waiting for, unlike at `sync`, where
+// there is nothing to say and the message is left out: a retry marks the
+// banner busy, and only a message resolves it.
+message_restore_answer :: proc(view: Instance_View) -> (message: string, ok: bool) {
+	if view.session == nil || view.slots == nil {
+		return "", false
+	}
+	if view.session.restore == .Not_Requested {
+		return `{"type":"restore","v":1,"state":"notRequested"}`, true
+	}
+	return message_restore(view)
 }
 
 @(private)

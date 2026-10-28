@@ -71,11 +71,10 @@ send_sync :: proc(p: ^Panel) {
 // Which patch is loaded, by name and by number, so the strip follows a program
 // change instead of naming the one before it.
 send_selection :: proc(p: ^Panel) {
-	if p == nil || !p.view.ready || p.host.read_session == nil {
+	if p == nil || !p.view.ready {
 		return
 	}
-	view := p.host.read_session(p.host.user)
-	if message, ok := message_patch(view); ok {
+	for message in selection_replies(&p.host) {
 		post(p, message)
 	}
 }

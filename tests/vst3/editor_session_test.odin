@@ -155,3 +155,49 @@ a_failed_restore_reaches_the_panel_and_a_retry_that_finds_nothing_changes_nothin
 	defer delete(resaved)
 	testing.expect_value(t, len(resaved), synth.STATE_SIZE)
 }
+
+// A host that selects a program -- a Program Change from a sequencer, or the
+// host's own menu -- while the project's bank is missing. The instance drops
+// the failed restore, and a panel that was still showing it and asks again has
+// to be answered rather than left waiting. Both ways a VST3 host selects one
+// are tried: the one that arrives in `process`, and the one on the controller.
+@(test)
+a_retry_after_a_program_change_dropped_a_failed_restore_is_answered :: proc(t: ^testing.T) {
+	before := work_in_progress(t, "Issue 13 Lost Bank", {0, 7}, 7, .Saved)
+	if before == nil {return}
+	defer synth.release(before)
+	saved := save_session(t, before)
+	defer delete(saved)
+
+	for how in ([]string{"process", "controller"}) {
+		after := synth.make_plugin()
+		if after == nil {return}
+		defer synth.release(after)
+		panel.session_set_bank(&after.session, &after.slots, bank_document("Playing Meanwhile", {0, 1}), false, .Imported, nil)
+		testing.expect_value(t, load_session(after, saved), vst3.RESULT_OK)
+		ed := synth.Editor {
+			plugin = after,
+		}
+		host := synth.editor_host(&ed)
+		shown := panel.handle_message(&host, `{"type":"sync"}`)
+		testing.expectf(t, len(shown) == 3, "%s: the failure was not shown: %d messages", how, len(shown))
+
+		if how == "process" {
+			synth.select_program(after, 1)
+		} else {
+			synth.stage_program(after, 1)
+		}
+		testing.expect_value(t, after.session.restore, panel.Restore_State.Not_Requested)
+
+		patch_message := `{"type":"patch","name":"Playing Meanwhile 1","index":1,"bank":"Playing Meanwhile","v":1,"origin":"imported"}`
+		told := panel.selection_replies(&host)
+		testing.expectf(t, len(told) == 1 && told[0] == patch_message, "%s: the panel was told %v", how, told[:])
+
+		retried := panel.handle_message(&host, `{"type":"restore-retry","v":1}`)
+		testing.expectf(t, len(retried) == 2, "%s: the retry was answered with %d messages", how, len(retried))
+		if len(retried) != 2 {continue}
+		testing.expect_value(t, retried[0], patch_message)
+		testing.expect_value(t, retried[1], `{"type":"restore","v":1,"state":"notRequested"}`)
+		testing.expect_value(t, after.program, i32(1))
+	}
+}

@@ -42,6 +42,9 @@ WIRE_SCENARIOS :: [?]string {
 	"bank-the-host-cannot-read",
 	"names-that-need-escaping",
 	"host-that-keeps-no-selection",
+	"program-change-ends-a-failed-restore",
+	"retry-after-the-host-dropped-the-failed-restore",
+	"a-selection-and-a-failed-restore-arrive-together",
 }
 
 // `using` and first, so that the pointer the callbacks of fake_host receive is
@@ -139,6 +142,21 @@ a_host_with_no_session_is_spoken_to_as_it_always_was :: proc(t: ^testing.T) {
 	play_wire(t, "host-that-keeps-no-selection")
 }
 
+@(test)
+a_program_change_lets_go_of_a_failed_restore_and_the_panel_is_told_the_patch :: proc(t: ^testing.T) {
+	play_wire(t, "program-change-ends-a-failed-restore")
+}
+
+@(test)
+a_retry_after_a_silent_program_change_is_answered_with_the_patch_and_no_restore :: proc(t: ^testing.T) {
+	play_wire(t, "retry-after-the-host-dropped-the-failed-restore")
+}
+
+@(test)
+a_patch_is_followed_by_the_failure_the_host_still_holds :: proc(t: ^testing.T) {
+	play_wire(t, "a-selection-and-a-failed-restore-arrive-together")
+}
+
 // -- playing one scenario -----------------------------------------------------
 
 play_wire :: proc(t: ^testing.T, name: string) {
@@ -168,9 +186,14 @@ play_wire :: proc(t: ^testing.T, name: string) {
 		w.retries = 0
 		w.discards = 0
 
-		said, _ := exchange["page_to_host"].(json.Array)
-		testing.expectf(t, len(said) > 0, "%s: the page says nothing", place)
+		// The host's own turn comes first: what it does by itself, which the
+		// page is not asked to have seen before it speaks.
 		answered := make([dynamic]string, context.temp_allocator)
+		wire_host_does(t, place, &w.fake, &host, exchange, &answered)
+
+		said, _ := exchange["page_to_host"].(json.Array)
+		page_does, _ := exchange["page_does"].(json.Object)
+		testing.expectf(t, len(said) > 0 || wire_bool(page_does, "idle"), "%s: the page says nothing", place)
 		for message in said {
 			text, _ := message.(json.String)
 			append(&answered, ..panel.handle_message(&host, string(text))[:])
@@ -180,6 +203,42 @@ play_wire :: proc(t: ^testing.T, name: string) {
 		wire_expect_messages(t, place, answered[:], expected)
 		effect, _ := exchange["host_effect"].(json.Object)
 		wire_expect_host(t, place, w, effect)
+	}
+}
+
+WIRE_HOST_DOES_KEYS :: [?]string{"program_change", "announce"}
+
+// What the host does by itself in an exchange, before it hears the page:
+//
+//   program_change  a MIDI Program Change reaches the instance on the audio
+//                   thread: the session selects the slot and posts nothing
+//   announce        the main thread tells an open editor, as send_selection
+//                   does after one, and the answer is what it posts
+wire_host_does :: proc(
+	t: ^testing.T,
+	place: string,
+	w: ^Fake,
+	host: ^panel.Host,
+	exchange: json.Object,
+	answered: ^[dynamic]string,
+) {
+	does, has := exchange["host_does"].(json.Object)
+	if !has {
+		return
+	}
+	keys := WIRE_HOST_DOES_KEYS
+	for key, _ in does {
+		known := false
+		for k in keys {
+			known ||= k == key
+		}
+		testing.expectf(t, known, "%s: the fixture has a host_does key this test does not play: %s", place, key)
+	}
+	if slot, has_slot := does["program_change"]; has_slot {
+		panel.session_select_slot(&w.inst.session, wire_int_of(slot))
+	}
+	if wire_bool(does, "announce") {
+		append(answered, ..panel.selection_replies(host)[:])
 	}
 }
 
@@ -200,6 +259,11 @@ wire_setup :: proc(t: ^testing.T, w: ^Wire, config: json.Object) -> panel.Host {
 	}
 	w.disk_full = wire_bool(config, "disk_full")
 
+	// A Program Change that came before the state did, as one can: the
+	// failure then lands on an instance that already has a preset.
+	if slot, has_slot := config["selected_slot"]; has_slot {
+		panel.session_select_slot(&w.inst.session, wire_int_of(slot))
+	}
 	if saved, has_saved := config["saved_state"].(json.Object); has_saved {
 		panel.session_restore(&w.inst.session, &w.inst.slots, wire_saved_state(saved))
 	}

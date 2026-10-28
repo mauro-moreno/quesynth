@@ -90,7 +90,15 @@
 //                  "bank":"My Bank","v":1,"origin":"user"}
 //                     `index` null and no `name` when the host has nothing to
 //                     report; the page then keeps its own sound and name and
-//                     calls it the current session's.
+//                     calls it the current session's. A `patch` that names a
+//                     preset is also the host saying it moved on by itself (a
+//                     MIDI Program Change), and the page lets go of a failed
+//                     restore it was showing, as it does when a person picks
+//                     a preset: the host dropped the identity too. A failure
+//                     the host still holds is sent again after its `patch`,
+//                     so a `patch` is never the last word on one. A retry the
+//                     page is waiting on is left to its own answer, which
+//                     carries a `patch` ahead of its `restore`.
 //                 {"type":"restore","v":1,"state":"restored",
 //                  "origin":"imported","bank":"Alfmeister Bank","slot":42,
 //                  "name":"Foo"}
@@ -101,6 +109,13 @@
 //                     `error` is MissingBank, InvalidProgram, HostStateRejected
 //                     or StateVersionUnsupported. A failed restore touches
 //                     neither the sound, the bank nor the program.
+//                 {"type":"restore","v":1,"state":"notRequested"}
+//                     The host holds nothing to restore. Sent only to answer
+//                     a `restore-retry`, never at `sync` (which says nothing
+//                     when nothing was asked): the failure being retried is
+//                     gone, because the instance moved to another preset
+//                     since. It resolves the page's retry, which `restoring`
+//                     would otherwise wait on for good.
 //                 {"type":"bank-saved","v":1,"ok":true,"bank":"My Bank"}
 //                 {"type":"bank-saved","v":1,"ok":false,
 //                  "error":"PersistenceFailed","message":"...",
@@ -115,8 +130,11 @@
 //                     What the panel just selected. `slot` is null for a sound
 //                     with no slot behind it (a file, or the current session).
 //                 {"type":"restore-retry","v":1}                      page
-//                     Re-evaluate the pending, failed restore; answered with
-//                     a `restore`.
+//                     Re-evaluate the pending, failed restore. Always
+//                     answered, so the page is never left waiting: with the
+//                     bank if it changed, the `patch` once the restore is
+//                     over, and a `restore` -- `restored`, `failed` again, or
+//                     `notRequested` when there is nothing to retry.
 //                 {"type":"restore-discard","v":1}                    page
 //                     The person dismissed the failure: forget the identity.
 //                 `bank`, which the page already sent, gains "v":1 and

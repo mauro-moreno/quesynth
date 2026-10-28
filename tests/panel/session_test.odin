@@ -353,6 +353,29 @@ a_retry_of_a_failure_that_cannot_change_does_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, inst.session.restore_error, panel.Restore_Error.State_Version_Unsupported)
 }
 
+// A Program Change drops the identity a failed restore was holding. A retry
+// that arrives after it has nothing to find, and must not bring the dropped
+// identity back and move the instance off the program it was just put on.
+@(test)
+a_retry_after_a_program_change_finds_nothing_and_moves_nothing :: proc(t: ^testing.T) {
+	inst := new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer free(inst)
+	panel.session_restore(&inst.session, &inst.slots, saved_trailer(.User, 7, "My Bank", "Glass Pad", bank_saved = true))
+	panel.session_select_slot(&inst.session, 1)
+	saved := new_instance(t, "My Bank", {0, 7}, .Saved)
+	defer free(saved)
+	before := inst.slots
+	selection_before := inst.session.selection
+
+	// Even with the bank the dropped identity named sitting in the file.
+	result, changed := panel.session_retry(&inst.session, &inst.slots, &saved.slots)
+
+	testing.expect(t, !changed && !result.restored && !result.has_program, "a retry acted on an identity that was dropped")
+	testing.expect_value(t, inst.session.restore, panel.Restore_State.Not_Requested)
+	testing.expect(t, inst.slots == before, "the bank changed")
+	testing.expect(t, inst.session.selection == selection_before, "the selection moved")
+}
+
 // -- what the panel says it selected -----------------------------------------
 
 @(test)

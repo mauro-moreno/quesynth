@@ -1822,9 +1822,10 @@
     paintStrip();
   }
 
-  // A person choosing something settles whatever restore was outstanding: the
-  // host is told with a `select` that replaces the identity it was holding, and
-  // the banner has nothing left to say.
+  // Whatever restore was outstanding is over, because somebody moved on from
+  // it: a person choosing something, whose `select` replaces the identity the
+  // host was holding, or the host itself choosing -- a MIDI Program Change --
+  // which drops it on its side. Either way the banner has nothing left to say.
   function settleRestore() {
     if (restoreState.state === "notRequested") return;
     failure = null;
@@ -1846,6 +1847,13 @@
   }
 
   function receiveRestore(msg) {
+    // The host holds nothing to restore. It answers a retry that way when the
+    // instance moved on since the failure, and the page, which marked the
+    // banner busy when it asked, would otherwise wait for an answer for good.
+    if (msg.state === "notRequested") {
+      settleRestore();
+      return;
+    }
     var identity = identityOf(msg);
     var next;
     if (msg.state === "restored") {
@@ -1944,6 +1952,13 @@
     lastDirty = computeDirty();
   }
 
+  // Whether a host's `patch` names a preset, as opposed to saying it has
+  // nothing to report: `index` null and no `name`, which keeps the panel's own.
+  function namesPreset(msg) {
+    return (typeof msg.name === "string" && msg.name !== "") || isSlot(msg.index) ||
+      msg.source === "archive" || msg.source === "file";
+  }
+
   function receivePatch(msg) {
     // The host answering a load this panel asked for, as opposed to a program
     // change somebody else made: only the first is the person's own choice.
@@ -1960,9 +1975,19 @@
       if (msg.source === "archive") pendingLoad = null;
     }
     takeHostSelection(msg);
-    // A restore that came before this and was shown as done is old news once
-    // the host moves on.
-    if (restoreState.state === "restored") restoreState = { state: "notRequested" };
+    // The host moving on ends a restore that was shown as done, which is old
+    // news by now. It also ends one that failed: a host that chose a preset by
+    // itself has dropped the identity it was holding, and a banner still
+    // offering a Retry would be offering it for nothing. Only a patch that
+    // names a preset says so. A failure the host still holds is sent again
+    // after its patch (see bridge.js), so it is not lost here.
+    //
+    // A retry still waiting is left to its answer, which the host always
+    // gives. The answer carries a patch ahead of its restore, so settling on
+    // that patch would lose the retry the restore is checked against; and a
+    // person cannot choose a preset in the meantime either (`loadPreset`).
+    if (restoreState.state === "restored" ||
+        (restoreState.state === "failed" && namesPreset(msg))) settleRestore();
     paintRestore();
     paintStrip();
     if (answered) announceLoaded();

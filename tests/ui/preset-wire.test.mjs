@@ -40,6 +40,7 @@ const TO_PAGE = {
   state: [["type", "values"]],
   patch: [["type", "name", "index", "bank", "v", "origin"]],
   restore: [
+    ["type", "v", "state"],
     ["type", "v", "state", "origin", "bank", "slot", "name"],
     ["type", "v", "state", "error", "recoverable", "message"],
     ["type", "v", "state", "error", "recoverable", "message", "origin", "bank", "slot", "name"],
@@ -58,6 +59,7 @@ const TO_HOST = {
   "restore-discard": [["type", "v"]],
   bank: [["type", "text", "save"], ["type", "text", "save", "v", "origin"]],
 };
+const HOST_DOES = ["program_change", "announce"];
 const ORIGINS = ["factory", "user", "imported", "archive", "file", "session"];
 const RESTORE_ERRORS = ["MissingBank", "InvalidProgram", "HostStateRejected", "StateVersionUnsupported"];
 
@@ -109,6 +111,7 @@ test("the fixture covers every message of the contract, so removing a scenario c
   assert.ok(to("patch"));
   assert.ok(to("restore", m => m.state === "restored" && m.slot !== null));
   assert.ok(to("restore", m => m.state === "restored" && m.slot === null), "a bank restored with nothing selected");
+  assert.ok(to("restore", m => m.state === "notRequested"), "a host that holds nothing to restore answering a retry");
   for (const error of RESTORE_ERRORS) assert.ok(to("restore", m => m.error === error), `restore ${error}`);
   assert.ok(to("bank-saved", m => m.ok === true));
   assert.ok(to("bank-saved", m => m.error === "PersistenceFailed"));
@@ -132,7 +135,9 @@ function boot() {
 }
 
 function act(page, does) {
-  if (does.click) {
+  if (does.idle) {
+    // The host's turn: it does something of its own, and the page only hears.
+  } else if (does.click) {
     const button = page.document.querySelector(does.click);
     assert.ok(button, `there is no ${does.click} to click`);
     button.click();
@@ -213,6 +218,12 @@ function play(scenario) {
       posted.length = 0;
       act(page, does);
       assert.deepEqual(posted, exchange.page_to_host, `${at}: what the page said`);
+    }
+
+    // What the host does by itself is the Odin side's to do; the page hears the
+    // strings it posts. A key spelt differently there would never be played.
+    for (const key of Object.keys(exchange.host_does ?? {})) {
+      assert.ok(HOST_DOES.includes(key), `${at}: the fixture has a host_does key this test does not know: ${key}`);
     }
 
     posted.length = 0;

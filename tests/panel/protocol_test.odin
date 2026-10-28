@@ -360,6 +360,113 @@ a_retry_that_fails_again_answers_with_the_failure_and_nothing_else :: proc(t: ^t
 	testing.expect(t, starts_with(replies[0], `{"type":"restore","v":1,"state":"failed","error":"MissingBank"`), replies[0])
 }
 
+// A Program Change is a choice like any other: the instance lets go of a failed
+// restore, and the page that was still showing it has to be told when it asks.
+// Until it was, the retry was not answered at all and the banner waited on it
+// for good.
+@(test)
+a_retry_after_a_program_change_dropped_the_failure_is_answered :: proc(t: ^testing.T) {
+	f: Fake
+	f.inst = new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer fake_destroy(&f)
+	panel.session_restore(&f.inst.session, &f.inst.slots, saved_trailer(.User, 7, "My Bank", "Glass Pad", bank_saved = true))
+	panel.session_select_slot(&f.inst.session, 1)
+	host := fake_host(&f)
+
+	replies := panel.handle_message(&host, `{"type":"restore-retry","v":1}`)
+
+	// Where the instance is now, then that it is restoring nothing.
+	testing.expect_value(t, len(replies), 2)
+	if len(replies) != 2 {return}
+	testing.expect_value(
+		t,
+		replies[0],
+		`{"type":"patch","name":"Factory 1","index":1,"bank":"Factory","v":1,"origin":"factory"}`,
+	)
+	testing.expect_value(t, replies[1], `{"type":"restore","v":1,"state":"notRequested"}`)
+	// And nothing was brought back: the identity the Program Change replaced
+	// is gone, not parked for the retry to find.
+	testing.expect_value(t, f.inst.session.restore, panel.Restore_State.Not_Requested)
+	testing.expect(t, !f.inst.session.has_pending, "a retry resurrected the identity a program change dropped")
+}
+
+// An instance nobody has told anything has no preset to name, and still owes
+// the page an answer: silence is what left it waiting.
+@(test)
+a_retry_with_nothing_to_retry_and_no_selection_is_answered_with_the_restore_alone :: proc(t: ^testing.T) {
+	f: Fake
+	f.inst = new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer fake_destroy(&f)
+	host := fake_host(&f)
+
+	replies := panel.handle_message(&host, `{"type":"restore-retry","v":1}`)
+
+	testing.expect_value(t, len(replies), 1)
+	if len(replies) != 1 {return}
+	testing.expect_value(t, replies[0], `{"type":"restore","v":1,"state":"notRequested"}`)
+}
+
+// What a host that moved itself tells an open panel, which is what
+// send_selection posts.
+@(test)
+a_program_change_is_announced_with_the_patch_alone_once_nothing_is_held_back :: proc(t: ^testing.T) {
+	f: Fake
+	f.inst = new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer fake_destroy(&f)
+	panel.session_restore(&f.inst.session, &f.inst.slots, saved_trailer(.User, 7, "My Bank", "Glass Pad", bank_saved = true))
+	panel.session_select_slot(&f.inst.session, 1)
+	host := fake_host(&f)
+
+	replies := panel.selection_replies(&host)
+
+	testing.expect_value(t, len(replies), 1)
+	if len(replies) != 1 {return}
+	testing.expect_value(
+		t,
+		replies[0],
+		`{"type":"patch","name":"Factory 1","index":1,"bank":"Factory","v":1,"origin":"factory"}`,
+	)
+}
+
+// The page takes a patch as the end of any failure it was showing. A state
+// load that failed after the Program Change, before the panel was told of it,
+// leaves the host holding both; the failure has to follow the patch so that
+// the page is not left believing it is gone.
+@(test)
+an_announced_selection_is_followed_by_a_failure_the_host_still_holds :: proc(t: ^testing.T) {
+	f: Fake
+	f.inst = new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer fake_destroy(&f)
+	panel.session_select_slot(&f.inst.session, 1)
+	panel.session_restore(&f.inst.session, &f.inst.slots, saved_trailer(.User, 7, "My Bank", "Glass Pad", bank_saved = true))
+	host := fake_host(&f)
+
+	replies := panel.selection_replies(&host)
+
+	testing.expect_value(t, len(replies), 2)
+	if len(replies) != 2 {return}
+	testing.expect(t, starts_with(replies[0], `{"type":"patch","name":"Factory 1"`), replies[0])
+	testing.expect_value(
+		t,
+		replies[1],
+		`{"type":"restore","v":1,"state":"failed","error":"MissingBank","recoverable":true,` +
+		`"message":"The bank this sound was saved from is not available.",` +
+		`"origin":"user","bank":"My Bank","slot":7,"name":"Glass Pad"}`,
+	)
+}
+
+@(test)
+an_instance_with_no_selection_announces_nothing :: proc(t: ^testing.T) {
+	f: Fake
+	f.inst = new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer fake_destroy(&f)
+	host := fake_host(&f)
+
+	testing.expect_value(t, len(panel.selection_replies(&host)), 0)
+	host_without_a_session := fake_host(&f, with_session = false)
+	testing.expect_value(t, len(panel.selection_replies(&host_without_a_session)), 0)
+}
+
 @(test)
 a_discard_reaches_the_host_and_is_not_answered :: proc(t: ^testing.T) {
 	f: Fake

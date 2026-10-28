@@ -190,3 +190,113 @@ test("a bank restored with nothing selected in it leaves the selection and the s
   assert.deepEqual(page.values(), hostSound);
   assert.equal(page.$("restore-ok").textContent, "Restored User / Quesynth Factory");
 });
+
+// -- the host drops the recovery it was holding ----------------------------------
+//
+// A MIDI Program Change is a choice like any other, and the host's session lets
+// go of a failed restore when one arrives. The page has to follow, or it shows a
+// Retry for something the host no longer holds.
+
+// What a plugin sends when a Program Change moved it to Brass: the sound, then
+// the selection. The bank in `missingBank` is the host's, so its cutoffs are
+// those of `bankText`.
+function programChange(page) {
+  page.send({type: "state", values: sound(11)});
+  page.send({type: "patch", name: "Brass", index: 1, bank: "Quesynth Factory", v: 1, origin: "factory"});
+}
+
+test("a Program Change the host reports ends a failed restore, as a person choosing a preset does", () => {
+  const {page} = missingBank();
+  programChange(page);
+
+  assert.equal(page.window.SynthBank.restoreState().state, "notRequested");
+  assert.ok(!shown(banner(page)), "the banner is still up for a recovery the host dropped");
+  assert.equal(page.window.SynthBank.status(), "clean");
+  assert.deepEqual(plain(page.window.SynthBank.selection()),
+    {origin: "factory", source: "bank", bank: "Quesynth Factory", slot: 1, presetName: "Brass", archive: null});
+  assert.deepEqual(page.sent.filter(m => m.type === "state" || m.type === "select"), [],
+    "following the host sends the host nothing");
+});
+
+test("a Program Change reported while a retry waits leaves the answer to resolve it, and the host always gives one", () => {
+  const {page} = missingBank();
+  page.window.SynthBank.restore.retry();
+  programChange(page);
+  assert.equal(page.window.SynthBank.restoreState().state, "restoring",
+    "the retry is still waiting on the host, whose answer carries a patch ahead of its restore");
+  assert.equal(page.window.SynthBank.selection().presetName, "Brass", "though the host's selection is the page's");
+
+  page.send({type: "restore", v: 1, state: "notRequested"});
+  assert.equal(page.window.SynthBank.restoreState().state, "notRequested");
+  assert.ok(!shown(banner(page)));
+  assert.equal(page.window.SynthBank.loadPreset({bank: 0, slot: 2}).ok, true,
+    "loading is not refused as a conflict with a restore nobody is waiting for");
+});
+
+test("Retry after the host dropped the recovery is answered and resolves", () => {
+  const {page} = missingBank();
+  page.forget();
+  // The page was never told: the host dropped it between the failure and the click.
+  assert.equal(page.window.SynthBank.restore.retry().ok, true);
+  assert.equal(page.window.SynthBank.restoreState().state, "restoring");
+  assert.equal(page.$("restore-banner").getAttribute("aria-busy"), "true");
+
+  // What the host answers a retry with when it holds nothing to retry: where it
+  // is now, and that it is not restoring anything.
+  page.send({type: "state", values: sound(11)});
+  page.send({type: "patch", name: "Brass", index: 1, bank: "Quesynth Factory", v: 1, origin: "factory"});
+  page.send({type: "restore", v: 1, state: "notRequested"});
+
+  assert.equal(page.window.SynthBank.restoreState().state, "notRequested");
+  assert.ok(!shown(banner(page)));
+  assert.equal(page.$("restore-banner").getAttribute("aria-busy"), "false");
+  assert.equal(page.window.SynthBank.status(), "clean", "nothing is waiting any more");
+  assert.equal(page.window.SynthBank.loadPreset({bank: 0, slot: 2}).ok, true);
+});
+
+test("a host with nothing selected answers a retry with the restore alone, and that resolves it", () => {
+  const {page, hostSound} = missingBank();
+  page.window.SynthBank.restore.retry();
+  page.send({type: "restore", v: 1, state: "notRequested"});
+
+  assert.equal(page.window.SynthBank.restoreState().state, "notRequested");
+  assert.ok(!shown(banner(page)));
+  assert.equal(page.window.SynthBank.selection().origin, "session", "no selection is invented");
+  assert.deepEqual(page.values(), hostSound, "and the sound is the one it was");
+});
+
+test("a sync that names a selection and then a failed restore still shows the failure", () => {
+  // The order a host answers `sync` in is bank, state, patch, restore, and a
+  // patch is what ends a failure on the page. The restore after it is the
+  // host saying the failure still stands, so it must win.
+  const {page} = missingBank();
+  const names = ["Strings", "Brass", "Bells"];
+  const again = {type: "restore", v: 1, state: "failed", error: "InvalidProgram", recoverable: true,
+    message: "slot 42 is empty", ...WANTED};
+  for (const m of syncAnswer({label: "Quesynth Factory", names, origin: "factory", state: sound(10),
+    slot: 0, name: "Strings", restore: again})) page.send(m);
+
+  assert.equal(page.window.SynthBank.restoreState().state, "failed");
+  assert.equal(page.window.SynthBank.restoreState().error, "InvalidProgram");
+  assert.ok(shown(banner(page)));
+  assert.equal(page.$("restore-failed-text").textContent, "Could not restore Alfmeister Bank / 042. The current sound was kept.");
+  assert.equal(page.window.SynthBank.selection().presetName, "Strings", "and the host's selection is the page's");
+});
+
+test("a retry answered with the patch first still reports a restore of another preset as a conflict", () => {
+  // The order the host answers in: bank, patch, restore. The patch must not
+  // end the retry the restore is about to be compared with.
+  const {page} = missingBank();
+  page.window.SynthBank.restore.retry();
+  page.send({type: "patch", name: "Other", index: 3, bank: "Somewhere Else", v: 1, origin: "user"});
+  page.send({type: "restore", v: 1, state: "restored", origin: "user", bank: "Somewhere Else", slot: 3, name: "Other"});
+  assert.equal(page.window.SynthBank.restoreState().state, "restored");
+  assert.equal(page.window.SynthBank.restoreState().conflict, true);
+});
+
+test("a patch with no selection in it leaves a failed restore standing", () => {
+  const {page} = missingBank();
+  page.send({type: "patch", index: null, v: 1});
+  assert.equal(page.window.SynthBank.restoreState().state, "failed");
+  assert.ok(shown(banner(page)));
+});

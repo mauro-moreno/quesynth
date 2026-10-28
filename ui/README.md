@@ -388,6 +388,26 @@ and one that is not a missing bank gets a Dismiss button instead of the second
 line. `SynthBank.restoreState()` is `{ state: "notRequested" | "restoring" |
 "restored" | "failed", error, recoverable, origin, bank, slot, name }`.
 
+The host can also choose by itself. A MIDI Program Change is a choice like any
+other, and the host's session lets go of the failed restore it was holding, so
+a `patch` that names a preset ends a failed restore on the page too, and the
+banner goes. A failure the host still holds is sent again straight after its
+`patch`, so a patch is never the last word on one (`sync` answers in the order
+bank, state, patch, restore for the same reason).
+
+A retry that is waiting is left to its own answer, which the host always gives:
+the restored bank and preset, the same failure again, or
+
+```json
+{"type":"restore","v":1,"state":"notRequested"}
+```
+
+when there is nothing left to retry because the instance has moved on. That
+state is only ever an answer to a retry; at `sync` a host with nothing to say
+says nothing. Without it a Retry would leave the banner busy, with Retry
+disabled and `loadPreset` refusing with `RestorationConflict`, until the person
+pressed Keep current sound.
+
 ### Version 1 of the protocol
 
 `"v":1` is the whole of the handshake: the page sends `select`,
