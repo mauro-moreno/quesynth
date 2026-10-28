@@ -300,14 +300,130 @@ a_new_file_that_will_not_parse_is_not_a_reason_to_read_the_old_one :: proc(t: ^t
 	testing.expect_value(t, bytes_of(files.saved), "this is not json")
 }
 
+// Where the old bank is, as main's bank_path said it: under LOCALAPPDATA on
+// every platform whenever that was set, and beside the working directory when
+// it was empty. A Linux or macOS user whose environment sets it kept their bank
+// there, and "off Windows it was the working directory" lost that bank.
+//
 // Windows never read a file beside the working directory unless LOCALAPPDATA
 // was empty, and then it was the only place there was. What is looked at is
 // decided by the platform and not by whether a file happens to be there.
 @(test)
-the_old_place_is_looked_at_off_windows_and_not_on_it :: proc(t: ^testing.T) {
-	testing.expect_value(t, panel.bank_legacy_path_in(true), "")
-	// Relative, as it was: the working directory is the point of it.
-	testing.expect_value(t, panel.bank_legacy_path_in(false), "user-bank.json")
+the_old_place_is_where_main_kept_the_bank_off_windows_and_nowhere_on_it :: proc(t: ^testing.T) {
+	local := path_of("/home/u/AppData/Local")
+	expected := path_of("/home/u/AppData/Local", "Quesynth", "user-bank.json")
+
+	set := panel.bank_legacy_path_in(false, local)
+	defer delete(set)
+	testing.expect_value(t, set, expected)
+
+	// Relative, as it was: the working directory is the point of it when
+	// there is no variable to say otherwise.
+	unset := panel.bank_legacy_path_in(false, "")
+	defer delete(unset)
+	testing.expect_value(t, unset, "user-bank.json")
+
+	// Windows' own place is bank_path's, so there is no second one.
+	windows := panel.bank_legacy_path_in(true, local)
+	defer delete(windows)
+	testing.expect_value(t, windows, "")
+	bare := panel.bank_legacy_path_in(true, "")
+	defer delete(bare)
+	testing.expect_value(t, bare, "")
+}
+
+path_of :: proc(parts: ..string) -> string {
+	joined, _ := filepath.join(parts, context.temp_allocator)
+	return joined
+}
+
+// -- the old place that LOCALAPPDATA names -----------------------------------
+//
+// The same bank, kept where main kept it for somebody whose environment sets
+// LOCALAPPDATA off Windows. Each test names that directory in the temp root and
+// asks bank_legacy_path_in for the file in it, so what is read is whatever the
+// function says and not a path the test made up to agree with it.
+
+local_old_place :: proc(files: Bank_Files) -> string {
+	return panel.bank_legacy_path_in(false, path_of(files.root, "local"))
+}
+
+@(test)
+a_bank_only_under_localappdata_is_the_saved_bank_off_windows :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	old := local_old_place(files)
+	defer delete(old)
+	text := bank_text("My Linux Bank", {0, 2, 7})
+	put_file(t, old, text)
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, old), panel.Bank_Source.Saved)
+	testing.expect_value(t, patch.slots_label(slots), "My Linux Bank")
+	testing.expect_value(t, patch.slots_name(slots, 7), "My Linux Bank 7")
+	testing.expect(t, !slots.filled[1] && !slots.filled[3], "an empty slot between two filled ones was filled")
+
+	// Read, and nothing more.
+	testing.expect_value(t, bytes_of(old), text)
+	testing.expect(t, !os.exists(files.saved), "reading the old file made a new one")
+}
+
+@(test)
+the_file_at_the_new_place_wins_over_the_one_under_localappdata :: proc(t: ^testing.T) {
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	old := local_old_place(files)
+	defer delete(old)
+	put_file(t, old, bank_text("Old Place", {0, 1}))
+	put_file(t, files.saved, bank_text("New Place", {0, 3}))
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, old), panel.Bank_Source.Saved)
+	testing.expect_value(t, patch.slots_label(slots), "New Place")
+}
+
+@(test)
+a_retry_finds_a_bank_only_under_localappdata :: proc(t: ^testing.T) {
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	old := local_old_place(files)
+	defer delete(old)
+
+	inst := new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer free(inst)
+	panel.session_restore(&inst.session, &inst.slots, saved_trailer(.User, 7, "My Linux Bank", "My Linux Bank 7", bank_saved = true))
+	testing.expect_value(t, inst.session.restore_error, panel.Restore_Error.Missing_Bank)
+
+	put_file(t, old, bank_text("My Linux Bank", {0, 2, 7}))
+	result, changed := panel.session_retry_from(&inst.session, &inst.slots, files.saved, old)
+
+	testing.expect(t, result.restored && changed, "the retry did not find the bank that is there")
+	testing.expect_value(t, patch.slots_label(&inst.slots), "My Linux Bank")
+	testing.expect_value(t, result.program, 7)
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Saved)
+}
+
+@(test)
+a_save_after_a_load_from_localappdata_goes_to_the_new_place_and_leaves_that_file :: proc(t: ^testing.T) {
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	old := local_old_place(files)
+	defer delete(old)
+	original := bank_text("My Linux Bank", {0, 2, 7})
+	put_file(t, old, original)
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, old), panel.Bank_Source.Saved)
+
+	edited := bank_text("My Linux Bank", {0, 2, 7, 9})
+	testing.expect(t, panel.bank_write_to(files.saved, edited), "the bank was not written")
+
+	testing.expect_value(t, bytes_of(files.saved), edited)
+	testing.expect_value(t, bytes_of(old), original)
 }
 
 @(test)

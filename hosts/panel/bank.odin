@@ -26,12 +26,13 @@ import "../../src/patch"
 // anyway.
 //
 // Elsewhere, where the platform keeps per-user data: $XDG_DATA_HOME, or
-// ~/.local/share without it. The only place this ever fell back to was a file
-// beside whatever the host's working directory happened to be, which is not
-// a place -- REAPER's is wherever it was launched from -- and a bank saved
-// there was gone the next time a project was opened from somewhere else. That
-// is why nothing is written there; the banks already there are another matter,
-// see bank_legacy_path.
+// ~/.local/share without it. Off Windows this used to follow LOCALAPPDATA when
+// it was set and otherwise fell back to a file beside whatever the host's
+// working directory happened to be, which is not a place -- REAPER's is
+// wherever it was launched from -- and a bank saved there was gone the next
+// time a project was opened from somewhere else. That is why nothing is
+// written to either any more; the banks already there are another matter, see
+// bank_legacy_path.
 bank_path :: proc(allocator := context.allocator) -> string {
 	local := os.get_env("LOCALAPPDATA", context.temp_allocator)
 	data := os.get_env("XDG_DATA_HOME", context.temp_allocator)
@@ -68,9 +69,12 @@ bank_path_in :: proc(windows: bool, local_app_data, xdg_data_home, home: string,
 	return joined
 }
 
-// Where the bank was before it had a place of its own. Off Windows that was a
-// file beside the host's working directory, and every build until the move
-// read the bank from there and wrote it there.
+// Where the bank was before it had a place of its own: exactly where the
+// build before the move looked for it. Under LOCALAPPDATA, on every platform,
+// whenever that variable was set, and a file beside the host's working
+// directory only when it was not. Linux and macOS users whose environment sets
+// it kept their bank there, and every build until the move read and wrote it
+// there.
 //
 // Read, never written. It is a poor place for a bank, which is why bank_path
 // stopped using it, but it is where somebody's bank already is. A build that
@@ -81,16 +85,28 @@ bank_path_in :: proc(windows: bool, local_app_data, xdg_data_home, home: string,
 // and nothing else: the file is not moved, copied or removed, the first save
 // goes to bank_path, and from then on that one is the bank.
 //
-// Nothing on Windows. The bank was under LOCALAPPDATA there, and a file in the
-// working directory was only ever read when that was empty, which is then
-// what bank_path answers anyway.
-bank_legacy_path :: proc "contextless" () -> string {
-	return bank_legacy_path_in(ODIN_OS == .Windows)
+// Nothing on Windows. The bank was under LOCALAPPDATA there, which is what
+// bank_path still answers, and the file in the working directory was only the
+// fallback for it being empty, which bank_path also still answers.
+bank_legacy_path :: proc(allocator := context.allocator) -> string {
+	local := os.get_env("LOCALAPPDATA", context.temp_allocator)
+	return bank_legacy_path_in(ODIN_OS == .Windows, local, allocator)
 }
 
-// The same, for either platform. Split out for the reason bank_path_in is.
-bank_legacy_path_in :: proc "contextless" (windows: bool) -> string {
-	return "" if windows else "user-bank.json"
+// The same, from what the environment said, for either platform. Split out for
+// the reason bank_path_in is. Always allocated, so that the caller deletes it
+// whichever of the three answers it is.
+bank_legacy_path_in :: proc(windows: bool, local_app_data: string, allocator := context.allocator) -> string {
+	if windows {
+		return strings.clone("", allocator)
+	}
+	if local_app_data != "" {
+		joined, err := filepath.join({local_app_data, "Quesynth", "user-bank.json"}, allocator)
+		if err == nil {
+			return joined
+		}
+	}
+	return strings.clone("user-bank.json", allocator)
 }
 
 // Load the saved bank, or the one compiled into the binary when there is none.
@@ -106,7 +122,9 @@ bank_legacy_path_in :: proc "contextless" (windows: bool) -> string {
 bank_load :: proc(slots: ^patch.Slots) -> Bank_Source {
 	path := bank_path()
 	defer delete(path)
-	return bank_load_from(path, slots, bank_legacy_path())
+	legacy := bank_legacy_path()
+	defer delete(legacy)
+	return bank_load_from(path, slots, legacy)
 }
 
 // The same, from a named file, and from `legacy` when there is none. Without
@@ -168,7 +186,9 @@ session_retry_from :: proc(s: ^Session, slots: ^patch.Slots, path: string, legac
 session_retry_saved :: proc(s: ^Session, slots: ^patch.Slots) -> (Restore_Result, bool) {
 	path := bank_path()
 	defer delete(path)
-	return session_retry_from(s, slots, path, bank_legacy_path())
+	legacy := bank_legacy_path()
+	defer delete(legacy)
+	return session_retry_from(s, slots, path, legacy)
 }
 
 // Write the bank out, creating the directory the first time.
