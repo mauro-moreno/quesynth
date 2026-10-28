@@ -142,14 +142,20 @@
       return exportFailed("export-bank", "ExportFailed", "Could not write the file: " + err.message);
     }
     var count = doc.patches.filter(Boolean).length;
+    // What an import cut off is not in the file, and an export that said
+    // nothing would pass it for the whole bank it was opened as.
+    var info = slots && slots.bankInfo ? slots.bankInfo(which === undefined ? slots.current() : which) : null;
+    var leftOut = info && info.leftOut > 0 ? info.leftOut : 0;
     // A person looking at an edited sound and pressing Export is owed knowing
     // the edit is not in the file.
     var unsaved = slots && slots.status && slots.status() === "dirty";
     var name = slots && slots.selection ? slots.selection().presetName : "";
     return reportOf({
       ok: true, action: "export-bank", name: doc.name, count: count, unsaved: !!unsaved,
-      warning: !!unsaved,
+      leftOut: leftOut, warning: !!unsaved || leftOut > 0,
       message: "Exported " + doc.name + " (" + count + (count === 1 ? " patch" : " patches") + ")." +
+        (leftOut ? " " + leftOut + (leftOut === 1 ? " patch of the original was" : " patches of the original were") +
+          " left out when it was opened." : "") +
         (unsaved ? " Unsaved changes to " + (name || "the sound") + " were not included." : ""),
     });
   }
@@ -283,7 +289,7 @@
   function addBank(label, patches, leftOut) {
     var slots = window.SynthBank;
     if (!slots || !slots.importBank) throw failure("UnsupportedFormat", "this build cannot hold several banks");
-    var added = slots.importBank(label, patches);
+    var added = slots.importBank(label, patches, leftOut);
     if (!added.ok) throw failure(added.error.code, added.error.message);
     var count = patches.filter(Boolean).length;
     return {

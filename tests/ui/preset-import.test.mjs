@@ -393,6 +393,45 @@ test("an export of an unedited sound has nothing to warn about", async () => {
   assert.equal(page.$("bank-status").getAttribute("data-kind"), "ok");
 });
 
+test("exporting a bank an import cut at 128 says so, as a warning, and does not present it as the whole", async () => {
+  const page = app();
+  await page.window.SynthPatchFile.importBytes(zip(patches(130)), "big.zip");
+  const at = plain(page.window.SynthBank.list()).findIndex(b => b.label === "big");
+  assert.equal(plain(page.window.SynthBank.bankInfo(at)).leftOut, 2, "the omission is kept on the bank, not only said once at import");
+
+  const result = page.window.SynthPatchFile.saveBank(at);
+  assert.deepEqual([result.ok, result.count, result.leftOut, result.warning], [true, 128, 2, true]);
+  assert.equal(result.message, "Exported big (128 patches). 2 patches of the original were left out when it was opened.");
+  assert.equal(page.text("bank-status"), result.message);
+  assert.equal(page.$("bank-status").getAttribute("data-kind"), "warn");
+  assert.equal(JSON.parse((await exported(page)).text).patches.length, 128, "and the file holds what the bank holds");
+});
+
+test("a folder cut at 128 warns on export, one patch short in the singular, and a bank that fit does not", async () => {
+  const page = app();
+  const files = n => patches(n).map(p => ({name: p.name, webkitRelativePath: `Dir/${p.name}`, bytes: p.bytes}));
+  await page.window.SynthPatchFile.importFolder(files(129));
+  const at = plain(page.window.SynthBank.list()).findIndex(b => b.label === "Dir");
+  const cut = page.window.SynthPatchFile.saveBank(at);
+  assert.equal(cut.message, "Exported Dir (128 patches). 1 patch of the original was left out when it was opened.");
+  assert.equal(cut.warning, true);
+
+  await page.window.SynthPatchFile.importFolder(files(128));
+  const whole = page.window.SynthPatchFile.saveBank(plain(page.window.SynthBank.list()).findIndex(b => b.label === "Dir 2"));
+  assert.equal(whole.message, "Exported Dir 2 (128 patches).");
+  assert.deepEqual([whole.warning, whole.leftOut], [false, 0]);
+  assert.equal(page.$("bank-status").getAttribute("data-kind"), "ok");
+});
+
+test("a bank read out of a zip of zips that held more than 128 warns on export too", async () => {
+  const page = app();
+  await page.window.SynthPatchFile.importBytes(nested({over: 4}), "collection.zip");
+  await new Promise(resolve => page.window.SynthBank.select(4, true, (err, state) => { if (state !== "loading") resolve(); }));
+  const result = page.window.SynthPatchFile.saveBank(4);
+  assert.equal(result.message, "Exported bankC (128 patches). 4 patches of the original were left out when it was opened.");
+  assert.equal(result.warning, true);
+});
+
 test("a bank that has not been opened is not exported as an empty one, and neither is a row of the archive", () => {
   const page = app();
   page.window.SynthBank.addLazy("Unopened", () => Promise.reject(new Error("must not be read")));

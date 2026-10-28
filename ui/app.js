@@ -3066,9 +3066,14 @@
     // A bank brought in from a file. The one thing it does is add a row: the
     // bank in view, the selection, the sound and the host are exactly as they
     // were, until somebody chooses something in it.
-    importBank: function (label, patches) {
+    //
+    // `leftOut` is how many patches the file held beyond a bank's 128. It stays
+    // on the bank, as it does for one read out of a zip of banks, so that an
+    // export of it cannot pass for the whole of what was opened.
+    importBank: function (label, patches, leftOut) {
       if (archive) return archiveBusy("import");
       var made = makeBank({ label: uniqueLabel(String(label || "Bank")), patches: patches }, "imported");
+      if (leftOut > 0) made.leftOut = leftOut;
       banks.push(made);
       refreshBrowser();
       return {

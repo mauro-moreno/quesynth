@@ -464,9 +464,12 @@ code, and the message it always had:
 
 A zip or a folder with more than 128 patches fills a bank with the first 128 --
 the archive's own order for a zip, the file names as numbers for a folder -- and
-reports "(N left out)". A zip of zips stays a list: no inner archive is read
-until somebody opens it. One `.sy1` or patch `.json` is not a bank; it becomes
-the sound, as a `file`. `tests/ui/preset-import.test.mjs` covers every row.
+reports "(N left out)". The number stays on the bank (`bankInfo(i).leftOut`),
+so exporting it later says "N patches of the original were left out when it
+was opened." as a warning rather than passing the 128 for the whole file. A zip
+of zips stays a list: no inner archive is read until somebody opens it. One
+`.sy1` or patch `.json` is not a bank; it becomes the sound, as a `file`.
+`tests/ui/preset-import.test.mjs` covers every row.
 
 ### Dialogs
 
