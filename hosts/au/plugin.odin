@@ -452,7 +452,9 @@ class_info_restore :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
 	key := au.CFStringCreateWithCString(nil, "data", au.CF_STRING_ENCODING_UTF8)
 	data := au.CFDictionaryGetValue(dict, key)
 	au.CFRelease(key)
-	if data == nil {
+	// A hand-edited or corrupt preset can hold anything under the key, and a
+	// CFData accessor on another type faults. It is treated as absent.
+	if data == nil || au.CFGetTypeID(data) != au.CFDataGetTypeID() {
 		return
 	}
 	ptr := au.CFDataGetBytePtr(data)
@@ -482,9 +484,16 @@ restore_selection :: proc "c" (s: ^AU, dict: au.CF_Dictionary_Ref) {
 	selection := au.CFDictionaryGetValue(dict, key)
 	au.CFRelease(key)
 
+	// What a selection that is not CFData stands in as: the trailer's tag and
+	// nothing after it, which the restore reads as an unreadable trailer, so
+	// it is refused with HostStateRejected and leaves the bank and the sound
+	// alone. Reading it as data would fault instead.
+	unreadable := panel.TRAILER_TAG
 	tail: []u8
 	if selection != nil {
-		if ptr := au.CFDataGetBytePtr(selection); ptr != nil {
+		if au.CFGetTypeID(selection) != au.CFDataGetTypeID() {
+			tail = unreadable[:]
+		} else if ptr := au.CFDataGetBytePtr(selection); ptr != nil {
 			tail = ptr[:int(au.CFDataGetLength(selection))]
 		}
 		editor_load_bank(s)
