@@ -457,6 +457,15 @@ bank was missing started on the compiled-in `Factory`, and when the file came
 back the host sent the user's bank beside it. Before this, a plain click on a
 `Factory` preset then replaced the user's bank file with `Factory`.
 
+Only a write asks the host to save. A load, a switch of bank, Load Factory /
+Init and the answer to a restore send the bank with `"save":false`, even when
+it is the bank the host keeps: the host plays it and embeds it in the project
+state, which is larger but restores the same, and its file is not touched.
+`"save":true` is sent for the kept bank by Write, Save, copy, move, clear and
+Keep, and by renaming it while it plays, because the name is stored with it.
+A host with no `"v":1` is still taken to keep bank zero, and is sent that bank
+to keep by the same writes and no longer by playing it again.
+
 ### Opening files
 
 An import validates the whole file before it touches anything, then adds one

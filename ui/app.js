@@ -2039,10 +2039,17 @@
   //                     (`persisted`); an older one is taken to keep bank zero,
   //                     which was the only bank it ever kept.
   //
+  // Playing a bank is not writing it, so `keep` is whether this send is a
+  // person's write of the bank's content. Only that may ask the host to save,
+  // and then only for the bank the host keeps. A load, a switch of bank or a
+  // restore is a send to play, never to save: one that said "save" for a
+  // bank that had been the host's file replaced the file on the way to
+  // playing a preset out of it, which nobody asked for.
+  //
   // The whole bank goes each time rather than a description of what moved.
   // Writing a patch is something a person does, one at a time, and a few tens
   // of kilobytes on that is nothing next to a second way of saying it.
-  function publishBank(rec) {
+  function publishBank(rec, keep) {
     rec = rec || bank;
     if (!rec || !window.SynthPatchFile || !window.SynthPatchFile.bankText) return;
     var at = banks.indexOf(rec);
@@ -2053,7 +2060,8 @@
     var text = window.SynthPatchFile.bankText(at);
     if (!text) return;
     var v1 = bridge.version() >= 1;
-    var save = !archive && (v1 ? rec.persisted === true : rec === banks[0]);
+    var save = keep === true && !archive &&
+      (v1 ? rec.persisted === true : rec === banks[0]);
     var msg = { type: "bank", text: text, save: save };
     if (v1) { msg.v = 1; msg.origin = rec.origin; }
     hostPlaying = rec;
@@ -2068,7 +2076,8 @@
 
   // Banks whose content just changed. The host's own bank is saved if it is
   // one of them, and because saving a bank makes the host play it, the bank the
-  // panel is actually playing from is sent again afterwards.
+  // panel is actually playing from is sent again afterwards, to be played and
+  // not saved unless it is itself one that changed.
   function publishChanged(recs) {
     var current = playingBank();
     var v1 = bridge.version() >= 1;
@@ -2079,8 +2088,10 @@
       if (r) r.edited = true;
       if (r && r !== current && others.indexOf(r) < 0 && v1 && r.persisted) others.push(r);
     });
-    others.forEach(function (r) { publishBank(r); });
-    if (recs.indexOf(current) >= 0 || others.length) publishBank(current);
+    others.forEach(function (r) { publishBank(r, true); });
+    if (recs.indexOf(current) >= 0 || others.length) {
+      publishBank(current, recs.indexOf(current) >= 0);
+    }
   }
 
   function flushStore() {
@@ -3131,7 +3142,8 @@
       var was = rec.label;
       rec.label = checked.label;
       if (selection.bank === was) selection.bank = checked.label;
-      if (rec === hostPlaying) publishBank(rec);
+      // The name is part of what a kept bank stores, so this one is a write.
+      if (rec === hostPlaying) publishBank(rec, true);
       paintStrip();
       refreshBrowser();
       return report({

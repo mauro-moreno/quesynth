@@ -206,3 +206,97 @@ test("the restore that brought the bank back is not itself a write", () => {
   page.send({type: "restore", v: 1, state: "restored", ...WANTED});
   assert.deepEqual(page.sent.filter(m => m.type === "bank"), [], "sent apart from the sync and the retry");
 });
+
+// ------------------------------------------- playing a bank is not writing it
+
+test("playing the bank the host keeps, after another, sends it to be played and not saved", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Factory", slot: 4});
+
+  page.forget();
+  assert.equal(api.loadPreset({bank: "Alfmeister Bank", slot: 0}).ok, true);
+  assert.deepEqual(banks(page), [["Alfmeister Bank", false]], "a load");
+
+  api.loadPreset({bank: "Factory", slot: 4});
+  page.forget();
+  api.select(at(page, "Alfmeister Bank"));
+  assert.deepEqual(banks(page), [["Alfmeister Bank", false]], "a switch of bank");
+
+  api.loadPreset({bank: "Factory", slot: 4});
+  api.select(at(page, "Alfmeister Bank"), true);
+  page.forget();
+  clickStep(page, 1);
+  assert.deepEqual(banks(page), [["Alfmeister Bank", false]], "NEXT");
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"], "it is still the one the host keeps");
+});
+
+test("Load Factory / Init after another bank was played does not save the host's Factory", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  for (const m of syncAnswer({label: "Quesynth Factory", names: ["Strings", "Brass", "Bells"], origin: "factory",
+    state: sound(99), restore: {type: "restore", v: 1, state: "failed", error: "MissingBank", recoverable: true, ...WANTED}})) {
+    page.send(m);
+  }
+  assert.deepEqual(persisted(page), ["Quesynth Factory"], "the host's Factory is the one it keeps");
+  const added = page.window.SynthBank.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  page.window.SynthBank.loadPreset({bank: added.index, slot: 0});
+  page.forget();
+
+  page.$("restore-factory").click();
+  assert.deepEqual(banks(page), [["Quesynth Factory", false]], "played, as the person chose");
+});
+
+test("a write of the bank the host keeps is still kept: Write, copy, move and clear", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Alfmeister Bank", slot: 0});
+
+  for (const [what, act] of [
+    ["Write", () => api.writePreset({bank: "Alfmeister Bank", slot: 3, name: "Filled"})],
+    ["copy", () => api.copySlot({bank: "Alfmeister Bank", slot: 0}, {bank: "Alfmeister Bank", slot: 10})],
+    ["move", () => api.moveSlot({bank: "Alfmeister Bank", slot: 10}, {bank: "Alfmeister Bank", slot: 17})],
+    ["clear", () => api.clear(17)],
+  ]) {
+    page.forget();
+    const done = act();
+    assert.ok(done === true || done.ok === true, what);
+    assert.deepEqual(saves(page), ["Alfmeister Bank"], what);
+  }
+});
+
+test("renaming the bank the host kept, while it plays, saves it under its new name", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  const api = page.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.loadPreset({bank: added.index, slot: 0});
+  api.keep();
+  page.send({type: "bank-saved", v: 1, ok: true, bank: "Third Party"});
+
+  page.forget();
+  assert.equal(api.renameBank(added.index, "Renamed").ok, true);
+  assert.deepEqual(banks(page), [["Renamed", true]]);
+
+  // One that is only being played is not kept by being called something else.
+  const other = api.importBank("Other", [{n: "Two", v: sound(2)}]);
+  api.loadPreset({bank: other.index, slot: 0});
+  page.forget();
+  api.renameBank(other.index, "Other Renamed");
+  assert.deepEqual(banks(page), [["Other Renamed", false]]);
+});
+
+test("a host that keeps only bank zero is not sent it to be saved by playing it again", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send({type: "bank", text: bankText("Quesynth Factory", HOST_FACTORY, 30)});
+  const api = page.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.loadPreset({bank: added.index, slot: 0});
+
+  page.forget();
+  api.loadPreset({bank: 0, slot: 1});
+  assert.deepEqual(banks(page), [["Quesynth Factory", false]], "a load");
+  assert.equal("v" in page.sent[0], false, "and still none of the version-1 fields");
+
+  page.forget();
+  api.writePreset({bank: 0, slot: 9, name: "Mine"});
+  assert.deepEqual(banks(page), [["Quesynth Factory", true]], "a write is");
+});
