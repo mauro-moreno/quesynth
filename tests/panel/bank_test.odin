@@ -131,3 +131,230 @@ a_retry_reads_the_saved_bank_file_for_the_bank_it_wants :: proc(t: ^testing.T) {
 	testing.expect_value(t, patch.slots_label(&inst.slots), "My Bank")
 	testing.expect_value(t, result.program, 7)
 }
+
+// -- the place the bank was kept before it had one ---------------------------
+//
+// Before the per-user directory the bank was a file beside the host's working
+// directory, and the Linux editors read and wrote it there. Somebody who has
+// one is not told to move it: a bank is read from where it is, so that
+// upgrading does not play the factory bank over the user's own.
+//
+// None of this names the process's working directory, which is the one thing
+// the old place depended on and the one thing a test cannot own: each test gets
+// a directory of its own and names both places in it.
+
+Bank_Files :: struct {
+	root:   string,
+	// Where the bank lives now. Its directory is not made until something is
+	// written, as on a machine that has never saved one.
+	saved:  string,
+	// Where it was.
+	legacy: string,
+}
+
+bank_files :: proc(t: ^testing.T) -> Bank_Files {
+	root, err := os.make_directory_temp("", "quesynth-bank-test-*", context.allocator)
+	testing.expect_value(t, err, nil)
+	join :: proc(parts: ..string) -> string {
+		joined, _ := filepath.join(parts, context.temp_allocator)
+		return joined
+	}
+	return Bank_Files{root = root, saved = join(root, "data", "Quesynth", "user-bank.json"), legacy = join(root, "cwd", "user-bank.json")}
+}
+
+bank_files_destroy :: proc(files: Bank_Files) {
+	os.remove_all(files.root)
+	delete(files.root)
+}
+
+// A file put where only a person or an older build would have put it.
+put_file :: proc(t: ^testing.T, path: string, text: string) {
+	if dir := filepath.dir(path); !os.exists(dir) {
+		testing.expect_value(t, os.make_directory_all(dir), nil)
+	}
+	testing.expect_value(t, os.write_entire_file(path, transmute([]u8)text), nil)
+}
+
+bytes_of :: proc(path: string) -> string {
+	data, _ := os.read_entire_file(path, context.temp_allocator)
+	return string(data)
+}
+
+@(test)
+a_bank_only_the_old_place_holds_is_the_saved_bank :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	// Interior empties, which are what a copy that compacted would lose.
+	text := bank_text("My Linux Bank", {0, 2, 7})
+	put_file(t, files.legacy, text)
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, files.legacy), panel.Bank_Source.Saved)
+
+	expected := new_instance(t, "My Linux Bank", {0, 2, 7}, .Saved)
+	defer free(expected)
+	testing.expect_value(t, patch.slots_label(slots), "My Linux Bank")
+	testing.expect_value(t, patch.slots_name(slots, 0), "My Linux Bank 0")
+	testing.expect_value(t, patch.slots_name(slots, 2), "My Linux Bank 2")
+	testing.expect_value(t, patch.slots_name(slots, 7), "My Linux Bank 7")
+	testing.expect(t, !slots.filled[1] && !slots.filled[3], "an empty slot between two filled ones was filled")
+	testing.expect(t, slots^ == expected.slots, "the bank that was read is not the bank that was in the file")
+
+	// Read, and nothing more: not moved, not copied, not rewritten.
+	testing.expect_value(t, bytes_of(files.legacy), text)
+	testing.expect(t, !os.exists(files.saved), "reading the old file made a new one")
+}
+
+// The objective, from the instance's side: a project saved before there was a
+// selection to save says nothing about its bank, so what a Program Change means
+// is whatever bank the instance starts with.
+@(test)
+a_program_change_after_the_upgrade_selects_out_of_the_users_own_bank :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	put_file(t, files.legacy, bank_text("My Linux Bank", {0, 2, 7}))
+
+	inst := new(Instance)
+	defer free(inst)
+	source := panel.bank_load_from(files.saved, &inst.slots, files.legacy)
+	panel.session_init(&inst.session, source)
+	panel.session_restore(&inst.session, &inst.slots, nil)
+	panel.session_select_slot(&inst.session, 2)
+
+	view := panel.selection_view(&inst.session.selection, &inst.slots)
+	testing.expect_value(t, view.origin, panel.Origin.User)
+	testing.expect_value(t, view.label, "My Linux Bank")
+	testing.expect_value(t, view.name, "My Linux Bank 2")
+
+	// And it is kept as the bank on this machine: named by a saved project,
+	// not carried in it.
+	saved := panel.session_trailer(&inst.session, &inst.slots)
+	defer delete(saved)
+	trailer, status := panel.trailer_decode(saved)
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, trailer.bank_saved && !trailer.embedded, "the bank was not treated as the user's saved bank")
+}
+
+@(test)
+the_file_at_the_new_place_wins_over_the_old_one :: proc(t: ^testing.T) {
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	put_file(t, files.legacy, bank_text("Old Place", {0, 1}))
+	put_file(t, files.saved, bank_text("New Place", {0, 3}))
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, files.legacy), panel.Bank_Source.Saved)
+	testing.expect_value(t, patch.slots_label(slots), "New Place")
+	testing.expect_value(t, patch.slots_name(slots, 3), "New Place 3")
+
+	// A retry reads in the same order.
+	other := new(patch.Slots)
+	defer free(other)
+	testing.expect(t, panel.bank_read_from(files.saved, other, files.legacy), "nothing was read")
+	testing.expect_value(t, patch.slots_label(other), "New Place")
+}
+
+@(test)
+with_neither_file_the_bank_is_the_built_in_one_and_nothing_is_made :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, files.legacy), panel.Bank_Source.Built_In)
+	testing.expect_value(t, patch.slots_label(slots), "Factory")
+
+	// A retry is looking for one bank, and leaves the playing one alone.
+	inst := new_instance(t, "Untouched", {0}, .Saved)
+	defer free(inst)
+	before := inst.slots
+	testing.expect(t, !panel.bank_read_from(files.saved, &inst.slots, files.legacy), "a bank was read from nothing")
+	testing.expect(t, inst.slots == before, "the slots changed")
+
+	testing.expect(t, !os.exists(files.saved) && !os.exists(files.legacy), "a load made a file")
+}
+
+// What happened before, and still does: a file that will not parse is as good
+// as none. It is a file at the new place, which is where this build keeps the
+// bank, so the old one is not a second opinion about it -- a bank from before
+// the move would be played over a newer one that only happens to be damaged,
+// and the next save would put it where the damaged one was.
+@(test)
+a_new_file_that_will_not_parse_is_not_a_reason_to_read_the_old_one :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	put_file(t, files.legacy, bank_text("Old Place", {0, 1}))
+	put_file(t, files.saved, "this is not json")
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, files.legacy), panel.Bank_Source.Built_In)
+	testing.expect_value(t, patch.slots_label(slots), "Factory")
+	testing.expect_value(t, bytes_of(files.saved), "this is not json")
+}
+
+// Windows never read a file beside the working directory unless LOCALAPPDATA
+// was empty, and then it was the only place there was. What is looked at is
+// decided by the platform and not by whether a file happens to be there.
+@(test)
+the_old_place_is_looked_at_off_windows_and_not_on_it :: proc(t: ^testing.T) {
+	testing.expect_value(t, panel.bank_legacy_path_in(true), "")
+	// Relative, as it was: the working directory is the point of it.
+	testing.expect_value(t, panel.bank_legacy_path_in(false), "user-bank.json")
+}
+
+@(test)
+a_retry_finds_a_bank_only_the_old_place_holds :: proc(t: ^testing.T) {
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+
+	inst := new_instance(t, "Factory", {0, 1, 7}, .Built_In)
+	defer free(inst)
+	panel.session_restore(&inst.session, &inst.slots, saved_trailer(.User, 7, "My Linux Bank", "My Linux Bank 7", bank_saved = true))
+
+	_, moved := panel.session_retry_from(&inst.session, &inst.slots, files.saved, files.legacy)
+	testing.expect(t, !moved, "the bank moved with nothing to read")
+	testing.expect_value(t, inst.session.restore_error, panel.Restore_Error.Missing_Bank)
+
+	// The user's bank was beside the host's working directory all along.
+	put_file(t, files.legacy, bank_text("My Linux Bank", {0, 2, 7}))
+	result, changed := panel.session_retry_from(&inst.session, &inst.slots, files.saved, files.legacy)
+
+	testing.expect(t, result.restored && changed, "the retry did not find the bank that is there")
+	testing.expect_value(t, patch.slots_label(&inst.slots), "My Linux Bank")
+	testing.expect_value(t, result.program, 7)
+	testing.expect_value(t, inst.session.bank_source, panel.Bank_Source.Saved)
+}
+
+// No migration, by anybody: the first write after a load from the old place
+// goes to the new one, where the bank now lives, and the old file is left for
+// the person who put it there.
+@(test)
+a_save_after_a_load_from_the_old_place_goes_to_the_new_place_and_leaves_the_old_one :: proc(t: ^testing.T) {
+	files := bank_files(t)
+	defer bank_files_destroy(files)
+	original := bank_text("My Linux Bank", {0, 2, 7})
+	put_file(t, files.legacy, original)
+
+	slots := new(patch.Slots)
+	defer free(slots)
+	testing.expect_value(t, panel.bank_load_from(files.saved, slots, files.legacy), panel.Bank_Source.Saved)
+
+	edited := bank_text("My Linux Bank", {0, 2, 7, 9})
+	testing.expect(t, panel.bank_write_to(files.saved, edited), "the bank was not written")
+
+	testing.expect_value(t, bytes_of(files.saved), edited)
+	testing.expect_value(t, bytes_of(files.legacy), original)
+
+	// And from then on the new one is the bank, edit and all.
+	again := new(patch.Slots)
+	defer free(again)
+	testing.expect_value(t, panel.bank_load_from(files.saved, again, files.legacy), panel.Bank_Source.Saved)
+	testing.expect_value(t, patch.slots_name(again, 9), "My Linux Bank 9")
+}

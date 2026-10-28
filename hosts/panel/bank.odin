@@ -29,7 +29,9 @@ import "../../src/patch"
 // ~/.local/share without it. The only place this ever fell back to was a file
 // beside whatever the host's working directory happened to be, which is not
 // a place -- REAPER's is wherever it was launched from -- and a bank saved
-// there was gone the next time a project was opened from somewhere else.
+// there was gone the next time a project was opened from somewhere else. That
+// is why nothing is written there; the banks already there are another matter,
+// see bank_legacy_path.
 bank_path :: proc(allocator := context.allocator) -> string {
 	local := os.get_env("LOCALAPPDATA", context.temp_allocator)
 	data := os.get_env("XDG_DATA_HOME", context.temp_allocator)
@@ -66,6 +68,31 @@ bank_path_in :: proc(windows: bool, local_app_data, xdg_data_home, home: string,
 	return joined
 }
 
+// Where the bank was before it had a place of its own. Off Windows that was a
+// file beside the host's working directory, and every build until the move
+// read the bank from there and wrote it there.
+//
+// Read, never written. It is a poor place for a bank, which is why bank_path
+// stopped using it, but it is where somebody's bank already is. A build that
+// did not look there would play the factory bank over it, and a Program Change
+// in a project saved before there was a selection to save -- which names no
+// bank to miss -- would pick the factory sound of that number where the user's
+// own used to be, with nothing to say so. So it is a second place to read from
+// and nothing else: the file is not moved, copied or removed, the first save
+// goes to bank_path, and from then on that one is the bank.
+//
+// Nothing on Windows. The bank was under LOCALAPPDATA there, and a file in the
+// working directory was only ever read when that was empty, which is then
+// what bank_path answers anyway.
+bank_legacy_path :: proc "contextless" () -> string {
+	return bank_legacy_path_in(ODIN_OS == .Windows)
+}
+
+// The same, for either platform. Split out for the reason bank_path_in is.
+bank_legacy_path_in :: proc "contextless" (windows: bool) -> string {
+	return "" if windows else "user-bank.json"
+}
+
 // Load the saved bank, or the one compiled into the binary when there is none.
 //
 // A file that will not parse is treated as absent rather than as an error. It
@@ -79,16 +106,17 @@ bank_path_in :: proc(windows: bool, local_app_data, xdg_data_home, home: string,
 bank_load :: proc(slots: ^patch.Slots) -> Bank_Source {
 	path := bank_path()
 	defer delete(path)
-	return bank_load_from(path, slots)
+	return bank_load_from(path, slots, bank_legacy_path())
 }
 
-// The same, from a named file.
+// The same, from a named file, and from `legacy` when there is none. Without
+// one, which is what the Audio Unit passes, `path` is the only place looked at.
 //
 // Split out so it can be checked without writing over the bank on the machine
 // running the check. A test that had to use the real path would either be a
 // test nobody dares run or a test that eats somebody's patches.
-bank_load_from :: proc(path: string, slots: ^patch.Slots) -> Bank_Source {
-	if bank_read_from(path, slots) {
+bank_load_from :: proc(path: string, slots: ^patch.Slots, legacy := "") -> Bank_Source {
+	if bank_read_from(path, slots, legacy) {
 		return .Saved
 	}
 	patch.slots_load_factory(slots)
@@ -98,7 +126,20 @@ bank_load_from :: proc(path: string, slots: ^patch.Slots) -> Bank_Source {
 // Read the saved bank if there is one, and leave `slots` alone if there is
 // not. What a retry wants: it is looking for one bank, and the factory one is
 // not it.
-bank_read_from :: proc(path: string, slots: ^patch.Slots) -> bool {
+//
+// `legacy` is read only when there is no file at `path`. A file that is there
+// and will not parse is not no file: it is where this build keeps the bank, and
+// an older one found beside it would be played over a newer one that is only
+// damaged, and written over it by the next save.
+bank_read_from :: proc(path: string, slots: ^patch.Slots, legacy := "") -> bool {
+	if legacy != "" && !os.exists(path) {
+		return read_bank_file(legacy, slots)
+	}
+	return read_bank_file(path, slots)
+}
+
+@(private)
+read_bank_file :: proc(path: string, slots: ^patch.Slots) -> bool {
 	data, read_err := os.read_entire_file(path, context.allocator)
 	if read_err != nil {
 		return false
@@ -115,18 +156,19 @@ bank_read_from :: proc(path: string, slots: ^patch.Slots) -> bool {
 }
 
 // A failed restore tried again, against the saved bank as the file holds it
-// now. The bank may have been put back since the state was loaded.
-session_retry_from :: proc(s: ^Session, slots: ^patch.Slots, path: string) -> (Restore_Result, bool) {
+// now. The bank may have been put back since the state was loaded. Looks where
+// bank_load_from does, in the same order, for the same reason.
+session_retry_from :: proc(s: ^Session, slots: ^patch.Slots, path: string, legacy := "") -> (Restore_Result, bool) {
 	saved := new(patch.Slots)
 	defer free(saved)
-	return session_retry(s, slots, saved if bank_read_from(path, saved) else nil)
+	return session_retry(s, slots, saved if bank_read_from(path, saved, legacy) else nil)
 }
 
 // The same, against this machine's saved bank.
 session_retry_saved :: proc(s: ^Session, slots: ^patch.Slots) -> (Restore_Result, bool) {
 	path := bank_path()
 	defer delete(path)
-	return session_retry_from(s, slots, path)
+	return session_retry_from(s, slots, path, bank_legacy_path())
 }
 
 // Write the bank out, creating the directory the first time.
