@@ -72,7 +72,7 @@ What each message of `ui/bridge.js` does here:
 |---|---|
 | `sync` | nothing; the page is sent `bank`, `state`, `patch`, `archive` (only from a daemon that shares one), `midi`, in that order |
 | `set` | `parameter.set <id> <value>` |
-| `state` | see below: dropped, `patch.load <k>`, or `patch.apply` then `patch.clear` |
+| `state` | see below: `patch.load <k>`, or `patch.apply` then `patch.clear` |
 | `edit` | nothing, by design: gesture brackets are for hosts that record automation, and the daemon records none |
 | `note` | `midi 144\|128 <note> <velocity>` (on the message's channel) |
 | `wheel` | pitch: `midi 224 <lsb> <msb>` (−1..1 onto 0..16383); mod: `midi 176 1 <0..127>` |
@@ -133,10 +133,12 @@ A `state` is a whole patch, and two things send one:
   `patch.load <slot> init` (only the TUI does), so the daemon names nothing.
 
 Adopting a bank sends nothing back: the page does not select a slot of it,
-load a patch or post its sound, so a `state` is always somebody's request. An
-older page echoed the bank's slot 0 (Init when slot 0 is empty) as a `state`,
-and the adapter still drops the first `state` equal to that sound within two
-seconds of each `bank` it sends; a page served from this tree never sends one.
+load a patch or post its sound, so a `state` is always somebody's request and
+is acted on, however soon after a `bank` it comes. Choosing slot 0 (or Init
+when slot 0 is empty) just after a bank arrived is `patch.load 0` (or
+`patch.apply` then `patch.clear`) like any other choice. The adapter serves the
+page it is tested with, so it keeps no allowance for an older page that echoed
+the bank's slot 0.
 
 A `bank` from the page is how the panel stores a patch (`SynthBank.store`): it
 posts the whole bank with one slot changed. When exactly one slot differs, it

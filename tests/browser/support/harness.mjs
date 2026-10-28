@@ -38,7 +38,6 @@ export async function startEnv(t, options = {}) {
     port: 0,
     pollMs: options.pollMs || 20,
     echoMs: options.echoMs,
-    adoptMs: options.adoptMs,
     requestTimeoutMs: options.requestTimeoutMs,
     log: message => logs.push(message),
   });

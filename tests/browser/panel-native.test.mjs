@@ -82,8 +82,8 @@ test("the real panel runs hosted on the daemon: synced, live both ways, and neve
   await sleep(150);
 
   // (a) Startup writes nothing but the volume. Adopting the daemon's bank
-  // used to select its slot 0 and send that sound back, which the adapter had
-  // to recognise and drop; the page now sends nothing for it at all.
+  // selects nothing and sends nothing, so the adapter has no reply to a bank
+  // to recognise: whatever state the page sends later is a person's.
   assert.deepEqual(writes(daemon), ["volume 640"]);
   assert.deepEqual(page.sent.map(m => m.type), ["sync", "volume"],
     "one sync and the startup volume: no state, no echo of the bank it was sent");
@@ -124,6 +124,21 @@ test("the real panel runs hosted on the daemon: synced, live both ways, and neve
   assert.equal(writes(daemon).at(-1), "patch.load 6");
   await until(() => shown() === "006:Organ", 3000, "the strip after NEXT");
   assert.deepEqual(Array.from(w.SynthPatch.values()), daemon.published.values);
+});
+
+test("choosing slot 0 of the daemon's bank at once loads it in the daemon", {
+  skip: !unix || typeof WebSocket !== "function",
+}, async t => {
+  const env = await startEnv(t);
+  const page = bootPanel(env.port);
+  t.after(() => page.close());
+  const w = page.window;
+  await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
+  // No wait: this is the moment the adapter used to be listening for an echo.
+  w.SynthBank.load(0);
+  await until(() => env.daemon.identity.slot === 0, 3000, "slot 0 to be the daemon's identity");
+  assert.deepEqual(writes(env.daemon).filter(line => !line.startsWith("volume")), ["patch.load 0"]);
+  assert.equal(w.document.getElementById("bank-patch").textContent, "000:" + env.daemon.bank.slots[0].name);
 });
 
 test("a fresh daemon plays Init, and the strip says so instead of the bank's first patch", {
