@@ -113,6 +113,16 @@ test("copying and moving into or out of the stale Factory keeps only the user's 
   assert.deepEqual(saves(page), ["Alfmeister Bank"], "a move changes both banks, and keeps the one that is kept");
 });
 
+test("a copy into the kept bank while another plays saves it, then plays what was playing", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Factory", slot: 4});
+
+  page.forget();
+  assert.equal(api.copySlot({bank: "Factory", slot: 1}, {bank: "Alfmeister Bank", slot: 3}).ok, true);
+  assert.deepEqual(banks(page), [["Alfmeister Bank", true], ["Factory", false]]);
+});
+
 test("a write into the user's bank is still kept, as that bank, with its interior empties", () => {
   const page = afterRetry();
   const wrote = plain(page.window.SynthBank.writePreset({bank: "Alfmeister Bank", slot: 3, name: "Filled"}));
