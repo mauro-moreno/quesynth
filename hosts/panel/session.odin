@@ -574,6 +574,14 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 	target := slots
 	candidate: ^patch.Slots
 	defer free(candidate)
+	// A state that names a bank and carries none is matched to the playing
+	// bank by name, whichever bank that is, and not only to the kept one: a
+	// Retry after the page handed the bank over since relies on the same
+	// match (session_retry). It binds a slot to a bank and nothing else --
+	// no bank is replaced and nothing is written, and a bank that is not the
+	// kept one stays one the host was handed, so the project still carries
+	// it. What a name is not enough for is being the kept bank: see
+	// session_set_bank.
 	if t.embedded {
 		parsed, err := patch.parse_bank_json(t.bank_json)
 		if err != .None {
