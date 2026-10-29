@@ -25,6 +25,14 @@ import synth "../../hosts/clap"
 // The per-user file is a temporary one named here and handed to the host's own
 // write, so nothing is written to the bank on the machine running the test, and
 // the file is read back from disk to see whether anything was written to it.
+//
+// The kept bank is told by what it holds as well as by its name. The page keeps
+// its banks' names unique only among the banks it lists, and after a reopen or
+// an offline and online it does not list the kept one, so a New bank can carry
+// the kept bank's name -- or the name Factory, while the compiled-in bank is
+// the kept one -- and a host that took the name for the bank saved the page's
+// next ordinary Write over the user's whole file, or brought the file back in
+// the place of the page's bank.
 
 @(private = "file", thread_local)
 kept_file: string
@@ -185,4 +193,88 @@ test_the_kept_bank_played_again_after_another_is_named_by_the_project_and_not_co
 	testing.expect(t, b.slots.filled[52], "a slot the file gained is empty after the reload")
 	testing.expect_value(t, b.session.bank_source, panel.Bank_Source.Saved)
 	testing.expect_value(t, file_text(), newer)
+}
+
+// The page's bank of a name the host also keeps, played after another, is a
+// bank the host was handed: not announced as kept, not written by the page's
+// next Write, and what a project brings back in place of the file.
+@(test)
+test_a_bank_with_the_kept_banks_name_is_not_kept_after_a_reopen_or_an_offline_online :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	original := bank_document("Alfmeister Bank", {0, 2, 7})
+	root := machine_with_a_saved_bank(t, original)
+	defer os.remove_all(root)
+
+	before, a := start_on_the_saved_bank(t)
+	if before == nil {return}
+	defer before.destroy(before)
+	host := editor_for(a)
+
+	// The editor was reopened while another bank played, so the page does not
+	// list the user's, and a New bank can be called what it is called.
+	panel.handle_message(&host, page_bank(bank_document("Third Party", {0, 1}), false, "imported"))
+	panel.handle_message(&host, page_bank(bank_document("Alfmeister Bank", {1, 3}), false, "user"))
+	panel.handle_message(&host, select_in_the_page("user", "Alfmeister Bank", 3, "Alfmeister Bank 3"))
+	testing.expect_value(t, a.session.bank_source, panel.Bank_Source.Adopted)
+	reopened := announced_bank(t, &host)
+	testing.expect(t, strings.has_suffix(reopened, `,"v":1,"origin":"user","readOnly":false,"kept":false}`), reopened)
+	panel.handle_message(&host, page_bank(bank_document("Alfmeister Bank", {1, 3, 4}), false, "user"))
+	testing.expect_value(t, file_text(), original)
+
+	saved := save_state(t, before)
+	defer delete(saved)
+	trailer, status := panel.trailer_decode(saved[synth.STATE_SIZE:])
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, trailer.embedded && !trailer.bank_saved, "the project does not carry the page's bank")
+
+	after, b := start_on_the_saved_bank(t)
+	if after == nil {return}
+	defer after.destroy(after)
+	testing.expect(t, load_saved(after, saved), "the saved state was refused")
+	testing.expect_value(t, b.session.restore, panel.Restore_State.Restored)
+	testing.expect_value(t, b.program, 3)
+	testing.expect(t, b.slots.filled[1] && b.slots.filled[3] && !b.slots.filled[2], "the user's file came back in place of the page's bank")
+	testing.expect_value(t, b.session.bank_source, panel.Bank_Source.Adopted)
+
+	host_again := editor_for(b)
+	back := announced_bank(t, &host_again)
+	testing.expect(t, strings.has_suffix(back, `,"v":1,"origin":"user","readOnly":false,"kept":false}`), back)
+	panel.handle_message(&host_again, page_bank(bank_document("Alfmeister Bank", {1, 3, 4, 5}), false, "user"))
+	testing.expect_value(t, file_text(), original)
+}
+
+// The same with no file on the machine: the compiled-in bank is the kept one,
+// and a New bank called Factory is not it.
+@(test)
+test_a_new_bank_called_factory_is_not_kept_after_a_reopen_or_an_offline_online :: proc(t: ^testing.T) {
+	patch.factory_prepare()
+	root := machine_with_a_saved_bank(t, "")
+	defer os.remove_all(root)
+	os.remove(kept_file)
+
+	before, a := start_on_the_saved_bank(t)
+	if before == nil {return}
+	defer before.destroy(before)
+	host := editor_for(a)
+	testing.expect_value(t, a.session.bank_source, panel.Bank_Source.Built_In)
+	opened := announced_bank(t, &host)
+	testing.expect(t, strings.has_suffix(opened, `,"v":1,"origin":"factory","readOnly":false,"kept":true}`), opened)
+
+	panel.handle_message(&host, page_bank(bank_document("Third Party", {0, 1}), false, "imported"))
+	panel.handle_message(&host, page_bank(bank_document("Factory", {0, 1}), false, "user"))
+	panel.handle_message(&host, select_in_the_page("user", "Factory", 1, "Factory 1"))
+	reopened := announced_bank(t, &host)
+	testing.expect(t, strings.has_suffix(reopened, `,"v":1,"origin":"user","readOnly":false,"kept":false}`), reopened)
+
+	saved := save_state(t, before)
+	defer delete(saved)
+	after, b := start_on_the_saved_bank(t)
+	if after == nil {return}
+	defer after.destroy(after)
+	testing.expect(t, b.slots.filled[2], "the instance does not start on the compiled-in bank, so this proves nothing")
+	testing.expect(t, load_saved(after, saved), "the saved state was refused")
+	testing.expect_value(t, b.program, 1)
+	testing.expect(t, !b.slots.filled[2], "the compiled-in bank came back in place of the page's")
+	testing.expect_value(t, b.session.bank_source, panel.Bank_Source.Adopted)
+	testing.expect_value(t, file_text(), "")
 }

@@ -193,9 +193,10 @@ returning_to_the_kept_bank_plays_it_again_and_embeds_nothing :: proc(t: ^testing
 	testing.expect_value(t, bytes_of(files.saved), newer)
 }
 
-// The rule is the label, which is the identity the trailer and a restore use,
-// and it is the page's to keep unique: it renames a second bank of a name that
-// is taken. A bank of any other name is a bank the host was handed.
+// The rule is the label and what the bank holds, so that a bank that only
+// shares the name is not taken for it (kept_content_test.odin). What is
+// recognised here is a bank of the kept one's name and content; a bank of any
+// other name is a bank the host was handed.
 @(test)
 only_the_bank_the_host_keeps_is_recognised_when_it_comes_back :: proc(t: ^testing.T) {
 	Case :: struct {

@@ -1,5 +1,7 @@
 package panel
 
+import "core:strings"
+
 import "../../src/patch"
 
 // Which preset an instance is playing, and what became of the last attempt to
@@ -205,10 +207,12 @@ Session :: struct {
 	bank_origin:     Origin,
 	bank_source:     Bank_Source,
 	// The bank this instance keeps -- the per-user file, or the compiled-in
-	// bank while there is none -- by name, for as long as another bank is the
-	// one being played. While the bank being played is the kept one it is
-	// that bank, and nothing here is read: see session_note_kept.
+	// bank while there is none -- by its name and by what it holds, for as
+	// long as another bank is the one being played. While the bank being
+	// played is the kept one it is that bank, and nothing here is read: see
+	// session_note_kept.
 	kept:            Text,
+	kept_hash:       u64,
 	kept_source:     Bank_Source,
 	restore:         Restore_State,
 	restore_error:   Restore_Error,
@@ -231,17 +235,75 @@ session_bank_kept :: proc "contextless" (s: ^Session) -> bool {
 	return s.bank_source != .Adopted
 }
 
+// What a bank holds, as a number: the filled flag of each of the hundred and
+// twenty-eight slots and, for a filled one, its name and ninety-nine values.
+// FNV-1a over 64 bits; it is a fingerprint for telling two banks apart, not a
+// defence against somebody forging one.
+//
+// A name is hashed as the page is told it and sends it back, not as it is
+// stored: a patch with no name is called Init by the host (patch.slots_name),
+// and the text the page is handed has every name trimmed, which is what
+// patch.slots_write_json writes. Hashing the stored name would make the host's
+// own copy of a bank differ from the page's copy of it, and the kept bank would
+// never be recognised again. A name already cut at forty-eight bytes is hashed
+// as it is cut, which is also what the page sends back.
+@(private)
+bank_fingerprint :: proc(slots: ^patch.Slots) -> u64 {
+	h := u64(14695981039346656037)
+	mix :: proc "contextless" (h: u64, b: u8) -> u64 {
+		return (h ~ u64(b)) * 1099511628211
+	}
+	mix_word :: proc "contextless" (h: u64, w: u32) -> u64 {
+		h := h
+		for shift in ([?]u32{0, 8, 16, 24}) {
+			h = mix(h, u8(w >> shift))
+		}
+		return h
+	}
+
+	for slot in 0 ..< patch.FACTORY_SLOTS {
+		if !slots.filled[slot] {
+			h = mix(h, 0)
+			continue
+		}
+		h = mix(h, 1)
+		name := strings.trim_space(patch.slots_name(slots, slot))
+		if name == "" {
+			name = "Init"
+		}
+		// Its length first, so that where one name ends and the values begin
+		// is not for the bytes to say.
+		h = mix_word(h, u32(len(name)))
+		for c in transmute([]u8)name {
+			h = mix(h, c)
+		}
+		for value in slots.values[slot] {
+			h = mix_word(h, u32(value))
+		}
+	}
+	return h
+}
+
 // Remember which bank is kept, before the bank being played stops being it.
 //
 // Called at the two places the playing bank is swapped for one that is only
-// played, while the old one is still in `slots`: that is the last time its name
-// can be had without a file to read it from, and it spares session_init a bank
-// to look at. Nothing to remember when the bank being played is already a
+// played, while the old one is still in `slots`: that is the last time it can
+// be had without a file to read it from, and it spares session_init a bank to
+// look at. Nothing to remember when the bank being played is already a
 // borrowed one -- the kept one was remembered when it was left.
+//
+// What is in `slots` while the bank is not a borrowed one is the kept bank as
+// the file holds it, or as the binary does: it was read from the file at the
+// start or by a retry, or it is what a write the disk took put there, and
+// nothing else changes `slots` in place. So noting it here is the same as
+// noting it wherever the kept bank is loaded or saved, and a save the disk
+// refused cannot have moved it: that bank was never played as the kept one,
+// and the one that was is noted before it is replaced.
 @(private)
 session_note_kept :: proc(s: ^Session, slots: ^patch.Slots) {
 	if s.bank_source != .Adopted {
 		text_set(&s.kept, patch.slots_label(slots))
+		s.kept_hash = bank_fingerprint(slots)
 		s.kept_source = s.bank_source
 	}
 }
@@ -361,15 +423,24 @@ session_set_bank :: proc(
 	}
 
 	// The kept bank coming back. The page sends a switch of bank to be played
-	// and not saved, even when it is to the bank the host keeps, so this is
-	// told from a bank the host was merely handed by its name -- the identity
-	// the trailer and a restore already use, and the page keeps its banks'
-	// names unique. It plays the page's copy, which may be older than the file;
-	// that is the last-writer-wins bank.odin documents, and it is not widened
-	// here. What is not done is treating the copy as a bank nothing else has:
-	// embedded in the project it replaced the file in every reload after it,
-	// and was then offered as the bank to save over it.
-	if !save && s.kept.len > 0 && text_get(&s.kept) == patch.slots_label(slots) {
+	// and not saved, even when it is to the bank the host keeps, so the host
+	// has to tell it from a bank it was merely handed. Not by its name: the
+	// page keeps its names unique only among the banks it lists, and after a
+	// reopen it does not list the kept one, so a New bank or an imported file
+	// can be called what the user's bank is -- or Factory -- and a host that
+	// took the name for the bank marked it kept, embedded nothing, and brought
+	// the file back in its place. By its name and by what it holds.
+	//
+	// It plays the page's copy, which is the kept bank's content if the page
+	// has not changed it, and then nothing differs from the file. A copy that
+	// is not the content the host noted -- the file changed since the page
+	// took it, or a bank that only shares the name -- stays a bank the host
+	// was handed: embedded in the project, announced as not kept, and never
+	// the one the page's Write asks to save. That is the price of never taking
+	// another bank for the file, and a stale copy of the kept bank pays it
+	// too; what a page that asks to save it anyway gets is its own explicit
+	// act, above.
+	if !save && s.kept.len > 0 && text_get(&s.kept) == patch.slots_label(slots) && s.kept_hash == bank_fingerprint(slots) {
 		s.bank_source = s.kept_source
 		s.bank_origin = .User if s.kept_source == .Saved else .Factory
 		return .Adopted
