@@ -432,7 +432,7 @@ refusal is `{ ok: false, error: { code, message } }`:
 |---|---|
 | `InvalidSlot` | not an integer 0..127, or not a bank that is open |
 | `ReadOnlyBank` | factory with nothing to keep it, archive, a bank not yet read, a move out of a read-only bank |
-| `InvalidName` | empty, control characters, or over 48 UTF-8 bytes (the host's limit: it truncates silently, so the panel refuses) |
+| `InvalidName` | empty, control characters, or over 48 UTF-8 bytes (the host's limit: it truncates silently, so the panel refuses); the same for a bank's name typed for New bank or Rename, and a name another open bank already has |
 | `OverwriteDenied` | the slot holds a sound and `overwrite` was not `true` |
 | `PersistenceFailed` | the host answered `bank-saved` with `ok: false`; the sound is in the bank here, the message says it is kept for this session only |
 
@@ -483,13 +483,26 @@ New bank, an imported file, or an older copy of the kept bank -- is one the
 host was handed, and travels with the project.
 `"save":true` is sent for the kept bank by Write, Save, copy, move, clear and
 Keep, and by renaming it while it plays, because the name is stored with it.
+
+The host holds a bank's label in 48 UTF-8 bytes too, cut at a character
+boundary, and names the bank by that label in `bank-saved`, `bank` and
+`patch`. So the page holds the same label: a name typed for New bank or
+Rename is refused over 48 bytes, and a name the page makes up -- after a
+file, a zip or a folder, Duplicate's `<name> copy`, the `Name 2` that keeps
+names apart -- is cut as the host cuts it, with room left for the suffix.
+Two banks are the same bank when their cut labels are, which is how a
+host's answer is matched and why no two open banks may share one. Holding
+the whole name made the answer to Keep of a long-named bank match nothing:
+the bank kept before stayed persisted, and its next Write replaced the file
+just kept.
 A host with no `"v":1` is still taken to keep bank zero, and is sent that bank
 to keep by the same writes and no longer by playing it again.
 
 ### Opening files
 
 An import validates the whole file before it touches anything, then adds one
-`imported` bank under a name that is not already taken (`Name 2`, `Name 3`), and
+`imported` bank under a name that is not already taken (`Name 2`, `Name 3`),
+cut to 48 bytes as the host would cut it, and
 that is all: not the bank in view, not the selection, not the sound, and nothing
 is sent to the host. A bad file leaves all of those as they were and fails with a
 code, and the message it always had:
@@ -583,7 +596,8 @@ The Banks pane lists every open bank with where it came from (`Factory`,
 it. The buttons beside it act on the bank in view and leave the sound, the
 selection and the host alone:
 
-- **New bank...** asks for a name and opens an empty bank of your own. The name
+- **New bank...** asks for a name of at most 48 UTF-8 bytes, the most the host
+  keeps, and opens an empty bank of your own. The name
   is a small form in the pane; Escape or Cancel closes the form and not the
   dialog, and a name the panel refuses is said beside it with the form kept.
 - **Import file...** and **Import folder...** add an `imported` bank (see
@@ -592,10 +606,12 @@ selection and the host alone:
   `SynthBrowser.importBank()` is the same file picker for the strip's menu,
   where a refusal is an alert. The archive path field and its Open and Close
   are as they were.
-- **Rename...** is for a bank of your own or one you opened. The factory bank,
-  a bank the host keeps, and an archive refuse in the panel's words.
+- **Rename...** is for a bank of your own or one you opened, to a name of at
+  most 48 bytes that no other open bank has. The factory bank, a bank the
+  host keeps, and an archive refuse in the panel's words.
 - **Duplicate** makes a writable `User` copy called `<name> copy` of a bank
-  that has been opened, a read-only one included.
+  that has been opened, a read-only one included; a long name is cut so that
+  ` copy` still fits in 48 bytes.
 - **Export bank** writes the stored slots of a bank that has been opened,
   interior empties kept, and says so when the sound has unsaved changes.
 - **Close bank** takes a bank out of the session: never the last one, never one
