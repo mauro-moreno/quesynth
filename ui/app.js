@@ -1555,16 +1555,19 @@
   }
 
   function bankByLabel(label) {
-    for (var i = 0; i < banks.length; i++) if (banks[i].label === label) return banks[i];
+    for (var i = 0; i < banks.length; i++) if (sameLabel(banks[i].label, label)) return banks[i];
     return null;
   }
 
   // Names are how the list is read, so two banks called the same thing would
-  // be two rows nobody can tell apart.
+  // be two rows nobody can tell apart -- and the host, which holds a label cut
+  // (cutLabel), could not tell which of two it was answering about. So the
+  // name is cut, and a suffix is made room for rather than cut off.
   function uniqueLabel(wanted, except) {
-    var name = wanted, n = 2;
-    while (banks.some(function (b) { return b !== except && b.label === name; })) {
-      name = wanted + " " + n++;
+    var base = cutLabel(wanted), name = base, n = 2;
+    while (banks.some(function (b) { return b !== except && sameLabel(b.label, name); })) {
+      var suffix = " " + n++;
+      name = cutLabel(base, NAME_MAX_BYTES - utf8Length(suffix)) + suffix;
     }
     return name;
   }
@@ -1593,7 +1596,7 @@
   function resolveBank(ref) {
     var rec = null, at = -1;
     if (typeof ref === "string") {
-      for (var i = 0; i < banks.length; i++) if (banks[i].label === ref) { rec = banks[i]; at = i; }
+      for (var i = 0; i < banks.length; i++) if (sameLabel(banks[i].label, ref)) { rec = banks[i]; at = i; }
       return rec ? { rec: rec, index: at } : null;
     }
     if (typeof ref !== "number" || ref % 1 !== 0 || ref < 0) return null;
@@ -1910,7 +1913,8 @@
 
   function receiveBankSaved(msg) {
     var label = typeof msg.bank === "string" ? msg.bank : "";
-    var at = pendingSaves.indexOf(label);
+    var at = -1;
+    pendingSaves.forEach(function (p, i) { if (at < 0 && sameLabel(p, label)) at = i; });
     if (at >= 0) pendingSaves.splice(at, 1);
     var rec = bankByLabel(label);
     if (msg.ok === true) {
@@ -1955,7 +1959,10 @@
     // panel keeps its own name, since the sound in the engine is still its own.
     var name = named ? msg.name : currentName;
     if (named) currentName = msg.name;
-    selection = makeSelection(origin, msg.bank, slot, name, msg.archive);
+    // The host names the bank by its cut label, and the selection by the row
+    // here, which everything after it compares with `===`.
+    var held = kind !== "archive" && typeof msg.bank === "string" ? bankByLabel(msg.bank) : null;
+    selection = makeSelection(origin, held ? held.label : msg.bank, slot, name, msg.archive);
     // A sound with no slot to compare against was whatever the host had just
     // sent; the `state` before this one, or the one after, is its baseline.
     if (storedValues(selection) === baseline) baseline = liveValues();
@@ -2304,6 +2311,34 @@
     return n;
   }
 
+  // `text` as the host stores a bank's label: at most `max` bytes of UTF-8,
+  // NAME_MAX_BYTES unless said, cut before the character that would not fit,
+  // as src/patch/slots.odin put_name cuts it. Every `bank-saved`, `bank` and
+  // `patch` names the bank by that label, so it is the label the page holds
+  // and matches by: one held whole matched none of them, and Keep left the
+  // bank kept before marked as kept, for the next Write to be saved over it.
+  function cutLabel(text, max) {
+    var room = max === undefined ? NAME_MAX_BYTES : max;
+    var n = 0, end = 0;
+    for (var i = 0; i < text.length; i = end) {
+      var c = text.charCodeAt(i), w = 3;
+      end = i + 1;
+      if (c < 0x80) w = 1;
+      else if (c < 0x800) w = 2;
+      else if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length &&
+               (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { w = 4; end = i + 2; }
+      if (n + w > room) return text.slice(0, i);
+      n += w;
+    }
+    return text;
+  }
+
+  // The same bank to the host. A label is long only if something put it
+  // there before labels were cut, or a host that does not cut sent it.
+  function sameLabel(a, b) {
+    return cutLabel(a) === cutLabel(b);
+  }
+
   // A name the host will store exactly as written.
   function checkName(raw) {
     if (typeof raw !== "string") return { error: "A name is text." };
@@ -2319,15 +2354,21 @@
     return { name: name };
   }
 
-  // A bank's name: anything readable. Banks come named after files, so there
-  // is no length to hold them to.
+  // A bank's name: anything readable that the host keeps as written. A name
+  // a person typed is refused over the host's limit rather than cut, as a
+  // preset's is; a name the page makes up is cut (uniqueLabel).
   function checkLabel(raw) {
     if (typeof raw !== "string") return { error: "A bank's name is text." };
     if (/[\u0000-\u001f\u007f-\u009f]/.test(raw)) {
       return { error: "A bank's name cannot contain control characters." };
     }
     var label = raw.trim();
-    return label ? { label: label } : { error: "A bank's name cannot be empty." };
+    if (!label) return { error: "A bank's name cannot be empty." };
+    var bytes = utf8Length(label);
+    if (bytes > NAME_MAX_BYTES) {
+      return { error: "That name is " + bytes + " bytes; the most a bank's name keeps is " + NAME_MAX_BYTES + "." };
+    }
+    return { label: label };
   }
 
   function slotWords(rec, slot) {
@@ -2604,7 +2645,7 @@
   }
 
   function bankIndexOf(label) {
-    for (var i = 0; i < banks.length; i++) if (banks[i].label === label) return i;
+    for (var i = 0; i < banks.length; i++) if (sameLabel(banks[i].label, label)) return i;
     return -1;
   }
 
@@ -3139,7 +3180,7 @@
       if (checked.label === rec.label) {
         return { ok: true, action: "rename-bank", index: found.index, label: rec.label };
       }
-      if (banks.some(function (b) { return b !== rec && b.label === checked.label; })) {
+      if (banks.some(function (b) { return b !== rec && sameLabel(b.label, checked.label); })) {
         return refusal("rename-bank", "InvalidName", "A bank called " + checked.label + " is already open.");
       }
       var was = rec.label;
@@ -3165,7 +3206,8 @@
         return refusal("duplicate-bank", "UnavailableSource", found.rec.label + " has not been opened.");
       }
       var made = makeBank({
-        label: uniqueLabel(found.rec.label + " copy"),
+        // Cut before " copy" rather than through it, so it still says so.
+        label: uniqueLabel(cutLabel(found.rec.label, NAME_MAX_BYTES - utf8Length(" copy")) + " copy"),
         patches: found.rec.patches.map(function (p) { return p ? copyPatch(p) : null; }),
       }, "user");
       banks.push(made);
