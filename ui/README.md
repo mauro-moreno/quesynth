@@ -483,6 +483,8 @@ New bank, an imported file, or an older copy of the kept bank -- is one the
 host was handed, and travels with the project.
 `"save":true` is sent for the kept bank by Write, Save, copy, move, clear and
 Keep, and by renaming it while it plays, because the name is stored with it.
+A host with no `"v":1` is still taken to keep bank zero, and is sent that bank
+to keep by the same writes and no longer by playing it again.
 
 The host holds a bank's label in 48 UTF-8 bytes too, cut at a character
 boundary, and names the bank by that label in `bank-saved`, `bank` and
@@ -495,8 +497,6 @@ host's answer is matched and why no two open banks may share one. Holding
 the whole name made the answer to Keep of a long-named bank match nothing:
 the bank kept before stayed persisted, and its next Write replaced the file
 just kept.
-A host with no `"v":1` is still taken to keep bank zero, and is sent that bank
-to keep by the same writes and no longer by playing it again.
 
 ### Opening files
 
