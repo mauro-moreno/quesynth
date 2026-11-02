@@ -2302,6 +2302,511 @@
           }
         }
       ]
+    },
+    {
+      "name": "keep-a-bank-with-a-long-name",
+      "about": [
+        "A bank opened from a file whose name is 63 bytes, kept. The host holds a",
+        "bank's label in 48 bytes, cut at a character boundary, and answers by that",
+        "label, so the page holds the bank under it too: the Keep goes out under the",
+        "cut label, the answer finds the bank, and it alone is persisted. A later",
+        "Write into the bank kept before is played and not saved. With the whole name",
+        "held the answer matched nothing, the old bank stayed persisted, and that",
+        "Write replaced the file just kept in REAPER 7.82."
+      ],
+      "host": {
+        "values": [
+          2,
+          1,
+          64,
+          81,
+          1,
+          64,
+          0,
+          0,
+          64,
+          0,
+          0,
+          64,
+          0,
+          0,
+          1,
+          0,
+          64,
+          32,
+          64,
+          99,
+          14,
+          128,
+          64,
+          0,
+          1,
+          64,
+          64,
+          107,
+          64,
+          107,
+          64,
+          1,
+          0,
+          11,
+          64,
+          8,
+          40,
+          20,
+          0,
+          0,
+          12,
+          2,
+          1,
+          64,
+          0,
+          0,
+          5,
+          1,
+          64,
+          64,
+          74,
+          74,
+          64,
+          64,
+          50,
+          64,
+          40,
+          1,
+          1,
+          0,
+          64,
+          64,
+          64,
+          64,
+          2,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          64,
+          0,
+          0,
+          22,
+          0,
+          0,
+          0,
+          64,
+          64,
+          64,
+          0,
+          66,
+          64,
+          24,
+          45057,
+          44,
+          45057,
+          43,
+          64,
+          0,
+          0,
+          2,
+          16,
+          0,
+          1,
+          1,
+          64
+        ],
+        "bank": {
+          "label": "My Bank",
+          "source": "saved",
+          "patches": [
+            {
+              "slot": 7,
+              "name": "Glass Pad"
+            }
+          ]
+        },
+        "saved_state": {
+          "origin": "user",
+          "slot": 7,
+          "bank": "My Bank",
+          "name": "Glass Pad",
+          "bank_saved": true
+        }
+      },
+      "exchanges": [
+        {
+          "page_does": {
+            "boot": true
+          },
+          "page_to_host": [
+            "{\"type\":\"sync\"}"
+          ],
+          "host_to_page": [
+            "{\"type\":\"bank\",\"text\":\"{\\n  \\\"format\\\": \\\"quesynth.bank\\\",\\n  \\\"version\\\": 1,\\n  \\\"name\\\": \\\"My Bank\\\",\\n  \\\"patches\\\": [\\n    null,\\n    null,\\n    null,\\n    null,\\n    null,\\n    null,\\n    null,\\n    {\\n      \\\"name\\\": \\\"Glass Pad\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 3,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 81,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 27,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    }\\n  ]\\n}\\n\",\"v\":1,\"origin\":\"user\",\"readOnly\":false,\"kept\":true}",
+            "{\"type\":\"state\",\"values\":[2,1,64,81,1,64,0,0,64,0,0,64,0,0,1,0,64,32,64,99,14,128,64,0,1,64,64,107,64,107,64,1,0,11,64,8,40,20,0,0,12,2,1,64,0,0,5,1,64,64,74,74,64,64,50,64,40,1,1,0,64,64,64,64,2,1,1,0,0,0,0,0,64,0,0,22,0,0,0,64,64,64,0,66,64,24,45057,44,45057,43,64,0,0,2,16,0,1,1,64]}",
+            "{\"type\":\"patch\",\"name\":\"Glass Pad\",\"index\":7,\"bank\":\"My Bank\",\"v\":1,\"origin\":\"user\"}",
+            "{\"type\":\"restore\",\"v\":1,\"state\":\"restored\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":7,\"name\":\"Glass Pad\"}"
+          ],
+          "host_effect": {
+            "selected": [],
+            "banks": [],
+            "selection": {
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "program": 7,
+            "restore": "restored",
+            "pending": false,
+            "bank_label": "My Bank",
+            "bank_origin": "user",
+            "values": [
+              2,
+              1,
+              64,
+              81,
+              1,
+              64,
+              0,
+              0,
+              64,
+              0,
+              0,
+              64,
+              0,
+              0,
+              1,
+              0,
+              64,
+              32,
+              64,
+              99,
+              14,
+              128,
+              64,
+              0,
+              1,
+              64,
+              64,
+              107,
+              64,
+              107,
+              64,
+              1,
+              0,
+              11,
+              64,
+              8,
+              40,
+              20,
+              0,
+              0,
+              12,
+              2,
+              1,
+              64,
+              0,
+              0,
+              5,
+              1,
+              64,
+              64,
+              74,
+              74,
+              64,
+              64,
+              50,
+              64,
+              40,
+              1,
+              1,
+              0,
+              64,
+              64,
+              64,
+              64,
+              2,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              64,
+              0,
+              0,
+              22,
+              0,
+              0,
+              0,
+              64,
+              64,
+              64,
+              0,
+              66,
+              64,
+              24,
+              45057,
+              44,
+              45057,
+              43,
+              64,
+              0,
+              0,
+              2,
+              16,
+              0,
+              1,
+              1,
+              64
+            ]
+          },
+          "page_effect": {
+            "protocol": 1,
+            "selection": {
+              "origin": "user",
+              "source": "bank",
+              "bank": "My Bank",
+              "slot": 7,
+              "presetName": "Glass Pad",
+              "archive": null
+            },
+            "status": "dirty",
+            "restore": {
+              "state": "restored",
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 7,
+              "name": "Glass Pad"
+            },
+            "strip": {
+              "bank-patch": "007:Glass Pad",
+              "bank-name": "My Bank",
+              "bank-origin": "User"
+            },
+            "banner": {
+              "visible": true,
+              "ok": "Restored User / My Bank / 007 Glass Pad",
+              "failed": null,
+              "missing": null
+            },
+            "sound": "host",
+            "index": 7,
+            "persisted": [
+              "My Bank"
+            ]
+          }
+        },
+        {
+          "page_does": {
+            "calls": [
+              {
+                "call": "SynthBank.importBank",
+                "args": [
+                  "Alfmeister Collected Pads and Strings Volume 2 Remastered 2026!",
+                  [
+                    {
+                      "n": "One",
+                      "v": [
+                        2,
+                        1,
+                        64,
+                        81,
+                        1,
+                        64,
+                        0,
+                        0,
+                        64,
+                        0,
+                        0,
+                        64,
+                        0,
+                        0,
+                        1,
+                        0,
+                        64,
+                        32,
+                        64,
+                        99,
+                        14,
+                        128,
+                        64,
+                        0,
+                        1,
+                        64,
+                        64,
+                        107,
+                        64,
+                        107,
+                        64,
+                        1,
+                        0,
+                        11,
+                        64,
+                        8,
+                        40,
+                        20,
+                        0,
+                        0,
+                        12,
+                        2,
+                        1,
+                        64,
+                        0,
+                        0,
+                        5,
+                        1,
+                        64,
+                        64,
+                        74,
+                        74,
+                        64,
+                        64,
+                        50,
+                        64,
+                        40,
+                        1,
+                        1,
+                        0,
+                        64,
+                        64,
+                        64,
+                        64,
+                        2,
+                        1,
+                        1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        64,
+                        0,
+                        0,
+                        22,
+                        0,
+                        0,
+                        0,
+                        64,
+                        64,
+                        64,
+                        0,
+                        66,
+                        64,
+                        24,
+                        45057,
+                        44,
+                        45057,
+                        43,
+                        64,
+                        0,
+                        0,
+                        2,
+                        16,
+                        0,
+                        1,
+                        1,
+                        64
+                      ]
+                    }
+                  ]
+                ]
+              },
+              {
+                "call": "SynthBank.select",
+                "args": [
+                  2,
+                  true
+                ]
+              },
+              {
+                "call": "SynthBank.keep",
+                "args": []
+              }
+            ]
+          },
+          "page_to_host": [
+            "{\"type\":\"bank\",\"text\":\"{\\n  \\\"format\\\": \\\"quesynth.bank\\\",\\n  \\\"version\\\": 1,\\n  \\\"name\\\": \\\"Alfmeister Collected Pads and Strings Volume 2 R\\\",\\n  \\\"patches\\\": [\\n    {\\n      \\\"name\\\": \\\"One\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 2,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 99,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 107,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    }\\n  ]\\n}\\n\",\"save\":true,\"v\":1,\"origin\":\"imported\"}"
+          ],
+          "host_to_page": [
+            "{\"type\":\"bank-saved\",\"v\":1,\"ok\":true,\"bank\":\"Alfmeister Collected Pads and Strings Volume 2 R\"}"
+          ],
+          "host_effect": {
+            "banks": [
+              {
+                "save": true,
+                "origin": "imported"
+              }
+            ],
+            "selected": [],
+            "bank_label": "Alfmeister Collected Pads and Strings Volume 2 R",
+            "bank_source": "saved"
+          },
+          "page_effect": {
+            "persisted": [
+              "Alfmeister Collected Pads and Strings Volume 2 R"
+            ],
+            "status_line": {
+              "text": "Kept Alfmeister Collected Pads and Strings Volume 2 R. Unsaved changes to Glass Pad were not included.",
+              "kind": "warn"
+            }
+          }
+        },
+        {
+          "page_does": {
+            "call": "SynthBank.writePreset",
+            "args": [
+              {
+                "bank": "My Bank",
+                "slot": 4,
+                "name": "Echo"
+              }
+            ]
+          },
+          "page_to_host": [
+            "{\"type\":\"bank\",\"text\":\"{\\n  \\\"format\\\": \\\"quesynth.bank\\\",\\n  \\\"version\\\": 1,\\n  \\\"name\\\": \\\"My Bank\\\",\\n  \\\"patches\\\": [\\n    null,\\n    null,\\n    null,\\n    null,\\n    {\\n      \\\"name\\\": \\\"Echo\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 2,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 99,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 107,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    },\\n    null,\\n    null,\\n    {\\n      \\\"name\\\": \\\"Glass Pad\\\",\\n      \\\"parameters\\\": {\\n        \\\"osc1 shape\\\": 3,\\n        \\\"osc2 shape\\\": 1,\\n        \\\"osc2 pitch\\\": 64,\\n        \\\"osc2 fine tune\\\": 81,\\n        \\\"osc2 kbd track\\\": 1,\\n        \\\"osc mix\\\": 64,\\n        \\\"osc2 sync\\\": 0,\\n        \\\"osc2 ring modulation\\\": 0,\\n        \\\"osc pulse width\\\": 64,\\n        \\\"osc key shift\\\": 0,\\n        \\\"osc mod env on/off\\\": 0,\\n        \\\"osc mod env amount\\\": 64,\\n        \\\"osc mod env attack\\\": 0,\\n        \\\"osc mod env decay\\\": 0,\\n        \\\"filter type\\\": 1,\\n        \\\"filter attack\\\": 0,\\n        \\\"filter decay\\\": 64,\\n        \\\"filter sustain\\\": 32,\\n        \\\"filter release\\\": 64,\\n        \\\"*filter freq\\\": 81,\\n        \\\"*filter resonance\\\": 14,\\n        \\\"filter amount\\\": 128,\\n        \\\"filter kbd track\\\": 64,\\n        \\\"filter saturation\\\": 0,\\n        \\\"filter velocity switch\\\": 1,\\n        \\\"amp attack\\\": 64,\\n        \\\"amp decay\\\": 64,\\n        \\\"amp sustain\\\": 107,\\n        \\\"amp release\\\": 64,\\n        \\\"amp gain\\\": 27,\\n        \\\"amp velocity sens\\\": 64,\\n        \\\"arpeggiator type\\\": 1,\\n        \\\"arpeggiator oct range\\\": 0,\\n        \\\"arpeggiator beat\\\": 11,\\n        \\\"arpeggiator gate\\\": 64,\\n        \\\"delay time\\\": 8,\\n        \\\"delay feedback\\\": 40,\\n        \\\"delay dry/wet\\\": 20,\\n        \\\"play mode type\\\": 0,\\n        \\\"portament time\\\": 0,\\n        \\\"pitch bend range\\\": 12,\\n        \\\"lfo1 destination\\\": 2,\\n        \\\"lfo1 type\\\": 1,\\n        \\\"lfo1 speed\\\": 64,\\n        \\\"lfo1 depth\\\": 0,\\n        \\\"osc1 FM\\\": 0,\\n        \\\"lfo2 destination\\\": 5,\\n        \\\"lfo2 type\\\": 1,\\n        \\\"lfo2 speed\\\": 64,\\n        \\\"lfo2 depth\\\": 64,\\n        \\\"midi ctrl sens1\\\": 74,\\n        \\\"midi ctrl sens2\\\": 74,\\n        \\\"chorus delay time\\\": 64,\\n        \\\"chorus depth\\\": 64,\\n        \\\"chorus rate\\\": 50,\\n        \\\"chorus feedback\\\": 64,\\n        \\\"chorus level\\\": 40,\\n        \\\"lfo1 on/off\\\": 1,\\n        \\\"lfo2 on/off\\\": 1,\\n        \\\"arpeggiator on/off\\\": 0,\\n        \\\"equalizer tone\\\": 64,\\n        \\\"equalizer freq\\\": 64,\\n        \\\"equalizer level\\\": 64,\\n        \\\"equalizer Q\\\": 64,\\n        \\\"chorus type\\\": 2,\\n        \\\"delay on/off\\\": 1,\\n        \\\"chorus on/off\\\": 1,\\n        \\\"lfo1 tempo sync\\\": 0,\\n        \\\"lfo1 key sync\\\": 0,\\n        \\\"lfo2 tempo sync\\\": 0,\\n        \\\"lfo2 key sync\\\": 0,\\n        \\\"osc mod dest\\\": 0,\\n        \\\"osc1,2 fine tune\\\": 64,\\n        \\\"unison mode\\\": 0,\\n        \\\"portament auto mode\\\": 0,\\n        \\\"unison detune\\\": 22,\\n        \\\"osc1 detune\\\": 0,\\n        \\\"effect on/off\\\": 0,\\n        \\\"effect type\\\": 0,\\n        \\\"effect control1\\\": 64,\\n        \\\"effect control2\\\": 64,\\n        \\\"effect level/mix\\\": 64,\\n        \\\"delay type\\\": 0,\\n        \\\"delay time spread\\\": 66,\\n        \\\"unison pan spread\\\": 64,\\n        \\\"unison pitch\\\": 24,\\n        \\\"midi ctrl src1\\\": 45057,\\n        \\\"midi ctrl assign1\\\": 44,\\n        \\\"midi ctrl src2\\\": 45057,\\n        \\\"midi ctrl assign2\\\": 43,\\n        \\\"pan\\\": 64,\\n        \\\"osc phase shift\\\": 0,\\n        \\\"unison phase shift\\\": 0,\\n        \\\"unison voice num\\\": 2,\\n        \\\"polyphony\\\": 16,\\n        \\\"osc1 sub gain\\\": 0,\\n        \\\"osc1 sub shape\\\": 1,\\n        \\\"osc1 sub octave\\\": 1,\\n        \\\"delay tone\\\": 64\\n      }\\n    }\\n  ]\\n}\\n\",\"save\":false,\"v\":1,\"origin\":\"user\"}",
+            "{\"v\":1,\"type\":\"select\",\"origin\":\"user\",\"bank\":\"My Bank\",\"slot\":4,\"name\":\"Echo\"}"
+          ],
+          "host_to_page": [],
+          "host_effect": {
+            "banks": [
+              {
+                "save": false,
+                "origin": "user"
+              }
+            ],
+            "selected": [
+              {
+                "origin": "user",
+                "bank": "My Bank",
+                "slot": 4,
+                "name": "Echo"
+              }
+            ],
+            "selection": {
+              "origin": "user",
+              "bank": "My Bank",
+              "slot": 4,
+              "name": "Echo"
+            },
+            "program": 4,
+            "bank_label": "My Bank",
+            "bank_origin": "user"
+          },
+          "page_effect": {
+            "persisted": [
+              "Alfmeister Collected Pads and Strings Volume 2 R"
+            ],
+            "status_line": {
+              "text": "Saved Echo to My Bank / 004.",
+              "kind": "ok"
+            }
+          }
+        }
+      ]
     }
   ]
 }
