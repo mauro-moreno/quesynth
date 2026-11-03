@@ -1441,8 +1441,28 @@ body.modal-open { overflow: hidden; }
   width: 100%;
 }
 
-/* The two panes. Their own row, because the save field sits under both. */
-.browser-panes {
+/* The dialog the browser lives in is the one people spend time in, so it is
+ * given room: wider than the other dialogs and a stable height, so that the
+ * list is the same size however many presets it holds. */
+.modal.modal-browser {
+  width: min(920px, 100%);
+  height: min(86vh, 700px);
+  max-height: 100%;
+}
+
+/* The sound that is playing, above the tabs and in both of them. The name leads
+ * and everything after it is quieter, so that it can be read at a glance and
+ * the rest only when it is wanted. */
+.browser-current {
+  flex: 0 0 auto;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--panel-edge);
+}
+
+/* The workspace and the details beside it: the workspace takes two parts in
+ * three, and what is chosen in it is read in the other one. Their own row,
+ * because the save field sits under both. */
+.browser-main {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -1530,7 +1550,7 @@ body.modal-open { overflow: hidden; }
 .browser-open { margin-top: 6px; color: var(--ink-faint); }
 
 .browser-slots {
-  flex: 1 1 auto;
+  flex: 2 1 0;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1613,7 +1633,7 @@ body.modal-open { overflow: hidden; }
 /* On a phone the two panes stack: sources across the top, slots below. */
 @media (max-width: 620px) {
   .modal { max-height: 88vh; }
-  .browser-panes { flex-direction: column; }
+  .browser-main { flex-direction: column; }
   .browser-sources {
     flex: 0 0 auto;
     max-height: 30vh;
@@ -1781,7 +1801,7 @@ body.modal-open { overflow: hidden; }
 }
 
 .browser-presets {
-  flex: 1 1 auto;
+  flex: 2 1 0;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1817,16 +1837,68 @@ body.modal-open { overflow: hidden; }
   border-color: var(--metal-dark);
 }
 
-/* What is playing, and what the list leaves out and why. Prose, so it wraps. */
+/* What is playing, and in what state. Prose, so it wraps; the name is the one
+ * thing in it that is not quiet. */
 .browser-now {
-  flex: 0 0 auto;
   margin: 0;
-  padding: 8px 14px;
+  line-height: 1.45;
   color: var(--ink-dim);
   overflow-wrap: anywhere;
-  border-bottom: 1px solid var(--panel-edge);
 }
-.browser-now[data-status="unavailable"] { color: var(--ink); }
+.browser-now-label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.browser-now-name {
+  font-size: var(--type-title);
+  color: var(--ink);
+}
+.browser-now[data-status="unavailable"] .browser-now-state { color: var(--ink); }
+
+/* The facts about the preset or the slot that has the attention, written out
+ * once so that the rows and the cells need not. */
+.browser-details {
+  flex: 1 1 0;
+  min-width: 200px;
+  max-width: 320px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-left: 1px solid var(--panel-edge);
+}
+.browser-details-toggle {
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 12px 16px 8px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.browser-details-toggle:hover { color: var(--ink); }
+.browser-details-body { padding: 0 16px 16px; }
+.browser-detail-name {
+  margin: 0 0 10px;
+  font-size: var(--type-title);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.browser-detail-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+}
+.browser-detail-facts dt { color: var(--ink-faint); }
+.browser-detail-facts dd { margin: 0; color: var(--ink-dim); overflow-wrap: anywhere; }
 .browser-notes:empty { display: none; }
 .browser-note {
   margin: 0;

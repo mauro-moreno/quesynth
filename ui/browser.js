@@ -81,6 +81,11 @@
     return b;
   }
 
+  // One id for each thing a button controls, so that two browsers open at once
+  // -- a destination chosen over the browser -- never share one.
+  var serial = 0;
+  function uid(prefix) { return prefix + "-" + (++serial); }
+
   // ------------------------------------------- favourites and recently used
   //
   // The person's habits, and nothing else's business. They are kept apart from
@@ -283,11 +288,26 @@
     wrap.setAttribute("data-mode", mode);
 
     var tabs = null;
-    var panes = element("div", "browser-panes");
+    var main = element("div", "browser-main");
     var left = element("div", "browser-sources");
     var right = element("div", "browser-slots");
-    panes.appendChild(left);
-    panes.appendChild(right);
+    main.appendChild(left);
+    main.appendChild(right);
+
+    // The sound that is playing, above everything and in both views: the
+    // question the person arrives with is "what am I on?", and it should not
+    // take reading a list of banks to answer it. Choosing somewhere to put a
+    // sound is not that question, so a destination has no such header.
+    var now = null;
+    if (!picking) {
+      var current = element("div", "browser-current");
+      current.setAttribute("role", "group");
+      current.setAttribute("aria-label", "Current sound");
+      now = element("p", "browser-now");
+      now.setAttribute("role", "status");
+      current.appendChild(now);
+      wrap.appendChild(current);
+    }
 
     // What the last thing said, where it is read. The strip says it too, but
     // the strip is behind the dialog: a refusal nobody can see is the one way
@@ -849,6 +869,8 @@
 
       right.appendChild(grid);
       layoutGrid(grid, slots.length);
+      paintNow();
+      paintSlotDetails(slots, here);
 
       var on = grid.querySelector(".browser-slot.on, .browser-slot.target");
       if (on) setTimeout(function () { on.scrollIntoView({ block: "center" }); }, 0);
@@ -1027,10 +1049,6 @@
       bar.appendChild(filters);
       right.appendChild(bar);
 
-      parts.now = element("p", "browser-now");
-      parts.now.setAttribute("role", "status");
-      right.appendChild(parts.now);
-
       parts.notes = element("div", "browser-notes");
       right.appendChild(parts.notes);
 
@@ -1077,6 +1095,7 @@
           other.children[i].setAttribute("tabindex", on ? "0" : "-1");
         }
       });
+      paintPresetDetails();
       var goal = onStar && row.children[1] ? row.children[1] : row.children[0];
       goal.focus();
       if (goal.scrollIntoView) goal.scrollIntoView({ block: "nearest" });
@@ -1119,12 +1138,21 @@
       return null;
     }
 
-    function paintNow(sel) {
+    // The header: what is playing, from where, and in what state, in the words
+    // the strip and the status line use. The name leads and the rest is quiet;
+    // a state is words, not a badge, because it is true of the sound and not a
+    // label on a row.
+    function paintNow() {
+      if (!now) return;
+      var sel = api().selection();
       var status = api().status();
       var at = sel.slot !== null ? pad3(sel.slot) + " " : sel.archive ? pad3(sel.archive.patch) + " " : "";
       var origin = sel.origin === "session" ? "Unsaved" : api().originLabel(sel.origin);
-      var words = ["Playing " + at + (sel.presetName || "Untitled") + " · " + origin +
-        (sel.bank ? " / " + sel.bank : "")];
+      now.textContent = "";
+      now.appendChild(element("span", "browser-now-label", "Playing "));
+      now.appendChild(element("span", "browser-now-name", at + (sel.presetName || "Untitled")));
+      now.appendChild(element("span", "browser-now-where", " · " + origin + (sel.bank ? " / " + sel.bank : "")));
+      var words = [];
       if (status === "loading") words.push("Loading…");
       if (status === "unavailable") {
         var why = api().restoreState().error;
@@ -1132,8 +1160,10 @@
       }
       if (status === "dirty") words.push("Unsaved changes");
       if (api().readOnly()) words.push("Read-only");
-      parts.now.textContent = words.join(" · ");
-      parts.now.setAttribute("data-status", status);
+      words.forEach(function (word) {
+        now.appendChild(element("span", "browser-now-state", " · " + word));
+      });
+      now.setAttribute("data-status", status);
     }
 
     // What the list does not contain, and why. A search that quietly left out
@@ -1211,7 +1241,9 @@
       parts.count.textContent = list.length + (list.length === 1 ? " preset" : " presets");
       parts.empty.textContent = emptyWords();
       parts.empty.hidden = list.length > 0;
-      paintNow(sel);
+      parts.focusAt = focusAt;
+      paintNow();
+      paintPresetDetails();
       paintNotes();
       if (held && held.key) {
         rowList().forEach(function (row) {
@@ -1226,6 +1258,94 @@
         var on = parts.results.querySelector(".browser-result.on");
         if (on) setTimeout(function () { on.scrollIntoView({ block: "center" }); }, 0);
       }
+    }
+
+    // ------------------------------------------------------ the details
+
+    // What the row or the slot that has the attention is, said once and at
+    // length, so that the rows and the cells can say less. The one place the
+    // facts about a sound that are not its name are written out: where it
+    // came from, which bank, which slot, and what state it is in.
+    //
+    // Open beside the list where there is room for it, shut under the list
+    // where there is not, and a button either way: it is the thing a person
+    // asks for, not the thing they must read past.
+    var detailsId = uid("browser-details");
+    var details = element("aside", "browser-details");
+    details.setAttribute("aria-label", "Details");
+    var detailsToggle = button("browser-details-toggle", "Details");
+    detailsToggle.setAttribute("aria-controls", detailsId);
+    var detailsBody = element("div", "browser-details-body");
+    detailsBody.id = detailsId;
+    var detailName = element("p", "browser-detail-name");
+    var detailFacts = element("dl", "browser-detail-facts");
+    detailsBody.appendChild(detailName);
+    detailsBody.appendChild(detailFacts);
+    details.appendChild(detailsToggle);
+    details.appendChild(detailsBody);
+
+    function setDetailsOpen(open) {
+      detailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      detailsBody.hidden = !open;
+    }
+    setDetailsOpen(!(window.matchMedia && window.matchMedia("(max-width: 620px)").matches));
+    detailsToggle.addEventListener("click", function () { setDetailsOpen(detailsBody.hidden); });
+
+    // `model`: { name, facts: [[label, value], ...] }. A fact with nothing to
+    // say is left out rather than shown as a dash.
+    function showDetails(model) {
+      detailName.textContent = model.name;
+      detailFacts.textContent = "";
+      model.facts.forEach(function (fact) {
+        if (!fact[1]) return;
+        detailFacts.appendChild(element("dt", null, fact[0]));
+        detailFacts.appendChild(element("dd", null, fact[1]));
+      });
+    }
+
+    // The preset the list has its attention on: the one the arrows reached or
+    // that was clicked, and failing that the one that is playing.
+    function paintPresetDetails() {
+      if (picking || !parts) return;
+      var p = shownByKey[activeKey] || shownByKey[parts.focusAt];
+      if (!p) {
+        showDetails({ name: "No preset selected", facts: [] });
+        return;
+      }
+      var at = positionOf(p);
+      var status = [];
+      if (isPlaying(p, api().selection())) status.push("Playing");
+      if (isPending(p)) status.push("Loading…");
+      if (p.unavailable) status.push("Unavailable");
+      if (p.readOnly) status.push("Read-only");
+      showDetails({
+        name: p.name,
+        facts: [
+          ["Source", p.origin === "session" ? "Unsaved" : api().originLabel(p.origin)],
+          ["Bank", p.bank],
+          [p.archive ? "Patch" : "Slot", at !== null ? pad3(at) : ""],
+          ["Status", status.join(" · ")],
+        ],
+      });
+    }
+
+    // The slot that is playing, in the bank in view.
+    function paintSlotDetails(slots, here) {
+      if (picking) return;
+      var row = viewRow();
+      var slot = here >= 0 ? slots[here] : null;
+      var status = [];
+      if (here >= 0) status.push("Playing");
+      if (row && row.readOnly) status.push("Read-only");
+      showDetails({
+        name: here < 0 ? "No slot selected" : slot ? slot.name : "Empty slot",
+        facts: [
+          ["Source", row ? api().originLabel(row.origin) : ""],
+          ["Bank", row ? row.label : ""],
+          ["Slot", here >= 0 ? pad3(here) : ""],
+          ["Status", status.join(" · ")],
+        ],
+      });
     }
 
     // ------------------------------------------------------------- the rest
@@ -1291,7 +1411,8 @@
       right.setAttribute("role", "tabpanel");
       wrap.appendChild(tabs);
     }
-    wrap.appendChild(panes);
+    wrap.appendChild(main);
+    if (!picking) main.appendChild(details);
 
     // Put the sound that is playing in the slot that is chosen, or ask first.
     //
@@ -1456,7 +1577,7 @@
       });
     }
 
-    window.SynthModal.show("Patches", body, actions, { onClose: body.dispose });
+    window.SynthModal.show("Patches", body, actions, { className: "modal-browser", onClose: body.dispose });
     if (view === "presets") body.focusSearch();
   }
 
@@ -1474,6 +1595,7 @@
     var body = build(mode);
     window.SynthModal.show(mode === "saveas" ? "Save As" : "Write", body,
       [{ label: "Cancel", onClick: function (close) { close(); } }], {
+        className: "modal-browser",
         onClose: function () {
           body.dispose();
           if (inPage && !body.wrote() && api().current() !== was) api().select(was, true);
@@ -1496,6 +1618,7 @@
       { label: "Cancel", onClick: function (close) { close(); } },
       { label: verb + " here", primary: true, onClick: function () { body.commit(); } },
     ], {
+      className: "modal-browser",
       stacked: true,
       onClose: function () {
         body.dispose();
