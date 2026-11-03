@@ -950,14 +950,22 @@
       if (p.unavailable) option.setAttribute("aria-disabled", "true");
       if (isPending(p)) option.setAttribute("aria-busy", "true");
 
+      // A row says a number, a name and one quiet line under the name of where
+      // it is. What a sound is in more detail is in the details region; what
+      // is true of it that the line should not hide -- it cannot be written
+      // to, it is loading, it is not there -- is words on that line or, for
+      // the two that change what a click does, a badge at the end.
       var at = positionOf(p);
       option.appendChild(element("span", "browser-result-num", at !== null ? pad3(at) : ""));
-      option.appendChild(element("span", "browser-result-name", p.name));
+      var text = element("span", "browser-result-text");
+      text.appendChild(element("span", "browser-result-name", p.name));
       var origin = p.origin === "session" ? "Unsaved" : api().originLabel(p.origin);
-      var meta = element("span", "browser-result-meta",
-        origin + (p.bank ? (origin ? " / " : "") + p.bank : ""));
-      option.appendChild(meta);
-      if (p.readOnly) option.appendChild(element("span", "browser-badge", "Read-only"));
+      var line = element("span", "browser-result-line");
+      line.appendChild(element("span", "browser-result-meta",
+        origin + (p.bank ? (origin ? " / " : "") + p.bank : "")));
+      if (p.readOnly) line.appendChild(element("span", "browser-result-state", "Read-only"));
+      text.appendChild(line);
+      option.appendChild(text);
       if (isPending(p)) option.appendChild(element("span", "browser-badge", "Loading…"));
       if (p.unavailable) option.appendChild(element("span", "browser-badge", "Unavailable"));
       option.addEventListener("click", function () { choose(p); });
@@ -1279,8 +1287,10 @@
     detailsBody.id = detailsId;
     var detailName = element("p", "browser-detail-name");
     var detailFacts = element("dl", "browser-detail-facts");
+    var detailActions = element("div", "browser-detail-actions");
     detailsBody.appendChild(detailName);
     detailsBody.appendChild(detailFacts);
+    detailsBody.appendChild(detailActions);
     details.appendChild(detailsToggle);
     details.appendChild(detailsBody);
 
@@ -1301,6 +1311,13 @@
         detailFacts.appendChild(element("dt", null, fact[0]));
         detailFacts.appendChild(element("dd", null, fact[1]));
       });
+      // The actions are made afresh for what has the attention, so the one
+      // that had the focus is found again, as the rows' are after a repaint.
+      var kept = keep(detailActions);
+      detailActions.textContent = "";
+      (model.actions || []).forEach(function (action) { detailActions.appendChild(action); });
+      detailActions.hidden = !detailActions.children.length;
+      give(detailActions, kept);
     }
 
     // The preset the list has its attention on: the one the arrows reached or
@@ -1313,11 +1330,28 @@
         return;
       }
       var at = positionOf(p);
+      var sel = api().selection();
+      var playing = isPlaying(p, sel);
       var status = [];
-      if (isPlaying(p, api().selection())) status.push("Playing");
+      if (playing) status.push("Playing");
       if (isPending(p)) status.push("Loading…");
       if (p.unavailable) status.push("Unavailable");
       if (p.readOnly) status.push("Read-only");
+      var actions = [];
+      // Loading what the arrows have reached, for a person who has not got
+      // Enter to hand. Not offered for what cannot be loaded or is already
+      // the sound, which a click would only say.
+      if (!playing && !p.unavailable && !p.live && !isPending(p)) {
+        var load = button("browser-action", "Load");
+        load.setAttribute("aria-label", "Load " + p.name);
+        load.addEventListener("click", function () {
+          choose(p);
+          // The button is not there once the sound is: the row is.
+          var row = activeRow();
+          if (row) focusRow(row);
+        });
+        actions.push(load);
+      }
       showDetails({
         name: p.name,
         facts: [
@@ -1326,6 +1360,7 @@
           [p.archive ? "Patch" : "Slot", at !== null ? pad3(at) : ""],
           ["Status", status.join(" · ")],
         ],
+        actions: actions,
       });
     }
 
