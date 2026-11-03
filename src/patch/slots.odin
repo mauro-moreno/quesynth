@@ -33,6 +33,13 @@ Slots :: struct {
 @(private = "file")
 put_name :: proc "contextless" (into: ^[SLOT_NAME_MAX]u8, length: ^int, text: string) {
 	n := min(len(text), SLOT_NAME_MAX)
+	// Not through the middle of a character. A name cut there is not UTF-8,
+	// and it goes on to be sent to the panel and written into saved states,
+	// where a reader that wants text refuses it -- which for a bank's label
+	// meant a project that could never find its bank again.
+	for n > 0 && n < len(text) && text[n] & 0xC0 == 0x80 {
+		n -= 1
+	}
 	for i in 0 ..< n {
 		into[i] = text[i]
 	}

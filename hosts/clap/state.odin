@@ -5,6 +5,7 @@ import "core:os"
 
 import "../../src/clap"
 import "../../src/patch"
+import "../panel"
 
 // State and preset loading. Both are [main-thread] in CLAP, which is what makes
 // the file read below legal: the audio thread never opens anything.
@@ -26,6 +27,14 @@ import "../../src/patch"
 // deliberately outside their own state table -- parameter 21's reference
 // default is 128 in a 128-state table -- and normalising those on the way
 // through would quietly change the sound of a restored session.
+//
+// After the values, when the instance knows which preset it is on, there is a
+// trailer saying so: hosts/panel/trailer.odin. The version above is not
+// bumped for it. Every build that has ever read this blob stops at the last
+// value, so a project saved now still loads in one of those and an older
+// project loads here as a state with no trailer; a new version number would
+// have made the first of those a refusal. STATE_SIZE is the size of the
+// values, not of the whole blob.
 STATE_MAGIC :: [4]u8{'S', '1', 'O', 'D'}
 STATE_VERSION :: u32(1)
 STATE_HEADER_SIZE :: 12
@@ -91,31 +100,35 @@ state_encode :: proc "contextless" (values: [PARAM_COUNT]i32) -> [STATE_SIZE]u8 
 	return buffer
 }
 
-// Read a state blob into a set of its own, without touching the instrument.
+// Read a state blob's values into a set of their own, without touching the
+// instrument.
 //
 // A foreign magic, another version, or a stream that ends before the header or
 // before the shared values is refused. Nothing else is: no trailing data is
 // required, and the declared count is only ever an upper bound on how much is
-// read -- never a size to allocate or to trust.
-state_read :: proc "contextless" (stream: ^clap.Istream) -> (values: [PARAM_COUNT]i32, ok: bool) {
+// read -- never a size to allocate or to trust. `surplus` is how many values
+// the blob has past the ones this build reads, for whatever follows them to be
+// found.
+state_read :: proc "contextless" (stream: ^clap.Istream) -> (values: [PARAM_COUNT]i32, surplus: int, ok: bool) {
 	header: [STATE_HEADER_SIZE]u8
 	if !stream_read_all(stream, header[:]) {
-		return {}, false
+		return {}, 0, false
 	}
 	magic := STATE_MAGIC
 	for i in 0 ..< 4 {
 		if header[i] != magic[i] {
-			return {}, false
+			return {}, 0, false
 		}
 	}
 	if get_u32(header[4:]) != STATE_VERSION {
-		return {}, false
+		return {}, 0, false
 	}
 
-	shared := int(min(get_u32(header[8:]), u32(PARAM_COUNT)))
+	declared := get_u32(header[8:])
+	shared := int(min(declared, u32(PARAM_COUNT)))
 	body: [PARAM_COUNT * 4]u8
 	if !stream_read_all(stream, body[:shared * 4]) {
-		return {}, false
+		return {}, 0, false
 	}
 	for i in 0 ..< PARAM_COUNT {
 		if i < shared {
@@ -124,7 +137,42 @@ state_read :: proc "contextless" (stream: ^clap.Istream) -> (values: [PARAM_COUN
 			values[i] = i32(patch.PARAMETERS[i].default)
 		}
 	}
-	return values, true
+	return values, int(declared) - shared if declared > u32(PARAM_COUNT) else 0, true
+}
+
+// Whatever follows the values, as far as a trailer can be: skips the values a
+// bigger build wrote, then reads at most the most a trailer can be.
+//
+// Read in chunks and never at a size the stream declares. A stream that ends
+// early, or fails, simply ends the tail there, and what is read is for the
+// trailer's own decoder to call truncated: this is the one part of loading a
+// state that must never be the reason for refusing it.
+state_read_tail :: proc(stream: ^clap.Istream, surplus_values: int) -> [dynamic]u8 {
+	tail: [dynamic]u8
+	if stream == nil || stream.read == nil {
+		return tail
+	}
+	chunk: [4096]u8
+
+	// The count may be absurd, and the stream is what bounds this.
+	skip := u64(surplus_values) * 4
+	for skip > 0 {
+		n := stream.read(stream, raw_data(chunk[:]), min(skip, u64(len(chunk))))
+		if n <= 0 {
+			return tail
+		}
+		skip -= min(u64(n), skip)
+	}
+
+	for len(tail) < panel.TRAILER_READ_MAX {
+		want := min(len(chunk), panel.TRAILER_READ_MAX - len(tail))
+		n := stream.read(stream, raw_data(chunk[:]), u64(want))
+		if n <= 0 {
+			break
+		}
+		append(&tail, ..chunk[:min(int(n), want)])
+	}
+	return tail
 }
 
 STATE := clap.Plugin_State {
@@ -133,6 +181,7 @@ STATE := clap.Plugin_State {
 		if s == nil {
 			return false
 		}
+		context = runtime.default_context()
 		// The main thread's authoritative set is whatever it last staged; when
 		// nothing is outstanding that is the same array the audio thread holds.
 		values := s.values
@@ -140,21 +189,47 @@ STATE := clap.Plugin_State {
 			values = s.staged
 		}
 		buffer := state_encode(values)
-		return stream_write_all(stream, buffer[:])
+		if !stream_write_all(stream, buffer[:]) {
+			return false
+		}
+		// Which preset these values are, when the instance knows. Nothing when
+		// it does not, so a state that never had one is the bytes it always was.
+		trailer := panel.session_trailer(&s.session, &s.slots)
+		defer delete(trailer)
+		return trailer == nil || stream_write_all(stream, trailer)
 	},
 	load = proc "c" (plugin: ^clap.Plugin, stream: ^clap.Istream) -> bool {
 		s := synth_of(plugin)
 		if s == nil {
 			return false
 		}
-		values, ok := state_read(stream)
+		context = runtime.default_context()
+		values, surplus, ok := state_read(stream)
 		if !ok {
 			return false
 		}
+		// Read before anything is changed, so that nothing about the trailer
+		// can be a reason to leave the values behind.
+		tail := state_read_tail(stream, surplus)
+		defer delete(tail)
+
 		stage_values(s, values)
 		// The values just moved underneath the host. A blob that was rejected
 		// above changed nothing, so it deliberately does not get here.
 		notify_host_values(s)
+
+		// Then which preset they are. The sound is already in; this only says
+		// where it came from, and if it cannot, says so and leaves the bank,
+		// the program and the sound as they are -- never the factory bank in
+		// the place of the one the project had.
+		result := panel.session_restore(&s.session, &s.slots, tail[:])
+		if result.has_program {
+			s.program = result.program
+		}
+		// An editor that is open is showing the instance from before.
+		if s.editor.open {
+			panel.send_sync(&s.editor)
+		}
 		return true
 	},
 }

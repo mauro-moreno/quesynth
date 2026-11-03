@@ -106,6 +106,18 @@ jobs:
         shell: pwsh
         run: node --test tests/ui/panel-smoke.test.mjs tests/ui/tui-layout.test.mjs
 
+      # What the panel does with a preset, a bank and a host's answer to "put
+      # the instrument back as it was": opening the editor leaves the sound
+      # alone (issue #13), a failed restore keeps it, a write goes exactly where
+      # it was asked or is refused. Against a fake host in the same stand-in
+      # DOM, so it costs nothing and needs no browser. Listed out because the
+      # shell here does not expand a pattern for node.
+      - name: The panel's presets, banks and restore behave
+        shell: pwsh
+        run: |
+          node --test tests/ui/preset-reopen.test.mjs tests/ui/preset-restore.test.mjs tests/ui/preset-state.test.mjs tests/ui/preset-strip.test.mjs tests/ui/preset-markup.test.mjs tests/ui/preset-modal.test.mjs tests/ui/preset-bridge.test.mjs tests/ui/preset-persistence.test.mjs tests/ui/preset-persisted.test.mjs tests/ui/preset-bank-labels.test.mjs tests/ui/preset-import.test.mjs tests/ui/preset-browser-view.test.mjs tests/ui/preset-browser-keys.test.mjs tests/ui/preset-browser-prefs.test.mjs tests/ui/preset-browser-banks.test.mjs tests/ui/preset-browser-save.test.mjs tests/ui/preset-browser-slots.test.mjs tests/ui/preset-wire.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "the preset tests failed" }
+
       # Quesynth Pad. Its rack rules, its .qkit format and its distribution
       # bundle are plain JavaScript with Node tests, and the two shells have to
       # load the same scripts in the same order; none of that is reached by the

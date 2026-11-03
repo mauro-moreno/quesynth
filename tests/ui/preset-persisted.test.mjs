@@ -1,0 +1,406 @@
+// Which bank a write may ask the host to save.
+//
+// The host keeps one saved bank per instrument, and a `bank` message with
+// "save": true replaces it whole (specs/2026-10-27-preset-bank-ux.md: 1, 3.4,
+// 5.3 and 2.4). So at most one bank in the page may carry that standing, the
+// one the host most recently called its own, and nothing but a person writing
+// that bank's content may spend it.
+//
+// The recovery path is where it went wrong. An instance whose saved bank file
+// is missing starts on the compiled-in `Factory`, which the host sends as
+// origin factory and not read-only; the person puts the file back and presses
+// Retry, and the host sends `Alfmeister Bank` as origin user. Both are banks
+// the host calls its own, and the page kept `Factory` writable beside it.
+// Loading one Factory preset then sent Factory with "save": true, and the host
+// wrote it over the user's file: a 119-patch bank became 16 patches.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import {bankText, bootPanel, compiledBank, plain, sound, syncAnswer} from "./support/panel.mjs";
+
+// What bank.js compiled into the page. The host's own is called `Factory`.
+const PAGE_FACTORY = compiledBank("Quesynth Factory", ["Strings", "Brass", "Bells"], 70);
+const HOST_FACTORY = ["Init", "Strings", "Brass", "Bells", "Pluck", "Lead"];
+const USER = Array.from({length: 60}, (_, i) => i === 42 ? "Foo" : i % 7 === 3 ? null : `Mine ${i}`);
+const WANTED = {origin: "user", bank: "Alfmeister Bank", slot: 42, name: "Foo"};
+
+// The messages the host sends for a bank, as wire-v1.json spells them. `kept`
+// is the host saying the bank is its own: the saved file, or the compiled-in
+// bank while there is none. Not a thing the page can work out from `origin`: a
+// bank the person made is announced as origin user too, and the host only
+// plays it. The default is what a plugin says of the banks in this file.
+const hostBank = (label, names, origin, base, kept = origin === "factory" || origin === "user") =>
+  ({type: "bank", text: bankText(label, names, base), v: 1, origin, readOnly: false, kept});
+
+// The page of an instance that started on the compiled-in Factory because its
+// saved bank was missing, was shown the failure, and was Retried after the
+// file came back: the host answers the retry with the user's bank, the patch
+// and the restore.
+function afterRetry() {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send(hostBank("Factory", HOST_FACTORY, "factory", 30));
+  page.send({type: "state", values: sound(99)});
+  page.send({type: "restore", v: 1, state: "failed", error: "MissingBank", recoverable: true,
+    message: "no bank named Alfmeister Bank", ...WANTED});
+  assert.equal(page.window.SynthBank.restore.retry().ok, true);
+  page.send(hostBank("Alfmeister Bank", USER, "user", 10));
+  page.send({type: "patch", name: "Foo", index: 42, bank: "Alfmeister Bank", v: 1, origin: "user"});
+  page.send({type: "restore", v: 1, state: "restored", ...WANTED});
+  page.forget();
+  return page;
+}
+
+const rows = page => plain(page.window.SynthBank.list());
+const persisted = page => rows(page).filter(r => r.persisted).map(r => r.label);
+const at = (page, label) => rows(page).findIndex(r => r.label === label);
+// What each `bank` the page posted asked of the host: [label, save].
+const banks = page => page.ofType("bank").map(m => [JSON.parse(m.text).name, m.save]);
+const saves = page => banks(page).filter(([, save]) => save).map(([label]) => label);
+const clickStep = (page, step) => page.document.querySelector(`.bank-step[data-step="${step}"]`).click();
+
+test("after Retry brings the user's bank, only that bank is the one the host keeps", () => {
+  const page = afterRetry();
+  assert.deepEqual(rows(page).map(r => r.label), ["Quesynth Factory", "Factory", "Alfmeister Bank"]);
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"]);
+});
+
+test("a preset of the stale Factory is played, never saved over the user's bank", () => {
+  const page = afterRetry();
+  const factory = at(page, "Factory");
+
+  assert.equal(page.window.SynthBank.loadPreset({bank: "Factory", slot: 4}).ok, true);
+  assert.deepEqual(banks(page), [["Factory", false]], "played, and not kept");
+
+  page.forget();
+  clickStep(page, 1);
+  clickStep(page, -1);
+  assert.deepEqual(plain(page.sent.filter(m => m.type === "state").length), 2, "NEXT and PREV did load");
+  assert.deepEqual(saves(page), []);
+
+  page.forget();
+  page.window.SynthBank.select(at(page, "Alfmeister Bank"), true);
+  page.window.SynthBank.select(factory);
+  page.window.SynthBank.load(2);
+  assert.deepEqual(saves(page), [], "switching to Factory and choosing in it");
+});
+
+test("Save and Write into the stale Factory are session-only changes: allowed, and not kept", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Factory", slot: 2});
+  page.window.SynthPatch.setParam(19, 0.5);
+  page.forget();
+
+  const saved = plain(api.save());
+  assert.deepEqual([saved.ok, saved.action, saved.bank, saved.slot], [true, "save", "Factory", 2]);
+  const wrote = plain(api.writePreset({bank: "Factory", slot: 9, name: "Mine"}));
+  assert.deepEqual([wrote.ok, wrote.bank, wrote.slot], [true, "Factory", 9]);
+
+  assert.ok(banks(page).length > 0, "the host was given the edited bank to play");
+  assert.deepEqual(saves(page), []);
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"]);
+});
+
+test("copying and moving into or out of the stale Factory keeps only the user's bank", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+
+  assert.equal(api.copySlot({bank: "Alfmeister Bank", slot: 0}, {bank: "Factory", slot: 10}).ok, true);
+  assert.deepEqual(saves(page), [], "into Factory");
+
+  page.forget();
+  assert.equal(api.copySlot({bank: "Factory", slot: 1}, {bank: "Alfmeister Bank", slot: 3}).ok, true);
+  assert.deepEqual(saves(page), ["Alfmeister Bank"], "out of Factory, into the user's bank");
+
+  page.forget();
+  assert.equal(api.moveSlot({bank: "Factory", slot: 10}, {bank: "Alfmeister Bank", slot: 10}).ok, true);
+  assert.deepEqual(saves(page), ["Alfmeister Bank"], "a move changes both banks, and keeps the one that is kept");
+});
+
+test("a copy into the kept bank while another plays saves it, then plays what was playing", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Factory", slot: 4});
+
+  page.forget();
+  assert.equal(api.copySlot({bank: "Factory", slot: 1}, {bank: "Alfmeister Bank", slot: 3}).ok, true);
+  assert.deepEqual(banks(page), [["Alfmeister Bank", true], ["Factory", false]]);
+});
+
+test("a write into the user's bank is still kept, as that bank, with its interior empties", () => {
+  const page = afterRetry();
+  const wrote = plain(page.window.SynthBank.writePreset({bank: "Alfmeister Bank", slot: 3, name: "Filled"}));
+  assert.equal(wrote.ok, true);
+
+  assert.deepEqual(saves(page), ["Alfmeister Bank"]);
+  const bank = page.ofType("bank").find(m => m.save);
+  assert.deepEqual([bank.v, bank.origin], [1, "user"]);
+  const doc = JSON.parse(bank.text);
+  assert.equal(doc.patches.length, 59, "the trailing empties go, the interior ones stay");
+  assert.deepEqual(doc.patches.map((p, i) => [i, p]).filter(([, p]) => p === null).map(([i]) => i),
+    [10, 17, 24, 31, 38, 45, 52], "slot 3 was filled; every other gap is still a gap");
+  assert.equal(doc.patches[42].name, "Foo");
+});
+
+test("two banks the host calls its own in a row: the later is the one it keeps", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send(hostBank("Factory", HOST_FACTORY, "factory", 30));
+  assert.deepEqual(persisted(page), ["Factory"]);
+  page.send(hostBank("My Bank", USER, "user", 10));
+  assert.deepEqual(persisted(page), ["My Bank"]);
+
+  // Nothing about the first one is lost: it is still there to play and edit.
+  assert.equal(page.window.SynthBank.bankInfo(at(page, "Factory")).used, HOST_FACTORY.length);
+  assert.equal(page.window.SynthBank.writePreset({bank: "Factory", slot: 9, name: "Mine"}).ok, true);
+  assert.deepEqual(saves(page), []);
+});
+
+test("a bank the host embeds from somebody's file does not take the saved bank's standing", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send(hostBank("My Bank", USER, "user", 10));
+  page.send(hostBank("Third Party", ["One", "Two"], "imported", 50));
+  assert.deepEqual(persisted(page), ["My Bank"], "the host still keeps the file it kept");
+});
+
+test("a host's bank sent again under its own name is still the one it keeps, once", () => {
+  const page = afterRetry();
+  page.send(hostBank("Alfmeister Bank", USER, "user", 10));
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"]);
+});
+
+test("Keep makes the kept bank the only one a write may save, and Factory is not it", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.select(added.index, true);
+
+  assert.equal(api.keep(), true);
+  assert.deepEqual(saves(page), ["Third Party"]);
+  page.send({type: "bank-saved", v: 1, ok: true, bank: "Third Party"});
+  assert.deepEqual(persisted(page), ["Third Party"]);
+
+  page.forget();
+  api.loadPreset({bank: "Factory", slot: 1});
+  api.loadPreset({bank: "Alfmeister Bank", slot: 0});
+  assert.deepEqual(saves(page), [], "neither of the banks the host kept before is sent to be saved by a load");
+
+  api.writePreset({bank: "Alfmeister Bank", slot: 1, name: "Edit", overwrite: true});
+  assert.deepEqual(saves(page), [], "and a write into one is not asked to be kept either");
+  api.writePreset({bank: "Third Party", slot: 1, name: "Two"});
+  assert.deepEqual(saves(page), ["Third Party"]);
+});
+
+test("a Keep the host could not make leaves the bank it kept as the one it keeps", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.select(added.index, true);
+  api.keep();
+  page.send({type: "bank-saved", v: 1, ok: false, error: "PersistenceFailed", message: "disk full", bank: "Third Party"});
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"]);
+});
+
+test("a host that never said it keeps a bank is never sent one to keep by a load", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send({type: "bank", text: bankText("Factory", HOST_FACTORY, 30)});
+  page.send({type: "bank", text: bankText("My Bank", USER, 10)});
+  assert.deepEqual(persisted(page), []);
+  page.forget();
+  page.window.SynthBank.loadPreset({bank: "Factory", slot: 1});
+  assert.deepEqual(banks(page), [["Factory", false]]);
+});
+
+test("the restore that brought the bank back is not itself a write", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  for (const m of syncAnswer({label: "Factory", names: HOST_FACTORY, origin: "factory", state: sound(99),
+    restore: {type: "restore", v: 1, state: "failed", error: "MissingBank", recoverable: true, ...WANTED}})) page.send(m);
+  page.window.SynthBank.restore.retry();
+  page.send(hostBank("Alfmeister Bank", USER, "user", 10));
+  page.send({type: "patch", name: "Foo", index: 42, bank: "Alfmeister Bank", v: 1, origin: "user"});
+  page.send({type: "restore", v: 1, state: "restored", ...WANTED});
+  assert.deepEqual(page.sent.filter(m => m.type === "bank"), [], "sent apart from the sync and the retry");
+});
+
+// ------------------------------------------- playing a bank is not writing it
+
+test("playing the bank the host keeps, after another, sends it to be played and not saved", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Factory", slot: 4});
+
+  page.forget();
+  assert.equal(api.loadPreset({bank: "Alfmeister Bank", slot: 0}).ok, true);
+  assert.deepEqual(banks(page), [["Alfmeister Bank", false]], "a load");
+
+  api.loadPreset({bank: "Factory", slot: 4});
+  page.forget();
+  api.select(at(page, "Alfmeister Bank"));
+  assert.deepEqual(banks(page), [["Alfmeister Bank", false]], "a switch of bank");
+
+  api.loadPreset({bank: "Factory", slot: 4});
+  api.select(at(page, "Alfmeister Bank"), true);
+  page.forget();
+  clickStep(page, 1);
+  assert.deepEqual(banks(page), [["Alfmeister Bank", false]], "NEXT");
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"], "it is still the one the host keeps");
+});
+
+test("Load Factory / Init after another bank was played does not save the host's Factory", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  for (const m of syncAnswer({label: "Quesynth Factory", names: ["Strings", "Brass", "Bells"], origin: "factory",
+    state: sound(99), restore: {type: "restore", v: 1, state: "failed", error: "MissingBank", recoverable: true, ...WANTED}})) {
+    page.send(m);
+  }
+  assert.deepEqual(persisted(page), ["Quesynth Factory"], "the host's Factory is the one it keeps");
+  const added = page.window.SynthBank.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  page.window.SynthBank.loadPreset({bank: added.index, slot: 0});
+  page.forget();
+
+  page.$("restore-factory").click();
+  assert.deepEqual(banks(page), [["Quesynth Factory", false]], "played, as the person chose");
+});
+
+test("a write of the bank the host keeps is still kept: Write, copy, move and clear", () => {
+  const page = afterRetry();
+  const api = page.window.SynthBank;
+  api.loadPreset({bank: "Alfmeister Bank", slot: 0});
+
+  for (const [what, act] of [
+    ["Write", () => api.writePreset({bank: "Alfmeister Bank", slot: 3, name: "Filled"})],
+    ["copy", () => api.copySlot({bank: "Alfmeister Bank", slot: 0}, {bank: "Alfmeister Bank", slot: 10})],
+    ["move", () => api.moveSlot({bank: "Alfmeister Bank", slot: 10}, {bank: "Alfmeister Bank", slot: 17})],
+    ["clear", () => api.clear(17)],
+  ]) {
+    page.forget();
+    const done = act();
+    assert.ok(done === true || done.ok === true, what);
+    assert.deepEqual(saves(page), ["Alfmeister Bank"], what);
+  }
+});
+
+test("renaming the bank the host kept, while it plays, saves it under its new name", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  const api = page.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.loadPreset({bank: added.index, slot: 0});
+  api.keep();
+  page.send({type: "bank-saved", v: 1, ok: true, bank: "Third Party"});
+
+  page.forget();
+  assert.equal(api.renameBank(added.index, "Renamed").ok, true);
+  assert.deepEqual(banks(page), [["Renamed", true]]);
+
+  // One that is only being played is not kept by being called something else.
+  const other = api.importBank("Other", [{n: "Two", v: sound(2)}]);
+  api.loadPreset({bank: other.index, slot: 0});
+  page.forget();
+  api.renameBank(other.index, "Other Renamed");
+  assert.deepEqual(banks(page), [["Other Renamed", false]]);
+});
+
+test("a host that keeps only bank zero is not sent it to be saved by playing it again", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send({type: "bank", text: bankText("Quesynth Factory", HOST_FACTORY, 30)});
+  const api = page.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.loadPreset({bank: added.index, slot: 0});
+
+  page.forget();
+  api.loadPreset({bank: 0, slot: 1});
+  assert.deepEqual(banks(page), [["Quesynth Factory", false]], "a load");
+  assert.equal("v" in page.sent[0], false, "and still none of the version-1 fields");
+
+  page.forget();
+  api.writePreset({bank: 0, slot: 9, name: "Mine"});
+  assert.deepEqual(banks(page), [["Quesynth Factory", true]], "a write is");
+});
+
+// ------------------------------------------ the host says which bank it keeps
+//
+// `origin` is what a bank is called, and the page cannot read what the host
+// does with it from that: a New bank or a Duplicate is origin user and the host
+// only plays it, and so is a project's embedded copy of one. Taking every user
+// bank the host sends for the one it keeps made 'Scratch' persisted after the
+// editor was reopened, and the next Write into it replaced the user's whole
+// saved bank with it (119 patches became 2 in REAPER 7.82).
+
+// The host's answer to `sync` after the editor was reopened on a bank the
+// person made: played by the host, kept by nobody.
+function reopenedOnScratch() {
+  const first = bootPanel({bank: PAGE_FACTORY});
+  first.send(hostBank("Alfmeister Bank", USER, "user", 10));
+  const api = first.window.SynthBank;
+  const made = api.newBank("Scratch");
+  api.writePreset({bank: made.index, slot: 0, name: "Sketch"});
+  const sent = first.ofType("bank").filter(m => JSON.parse(m.text).name === "Scratch");
+  assert.ok(sent.length > 0, "the Write reached the host");
+  assert.ok(sent.every(m => m.save === false), "the person's New bank and Write were only played");
+
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send({type: "bank", text: sent[sent.length - 1].text, v: 1, origin: "user", readOnly: false, kept: false});
+  page.send({type: "state", values: sound(77)});
+  page.send({type: "patch", name: "Sketch", index: 0, bank: "Scratch", v: 1, origin: "user"});
+  page.forget();
+  return page;
+}
+
+test("a bank the host only plays is not the one it keeps, though it is origin user", () => {
+  const page = reopenedOnScratch();
+  assert.deepEqual(rows(page).map(r => [r.label, r.origin, r.persisted]),
+    [["Quesynth Factory", "factory", false], ["Scratch", "user", false]]);
+});
+
+test("a Write into the bank the host only plays asks for it to be played and not saved", () => {
+  const page = reopenedOnScratch();
+  const wrote = plain(page.window.SynthBank.writePreset({bank: "Scratch", slot: 1, name: "Second"}));
+  assert.equal(wrote.ok, true);
+  assert.deepEqual(banks(page), [["Scratch", false]]);
+  assert.deepEqual(saves(page), []);
+});
+
+test("only the bank the host says it keeps is persisted, and one it plays beside it is not", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send(hostBank("Alfmeister Bank", USER, "user", 10, true));
+  page.send(hostBank("Scratch", ["One", "Two"], "user", 50, false));
+  assert.deepEqual(persisted(page), ["Alfmeister Bank"], "the one it keeps is still the one it keeps");
+
+  page.forget();
+  page.window.SynthBank.writePreset({bank: "Scratch", slot: 5, name: "Mine"});
+  assert.deepEqual(saves(page), [], "a write into the bank it plays");
+  page.forget();
+  page.window.SynthBank.writePreset({bank: "Alfmeister Bank", slot: 3, name: "Mine"});
+  assert.deepEqual(saves(page), ["Alfmeister Bank"], "a write into the bank it keeps");
+});
+
+test("a version 1 bank that does not say it is kept is not persisted, whatever it says it is", () => {
+  for (const kept of [undefined, false, null, 1, "true"]) {
+    const page = bootPanel({bank: PAGE_FACTORY});
+    const message = {type: "bank", text: bankText("My Bank", USER, 10), v: 1, origin: "user", readOnly: false, kept};
+    if (kept === undefined) delete message.kept;
+    page.send(message);
+    assert.deepEqual(persisted(page), [], `kept ${JSON.stringify(kept)}`);
+    page.forget();
+    page.window.SynthBank.writePreset({bank: "My Bank", slot: 3, name: "Mine"});
+    assert.deepEqual(saves(page), [], `a write with kept ${JSON.stringify(kept)}`);
+  }
+});
+
+test("a read-only bank is not persisted even when the host calls it kept", () => {
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send({...hostBank("Locked", USER, "user", 10, true), readOnly: true});
+  assert.deepEqual(persisted(page), []);
+});
+
+test("a bank the host kept, once Keep was answered, is the one it announces as kept after a reopen", () => {
+  const first = bootPanel({bank: PAGE_FACTORY});
+  const api = first.window.SynthBank;
+  const added = api.importBank("Third Party", [{n: "One", v: sound(1)}]);
+  api.select(added.index, true);
+  api.keep();
+  first.send({type: "bank-saved", v: 1, ok: true, bank: "Third Party"});
+  assert.deepEqual(persisted(first), ["Third Party"]);
+
+  const page = bootPanel({bank: PAGE_FACTORY});
+  page.send(hostBank("Third Party", ["One"], "user", 1, true));
+  assert.deepEqual(persisted(page), ["Third Party"]);
+});

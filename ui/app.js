@@ -43,6 +43,7 @@
     // Only the browser build ships a store; in a plugin the host is already
     // saving this into the project and a second copy would fight it.
     if (window.SynthStore) window.SynthStore.touch();
+    refreshDirty();
   }
 
   function dependOn(index, fn) {
@@ -175,6 +176,7 @@
     solo: ["M22 68c10 10 46 10 56-5 8-13-3-20-20-22l-16-2c-17-2-24-15-13-24 12-10 47-8 61 2"],
     edit: ["M18 72l8-25 39-39 19 19-39 39z", "M26 47l19 19"],
     close: ["M22 22l56 56M78 22L22 78"],
+    star: ["M50 10l12 27 29 3-22 20 6 29-25-15-25 15 6-29-22-20 29-3z"],
     previous: ["M64 18L32 50l32 32"], next: ["M36 18l32 32-32 32"],
     // The stepper's two, so a whole number's controls are drawn in the same hand
     // as everything else rather than set in whatever the font has at "−".
@@ -1336,12 +1338,16 @@
 
   // -------------------------------------------------------------------- bank
 
-  // The patch and bank readout, and the two steps either side of it.
+  // The patch and bank readout, the two steps either side of it, and the
+  // actions beside it.
   //
-  // Purely a view plus two requests: the interface does not hold a bank, it asks
-  // the host to change patch and waits to be told what happened. Anything else
-  // would put a second idea of "what is loaded" in the panel, and the whole state
-  // model here rests on there being one.
+  // What the panel shows is a *selection*: one explicit record of which preset
+  // the sound in the engine is, kept apart from three things it was once
+  // conflated with -- the bank the browser is looking at (`currentBank`), the
+  // slot a Write is aimed at (browser.js), and the live parameters themselves.
+  // A host that has a program of its own tells the panel what it is with
+  // `patch` and `restore`; the panel never infers it by loading something.
+
   // A bank is a hundred and twenty-eight slots. Always, however few of them
   // hold a sound.
   //
@@ -1356,6 +1362,32 @@
   // padded here. An empty slot is null rather than a written-out Init patch,
   // so a saved bank is the size of what is actually in it.
   var BANK_SLOTS = 128;
+
+  // The host's `SLOT_NAME_MAX`. The host truncates a longer name without
+  // saying so, which would make the name written differ from the name stored,
+  // so a name over it is refused instead.
+  var NAME_MAX_BYTES = 48;
+
+  // Where a sound came from, which decides what may be done with it.
+  //
+  //   factory   the bank compiled into the page, or the one a host calls that
+  //   user      a bank made here, or the one a host keeps for this instrument
+  //   imported  a bank opened from a file, a zip or a folder
+  //   archive   a bank inside a host's shared archive: always read-only
+  //   file      one patch opened from a file: a sound with no bank behind it
+  //   session   the sound as it is now, with no slot behind it
+  var ORIGIN_LABELS = {
+    factory: "Factory", user: "User", imported: "Imported",
+    archive: "Archive", file: "File", session: "Current session",
+  };
+
+  function isOrigin(text) {
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, text);
+  }
+
+  function isSlot(n) {
+    return typeof n === "number" && n % 1 === 0 && n >= 0 && n < BANK_SLOTS;
+  }
 
   // The sound a slot has when nothing has been put in it: every parameter at
   // its default, which is the reference plugin's own init patch.
@@ -1378,6 +1410,32 @@
     return { label: (b && b.label) || "Bank", patches: slots };
   }
 
+  // A bank, with what the panel needs to know about its standing.
+  //
+  //   origin     see ORIGIN_LABELS
+  //   readOnly   a host said so, whatever the origin; see bankReadOnly
+  //   hostOwned  it is the bank a host sent, which that host plays out of
+  //   persisted  and that host keeps it: a write to it asks the host to save
+  function makeBank(spec, origin) {
+    var made = normalizeBank(spec);
+    made.origin = origin;
+    made.readOnly = false;
+    made.hostOwned = false;
+    made.persisted = false;
+    return made;
+  }
+
+  // The host keeps one saved bank, and a write that asks it to save replaces
+  // that file whole. So no more than one bank here may say it is that one: the
+  // one the host last called its own, or last confirmed it kept. Every place
+  // that gives a bank the standing goes through here, so a second one cannot
+  // be left behind to be saved over the first -- as the compiled-in Factory
+  // was, beside the user's bank a Retry brought back.
+  function markPersisted(rec) {
+    banks.forEach(function (b) { b.persisted = false; });
+    rec.persisted = true;
+  }
+
   // Every bank that is open, not just the one being played.
   //
   // Loading a file used to replace the bank outright, so the list down the side
@@ -1385,17 +1443,20 @@
   // navigate between. Holding them means a file can be *added* -- and means
   // switching away from a bank and back does not lose what was saved into it,
   // because each one keeps its own slots.
-  var banks = [normalizeBank(window.SYNTH1_BANK)];
-  var currentBank = 0;
-  var bank = banks[0];
+  //
   // Whether anything was compiled into the page at all. An empty bank of a
   // hundred and twenty-eight Inits is still a bank you can save into, but the
-  // strip must not claim a patch is loaded before one is.
+  // strip must not claim a patch is loaded before one is, and it is not a
+  // *factory* bank: nobody shipped it.
   var bankSupplied = !!(window.SYNTH1_BANK && window.SYNTH1_BANK.patches &&
                         window.SYNTH1_BANK.patches.length);
+  var banks = [makeBank(window.SYNTH1_BANK, bankSupplied ? "factory" : "user")];
+  // The bank the browser is looking at, and the one a new sound is written to.
+  // Not the bank that is playing; see `selection`.
+  var currentBank = 0;
+  var bank = banks[0];
   // What is loaded right now, whether it came from the bank or from a file.
   var currentName = "";
-  var bankIndex = -1;
 
   // A shared archive is only claimed by an `archive` from the host. Other
   // hosts keep their local banks and their existing zip reader unchanged.
@@ -1407,128 +1468,703 @@
   var archiveError = "";
   var playing = null;
   var hostBank = null;
+  // The bank the host believes it is playing out of. A plugin selects patches
+  // by program change from its own copy, so when the panel moves to a bank the
+  // host does not hold, the host has to be given it first or "program 12"
+  // means two sounds at once. Until a host says otherwise, the bank compiled
+  // into the page is the one it is taken to have.
+  var hostPlaying = banks[0];
 
-  // Only with a shared archive, which other clients can move under an open
-  // dialog. Without one the dialog repaints on its own actions, as it did.
-  function refreshBrowser() {
-    if (archive && window.SynthBrowser && window.SynthBrowser.refresh) window.SynthBrowser.refresh();
-  }
-
-  function receiveArchive(msg) {
-    if (!archive) {
-      // sync sends the ordinary bank before the archive capability. Keep
-      // that bank, not the empty placeholder the hosted page began with.
-      banks = [hostBank || bank];
-      currentBank = 0;
-      bank = banks[0];
-    }
-    archive = msg;
-    if (browsedArchive >= 0) {
-      browsedArchive = msg.open && msg.bank !== null ? msg.bank : -1;
-    }
-    archiveWaiting = -1;
-    refreshBrowser();
-  }
-
-  function buildBank() {
-    var el = document.getElementById("bank");
-    if (!el) return;
-
-    var steps = el.querySelectorAll(".bank-step");
-    for (var i = 0; i < steps.length; i++) {
-      (function (b) {
-        b.addEventListener("click", function (e) {
-          e.stopPropagation();
-          var step = parseInt(b.dataset.step, 10);
-          if (archive && playing && playing.source === "archive") {
-            bridge.send({ type: "patch-step", step: step });
-          } else if (bank) {
-            loadPatch(bankIndex + step);
-          } else {
-            // No bank compiled in: the host may still have one.
-            bridge.send({ type: "patch-step", step: step });
-          }
-        });
-      })(steps[i]);
-    }
-
-    var read = el.querySelector(".bank-read");
-    if (read) {
-      read.classList.add("pickable");
-      read.addEventListener("click", function (e) {
-        e.stopPropagation();
-        // The browser if it is loaded, the old popover if it is not. A native
-        // host that ships a trimmed panel still gets a way to change patch.
-        if (window.SynthBrowser) window.SynthBrowser.open();
-        else showBankList(read);
-      });
-    }
-
-    // What was remembered, if anything is doing the remembering.
-    //
-    // The factory bank's slots go back first, so that loading slot zero below
-    // loads the edited version of it rather than the one that shipped. The
-    // current sound goes on top of that, because it is what was actually being
-    // played and it need not be any slot's contents.
-    var kept = window.SynthStore ? window.SynthStore.restore() : null;
-    if (kept && kept.midi && window.SynthMidiMap) {
-      window.SynthMidiMap.restore(kept.midi);
-    }
-    if (kept && kept.factory) {
-      banks[0] = normalizeBank({ label: banks[0].label, patches: kept.factory });
-      if (currentBank === 0) bank = banks[0];
-    }
-
-    var name = document.getElementById("bank-name");
-    if (name) name.textContent = bank.label;
-    // Only when a bank actually came with the page. There is always a bank now
-    // -- an empty one is still 128 slots you can save into -- but loading slot
-    // zero of it would send an Init patch to the host, and in a plugin the host
-    // has its own state and got there first. A panel that overwrote it on
-    // startup would lose the user's sound every time the window was opened.
-    if (bankSupplied) loadPatch(0);
-
-    // And then the sound that was actually up, over the top of it. Restored
-    // after loadPatch rather than instead of it, so the slot number and the
-    // bank name are already right and only the sound changes.
-    if (kept && kept.current && kept.current.values) {
-      window.SynthPatch.apply(kept.current.values, kept.current.name);
-      var slot = kept.current.slot;
-      if (typeof slot === "number" && slot >= 0 && slot < BANK_SLOTS) {
-        bankIndex = slot;
-        showPatch({ name: currentName, index: slot, bank: bank.label });
-      }
-    }
-  }
-
-  // Load one patch out of the compiled-in bank.
+  // The selection: which preset the sound in the engine is.
   //
-  // Every parameter goes at once rather than as ninety-nine separate messages:
-  // the engine rebinds on each one, and a patch change that rebound a hundred
-  // times would be audible as a smear rather than a change.
-  function loadPatch(index) {
-    if (!bank) return;
-    var n = BANK_SLOTS;
-    // Wraps, so stepping past either end is a way round rather than a dead stop.
-    bankIndex = ((index % n) + n) % n;
-    // An empty slot loads as Init rather than being skipped over. Skipping
-    // would make the empty ones invisible to the arrows, and then there would
-    // be no way to arrive at one in order to save into it.
-    var p = bank.patches[bankIndex] || { n: "Init", v: initValues() };
+  //   origin      see ORIGIN_LABELS
+  //   source      "bank", "archive", "file" or "none": `patch.source`'s words
+  //   bank        the label of its bank, "" when there is none
+  //   slot        0..127 only for an ordinary slot-backed preset, else null
+  //   presetName  what to call it
+  //   archive     { bank, patch } for an archive preset, else null
+  //
+  // Invariants, each held by one function so no caller can break them:
+  // a slot is only ever a factory, user or imported preset's; an archive
+  // preset has no slot and carries its two indexes instead; a file or the
+  // current session has neither. A sound with no slot may still say which bank
+  // it is shown beside: a host that names one is not contradicted.
+  function makeSelection(origin, bankLabel, slot, name, from) {
+    if (!isOrigin(origin)) origin = "session";
+    var ordinary = origin === "factory" || origin === "user" || origin === "imported";
+    return {
+      origin: origin,
+      source: origin === "archive" ? "archive" : origin === "file" ? "file"
+        : origin === "session" ? "none" : "bank",
+      bank: String(bankLabel || ""),
+      slot: ordinary && isSlot(slot) ? slot : null,
+      presetName: String(name || ""),
+      archive: origin === "archive" && from ? { bank: from.bank, patch: from.patch } : null,
+    };
+  }
 
-    for (var i = 0; i < p.v.length; i++) {
-      if (byIndex[i] !== undefined) values[i] = p.v[i];
+  var selection = makeSelection("session", "", null, "");
+  // The values the selection was loaded with, or last exported with. Only
+  // consulted when the slot it names cannot answer; see `storedValues`.
+  var baseline = initValues();
+  var lastDirty = false;
+  // Set while a whole sound is being applied, so it is judged once at the end.
+  var settling = false;
+
+  // What the host answered to the last attempt to restore a program and bank.
+  // See `restoreState` in SynthBank. `failure` is the last failed answer, kept
+  // while a retry is in flight so the banner still says what is being retried.
+  var restoreState = { state: "notRequested" };
+  var failure = null;
+  // An archive load asked of the host, until it answers.
+  var pendingLoad = null;
+  // Banks sent with "save": true that the host has not yet answered for.
+  var pendingSaves = [];
+  var resultListeners = [];
+  var loadListeners = [];
+  var lastResult = null;
+  var statusTimer = null;
+  var statusSerial = 0;
+
+  function byId(id) { return document.getElementById(id); }
+
+  function pad3(n) {
+    var s = String(n);
+    return s.length >= 3 ? s : ("000" + s).slice(-3);
+  }
+
+  function liveValues() {
+    var out = [];
+    for (var i = 0; i < PARAMS.length; i++) {
+      out.push(values[PARAMS[i].i] !== undefined ? values[PARAMS[i].i] : PARAMS[i].def);
     }
-    // Repaint everything, including the controls whose label follows another
-    // parameter -- a new patch can change the effect type under Control 1.
+    return out;
+  }
+
+  // Repaint every control from a list of stored integers, including the ones
+  // whose label follows another parameter -- a new patch can change the effect
+  // type under Control 1.
+  function paintValues(list) {
+    for (var i = 0; i < list.length; i++) {
+      if (byIndex[i] !== undefined) values[i] = list[i];
+    }
     for (var k in controls) controls[k]();
     for (var d in dependents) {
       dependents[d].forEach(function (fn) { fn(); });
     }
+  }
 
+  function bankByLabel(label) {
+    for (var i = 0; i < banks.length; i++) if (sameLabel(banks[i].label, label)) return banks[i];
+    return null;
+  }
+
+  // Names are how the list is read, so two banks called the same thing would
+  // be two rows nobody can tell apart -- and the host, which holds a label cut
+  // (cutLabel), could not tell which of two it was answering about. So the
+  // name is cut, and a suffix is made room for rather than cut off.
+  function uniqueLabel(wanted, except) {
+    var base = cutLabel(wanted), name = base, n = 2;
+    while (banks.some(function (b) { return b !== except && sameLabel(b.label, name); })) {
+      var suffix = " " + n++;
+      name = cutLabel(base, NAME_MAX_BYTES - utf8Length(suffix)) + suffix;
+    }
+    return name;
+  }
+
+  // Can the panel write into this bank?
+  //
+  // Archive banks never. The factory bank only where something keeps what is
+  // written to it: the browser build's local storage, or a host that says its
+  // bank is writable. Anywhere else (a bare page, the pad shell) a write to it
+  // would last until the page closes and look like it had been saved.
+  function bankReadOnly(rec) {
+    if (!rec || rec.origin === "archive" || rec.readOnly) return true;
+    if (rec.origin === "factory" && !rec.hostOwned && !window.SynthStore) return true;
+    return false;
+  }
+
+  // A bank still waiting to be read has no patches yet, only 128 empty slots
+  // that would be thrown away when it loads.
+  function bankUnopened(rec) {
+    return !!(rec && rec.load && !rec.loaded);
+  }
+
+  // A bank named by a caller: a position in `SynthBank.list()`, or a label.
+  // `archive` is set for a row of the host's archive, which the panel can
+  // list and ask for but never holds.
+  function resolveBank(ref) {
+    var rec = null, at = -1;
+    if (typeof ref === "string") {
+      for (var i = 0; i < banks.length; i++) if (sameLabel(banks[i].label, ref)) { rec = banks[i]; at = i; }
+      return rec ? { rec: rec, index: at } : null;
+    }
+    if (typeof ref !== "number" || ref % 1 !== 0 || ref < 0) return null;
+    if (archive) {
+      if (ref === 0) return { rec: banks[0], index: 0 };
+      return ref - 1 < archive.banks.length ? { archive: true, bank: ref - 1 } : null;
+    }
+    return ref < banks.length ? { rec: banks[ref], index: ref } : null;
+  }
+
+  // The bank the host plays out of: where the selection is, else where the
+  // browser is.
+  function playingBank() {
+    var chosen = selection.bank !== "" ? bankByLabel(selection.bank) : null;
+    return chosen || bank;
+  }
+
+  // -- the selection, and what it says about itself
+
+  // What the selection is stored as, to tell whether the sound was changed.
+  // The slot is asked rather than a copy kept, so a bank replaced or edited
+  // under the selection is noticed; a sound with no slot behind it -- or whose
+  // slot is empty -- is held against what it was loaded with.
+  function storedValues(sel) {
+    if (sel.slot !== null) {
+      var rec = bankByLabel(sel.bank);
+      var p = rec && rec.patches[sel.slot];
+      if (p) return p.v;
+    }
+    return baseline;
+  }
+
+  function computeDirty() {
+    var live = liveValues();
+    var stored = storedValues(selection);
+    for (var i = 0; i < live.length; i++) {
+      var s = stored[i] !== undefined ? stored[i] : PARAMS[i].def;
+      if (live[i] !== s) return true;
+    }
+    return false;
+  }
+
+  // Called on every parameter change, so it only touches the page when the
+  // answer changes.
+  function refreshDirty() {
+    if (settling) return;
+    var now = computeDirty();
+    if (now === lastDirty) return;
+    lastDirty = now;
+    paintStrip();
+  }
+
+  function selectedReadOnly() {
+    if (selection.origin === "archive") return true;
+    if (selection.origin === "session" || selection.origin === "file") return false;
+    var rec = bankByLabel(selection.bank);
+    return rec ? bankReadOnly(rec) : false;
+  }
+
+  // Single value, in this order: a load in flight beats everything, then a
+  // restore that could not be shown, then unsaved edits, then read-only.
+  // `readOnly()` says the last separately, so "Read-only" can stand beside
+  // "dirty" when the sound was edited in a bank that cannot take the edit.
+  function computeStatus() {
+    if (pendingLoad || restoreState.state === "restoring") return "loading";
+    if (restoreState.state === "failed") return "unavailable";
+    if (lastDirty) return "dirty";
+    if (selectedReadOnly()) return "readonly";
+    return "clean";
+  }
+
+  // Make something the selection, and say what its stored values are.
+  // `from` is the values it was loaded with; without them, the sound as it is.
+  function setSelection(next, from) {
+    selection = next;
+    baseline = (from || liveValues()).slice();
+    lastDirty = computeDirty();
+    paintStrip();
+  }
+
+  function slotInView() {
+    return selection.slot !== null && selection.bank === bank.label ? selection.slot : -1;
+  }
+
+  function originChip() {
+    return selection.origin === "session" ? "Unsaved" : ORIGIN_LABELS[selection.origin];
+  }
+
+  // The patch, its bank, where it came from, whether it is changed, and
+  // whether it can be saved where it is. Everything but the two original
+  // elements is new, and those two keep their text forms: `NNN:Name` or the
+  // bare name, and the bank's label alone.
+  function paintStrip() {
+    var position = selection.origin === "archive"
+      ? (selection.archive ? selection.archive.patch : null) : selection.slot;
+    var name = selection.presetName || "Untitled";
+    var patchEl = byId("bank-patch");
+    if (patchEl) patchEl.textContent = (position !== null ? pad3(position) + ":" : "") + name;
+    var bankEl = byId("bank-name");
+    if (bankEl) bankEl.textContent = selection.bank;
+    var originEl = byId("bank-origin");
+    if (originEl) {
+      originEl.textContent = originChip();
+      originEl.setAttribute("data-origin", selection.origin);
+    }
+    var dirtyEl = byId("bank-dirty");
+    if (dirtyEl) dirtyEl.hidden = !lastDirty;
+    var strip = byId("bank");
+    if (strip) {
+      strip.setAttribute("data-source", selection.source);
+      strip.setAttribute("data-origin", selection.origin);
+      strip.setAttribute("data-status", computeStatus());
+      strip.setAttribute("data-readonly", selectedReadOnly() ? "true" : "false");
+    }
+    var save = byId("preset-save");
+    if (save) {
+      var writes = savesInPlace();
+      save.setAttribute("data-route", writes ? "write" : "save-as");
+      save.title = writes
+        ? "Save to " + selection.bank + " / " + pad3(selection.slot)
+        : "Save As: choose a bank and slot";
+    }
+  }
+
+  // Does Save write back to where the sound came from, or ask where to put it?
+  //
+  // Only a slot the panel may overwrite and that is the preset's own: a user
+  // bank's, or a factory bank's where something keeps it. An imported bank is
+  // somebody else's file, a read-only one cannot take it, and a sound with no
+  // slot has nowhere to go back to, so each of those opens Save As.
+  function savesInPlace() {
+    if (selection.slot === null) return false;
+    if (selection.origin !== "user" && selection.origin !== "factory") return false;
+    var rec = bankByLabel(selection.bank);
+    return !!rec && !bankReadOnly(rec);
+  }
+
+  // -- visible results
+
+  // Say what happened, in the strip, where it can be read without a dialog in
+  // the way of the sound. Errors stay until the next result; the rest fade, as
+  // a person has read them by then.
+  function say(text, kind) {
+    var el = byId("bank-status");
+    // Each message is its own: a timer from an earlier one must not clear a
+    // later one, whether or not the timer could be cancelled.
+    var mine = ++statusSerial;
+    if (statusTimer) { window.clearTimeout(statusTimer); statusTimer = null; }
+    if (!el) return;
+    el.textContent = text || "";
+    el.hidden = !text;
+    el.setAttribute("data-kind", kind || "ok");
+    if (text && kind !== "error") {
+      statusTimer = window.setTimeout(function () {
+        if (mine !== statusSerial) return;
+        statusTimer = null;
+        el.hidden = true;
+        el.textContent = "";
+      }, 8000);
+    }
+  }
+
+  // Every outcome goes through here: remembered, announced, and handed to
+  // whoever asked to hear about them. A refusal has the same shape as a
+  // success so a caller never has to guess which it got.
+  function report(result) {
+    lastResult = result;
+    say(result.ok ? result.message : result.error.message,
+        result.ok ? (result.warning ? "warn" : "ok") : "error");
+    resultListeners.slice().forEach(function (fn) {
+      try { fn(result); } catch (e) { console.error("result listener:", e.message); }
+    });
+    return result;
+  }
+
+  function refusal(action, code, message) {
+    return report({ ok: false, action: action, error: { code: code, message: message } });
+  }
+
+  // A person chose a preset and it is now the sound. Said to whoever asked --
+  // the browser's recently used list -- and not through `report`, because
+  // stepping with PREV and NEXT is a load too and says nothing in the strip.
+  function announceLoaded() {
+    var chosen = window.SynthBank.selection();
+    loadListeners.slice().forEach(function (fn) {
+      try { fn(chosen); } catch (e) { console.error("load listener:", e.message); }
+    });
+  }
+
+  // -- restoring what the host asked for
+
+  // What a restore was after, as the banner names it: `Alfmeister Bank / 042`.
+  function restoreWords(s) {
+    if (s.bank) return isSlot(s.slot) ? s.bank + " / " + pad3(s.slot) : s.bank;
+    return isSlot(s.slot) ? "slot " + pad3(s.slot) : "the saved preset";
+  }
+
+  function paintRestore() {
+    var banner = byId("restore-banner");
+    if (!banner) return;
+    var s = restoreState;
+    var failed = s.state === "failed" || s.state === "restoring";
+    var done = s.state === "restored";
+    banner.hidden = !failed && !done;
+    banner.setAttribute("aria-busy", s.state === "restoring" ? "true" : "false");
+
+    var ok = byId("restore-ok");
+    if (ok) ok.hidden = !done;
+    if (done) {
+      var tail = (isSlot(s.slot) ? pad3(s.slot) : "") +
+        (s.name ? (isSlot(s.slot) ? " " : "") + s.name : "");
+      var words = [];
+      if (isOrigin(s.origin)) words.push(ORIGIN_LABELS[s.origin]);
+      if (s.bank) words.push(s.bank);
+      if (tail) words.push(tail);
+      var okId = byId("restore-ok-id");
+      if (okId) okId.textContent = words.join(" / ");
+    }
+
+    var bad = byId("restore-failed");
+    if (bad) bad.hidden = !failed;
+    var missing = byId("restore-missing");
+    if (missing) missing.hidden = !(failed && failure && failure.error === "MissingBank");
+    if (failed && failure) {
+      var badId = byId("restore-failed-id");
+      if (badId) badId.textContent = restoreWords(failure);
+      var retry = byId("restore-retry");
+      if (retry) retry.disabled = failure.recoverable === false || s.state === "restoring";
+      var dismiss = byId("restore-dismiss");
+      if (dismiss) dismiss.hidden = failure.error === "MissingBank";
+    }
+  }
+
+  function setRestore(next) {
+    restoreState = next;
+    paintRestore();
+    paintStrip();
+  }
+
+  // Whatever restore was outstanding is over, because somebody moved on from
+  // it: a person choosing something, whose `select` replaces the identity the
+  // host was holding, or the host itself choosing -- a MIDI Program Change --
+  // which drops it on its side. Either way the banner has nothing left to say.
+  function settleRestore() {
+    if (restoreState.state === "notRequested") return;
+    failure = null;
+    setRestore({ state: "notRequested" });
+  }
+
+  var RESTORE_ERRORS = {
+    MissingBank: true, InvalidProgram: true, HostStateRejected: true,
+    StateVersionUnsupported: true,
+  };
+
+  function identityOf(msg) {
+    var out = {};
+    if (isOrigin(msg.origin)) out.origin = msg.origin;
+    if (typeof msg.bank === "string" && msg.bank !== "") out.bank = msg.bank;
+    if (isSlot(msg.slot)) out.slot = msg.slot;
+    if (typeof msg.name === "string" && msg.name !== "") out.name = msg.name;
+    return out;
+  }
+
+  function receiveRestore(msg) {
+    // The host holds nothing to restore. It answers a retry that way when the
+    // instance moved on since the failure, and the page, which marked the
+    // banner busy when it asked, would otherwise wait for an answer for good.
+    if (msg.state === "notRequested") {
+      settleRestore();
+      return;
+    }
+    var identity = identityOf(msg);
+    var next;
+    if (msg.state === "restored") {
+      next = { state: "restored" };
+      for (var k in identity) next[k] = identity[k];
+      // A host that answers a retry with a different preset than the one being
+      // retried has contradicted the request. It is the authority, so what it
+      // says stands, but the page remembers that it was not what was asked.
+      if (restoreState.state === "restoring" && failure &&
+          ((identity.bank !== undefined && identity.bank !== failure.bank) ||
+           (identity.slot !== undefined && identity.slot !== failure.slot))) {
+        next.conflict = true;
+      }
+      failure = null;
+      pendingLoad = null;
+      // The host's selection is the selection. `patch` normally arrived first
+      // and said the same; this covers a host that only says it here. A bank
+      // restored with nothing selected in it names no slot, and says nothing
+      // about which sound is playing, so it leaves the selection as it is.
+      if (identity.slot !== undefined) {
+        takeHostSelection({
+          name: identity.name, index: identity.slot, bank: identity.bank, origin: identity.origin,
+        });
+      }
+      setRestore(next);
+      return;
+    }
+    if (msg.state !== "failed") return;
+    var error = RESTORE_ERRORS[msg.error] === true ? msg.error : "HostStateRejected";
+    // Whatever the host did not say, the code decides: a missing bank or an
+    // unusable program can be tried again, a state the host will not read
+    // cannot.
+    var recoverable = typeof msg.recoverable === "boolean" ? msg.recoverable
+      : error === "MissingBank" || error === "InvalidProgram";
+    next = { state: "failed", error: error, recoverable: recoverable };
+    if (typeof msg.message === "string" && msg.message !== "") next.message = msg.message;
+    for (var j in identity) next[j] = identity[j];
+    failure = next;
+    // Neither the sound, the bank nor the selection is touched: the failure is
+    // information about the project, not an instruction.
+    setRestore(next);
+  }
+
+  function receiveBankSaved(msg) {
+    var label = typeof msg.bank === "string" ? msg.bank : "";
+    var at = -1;
+    pendingSaves.forEach(function (p, i) { if (at < 0 && sameLabel(p, label)) at = i; });
+    if (at >= 0) pendingSaves.splice(at, 1);
+    var rec = bankByLabel(label);
+    if (msg.ok === true) {
+      if (rec) {
+        // Kept: this is now the bank the host comes back to.
+        markPersisted(rec);
+        rec.saveError = "";
+      }
+      return;
+    }
+    var code = msg.error === "InvalidBank" ? "InvalidBank" : "PersistenceFailed";
+    var why = typeof msg.message === "string" && msg.message !== "" ? " (" + msg.message + ")" : "";
+    if (rec) rec.saveError = why || "could not be saved";
+    report({
+      ok: false, action: "persist", error: {
+        code: code,
+        message: "Could not save " + (label || "the bank") + " in the host" + why +
+          ". The change is kept for this session only.",
+      },
+    });
+  }
+
+  // -- the host says which preset is playing
+
+  // Work out the selection a `patch` (or `restore`) describes and adopt it. The
+  // daemon's `patch` and the pad shell's own carry no "v" and are read the same
+  // way: what they say is the selection, and what they do not say is not
+  // guessed.
+  function takeHostSelection(msg) {
+    var named = typeof msg.name === "string" && msg.name !== "";
+    var slot = isSlot(msg.index) ? msg.index : null;
+    var origin = isOrigin(msg.origin) ? msg.origin : "";
+    var kind = msg.source;
+    if (kind === "archive") origin = "archive";
+    else if (kind === "file") origin = "file";
+    else if (kind === "none") origin = "session";
+    else if (origin === "" || origin === "archive") {
+      var rec = typeof msg.bank === "string" ? bankByLabel(msg.bank) : null;
+      origin = slot !== null ? (rec ? rec.origin : "user") : "session";
+    }
+    // A host with no selection to report names neither a slot nor a sound: the
+    // panel keeps its own name, since the sound in the engine is still its own.
+    var name = named ? msg.name : currentName;
+    if (named) currentName = msg.name;
+    // The host names the bank by its cut label, and the selection by the row
+    // here, which everything after it compares with `===`.
+    var held = kind !== "archive" && typeof msg.bank === "string" ? bankByLabel(msg.bank) : null;
+    selection = makeSelection(origin, held ? held.label : msg.bank, slot, name, msg.archive);
+    // A sound with no slot to compare against was whatever the host had just
+    // sent; the `state` before this one, or the one after, is its baseline.
+    if (storedValues(selection) === baseline) baseline = liveValues();
+    lastDirty = computeDirty();
+  }
+
+  // Whether a host's `patch` names a preset, as opposed to saying it has
+  // nothing to report: `index` null and no `name`, which keeps the panel's own.
+  function namesPreset(msg) {
+    return (typeof msg.name === "string" && msg.name !== "") || isSlot(msg.index) ||
+      msg.source === "archive" || msg.source === "file";
+  }
+
+  function receivePatch(msg) {
+    // The host answering a load this panel asked for, as opposed to a program
+    // change somebody else made: only the first is the person's own choice.
+    var answered = !!pendingLoad && msg.source === "archive" && !!msg.archive &&
+      msg.archive.bank === pendingLoad.bank && msg.archive.patch === pendingLoad.patch;
+    // Which patch a *host* says is loaded, after something other than this
+    // panel changed it -- a MIDI program change, most often.
+    //
+    // Not only drawn. The panel's own idea of what is loaded has to move with
+    // it, or the next "save patch" writes the sound that is playing under the
+    // name of the one before it.
+    if (typeof msg.source === "string") {
+      playing = msg;
+      if (msg.source === "archive") pendingLoad = null;
+    }
+    takeHostSelection(msg);
+    // The host moving on ends a restore that was shown as done, which is old
+    // news by now. It also ends one that failed: a host that chose a preset by
+    // itself has dropped the identity it was holding, and a banner still
+    // offering a Retry would be offering it for nothing. Only a patch that
+    // names a preset says so. A failure the host still holds is sent again
+    // after its patch (see bridge.js), so it is not lost here.
+    //
+    // A retry still waiting is left to its answer, which the host always
+    // gives. The answer carries a patch ahead of its restore, so settling on
+    // that patch would lose the retry the restore is checked against; and a
+    // person cannot choose a preset in the meantime either (`loadPreset`).
+    if (restoreState.state === "restored" ||
+        (restoreState.state === "failed" && namesPreset(msg))) settleRestore();
+    paintRestore();
+    paintStrip();
+    if (answered) announceLoaded();
+    refreshBrowser();
+  }
+
+  // -- telling the host
+
+  // Only with a shared archive, which other clients can move under an open
+  // dialog; and with a host that can say a program changed, or a restore
+  // finished, under one. Without either the dialog repaints on its own actions.
+  function refreshBrowser() {
+    if (window.SynthBrowser && window.SynthBrowser.refresh) window.SynthBrowser.refresh();
+  }
+
+  // What the host is told about a selection, once it has said it can read one.
+  function announceSelection() {
+    bridge.select(selection.origin, selection.bank, selection.slot, selection.presetName);
+  }
+
+  // Tell a host which bank is loaded, and whether to keep it.
+  //
+  // Only a plugin listens: in the browser the bank is remembered in local
+  // storage instead, and host.js ignores a message it has no case for.
+  //
+  // Two separate questions, which is why there is a flag rather than two
+  // conditions on one send:
+  //
+  //   what is playing   always. A plugin selects patches by program change out
+  //                     of its own copy, so if the panel is showing a bank the
+  //                     plugin does not have, "program 12" means two different
+  //                     sounds at once. It did: loading a .zip left the plugin
+  //                     on the bank it started with.
+  //   what is kept      only the bank the host itself keeps. The others are
+  //                     files somebody opened -- they are already on disk,
+  //                     under their own names, and overwriting the saved bank
+  //                     by browsing somebody else's would be a poor trade.
+  //                     A host that speaks version 1 says which one that is
+  //                     (`kept` on its `bank`, `persisted` here); an older one
+  //                     is taken to keep bank zero, which was the only bank it
+  //                     ever kept.
+  //
+  // Playing a bank is not writing it, so `keep` is whether this send is a
+  // person's write of the bank's content. Only that may ask the host to save,
+  // and then only for the bank the host keeps. A load, a switch of bank or a
+  // restore is a send to play, never to save: one that said "save" for a
+  // bank that had been the host's file replaced the file on the way to
+  // playing a preset out of it, which nobody asked for.
+  //
+  // The whole bank goes each time rather than a description of what moved.
+  // Writing a patch is something a person does, one at a time, and a few tens
+  // of kilobytes on that is nothing next to a second way of saying it.
+  function publishBank(rec, keep) {
+    rec = rec || bank;
+    if (!rec || !window.SynthPatchFile || !window.SynthPatchFile.bankText) return;
+    var at = banks.indexOf(rec);
+    // A daemon's ordinary bank used to be added after the placeholder, so
+    // publishing it did not also keep it. Removing that placeholder must
+    // not turn browsing or adding a bank into a disk write; Keep still does.
+    if (at < 0 || (archive && at !== 0)) return;
+    var text = window.SynthPatchFile.bankText(at);
+    if (!text) return;
+    var v1 = bridge.version() >= 1;
+    var save = keep === true && !archive &&
+      (v1 ? rec.persisted === true : rec === banks[0]);
+    var msg = { type: "bank", text: text, save: save };
+    if (v1) { msg.v = 1; msg.origin = rec.origin; }
+    hostPlaying = rec;
+    if (bridge.send(msg) && save && v1) pendingSaves.push(rec.label);
+  }
+
+  // The host plays out of the bank the selection is in; when the panel moves
+  // somewhere it has not, the host is given that bank before the sound.
+  function ensurePlaying(rec) {
+    if (rec && rec !== hostPlaying) publishBank(rec);
+  }
+
+  // Banks whose content just changed. The host's own bank is saved if it is
+  // one of them, and because saving a bank makes the host play it, the bank the
+  // panel is actually playing from is sent again afterwards, to be played and
+  // not saved unless it is itself one that changed.
+  function publishChanged(recs) {
+    var current = playingBank();
+    var v1 = bridge.version() >= 1;
+    var others = [];
+    recs.forEach(function (r) {
+      // From here on the bank is not just the file it was opened from, which
+      // is what closing it would otherwise be able to claim.
+      if (r) r.edited = true;
+      if (r && r !== current && others.indexOf(r) < 0 && v1 && r.persisted) others.push(r);
+    });
+    others.forEach(function (r) { publishBank(r, true); });
+    if (recs.indexOf(current) >= 0 || others.length) {
+      publishBank(current, recs.indexOf(current) >= 0);
+    }
+  }
+
+  function flushStore() {
+    if (window.SynthStore) window.SynthStore.flush();
+  }
+
+  // -- loading
+
+  // Load one patch out of a bank.
+  //
+  // Every parameter goes at once rather than as ninety-nine separate messages:
+  // the engine rebinds on each one, and a patch change that rebound a hundred
+  // times would be audible as a smear rather than a change.
+  function loadPatch(index, rec) {
+    rec = rec || bank;
+    if (!rec) return;
+    var n = BANK_SLOTS;
+    // Wraps, so stepping past either end is a way round rather than a dead stop.
+    var slot = ((index % n) + n) % n;
+    // An empty slot loads as Init rather than being skipped over. Skipping
+    // would make the empty ones invisible to the arrows, and then there would
+    // be no way to arrive at one in order to save into it.
+    var p = rec.patches[slot] || { n: "Init", v: initValues() };
+    paintValues(p.v);
     currentName = p.n;
+    setSelection(makeSelection(rec.origin, rec.label, slot, p.n));
     bridge.send({ type: "state", values: p.v });
-    showPatch({ name: p.n, index: bankIndex, bank: bank.label });
+  }
+
+  // What a person choosing a slot does, in the order a host needs it: its bank,
+  // then the sound, then which preset that was. Nothing else loads a slot on
+  // the person's behalf; in particular nothing a host *sends* does.
+  function userLoad(index, rec) {
+    rec = rec || bank;
+    if (!rec) return;
+    settleRestore();
+    currentBank = banks.indexOf(rec);
+    bank = rec;
+    ensurePlaying(rec);
+    loadPatch(index, rec);
+    announceSelection();
+    announceLoaded();
+  }
+
+  // The preset a host plays, asked for through the archive: the host answers
+  // with a `patch`, and the selection moves then and not before.
+  function loadArchive(bankIndex, patchIndex) {
+    var bad = function (code, message) { return refusal("load", code, message); };
+    if (!archive || !archive.open) return bad("UnavailableSource", "No archive is open.");
+    if (typeof bankIndex !== "number" || bankIndex % 1 !== 0 || bankIndex < 0 ||
+        bankIndex >= archive.banks.length) {
+      return bad("UnavailableSource", "That archive bank is not in the archive.");
+    }
+    if (typeof patchIndex !== "number" || patchIndex % 1 !== 0 || patchIndex < 0 ||
+        (archive.bank === bankIndex && patchIndex >= archive.patches.length)) {
+      return bad("InvalidPreset", "That patch is not in the archive bank.");
+    }
+    archiveError = "";
+    pendingLoad = { bank: bankIndex, patch: patchIndex };
+    if (!bridge.send({ type: "archive-load", bank: bankIndex, index: patchIndex })) {
+      pendingLoad = null;
+      return bad("UnavailableSource", "The host could not be reached.");
+    }
+    paintStrip();
+    return { ok: true, action: "load", pending: true, archive: { bank: bankIndex, patch: patchIndex } };
   }
 
   // The patch list, as a popover over the bar.
@@ -1549,18 +2185,19 @@
       bank.patches.forEach(function (p, i) {
         var b = document.createElement("button");
         b.type = "button";
-        b.textContent = pad3(i) + "  " + p.n;
+        b.textContent = pad3(i) + "  " + (p ? p.n : "Init");
         b.addEventListener("click", function () {
-          loadPatch(i);
+          userLoad(i);
           list.classList.remove("open");
         });
         list.appendChild(b);
       });
     }
 
+    var at = slotInView();
     var kids = list.children;
     for (var i = 0; i < kids.length; i++) {
-      kids[i].setAttribute("aria-current", i === bankIndex ? "true" : "false");
+      kids[i].setAttribute("aria-current", i === at ? "true" : "false");
     }
 
     list.classList.add("open");
@@ -1570,7 +2207,7 @@
       Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8))) + "px";
     list.style.bottom = Math.round(window.innerHeight - r.top + 8) + "px";
     // Bring the current patch into view rather than always opening at the top.
-    if (kids[bankIndex]) kids[bankIndex].scrollIntoView({ block: "center" });
+    if (kids[at]) kids[at].scrollIntoView({ block: "center" });
   }
 
   // What patchfile.js needs, and nothing more.
@@ -1582,20 +2219,15 @@
   // and change a parameter without the controls being repainted to match.
   window.SynthPatch = {
     // The current parameter set, as stored integers in parameter order.
-    values: function () {
-      var out = [];
-      for (var i = 0; i < PARAMS.length; i++) {
-        out.push(values[PARAMS[i].i] !== undefined ? values[PARAMS[i].i] : PARAMS[i].def);
-      }
-      return out;
-    },
+    values: liveValues,
 
     // The name of what is actually loaded, which is not always the bank's.
     //
-    // Reading it off `bank.patches[bankIndex]` was wrong and testing found it:
-    // loading a patch *file* leaves the bank index where it was, so a save
+    // Reading it off `bank.patches[slot]` was wrong and testing found it:
+    // loading a patch *file* leaves the bank's slot where it was, so a save
     // straight afterwards wrote the loaded patch's parameters under the
-    // neighbouring bank entry's name. `currentName` is set by both paths.
+    // neighbouring bank entry's name. `currentName` is set by every path that
+    // changes the sound.
     name: function () {
       return currentName || "Patch";
     },
@@ -1619,111 +2251,608 @@
       setPosition(index, position, true);
     },
 
-    // Apply a whole patch. Goes through the same path a bank patch does, so a
-    // loaded file cannot end up shown differently from one that was stepped to.
+    // Apply a whole patch as the sound, with no bank behind it. Goes through
+    // the same path a bank patch does, so a loaded file cannot end up shown
+    // differently from one that was stepped to.
     apply: function (list, name) {
-      for (var i = 0; i < list.length; i++) {
-        if (byIndex[i] !== undefined) values[i] = list[i];
-      }
-      for (var k in controls) controls[k]();
-      for (var d in dependents) {
-        dependents[d].forEach(function (fn) { fn(); });
-      }
+      settleRestore();
+      paintValues(list);
       currentName = name || "Patch";
+      setSelection(makeSelection("file", "", null, currentName));
       bridge.send({ type: "state", values: list });
-      showPatch({ name: currentName, index: null, bank: bank ? bank.label : "" });
+      announceSelection();
     },
 
-    // The bank as it stands, and a way to replace it. Replacing rebuilds the
-    // list popover, which is cached after its first open.
+    // The bank in view.
     bank: function () {
       return bank;
     },
-
-    // Add a bank and switch to it. Replaces one already open under the same
-    // name -- opening the same file twice should not give two identical rows.
-    setBank: function (label, patches) {
-      var made = normalizeBank({ label: label, patches: patches });
-      var at = -1;
-      // Publishing happens at the end of this, once currentBank has moved.
-      if (archive) {
-        banks = [made];
-        currentBank = 0;
-        if (!adoptingBank) browsedArchive = -1;
-      } else {
-        for (var i = 0; i < banks.length; i++) if (banks[i].label === made.label) at = i;
-        if (at >= 0) { banks[at] = made; currentBank = at; }
-        else { banks.push(made); currentBank = banks.length - 1; }
-      }
-      bank = made;
-      bankSupplied = true;
-      bankIndex = 0;
-      var list = document.getElementById("bank-list");
-      if (list) {
-        list.textContent = "";
-        list.classList.remove("open");
-      }
-      loadPatch(0);
-      // Last, so a host is told about the bank that is now current rather than
-      // the one that was.
-      publishBank();
-    },
   };
-
-  // Tell a host which bank is loaded, and whether to keep it.
-  //
-  // Only a plugin listens: in the browser the bank is remembered in local
-  // storage instead, and host.js ignores a message it has no case for.
-  //
-  // Two separate questions, which is why there is a flag rather than two
-  // conditions on one send:
-  //
-  //   what is playing   always. A plugin selects patches by program change out
-  //                     of its own copy, so if the panel is showing a bank the
-  //                     plugin does not have, "program 12" means two different
-  //                     sounds at once. It did: loading a .zip left the plugin
-  //                     on the bank it started with.
-  //   what is kept      only bank zero, which is the one that started as the
-  //                     factory bank and is the one on disk. The others are
-  //                     files somebody opened -- they are already on disk,
-  //                     under their own names, and overwriting the saved bank
-  //                     by browsing somebody else's would be a poor trade.
-  //
-  // The whole bank goes each time rather than a description of what moved.
-  // Writing a patch is something a person does, one at a time, and a few tens
-  // of kilobytes on that is nothing next to a second way of saying it.
-  function publishBank() {
-    // Not while applying a bank the host just sent: it would go straight back,
-    // and on every editor open.
-    if (adoptingBank) return;
-    if (!window.SynthPatchFile || !window.SynthPatchFile.bankText) return;
-    var text = window.SynthPatchFile.bankText();
-    // A daemon's ordinary bank used to be added after the placeholder, so
-    // publishing it did not also keep it. Removing that placeholder must
-    // not turn browsing or adding a bank into a disk write; Keep still does.
-    if (text) bridge.send({ type: "bank", text: text, save: !archive && currentBank === 0 });
-  }
-
-  // Set while a bank from the host is being applied; see publishBank.
-  var adoptingBank = false;
 
   // Keep the bank that is open, whichever one it is.
   //
-  // publishBank only marks bank zero to be saved, which is right for the
-  // ordinary case and left no way at all to do the thing somebody actually
+  // publishBank only marks the host's own bank to be saved, which is right for
+  // the ordinary case and left no way at all to do the thing somebody actually
   // wants after opening a .zip: make *that* the bank the plugin comes back to.
   // There was "Save bank…", which downloads a file -- in a plugin that puts it
   // in Downloads, which is not a bank, and is where this was found.
   function keepBank() {
     if (!window.SynthPatchFile || !window.SynthPatchFile.bankText) return false;
-    var text = window.SynthPatchFile.bankText();
+    var text = window.SynthPatchFile.bankText(currentBank);
     if (!text) return false;
-    bridge.send({ type: "bank", text: text, save: true });
-    return true;
+    var v1 = bridge.version() >= 1;
+    var msg = { type: "bank", text: text, save: true };
+    if (v1) { msg.v = 1; msg.origin = bank.origin; }
+    hostPlaying = bank;
+    var sent = bridge.send(msg);
+    if (sent && v1) pendingSaves.push(bank.label);
+    // What is stored is the slots; the sound being edited is not in it, and a
+    // person pressing Keep after an edit is owed being told so.
+    say(sent ? "Kept " + bank.label + "." + (lastDirty
+      ? " Unsaved changes to " + selection.presetName + " were not included." : "")
+      : "Could not keep " + bank.label + ".", sent ? (lastDirty ? "warn" : "ok") : "error");
+    return sent;
   }
 
   function emptyBank(label) {
-    return normalizeBank({ label: label, patches: [] });
+    return makeBank({ label: label, patches: [] }, "user");
+  }
+
+  function utf8Length(text) {
+    var n = 0;
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      if (c < 0x80) n += 1;
+      else if (c < 0x800) n += 2;
+      else if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length &&
+               (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { n += 4; i++; }
+      else n += 3;
+    }
+    return n;
+  }
+
+  // `text` as the host stores a bank's label: at most `max` bytes of UTF-8,
+  // NAME_MAX_BYTES unless said, cut before the character that would not fit,
+  // as src/patch/slots.odin put_name cuts it. Every `bank-saved`, `bank` and
+  // `patch` names the bank by that label, so it is the label the page holds
+  // and matches by: one held whole matched none of them, and Keep left the
+  // bank kept before marked as kept, for the next Write to be saved over it.
+  function cutLabel(text, max) {
+    var room = max === undefined ? NAME_MAX_BYTES : max;
+    var n = 0, end = 0;
+    for (var i = 0; i < text.length; i = end) {
+      var c = text.charCodeAt(i), w = 3;
+      end = i + 1;
+      if (c < 0x80) w = 1;
+      else if (c < 0x800) w = 2;
+      else if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length &&
+               (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { w = 4; end = i + 2; }
+      if (n + w > room) return text.slice(0, i);
+      n += w;
+    }
+    return text;
+  }
+
+  // The same bank to the host. A label is long only if something put it
+  // there before labels were cut, or a host that does not cut sent it.
+  function sameLabel(a, b) {
+    return cutLabel(a) === cutLabel(b);
+  }
+
+  // A name the host will store exactly as written.
+  function checkName(raw) {
+    if (typeof raw !== "string") return { error: "A name is text." };
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(raw)) {
+      return { error: "A name cannot contain control characters." };
+    }
+    var name = raw.trim();
+    if (!name) return { error: "A name cannot be empty." };
+    var bytes = utf8Length(name);
+    if (bytes > NAME_MAX_BYTES) {
+      return { error: "That name is " + bytes + " bytes; the most a slot keeps is " + NAME_MAX_BYTES + "." };
+    }
+    return { name: name };
+  }
+
+  // A bank's name: anything readable that the host keeps as written. A name
+  // a person typed is refused over the host's limit rather than cut, as a
+  // preset's is; a name the page makes up is cut (uniqueLabel).
+  function checkLabel(raw) {
+    if (typeof raw !== "string") return { error: "A bank's name is text." };
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(raw)) {
+      return { error: "A bank's name cannot contain control characters." };
+    }
+    var label = raw.trim();
+    if (!label) return { error: "A bank's name cannot be empty." };
+    var bytes = utf8Length(label);
+    if (bytes > NAME_MAX_BYTES) {
+      return { error: "That name is " + bytes + " bytes; the most a bank's name keeps is " + NAME_MAX_BYTES + "." };
+    }
+    return { label: label };
+  }
+
+  function slotWords(rec, slot) {
+    return rec.label + " / " + pad3(slot);
+  }
+
+  function copyPatch(p) {
+    return { n: p.n, v: p.v.slice() };
+  }
+
+  function archiveBusy(action) {
+    return refusal(action, "UnsupportedFormat",
+      "Banks cannot be added or removed in the page while a shared archive is open.");
+  }
+
+  var ORIGIN_RANK = { factory: 0, user: 1, imported: 2, file: 3, archive: 4, session: 5 };
+
+  // The preset's identity for anything that wants to remember it: favourites,
+  // most recently used. Built from what names it, so a bank renamed or a slot
+  // rewritten is a different preset and an old reference goes unavailable
+  // instead of quietly pointing at something else.
+  function presetKey(origin, label, slot, from, name) {
+    var where = slot !== null ? String(slot) : from ? "a" + from.bank + "." + from.patch : "";
+    return origin + "\u0000" + label + "\u0000" + where + "\u0000" + name;
+  }
+
+  function bankRow(b, i) {
+    var used = null;
+    if (!b.load || b.loaded) {
+      used = 0;
+      for (var j = 0; j < b.patches.length; j++) if (b.patches[j]) used++;
+    }
+    return {
+      index: i,
+      label: b.label,
+      origin: b.origin,
+      kind: "bank",
+      used: used,
+      loading: !!b.loading,
+      unavailable: !!b.error,
+      error: b.error || "",
+      leftOut: b.leftOut || 0,
+      readOnly: bankReadOnly(b),
+      closable: bankClosable(b),
+      persisted: b.persisted === true,
+      edited: b.edited === true,
+      saveError: b.saveError || "",
+      current: i === currentBank,
+      playing: selection.origin !== "archive" && selection.bank === b.label,
+    };
+  }
+
+  // A bank that can be closed: one the panel made or opened, that no host
+  // keeps.
+  function bankClosable(rec) {
+    if (archive || banks.length < 2) return false;
+    if (rec.origin !== "imported" && rec.origin !== "user") return false;
+    return !rec.hostOwned && !rec.persisted;
+  }
+
+  function receiveArchive(msg) {
+    if (!archive) {
+      // sync sends the ordinary bank before the archive capability. Keep
+      // that bank, not the empty placeholder the hosted page began with.
+      banks = [hostBank || bank];
+      currentBank = 0;
+      bank = banks[0];
+    }
+    archive = msg;
+    if (browsedArchive >= 0) {
+      browsedArchive = msg.open && msg.bank !== null ? msg.bank : -1;
+    }
+    archiveWaiting = -1;
+    refreshBrowser();
+  }
+
+  // The bank a *plugin* holds, which is the one on disk, or the one it was
+  // sent and keeps in its state. The copy compiled into this page is only what
+  // a browser would have used, so it is replaced when it has the same name and
+  // otherwise sits beside it.
+  //
+  // This changes the bank list and nothing else. It does not load slot 0, it
+  // does not touch the sound, and it sends nothing: the bank came from the
+  // host, and sending it straight back out -- or the first patch of it -- was
+  // the write on every editor open that issue #13 is about. Which preset is
+  // playing is the host's `state`, `patch` and `restore`, not this.
+  function adoptHostBank(msg) {
+    var parsed = window.SynthPatchFile.parseBank(msg.text);
+    var origin = msg.origin === "factory" || msg.origin === "imported" ? msg.origin : "user";
+    var made = makeBank({ label: parsed.label, patches: parsed.patches }, origin);
+    made.hostOwned = true;
+    made.readOnly = msg.readOnly === true;
+    // Only a version-1 host says which bank it keeps, and it says so itself:
+    // `kept`. What the bank is called does not tell. A New bank or a Duplicate
+    // made here is origin user too, and the host only plays it -- as it does an
+    // embedded copy of one, or of somebody's file -- so taking every user bank
+    // for the kept one offered the scratch bank as the saved bank after the
+    // editor was reopened, and the next Write into it replaced the file the
+    // user kept. Not said is not kept.
+    var keeps = !made.readOnly && bridge.version() >= 1 && msg.kept === true;
+    if (archive) {
+      banks = [made];
+      currentBank = 0;
+    } else {
+      var at = bankIndexOf(made.label);
+      if (at >= 0) {
+        banks[at] = made;
+        currentBank = at;
+      } else {
+        banks.push(made);
+        currentBank = banks.length - 1;
+      }
+    }
+    // A host that sends a second bank it keeps has moved on from the first,
+    // which stays here to be played and edited but is no longer what it saves.
+    if (keeps) markPersisted(made);
+    bank = made;
+    hostBank = made;
+    hostPlaying = made;
+    bankSupplied = true;
+    var list = byId("bank-list");
+    if (list) {
+      list.textContent = "";
+      list.classList.remove("open");
+    }
+    lastDirty = computeDirty();
+    paintStrip();
+  }
+
+  // -- writing, copying, moving
+
+  // Every refusal a write of a slot can give, in the order they are given.
+  // The write is the live sound going into a slot (`from` is null) or a patch
+  // copied or moved there from another slot (`from` names it).
+  //
+  // One function because the rules are one set -- what an archive, a read-only
+  // or an unopened bank takes, and when an occupied slot may be written over --
+  // and two copies of them would be free to disagree about a bank. The order is
+  // part of what the doors promise when more than one refusal applies: what is
+  // being taken, then where it is going, and for a move only then whether it
+  // may leave.
+  //
+  // Answers { refusal: { code, message } }, or what it resolved: { src, dst,
+  // p, name, there } -- the banks, the patch being copied, the checked name of
+  // a live sound, and what the destination slot holds now.
+  function checkSlotWrite(action, from, to, name, overwrite) {
+    var no = function (code, message) { return { refusal: { code: code, message: message } }; };
+    var src = from ? resolveBank(from.bank) : null;
+    var dst = resolveBank(to.bank);
+    if (!dst || !isSlot(to.slot) || (from && (!src || !isSlot(from.slot)))) {
+      return no("InvalidSlot", "That is not a slot of a bank that is open.");
+    }
+    if (src && src.archive) {
+      return no(action === "move" ? "ReadOnlyBank" : "UnavailableSource",
+        "A patch in the shared archive is not held here to " + action + ".");
+    }
+    if (dst.archive) return no("ReadOnlyBank", "Archive banks are read-only.");
+    if (src && src.rec === dst.rec && from.slot === to.slot) {
+      return no("InvalidSlot", "That is the same slot.");
+    }
+    if (src && bankUnopened(src.rec)) return no("UnavailableSource", src.rec.label + " has not been opened.");
+    var p = src ? src.rec.patches[from.slot] : null;
+    if (src && !p) return no("InvalidPreset", "Slot " + slotWords(src.rec, from.slot) + " is empty.");
+    if (bankReadOnly(dst.rec)) return no("ReadOnlyBank", dst.rec.label + " is read-only.");
+    if (bankUnopened(dst.rec)) return no("ReadOnlyBank", "Open " + dst.rec.label + " before writing to it.");
+    var checked = null;
+    if (!from) {
+      checked = checkName(name);
+      if (checked.error) return no("InvalidName", checked.error);
+    }
+    if (action === "move" && bankReadOnly(src.rec)) {
+      return no("ReadOnlyBank", src.rec.label + " is read-only, so nothing can be moved out of it.");
+    }
+    var there = dst.rec.patches[to.slot];
+    if (there && overwrite !== true) {
+      return no("OverwriteDenied", "Slot " + slotWords(dst.rec, to.slot) + " already holds " + there.n + ".");
+    }
+    return { src: src, dst: dst, p: p, name: checked ? checked.name : null, there: there };
+  }
+
+  // The one door through which a sound becomes part of a bank. It writes the
+  // live sound to exactly the slot asked for, or refuses and changes nothing.
+  //
+  //   writePreset({ bank, slot, name, overwrite })
+  //
+  // `bank` is a position in `SynthBank.list()` or a label. Writing over a sound
+  // takes `overwrite: true`, which is the caller saying a person agreed: the
+  // panel does not ask, and does not assume the answer.
+  //
+  // Returns { ok: true, action, bank, slot, name, message } or
+  // { ok: false, action, error: { code, message } } with the code one of
+  // InvalidSlot, ReadOnlyBank, InvalidName, OverwriteDenied.
+  function writeSlot(req, action) {
+    req = req || {};
+    var checked = checkSlotWrite(action, null, { bank: req.bank, slot: req.slot },
+      req.name === undefined ? (currentName || "Untitled") : req.name, req.overwrite);
+    if (checked.refusal) return refusal(action, checked.refusal.code, checked.refusal.message);
+    var found = checked.dst, rec = found.rec, old = checked.there;
+
+    rec.patches[req.slot] = { n: checked.name, v: liveValues() };
+    settleRestore();
+    currentBank = found.index;
+    bank = rec;
+    currentName = checked.name;
+    setSelection(makeSelection(rec.origin, rec.label, req.slot, checked.name));
+    flushStore();
+    publishChanged([rec]);
+    announceSelection();
+    refreshBrowser();
+    return report({
+      ok: true, action: action, bank: rec.label, slot: req.slot, name: checked.name,
+      overwrote: !!old,
+      message: "Saved " + checked.name + " to " + slotWords(rec, req.slot) + ".",
+    });
+  }
+
+  // Copy or move one preset to another slot, the same bank's or another's. The
+  // caller has already asked; a destination that holds a sound is only touched
+  // with `overwrite: true`. A copy leaves the sound that is playing alone, and
+  // so does a move, except that the sound that *was* the moved one is now at
+  // its new address and the selection goes with it.
+  function transfer(action, from, to, options) {
+    from = from || {};
+    to = to || {};
+    var checked = checkSlotWrite(action, from, to, null, !!(options && options.overwrite === true));
+    if (checked.refusal) return refusal(action, checked.refusal.code, checked.refusal.message);
+    var src = checked.src, dst = checked.dst, p = checked.p, there = checked.there;
+
+    // Both ends are changed before anything is announced, so a host is told
+    // about a move once and never sees a copy that has not lost its source yet.
+    var wasSelected = selection.slot === from.slot && selection.bank === src.rec.label;
+    dst.rec.patches[to.slot] = copyPatch(p);
+    if (action === "move") src.rec.patches[from.slot] = null;
+    if (action === "move" && wasSelected) {
+      selection = makeSelection(dst.rec.origin, dst.rec.label, to.slot, p.n);
+    }
+    lastDirty = computeDirty();
+    flushStore();
+    publishChanged(action === "move" ? [dst.rec, src.rec] : [dst.rec]);
+    if (action === "move" && wasSelected) announceSelection();
+    paintStrip();
+    refreshBrowser();
+    return report({
+      ok: true, action: action, name: p.n, overwrote: !!there,
+      from: { bank: src.rec.label, slot: from.slot },
+      to: { bank: dst.rec.label, slot: to.slot },
+      message: (action === "move" ? "Moved " : "Copied ") + p.n + " from " +
+        slotWords(src.rec, from.slot) + " to " + slotWords(dst.rec, to.slot) + ".",
+    });
+  }
+
+  // -- Save, and Save As
+
+  // Save writes the sound back to where it came from when that is somewhere it
+  // may go, and otherwise asks where; it never overwrites a source it does not
+  // own. Asking is the browser's job, because choosing a destination is what
+  // its Write view is.
+  function save() {
+    if (savesInPlace()) {
+      return writeSlot({
+        bank: bankIndexOf(selection.bank), slot: selection.slot,
+        name: selection.presetName || currentName || "Untitled", overwrite: true,
+      }, "save");
+    }
+    return saveAs();
+  }
+
+  function saveAs() {
+    var b = window.SynthBrowser;
+    if (b && typeof b.saveAs === "function") b.saveAs();
+    else if (b && typeof b.write === "function") b.write();
+    else return refusal("save-as", "InvalidSlot", "There is nowhere to choose a destination here.");
+    return { ok: true, action: "save-as", pending: true };
+  }
+
+  function bankIndexOf(label) {
+    for (var i = 0; i < banks.length; i++) if (sameLabel(banks[i].label, label)) return i;
+    return -1;
+  }
+
+  // -- the browser's own entry points, as the strip reaches them
+
+  function openBrowser() {
+    var read = document.querySelector("#bank .bank-read");
+    if (window.SynthBrowser && window.SynthBrowser.open) window.SynthBrowser.open();
+    else if (read) showBankList(read);
+  }
+
+  function importWithPicker() {
+    var b = window.SynthBrowser;
+    if (b && typeof b.importBank === "function") { b.importBank(); return; }
+    var files = window.SynthPatchFile;
+    if (!files || !files.pick) {
+      refusal("import", "UnsupportedFormat", "This build cannot open files.");
+      return;
+    }
+    files.pick(function (err, what) {
+      if (err) return;
+      say(what ? "Opened " + what + "." : "", "ok");
+    });
+  }
+
+  function runMenu(action) {
+    var files = window.SynthPatchFile;
+    var b = window.SynthBrowser;
+    var missing = function (what) { refusal(action, "InvalidSlot", what + " is not available here."); };
+    switch (action) {
+      case "save-as": saveAs(); break;
+      case "export-patch": if (files && files.savePatch) files.savePatch(); else missing("Export"); break;
+      case "export-bank": if (files && files.saveBank) files.saveBank(); else missing("Export"); break;
+      case "import-bank": importWithPicker(); break;
+      case "write": if (b && b.write) b.write(); else missing("Write"); break;
+    }
+  }
+
+  // The actions beside the strip: Browser, Save, and a menu of the rest.
+  //
+  // The menu is a menu button as the WAI-ARIA practices describe one: it opens
+  // on click, Enter, Space and the arrow keys, focus moves into it and stays
+  // inside, Escape closes it and gives focus back to the button, and so does
+  // choosing something -- *before* the action runs, so that a dialog the action
+  // opens takes the button as the place focus returns to rather than an item
+  // that has just been hidden.
+  function buildActions() {
+    var browse = byId("preset-browse");
+    var saveButton = byId("preset-save");
+    var menu = byId("preset-menu");
+    var list = byId("preset-menu-list");
+    if (browse) browse.addEventListener("click", function (e) { e.stopPropagation(); openBrowser(); });
+    if (saveButton) {
+      saveButton.addEventListener("click", function (e) {
+        e.stopPropagation();
+        window.SynthBank.save();
+      });
+    }
+    if (!menu || !list) return;
+
+    var items = [].slice.call(list.querySelectorAll('[role="menuitem"]'));
+    function setOpen(open, which) {
+      list.hidden = !open;
+      menu.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open && items.length) items[which === "last" ? items.length - 1 : 0].focus();
+    }
+    function move(from, by) {
+      items[(from + by + items.length) % items.length].focus();
+    }
+
+    menu.addEventListener("click", function (e) {
+      e.stopPropagation();
+      setOpen(list.hidden, "first");
+    });
+    menu.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setOpen(true, e.key === "ArrowUp" ? "last" : "first");
+      }
+    });
+    items.forEach(function (item, at) {
+      item.addEventListener("click", function (e) {
+        e.stopPropagation();
+        setOpen(false);
+        menu.focus();
+        runMenu(item.getAttribute("data-action"));
+      });
+      item.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowDown") { e.preventDefault(); move(at, 1); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); move(at, -1); }
+        else if (e.key === "Home") { e.preventDefault(); items[0].focus(); }
+        else if (e.key === "End") { e.preventDefault(); items[items.length - 1].focus(); }
+        else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen(false);
+          menu.focus();
+        } else if (e.key === "Tab") setOpen(false);
+      });
+    });
+    // A click anywhere else closes it, as for any menu.
+    document.addEventListener("click", function () {
+      if (!list.hidden) setOpen(false);
+    });
+  }
+
+  function buildRestore() {
+    var on = function (id, fn) {
+      var el = byId(id);
+      if (el) el.addEventListener("click", fn);
+    };
+    on("restore-retry", function () { window.SynthBank.restore.retry(); });
+    on("restore-choose", function () { window.SynthBank.restore.chooseBank(); });
+    on("restore-dismiss", function () { window.SynthBank.restore.discard(); });
+    on("restore-factory", function () { window.SynthBank.restore.loadFactoryInit(); });
+    on("restore-keep", function () { window.SynthBank.restore.discard(); });
+  }
+
+  // Does the host hold the sound? In a plugin, and in the standalone daemon's
+  // page, it does: opening the editor is looking at an instrument that is
+  // already playing, and the host will say what it is playing. A page whose
+  // engine is *in* the page -- the browser build, the pad -- has been told
+  // nothing, and a sound of its own is the only sound there will ever be.
+  function hostHoldsSound() {
+    return window.SynthBank.hosted() && !bridge.inPage;
+  }
+
+  function buildBank() {
+    var el = byId("bank");
+    if (!el) return;
+
+    var steps = el.querySelectorAll(".bank-step");
+    for (var i = 0; i < steps.length; i++) {
+      (function (b) {
+        b.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var step = parseInt(b.dataset.step, 10);
+          var at = slotInView();
+          if (archive && playing && playing.source === "archive") {
+            bridge.send({ type: "patch-step", step: step });
+          } else if (bank) {
+            // With nothing loaded from this bank the first press goes to its
+            // ends, rather than to the slot one past a position that is not
+            // one.
+            userLoad(at < 0 ? (step > 0 ? 0 : BANK_SLOTS - 1) : at + step);
+          } else {
+            // No bank compiled in: the host may still have one.
+            bridge.send({ type: "patch-step", step: step });
+          }
+        });
+      })(steps[i]);
+    }
+
+    var read = el.querySelector(".bank-read");
+    if (read) {
+      read.classList.add("pickable");
+      read.addEventListener("click", function (e) {
+        e.stopPropagation();
+        // The browser if it is loaded, the old popover if it is not. A native
+        // host that ships a trimmed panel still gets a way to change patch.
+        openBrowser();
+      });
+    }
+    buildActions();
+    buildRestore();
+
+    // What was remembered, if anything is doing the remembering.
+    //
+    // The factory bank's slots go back first, so that loading slot zero below
+    // loads the edited version of it rather than the one that shipped. The
+    // current sound goes on top of that, because it is what was actually being
+    // played and it need not be any slot's contents.
+    var kept = window.SynthStore ? window.SynthStore.restore() : null;
+    if (kept && kept.midi && window.SynthMidiMap) {
+      window.SynthMidiMap.restore(kept.midi);
+    }
+    if (kept && kept.factory) {
+      banks[0] = makeBank({ label: banks[0].label, patches: kept.factory }, banks[0].origin);
+      if (currentBank === 0) bank = banks[0];
+    }
+
+    // Only when a bank actually came with the page, and only when nothing else
+    // holds the sound. There is always a bank now -- an empty one is still 128
+    // slots you can save into -- but loading slot zero of it sends an Init
+    // patch or a factory one to the host, and in a plugin the host has its own
+    // state and got there first. A panel that overwrote it on startup lost the
+    // user's sound every time the window was opened. That is issue #13: the
+    // editor is a view, and opening a view is not an edit.
+    if (bankSupplied && !hostHoldsSound()) loadPatch(0, bank);
+    else paintStrip();
+
+    // And then the sound that was actually up, over the top of it. Restored
+    // after loadPatch rather than instead of it, so the slot number and the
+    // bank name are already right and only the sound changes.
+    if (kept && kept.current && kept.current.values) {
+      window.SynthPatch.apply(kept.current.values, kept.current.name);
+      var slot = kept.current.slot;
+      // A slot is a place in one bank, and the factory bank is the only one
+      // remembered. A sound that came from another bank stays the sound it is
+      // rather than becoming a factory preset it never was. A state written
+      // before it recorded the bank has none to compare, and keeps its slot.
+      var from = kept.current.bank;
+      if (isSlot(slot) && (from === undefined || from === bank.label)) {
+        setSelection(makeSelection(bank.origin, bank.label, slot, currentName));
+      }
+    }
+    paintRestore();
   }
 
   // The bank as slots: what the browser and the file menu both work through.
@@ -1741,6 +2870,125 @@
       archiveError = "";
       return bridge.send({ type: "archive-close" });
     },
+
+    // -- what is selected, and how it is doing
+
+    // Which preset the sound in the engine is. A copy: the page owns it.
+    selection: function () {
+      return makeSelection(selection.origin, selection.bank, selection.slot,
+        selection.presetName, selection.archive);
+    },
+
+    // One of "loading", "unavailable", "dirty", "readonly" or "clean", the
+    // first that applies. `dirty` is about the *sound*: the live parameters
+    // differ from what the selection was stored as. It says nothing about
+    // whether the host's project has unsaved changes.
+    status: computeStatus,
+
+    // Whether the selection is in a bank that cannot take a write.
+    readOnly: selectedReadOnly,
+
+    // What became of the last attempt to restore a program and bank:
+    // { state: "notRequested" | "restoring" | "restored" | "failed", ... }.
+    restoreState: function () {
+      var out = {};
+      for (var k in restoreState) out[k] = restoreState[k];
+      return out;
+    },
+
+    restore: {
+      // Ask the host to try again, and say nothing final until it answers.
+      retry: function () {
+        var cannot = function () {
+          return refusal("restore-retry", "HostRejected", "This host cannot retry a restore.");
+        };
+        if (bridge.version() < 1) return cannot();
+        if (restoreState.state === "restoring") return { ok: true, action: "restore-retry", pending: true };
+        if (restoreState.state !== "failed" || !failure) return { ok: true, action: "restore-retry", pending: false };
+        if (!bridge.restoreRetry()) return cannot();
+        var next = { state: "restoring" };
+        ["origin", "bank", "slot", "name"].forEach(function (k) {
+          if (failure[k] !== undefined) next[k] = failure[k];
+        });
+        setRestore(next);
+        return { ok: true, action: "restore-retry", pending: true };
+      },
+
+      // Keep the sound that is playing and let the host forget what it could
+      // not restore.
+      discard: function () {
+        bridge.restoreDiscard();
+        failure = null;
+        setRestore({ state: "notRequested" });
+        return { ok: true, action: "restore-discard" };
+      },
+
+      // The factory's Init, as a choice somebody made. This is the only thing
+      // in the panel that ever puts the factory bank in place of a bank that
+      // could not be found, and it only does it when asked.
+      loadFactoryInit: function () {
+        var rec = null;
+        banks.forEach(function (b) { if (!rec && b.origin === "factory") rec = b; });
+        var label = rec ? rec.label
+          : (window.SYNTH1_BANK && window.SYNTH1_BANK.label) || "Quesynth Factory";
+        settleRestore();
+        if (rec && !archive) {
+          currentBank = banks.indexOf(rec);
+          bank = rec;
+          ensurePlaying(rec);
+        }
+        var init = initValues();
+        paintValues(init);
+        currentName = "Init";
+        setSelection(makeSelection("factory", label, null, "Init"));
+        bridge.send({ type: "state", values: init });
+        announceSelection();
+        return report({ ok: true, action: "load-factory-init", message: "Loaded " + label + " / Init." });
+      },
+
+      chooseBank: function () {
+        openBrowser();
+        return { ok: true, action: "choose-bank" };
+      },
+    },
+
+    // -- results
+
+    // Say something in the strip, where it is seen and not in the way.
+    // `kind` is "ok", "warn" or "error".
+    announce: say,
+    // Every outcome of a write, copy, move, save, import or export, as the
+    // object it returned; and the last one, for whoever missed it.
+    report: report,
+    lastResult: function () { return lastResult; },
+    onResult: function (fn) {
+      resultListeners.push(fn);
+      return function () {
+        var at = resultListeners.indexOf(fn);
+        if (at >= 0) resultListeners.splice(at, 1);
+      };
+    },
+    // Told with the selection each time a person's choice becomes the sound:
+    // a slot loaded, or the host's answer to an archive patch asked for.
+    onLoad: function (fn) {
+      loadListeners.push(fn);
+      return function () {
+        var at = loadListeners.indexOf(fn);
+        if (at >= 0) loadListeners.splice(at, 1);
+      };
+    },
+
+    // A patch was written to a file. A sound with no slot behind it is now what
+    // it was exported as; one in a slot is still not what that slot holds.
+    patchExported: function () {
+      if (selection.slot !== null) return false;
+      baseline = liveValues();
+      lastDirty = false;
+      paintStrip();
+      return true;
+    },
+
+    // -- the banks
 
     // A view for navigation, not for exporting or storing the ordinary bank.
     // Keeping it apart from label/slots/index prevents an export or a write
@@ -1766,12 +3014,8 @@
     },
 
     loadBrowsed: function (i) {
-      if (archive && browsedArchive >= 0) {
-        archiveError = "";
-        bridge.send({ type: "archive-load", bank: browsedArchive, index: i });
-      } else {
-        loadPatch(i);
-      }
+      if (archive && browsedArchive >= 0) loadArchive(browsedArchive, i);
+      else userLoad(i);
     },
 
     // Every open bank, for the list down the side.
@@ -1784,32 +3028,41 @@
     // somebody opens it.
     list: function () {
       if (archive) {
-        var ordinary = { label: bank.label, used: bank.patches.filter(Boolean).length,
-          loading: false, current: browsedArchive < 0, kind: "bank" };
-        return [ordinary].concat(archive.banks.map(function (name, i) {
-          return { label: name, used: archive.bank === i ? archive.patches.length : null,
-            loading: archiveWaiting === i, current: browsedArchive === i, kind: "archive" };
-        }));
+        var ordinary = bankRow(banks[0], 0);
+        ordinary.used = banks[0].patches.filter(Boolean).length;
+        ordinary.current = browsedArchive < 0;
+        var rows = archive.banks.map(function (name, i) {
+          return {
+            index: i + 1, label: name, origin: "archive", kind: "archive",
+            used: archive.bank === i ? archive.patches.length : null,
+            loading: archiveWaiting === i, unavailable: false, error: "", leftOut: 0,
+            readOnly: true, closable: false, persisted: false, edited: false, saveError: "",
+            current: browsedArchive === i,
+            playing: selection.origin === "archive" && !!selection.archive && selection.archive.bank === i,
+          };
+        });
+        return [ordinary].concat(rows);
       }
-      return banks.map(function (b, i) {
-        var used = null;
-        if (!b.load || b.loaded) {
-          used = 0;
-          for (var j = 0; j < b.patches.length; j++) if (b.patches[j]) used++;
-        }
-        return {
-          label: b.label,
-          used: used,
-          loading: !!b.loading,
-          current: i === currentBank,
-        };
-      });
+      return banks.map(bankRow);
+    },
+
+    // One row of `list`, by the same position, or null.
+    bankInfo: function (i) {
+      return window.SynthBank.list()[i] || null;
+    },
+    origin: function (i) {
+      var info = window.SynthBank.bankInfo(i);
+      return info ? info.origin : null;
+    },
+    originLabel: function (origin) {
+      return isOrigin(origin) ? ORIGIN_LABELS[origin] : "";
     },
 
     // A bank that exists but has not been read yet. `load` is called at most
     // once, the first time it is selected, and resolves to its patches.
     addLazy: function (label, load) {
-      var made = emptyBank(label);
+      var made = emptyBank(uniqueLabel(String(label || "Bank")));
+      made.origin = "imported";
       made.load = load;
       made.loaded = false;
       banks.push(made);
@@ -1820,7 +3073,8 @@
 
     // Switch to another open bank. `quiet` leaves the sound alone, which is
     // what looking for somewhere to save wants: choosing a destination must not
-    // overwrite the thing being saved.
+    // overwrite the thing being saved. Either way, the selection stays where it
+    // was until something is chosen.
     select: function (i, quiet, done) {
       if (archive) {
         if (i < 0 || i > archive.banks.length) return;
@@ -1841,15 +3095,21 @@
       if (target.load && !target.loaded) {
         if (target.loading) return;
         target.loading = true;
+        target.error = "";
         target.load().then(function (patches) {
           target.loading = false;
           target.loaded = true;
           var filled = normalizeBank({ label: target.label, patches: patches });
           target.patches = filled.patches;
+          // Said where it is read, so a bank that did not fit is never shown as
+          // if it had.
+          target.leftOut = Math.max(0, patches.length - BANK_SLOTS);
           window.SynthBank.select(i, quiet, done);
         }, function (err) {
           target.loading = false;
-          // Left unloaded rather than emptied, so it can be tried again.
+          // Left unloaded rather than emptied, so it can be tried again; marked
+          // so the list can say why it is not there.
+          target.error = (err && err.message) || "could not be read";
           if (done) done(err);
         });
         if (done) done(null, "loading");
@@ -1859,50 +3119,236 @@
       if (i === currentBank) { if (done) done(null); return; }
       currentBank = i;
       bank = banks[i];
-      var name = document.getElementById("bank-name");
-      if (name) name.textContent = bank.label;
-      publishBank();
-      if (quiet) {
-        // No slot number. The sound in the engine did not come from this bank,
-        // so claiming a slot in it would be a lie -- and a specific one: it
-        // would read "060:Lead Copy" over a bank whose slot 60 is empty.
-        // Nothing is loaded here on purpose; see the write mode in browser.js.
-        bankIndex = -1;
-        showPatch({ name: currentName, index: null, bank: bank.label });
-      } else {
-        loadPatch(0);
+      var list = byId("bank-list");
+      if (list) {
+        list.textContent = "";
+        list.classList.remove("open");
       }
+      if (!quiet) userLoad(0, bank);
       if (done) done(null);
     },
 
     // A new empty bank: 128 slots with nothing in them, which is a perfectly
     // good bank to start writing sounds into.
-    create: function (label) {
-      var wanted = String(label || "New Bank");
-      if (archive) {
-        banks = [emptyBank(wanted)];
-        bank = banks[0];
-        currentBank = 0;
-        browsedArchive = -1;
-        publishBank();
-        refreshBrowser();
-        return 0;
-      }
-      // Names are how the list is read, so two banks called the same thing
-      // would be two rows nobody can tell apart.
-      var name = wanted, n = 2;
-      while (banks.some(function (b) { return b.label === name; })) {
-        name = wanted + " " + n++;
-      }
-      banks.push(emptyBank(name));
+    newBank: function (label) {
+      if (archive) return archiveBusy("new-bank");
+      var checked = checkLabel(label === undefined ? "New Bank" : label);
+      if (checked.error) return refusal("new-bank", "InvalidName", checked.error);
+      var made = emptyBank(uniqueLabel(checked.label));
+      banks.push(made);
       window.SynthBank.select(banks.length - 1, true);
-      return banks.length - 1;
+      return report({
+        ok: true, action: "new-bank", index: banks.length - 1, label: made.label,
+        message: "Made " + made.label + ".",
+      });
+    },
+    create: function (label) {
+      var r = window.SynthBank.newBank(label);
+      return r.ok ? r.index : -1;
     },
 
-    label: function () { return bank.label; },
+    // A bank brought in from a file. The one thing it does is add a row: the
+    // bank in view, the selection, the sound and the host are exactly as they
+    // were, until somebody chooses something in it.
+    //
+    // `leftOut` is how many patches the file held beyond a bank's 128. It stays
+    // on the bank, as it does for one read out of a zip of banks, so that an
+    // export of it cannot pass for the whole of what was opened.
+    importBank: function (label, patches, leftOut) {
+      if (archive) return archiveBusy("import");
+      var made = makeBank({ label: uniqueLabel(String(label || "Bank")), patches: patches }, "imported");
+      if (leftOut > 0) made.leftOut = leftOut;
+      banks.push(made);
+      refreshBrowser();
+      return {
+        ok: true, action: "import", index: banks.length - 1, label: made.label,
+        used: made.patches.filter(Boolean).length,
+      };
+    },
+
+    // Rename a bank the panel owns: one it made or opened, that no host keeps
+    // under its old name.
+    renameBank: function (i, name) {
+      var found = resolveBank(i);
+      if (!found || found.archive) return refusal("rename-bank", "InvalidSlot", "That bank is not open.");
+      var rec = found.rec;
+      if (rec.origin === "factory" || rec.origin === "archive" || rec.hostOwned) {
+        return refusal("rename-bank", "ReadOnlyBank", rec.label + " belongs to the host and cannot be renamed.");
+      }
+      var checked = checkLabel(name);
+      if (checked.error) return refusal("rename-bank", "InvalidName", checked.error);
+      if (checked.label === rec.label) {
+        return { ok: true, action: "rename-bank", index: found.index, label: rec.label };
+      }
+      if (banks.some(function (b) { return b !== rec && sameLabel(b.label, checked.label); })) {
+        return refusal("rename-bank", "InvalidName", "A bank called " + checked.label + " is already open.");
+      }
+      var was = rec.label;
+      rec.label = checked.label;
+      if (selection.bank === was) selection.bank = checked.label;
+      // The name is part of what a kept bank stores, so this one is a write.
+      if (rec === hostPlaying) publishBank(rec, true);
+      paintStrip();
+      refreshBrowser();
+      return report({
+        ok: true, action: "rename-bank", index: found.index, label: rec.label,
+        message: "Renamed " + was + " to " + rec.label + ".",
+      });
+    },
+
+    // A writable copy of a bank that is open and has been read, as a bank of
+    // the user's own.
+    duplicateBank: function (i) {
+      if (archive) return archiveBusy("duplicate-bank");
+      var found = resolveBank(i);
+      if (!found) return refusal("duplicate-bank", "InvalidSlot", "That bank is not open.");
+      if (bankUnopened(found.rec)) {
+        return refusal("duplicate-bank", "UnavailableSource", found.rec.label + " has not been opened.");
+      }
+      var made = makeBank({
+        // Cut before " copy" rather than through it, so it still says so.
+        label: uniqueLabel(cutLabel(found.rec.label, NAME_MAX_BYTES - utf8Length(" copy")) + " copy"),
+        patches: found.rec.patches.map(function (p) { return p ? copyPatch(p) : null; }),
+      }, "user");
+      banks.push(made);
+      window.SynthBank.select(banks.length - 1, true);
+      return report({
+        ok: true, action: "duplicate-bank", index: banks.length - 1, label: made.label,
+        message: "Copied " + found.rec.label + " to " + made.label + ".",
+      });
+    },
+
+    // Close a bank the panel opened. Never the last one, never the host's, and
+    // never the sound: if it was the one playing, the sound stays as it is and
+    // simply has no slot behind it any more.
+    removeBank: function (i) {
+      var found = resolveBank(i);
+      if (!found || found.archive) return refusal("remove-bank", "InvalidSlot", "That bank is not open.");
+      var rec = found.rec;
+      if (!bankClosable(rec)) {
+        return refusal("remove-bank", "ReadOnlyBank",
+          banks.length < 2 ? "The last bank cannot be closed." : rec.label + " cannot be closed.");
+      }
+      banks.splice(found.index, 1);
+      if (found.index < currentBank) currentBank--;
+      else if (found.index === currentBank) currentBank = Math.min(currentBank, banks.length - 1);
+      bank = banks[currentBank];
+      if (hostPlaying === rec) hostPlaying = null;
+      if (selection.bank === rec.label && selection.origin !== "archive") {
+        // What the sound was loaded with is still what it is measured against:
+        // closing the bank it came from does not make an edit to it a
+        // non-edit.
+        var was = selection.slot !== null && rec.patches[selection.slot];
+        selection = makeSelection("session", "", null, selection.presetName);
+        baseline = was ? was.v.slice() : liveValues();
+        lastDirty = computeDirty();
+        announceSelection();
+      }
+      var list = byId("bank-list");
+      if (list) {
+        list.textContent = "";
+        list.classList.remove("open");
+      }
+      paintStrip();
+      refreshBrowser();
+      return report({
+        ok: true, action: "remove-bank", label: rec.label, message: "Closed " + rec.label + ".",
+      });
+    },
+
+    // -- presets
+
+    // Every preset the panel can name and load now, in one order: by where it
+    // came from (factory, user, imported, file, archive, session), then the
+    // order the banks were opened in, then slot. A bank that is listed but not
+    // read contributes nothing, and nothing here reads one.
+    presets: function () {
+      var out = [];
+      banks.forEach(function (b, i) {
+        if (archive && i > 0) return;
+        if (bankUnopened(b)) return;
+        b.patches.forEach(function (p, slot) {
+          if (!p) return;
+          out.push({
+            key: presetKey(b.origin, b.label, slot, null, p.n),
+            origin: b.origin, source: "bank", bank: b.label, bankIndex: i, slot: slot,
+            archive: null, name: p.n, readOnly: bankReadOnly(b), live: false,
+          });
+        });
+      });
+      if (archive && archive.open && archive.bank !== null) {
+        var named = archive.banks[archive.bank];
+        archive.patches.forEach(function (name, j) {
+          var from = { bank: archive.bank, patch: j };
+          out.push({
+            key: presetKey("archive", named, null, from, name),
+            origin: "archive", source: "archive", bank: named, bankIndex: archive.bank + 1,
+            slot: null, archive: from, name: name, readOnly: true, live: false,
+          });
+        });
+      }
+      // The sound with nothing behind it is a preset too: the one thing in the
+      // list that is only here until it is saved.
+      if (selection.origin === "session" || selection.origin === "file") {
+        var live = selection.presetName || "Untitled";
+        out.push({
+          key: presetKey(selection.origin, "", null, null, live),
+          origin: selection.origin, source: selection.source, bank: "", bankIndex: -1,
+          slot: null, archive: null, name: live, readOnly: false, live: true,
+        });
+      }
+      return out.map(function (p, at) { return { p: p, at: at }; }).sort(function (a, b) {
+        return (ORIGIN_RANK[a.p.origin] - ORIGIN_RANK[b.p.origin]) ||
+          (a.p.bankIndex - b.p.bankIndex) ||
+          ((a.p.slot !== null ? a.p.slot : a.p.archive ? a.p.archive.patch : 0) -
+           (b.p.slot !== null ? b.p.slot : b.p.archive ? b.p.archive.patch : 0)) ||
+          (a.at - b.at);
+      }).map(function (e) { return e.p; });
+    },
+
+    // Make a preset the sound: `{ bank, slot }` for an ordinary slot, or
+    // `{ archive: { bank, patch } }` for the host's. A slot of the panel's own
+    // loads now; an archive patch is asked of the host and the selection
+    // moves when it answers, with `pending: true` until then. Refuses, rather
+    // than substituting anything, a preset that is not there.
+    loadPreset: function (ref) {
+      var bad = function (code, message) { return refusal("load", code, message); };
+      if (!ref || typeof ref !== "object") return bad("InvalidPreset", "No preset was named.");
+      if (restoreState.state === "restoring") {
+        return bad("RestorationConflict", "A restore is still waiting on the host. Wait for it, or keep the current sound.");
+      }
+      if (ref.archive) return loadArchive(ref.archive.bank, ref.archive.patch);
+      var found = resolveBank(ref.bank);
+      if (!found) return bad("UnavailableSource", "That bank is not open.");
+      if (found.archive) return loadArchive(found.bank, ref.slot);
+      var rec = found.rec;
+      if (bankUnopened(rec)) return bad("UnavailableSource", rec.label + " has not been opened.");
+      if (!isSlot(ref.slot)) return bad("InvalidPreset", "That is not a slot.");
+      if (!rec.patches[ref.slot]) {
+        return bad("InvalidPreset", "Slot " + slotWords(rec, ref.slot) + " is empty.");
+      }
+      userLoad(ref.slot, rec);
+      var chosen = window.SynthBank.selection();
+      return report({
+        ok: true, action: "load", pending: false, selection: chosen, bank: rec.label,
+        slot: ref.slot, name: chosen.presetName,
+        message: "Loaded " + chosen.presetName + " from " + slotWords(rec, ref.slot) + ".",
+      });
+    },
+
+    writePreset: function (req) { return writeSlot(req, "write"); },
+    copySlot: function (from, to, options) { return transfer("copy", from, to, options); },
+    moveSlot: function (from, to, options) { return transfer("move", from, to, options); },
+
+    // Save where the sound came from, or ask where to put it.
+    save: save,
+
+    label: function (which) {
+      var rec = which === undefined ? bank : banks[which];
+      return rec ? rec.label : "";
+    },
     setLabel: function (text) {
-      bank.label = String(text || "Bank");
-      showPatch({ name: currentName, index: bankIndex, bank: bank.label });
+      window.SynthBank.renameBank(currentBank, text);
     },
 
     // The slots themselves. Names only -- a caller listing 128 rows does not
@@ -1911,36 +3357,36 @@
       return bank.patches.map(function (p) { return p ? { name: p.n } : null; });
     },
 
-    index: function () { return bankIndex; },
-    load: function (i) { loadPatch(i); },
+    // The slot of the selection in the bank in view, or -1: the selection can
+    // be somewhere else, and a browser looking elsewhere marks nothing.
+    index: slotInView,
+    load: function (i) { userLoad(i); },
 
-    // Put the sound that is currently loaded into a slot.
+    // Put the sound that is currently loaded into a slot of the bank in view.
+    // The caller has asked for exactly this slot, so a sound already there is
+    // replaced; use writePreset to be told instead.
     store: function (i, name) {
-      if (i < 0 || i >= BANK_SLOTS) return false;
-      bank.patches[i] = { n: String(name || currentName || "Untitled"),
-                          v: window.SynthPatch.values() };
-      bankIndex = i;
-      currentName = bank.patches[i].n;
-      showPatch({ name: currentName, index: i, bank: bank.label });
-      if (window.SynthStore) window.SynthStore.flush();
-      publishBank();
-      return true;
+      var r = writeSlot({ bank: currentBank, slot: i, name: name || undefined, overwrite: true }, "write");
+      return r.ok;
     },
 
     clear: function (i) {
-      if (i < 0 || i >= BANK_SLOTS) return false;
+      if (!isSlot(i)) return false;
+      if (bankReadOnly(bank) || bankUnopened(bank)) {
+        refusal("clear", "ReadOnlyBank", bank.label + " is read-only.");
+        return false;
+      }
       bank.patches[i] = null;
-      if (i === bankIndex) loadPatch(i);
-      if (window.SynthStore) window.SynthStore.flush();
-      publishBank();
+      if (i === slotInView()) {
+        loadPatch(i, bank);
+        announceSelection();
+      } else {
+        lastDirty = computeDirty();
+        paintStrip();
+      }
+      flushStore();
+      publishChanged([bank]);
       return true;
-    },
-
-    // Replace the whole bank, padding to the slot count. The same call the
-    // file menu makes through SynthPatch.setBank; both are here so neither can
-    // drift into padding differently.
-    replace: function (label, patches) {
-      window.SynthPatch.setBank(label, patches);
     },
 
     // One bank's slots, in the shape a file uses, for whatever is keeping
@@ -1982,26 +3428,6 @@
       return bank.patches.slice(0, last + 1);
     },
   };
-
-  function showPatch(msg) {
-    var p = document.getElementById("bank-patch");
-    var b = document.getElementById("bank-name");
-    var position = msg.source === "archive" ? (msg.archive ? msg.archive.patch : null) : msg.index;
-    if (p && msg.name) {
-      p.textContent = (position != null ? pad3(position) + ":" : "") + msg.name;
-    }
-    if (b && (msg.bank || typeof msg.source === "string")) b.textContent = msg.bank || "";
-    var strip = document.getElementById("bank");
-    if (strip && typeof msg.source === "string") strip.dataset.source = msg.source;
-    // Only in the bank bar at the foot. It used to be repeated in the strip
-    // beside the name, which said the same thing twice and made the one piece
-    // of fixed chrome change width as patches were stepped through.
-  }
-
-  function pad3(n) {
-    var s = String(n);
-    return s.length >= 3 ? s : ("000" + s).slice(-3);
-  }
 
   // ------------------------------------------------------------------ wheels
 
@@ -2134,55 +3560,57 @@
     bridge.onMessage(function (msg) {
       if (!msg || !msg.type) return;
       if (msg.type === "state" && Array.isArray(msg.values)) {
-        msg.values.forEach(function (v, i) {
-          if (byIndex[i] !== undefined && typeof v === "number") setStored(i, v);
-        });
+        // One whole sound arriving, so the question "is it changed?" is asked
+        // once it is all here, not after each of the ninety-nine.
+        settling = true;
+        try {
+          msg.values.forEach(function (v, i) {
+            if (byIndex[i] !== undefined && typeof v === "number") setStored(i, v);
+          });
+        } finally {
+          settling = false;
+        }
+        // A sound that has no slot to be compared with is what the host just
+        // said it is.
+        if (storedValues(selection) === baseline) baseline = liveValues();
+        lastDirty = computeDirty();
+        paintStrip();
       } else if (msg.type === "param" && typeof msg.index === "number") {
         setStored(msg.index, msg.value);
       } else if (msg.type === "bank" && typeof msg.text === "string") {
-        // The bank a *plugin* holds, which is the one on disk. The copy
-        // compiled into this page is only what a browser would have used, so
-        // it is replaced rather than added to.
-        //
-        // Not published back: this came from the host, and sending it straight
-        // out again would be a write on every editor open.
-        adoptingBank = true;
         try {
-          window.SynthPatchFile.load(msg.text);
-          hostBank = bank;
+          adoptHostBank(msg);
         } catch (e) {
           console.error("bank from host:", e.message);
-        } finally {
-          adoptingBank = false;
+          say("The host sent a bank this panel could not read (" + e.message +
+              "). The banks here are unchanged.", "error");
         }
         refreshBrowser();
+      } else if (msg.type === "bank-saved") {
+        receiveBankSaved(msg);
+      } else if (msg.type === "restore") {
+        receiveRestore(msg);
       } else if (msg.type === "archive" && Array.isArray(msg.banks) && Array.isArray(msg.patches)) {
         receiveArchive(msg);
       } else if (msg.type === "error" && /^archive-/.test(msg["for"] || "")) {
         archiveError = msg.message || msg.code;
         archiveWaiting = -1;
+        if (msg["for"] === "archive-load" && pendingLoad) {
+          pendingLoad = null;
+          report({ ok: false, action: "load", error: {
+            code: "HostRejected", message: "The host did not load that patch: " + archiveError } });
+          paintStrip();
+        }
         refreshBrowser();
+      } else if (msg.type === "error" && msg["for"] === "bank") {
+        // The host refused the bank the page sent. The page still shows it, so
+        // say that the host does not have it.
+        report({ ok: false, action: "persist", error: {
+          code: "PersistenceFailed",
+          message: "The host did not take the bank (" + (msg.message || msg.code || "refused") +
+            "). The change is kept for this session only." } });
       } else if (msg.type === "patch") {
-        // Which patch a *host* says is loaded, after something other than this
-        // panel changed it -- a MIDI program change, most often.
-        //
-        // Not only drawn. The panel's own idea of what is loaded has to move
-        // with it, or the next "save patch" writes the sound that is playing
-        // under the name of the one before it, which is the bug the
-        // currentName note above is about, arriving by a different road.
-        if (typeof msg.name === "string" && msg.name !== "") {
-          currentName = msg.name;
-        }
-        if (typeof msg.source === "string") {
-          playing = msg;
-          bankIndex = -1;
-        }
-        if ((!msg.source || msg.source === "bank") &&
-            typeof msg.index === "number" && msg.index >= 0 && msg.index < BANK_SLOTS) {
-          bankIndex = msg.index;
-        }
-        showPatch(msg);
-        refreshBrowser();
+        receivePatch(msg);
       }
     });
 

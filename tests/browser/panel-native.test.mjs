@@ -81,12 +81,12 @@ test("the real panel runs hosted on the daemon: synced, live both ways, and neve
   await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
   await sleep(150);
 
-  // (a) Startup writes nothing but the volume; the page's echo of the bank
-  // it was sent is dropped by the adapter.
+  // (a) Startup writes nothing but the volume. Adopting the daemon's bank
+  // selects nothing and sends nothing, so the adapter has no reply to a bank
+  // to recognise: whatever state the page sends later is a person's.
   assert.deepEqual(writes(daemon), ["volume 640"]);
-  assert.deepEqual(page.sent.map(m => m.type), ["sync", "volume", "state"],
-    "one sync, the startup volume, and the adoption echo");
-  assert.deepEqual(page.sent[2].values, daemon.bank.slots[0].values, "the echo is slot 0");
+  assert.deepEqual(page.sent.map(m => m.type), ["sync", "volume"],
+    "one sync and the startup volume: no state, no echo of the bank it was sent");
 
   // (e) The daemon's bank is the page's bank.
   assert.equal(w.SynthBank.label(), "My Bank");
@@ -126,6 +126,21 @@ test("the real panel runs hosted on the daemon: synced, live both ways, and neve
   assert.deepEqual(Array.from(w.SynthPatch.values()), daemon.published.values);
 });
 
+test("choosing slot 0 of the daemon's bank at once loads it in the daemon", {
+  skip: !unix || typeof WebSocket !== "function",
+}, async t => {
+  const env = await startEnv(t);
+  const page = bootPanel(env.port);
+  t.after(() => page.close());
+  const w = page.window;
+  await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
+  // No wait: this is the moment the adapter used to be listening for an echo.
+  w.SynthBank.load(0);
+  await until(() => env.daemon.identity.slot === 0, 3000, "slot 0 to be the daemon's identity");
+  assert.deepEqual(writes(env.daemon).filter(line => !line.startsWith("volume")), ["patch.load 0"]);
+  assert.equal(w.document.getElementById("bank-patch").textContent, "000:" + env.daemon.bank.slots[0].name);
+});
+
 test("a fresh daemon plays Init, and the strip says so instead of the bank's first patch", {
   skip: !unix || typeof WebSocket !== "function",
 }, async t => {
@@ -136,7 +151,7 @@ test("a fresh daemon plays Init, and the strip says so instead of the bank's fir
   await until(() => page.got.some(m => m.type === "patch"), 5000, "the page to be synced");
   await sleep(150);
   assert.deepEqual(env.daemon.identity, {slot: -1, bank: "", name: "", source: "none", archiveBank: -1, archivePatch: -1});
-  assert.equal(shown(), "Untitled", "not 000:Strings, which is what adopting the bank selected");
+  assert.equal(shown(), "Untitled", "the daemon names no sound, and adopting its bank selects none");
   assert.deepEqual(Array.from(page.window.SynthPatch.values()), env.daemon.published.values);
 });
 
@@ -185,7 +200,7 @@ test("the hosted bank dialog browses the shared archive without replacing the or
   const w = page.window, doc = w.document;
   await until(() => page.got.some(m => m.type === "archive"), 5000, "archive capability");
   assert.deepEqual(Array.from(w.SynthBank.list(), b => b.label), ["My Bank"], "no placeholder bank");
-  w.SynthBrowser.open();
+  w.SynthBrowser.open({view: "slots"});
   const sources = () => doc.querySelectorAll(".browser-source");
   const slots = () => doc.querySelectorAll(".browser-slot");
   const shown = () => doc.getElementById("bank-patch").textContent;
@@ -275,7 +290,7 @@ test("the hosted WRITE dialog targets only the ordinary bank while an archive pa
   t.after(() => page.close());
   const w = page.window, doc = w.document;
   await until(() => page.got.some(m => m.type === "archive"), 5000, "archive capability");
-  w.SynthBrowser.open();
+  w.SynthBrowser.open({view: "slots"});
   doc.querySelectorAll(".browser-source")[2].click();
   await until(() => w.SynthBank.browsing().bank === 1 && !w.SynthBank.browsing().loading, 3000);
   w.SynthBrowser.write();

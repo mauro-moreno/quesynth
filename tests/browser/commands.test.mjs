@@ -185,44 +185,39 @@ test("volume on 0..1 becomes volume in thousandths, clamped", {skip}, async t =>
 
 // -- the state rules ----------------------------------------------------------
 
-test("the adoption echo is dropped exactly once, and only when it is slot 0", {skip}, async t => {
+test("loading slot 0 right after the bank arrived is a request, however often it is made", {skip}, async t => {
+  // The page sends no state for a bank it adopts, so a state of slot 0 is a
+  // person's choice at any time, the first moment after the bank included.
   const {ws, daemon} = await page(t);
   const slot0 = daemon.bank.slots[0].values;
-  const slot4 = daemon.bank.slots[4].values;
-  ws.send({type: "state", values: slot4});
-  await until(() => writes(daemon).length === 1, 3000, "slot 4 load");
-  assert.deepEqual(writes(daemon), ["patch.load 4"], "a state that is not the echo is not dropped");
   ws.send({type: "state", values: slot0});
-  await sleep(80);
-  assert.deepEqual(writes(daemon), ["patch.load 4"], "the echo changed nothing");
-  ws.send({type: "state", values: slot0});
-  await until(() => writes(daemon).length === 2, 3000, "second slot 0");
-  assert.deepEqual(writes(daemon), ["patch.load 4", "patch.load 0"], "the second one is a request");
-});
-
-test("with slot 0 empty the adoption echo is the Init patch", {skip}, async t => {
-  const {ws, daemon} = await page(t, {daemon: {bankText: bankWith(doc => { doc.patches[0] = null; })}});
-  ws.send({type: "state", values: DEFAULTS});
-  await sleep(80);
-  assert.deepEqual(writes(daemon), []);
-  ws.send({type: "state", values: DEFAULTS});
-  await until(() => writes(daemon).length === 2, 3000, "Init by value");
-  assert.match(writes(daemon)[0], /^patch\.apply /);
-  assert.equal(writes(daemon)[1], "patch.clear");
-});
-
-test("an adoption echo that never comes stops being expected", {skip}, async t => {
-  const {ws, daemon} = await page(t, {adoptMs: 60});
-  await sleep(120);
-  ws.send({type: "state", values: daemon.bank.slots[0].values});
-  await until(() => writes(daemon).length === 1, 3000, "slot 0 load");
+  await until(() => writes(daemon).length === 1, 3000, "the first slot 0 load");
   assert.deepEqual(writes(daemon), ["patch.load 0"]);
+  assert.equal(daemon.identity.slot, 0);
+  ws.send({type: "state", values: slot0});
+  await until(() => writes(daemon).length === 2, 3000, "the second slot 0 load");
+  assert.deepEqual(writes(daemon), ["patch.load 0", "patch.load 0"]);
+});
+
+test("with slot 0 empty, Init right after the bank arrived is applied and names nothing", {skip}, async t => {
+  const {env, ws, daemon} = await page(t, {daemon: {bankText: bankWith(doc => { doc.patches[0] = null; })}});
+  // Another sound is playing, so Init is a change the daemon has to make.
+  const peer = await connectRaw(env.socketPath);
+  t.after(() => peer.close());
+  await peer.request("patch.load 4");
+  await ws.next(m => m.type === "patch" && m.index === 4);
+  const before = writes(daemon).length;
+  ws.send({type: "state", values: DEFAULTS});
+  await until(() => writes(daemon).length === before + 2, 3000, "Init by value");
+  const [apply, clear] = writes(daemon).slice(before);
+  assert.match(apply, /^patch\.apply /);
+  assert.equal(clear, "patch.clear");
+  assert.deepEqual(daemon.published.values, DEFAULTS);
+  assert.equal(daemon.identity.slot, -1);
 });
 
 test("a state that is a filled slot's sound becomes patch.load and moves the identity", {skip}, async t => {
   const {ws, daemon} = await page(t);
-  ws.send({type: "state", values: daemon.bank.slots[0].values});
-  await sleep(50);
   ws.send({type: "state", values: daemon.bank.slots[7].values});
   assert.deepEqual(await ws.next("patch"), {type: "patch", name: "Brass", index: 7, bank: "My Bank", source: "bank", archive: null});
   assert.deepEqual(writes(daemon), ["patch.load 7"]);
@@ -231,7 +226,6 @@ test("a state that is a filled slot's sound becomes patch.load and moves the ide
 
 test("a sound two slots hold loads the slot already current, else the lowest", {skip}, async t => {
   const {env, ws, daemon} = await page(t, {daemon: {bankText: bankWith(doc => { doc.patches[9] = doc.patches[4]; })}});
-  ws.send({type: "state", values: daemon.bank.slots[0].values});
   const shared = daemon.bank.slots[4].values;
   ws.send({type: "state", values: shared});
   await until(() => writes(daemon).length === 1, 3000, "first load");

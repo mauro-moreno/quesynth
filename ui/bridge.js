@@ -71,6 +71,83 @@
 // archive patch send {"type":"patch-step","step":1} for the host to walk its
 // bank. A host that never sends `archive` keeps the page's own zip handling,
 // and a `patch` without `source` is read as it always was.
+//
+// Version 1 -- which preset the host is playing, and whether it could be
+// restored. Every message below carries "v":1, and the page sends none of the
+// ones marked "page" until it has received one host message that carries a "v"
+// of its own: a host that never says it is a legacy host, and a legacy host
+// (the standalone daemon's adapter, which answers an unknown type with an
+// `error`) is never sent anything it did not already understand. Nothing that
+// existed is renamed or dropped; v1 only adds fields and messages.
+//
+//   to interface  {"type":"bank","text":"<quesynth.bank>","v":1,
+//                  "origin":"factory|user|imported","readOnly":false,
+//                  "kept":true}
+//                     `origin`, `readOnly` and `kept` are new on the existing
+//                     message. Adopting it never selects a slot, loads a
+//                     patch, or answers with a `state`: it is the host saying
+//                     what it holds, not a request to change what is playing.
+//                     `kept` is whether this is the bank the host keeps -- its
+//                     saved bank, or the compiled-in one while it has none --
+//                     and so the only one a `bank` with "save":true may be
+//                     sent for. It is false for a bank the host only plays: one
+//                     the page made and sent, one opened from a file, one the
+//                     project embedded. `origin` is only what to call it, and
+//                     a bank the person made is the user's too. A message
+//                     without `kept` is read as false.
+//                 {"type":"patch","name":"Glass Pad","index":42,
+//                  "bank":"My Bank","v":1,"origin":"user"}
+//                     `index` null and no `name` when the host has nothing to
+//                     report; the page then keeps its own sound and name and
+//                     calls it the current session's. A `patch` that names a
+//                     preset is also the host saying it moved on by itself (a
+//                     MIDI Program Change), and the page lets go of a failed
+//                     restore it was showing, as it does when a person picks
+//                     a preset: the host dropped the identity too. A failure
+//                     the host still holds is sent again after its `patch`,
+//                     so a `patch` is never the last word on one. A retry the
+//                     page is waiting on is left to its own answer, which
+//                     carries a `patch` ahead of its `restore`.
+//                 {"type":"restore","v":1,"state":"restored",
+//                  "origin":"imported","bank":"Alfmeister Bank","slot":42,
+//                  "name":"Foo"}
+//                 {"type":"restore","v":1,"state":"failed",
+//                  "error":"MissingBank","recoverable":true,"message":"...",
+//                  "origin":"imported","bank":"Alfmeister Bank","slot":42,
+//                  "name":"Foo"}
+//                     `error` is MissingBank, InvalidProgram, HostStateRejected
+//                     or StateVersionUnsupported. A failed restore touches
+//                     neither the sound, the bank nor the program.
+//                 {"type":"restore","v":1,"state":"notRequested"}
+//                     The host holds nothing to restore. Sent only to answer
+//                     a `restore-retry`, never at `sync` (which says nothing
+//                     when nothing was asked): the failure being retried is
+//                     gone, because the instance moved to another preset
+//                     since. It resolves the page's retry, which `restoring`
+//                     would otherwise wait on for good.
+//                 {"type":"bank-saved","v":1,"ok":true,"bank":"My Bank"}
+//                 {"type":"bank-saved","v":1,"ok":false,
+//                  "error":"PersistenceFailed","message":"...",
+//                  "bank":"My Bank"}
+//                     The answer to a `bank` with "save":true; `error` is
+//                     PersistenceFailed or InvalidBank.
+//                 `sync` is answered in this order: bank, state, patch (if the
+//                 host has a selection), restore (if one was requested).
+//
+//   to host       {"type":"select","v":1,"origin":"user","bank":"My Bank",
+//                  "slot":42,"name":"Glass Pad"}                     page
+//                     What the panel just selected. `slot` is null for a sound
+//                     with no slot behind it (a file, or the current session).
+//                 {"type":"restore-retry","v":1}                      page
+//                     Re-evaluate the pending, failed restore. Always
+//                     answered, so the page is never left waiting: with the
+//                     bank if it changed, the `patch` once the restore is
+//                     over, and a `restore` -- `restored`, `failed` again, or
+//                     `notRequested` when there is nothing to retry.
+//                 {"type":"restore-discard","v":1}                    page
+//                     The person dismissed the failure: forget the identity.
+//                 `bank`, which the page already sent, gains "v":1 and
+//                 "origin" once a host has said v. `save` keeps its meaning.
 
 (function () {
   "use strict";
@@ -113,8 +190,20 @@
     return null;
   }
 
+  // The newest protocol this page speaks. See "Version 1" above.
+  var PROTOCOL = 1;
+
   var transport = detect();
+  // A host that runs inside the page -- the browser build's engine -- claims
+  // `SynthVolume` itself before this file loads (see the bottom of it). It is
+  // the one kind of host that holds nothing the page did not send it, so the
+  // page has to supply its sound; every other host already has one.
+  var inPage = !!transport && typeof window.SynthVolume === "function";
   var handlers = [];
+  // The highest version the host has spoken, capped at ours: what both sides
+  // understand. Zero until a host message carries a "v".
+  var peer = 0;
+  var failure = null;
 
   function deliver(text) {
     var msg;
@@ -122,6 +211,11 @@
       msg = typeof text === "string" ? JSON.parse(text) : text;
     } catch (err) {
       return;
+    }
+    // Before the handlers run, so the reply a handler sends to this very
+    // message can already be a version-1 one.
+    if (msg && typeof msg.v === "number" && msg.v >= 1 && msg.v > peer) {
+      peer = Math.min(Math.floor(msg.v), PROTOCOL);
     }
     for (var i = 0; i < handlers.length; i++) handlers[i](msg);
   }
@@ -139,13 +233,52 @@
     host: transport ? transport.name : "standalone",
     connected: !!transport,
 
+    // True when the host's engine is in this very page and holds no state the
+    // page did not give it. See where it is computed.
+    inPage: inPage,
+
+    // A transport that throws -- a host mid-teardown, a web view that has
+    // already closed its end -- must not take the page's handler down with it:
+    // a refused write is a `false` with the reason kept in `error`, which is
+    // how the panel already treats having no host at all.
     send: function (msg) {
-      if (transport) {
+      if (!transport) return false;
+      try {
         transport.send(msg);
+        failure = null;
         return true;
+      } catch (err) {
+        failure = String(err && err.message ? err.message : err);
+        return false;
       }
-      return false;
     },
+
+    // Why the last send failed, or null if it did not. Cleared by the next one
+    // that goes through.
+    error: function () { return failure; },
+
+    PROTOCOL: PROTOCOL,
+
+    // What the host and this page both understand: 0 until the host has sent a
+    // message with a "v", then the lower of its version and PROTOCOL.
+    version: function () { return peer; },
+
+    // A message only a version-1 host can read. Refused, and not sent, to a
+    // host that has not said it is one, so a legacy host never hears a type it
+    // would answer with an error.
+    sendV1: function (msg) {
+      if (peer < 1) return false;
+      var out = { v: PROTOCOL };
+      for (var key in msg) if (Object.prototype.hasOwnProperty.call(msg, key)) out[key] = msg[key];
+      return this.send(out);
+    },
+
+    // What the panel selected, for a host that keeps track of it.
+    select: function (origin, bank, slot, name) {
+      return this.sendV1({ type: "select", origin: origin, bank: bank, slot: slot, name: name });
+    },
+    restoreRetry: function () { return this.sendV1({ type: "restore-retry" }); },
+    restoreDiscard: function () { return this.sendV1({ type: "restore-discard" }); },
 
     onMessage: function (fn) { handlers.push(fn); },
 

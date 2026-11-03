@@ -26,15 +26,6 @@ test("the fake daemon's bank writer is byte-identical to the Odin writer", () =>
   assert.equal(writeBank(readBank(FIXTURE)), FIXTURE);
 });
 
-test("the echo the page sends after adopting is slot 0, or Init when slot 0 is empty", () => {
-  const model = bank.parseBank(FIXTURE, params);
-  assert.deepEqual(bank.adoptionValues(model, params), model.slots[0].values);
-  const doc = JSON.parse(FIXTURE);
-  doc.patches[0] = null;
-  const hole = bank.parseBank(JSON.stringify(doc), params);
-  assert.deepEqual(bank.adoptionValues(hole, params), params.defaults);
-});
-
 test("a sound held by two slots is matched to the loaded one, else the lowest", () => {
   const doc = JSON.parse(FIXTURE);
   doc.patches[9] = doc.patches[4];
@@ -46,7 +37,7 @@ test("a sound held by two slots is matched to the loaded one, else the lowest", 
   assert.equal(bank.findSlot(null, values, -1), -1);
 });
 
-test("documents the page would refuse are refused, so no echo is expected of them", () => {
+test("documents the page would refuse are refused, so none of their slots is ever matched", () => {
   const doc = JSON.parse(FIXTURE);
   assert.throws(() => bank.parseBank("{", params));
   assert.throws(() => bank.parseBank(JSON.stringify({...doc, format: "quesynth.patch"}), params));

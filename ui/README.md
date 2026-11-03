@@ -173,8 +173,11 @@ what keeps the label and the sound in agreement.
 | `style.css` | black ground, silver controls, one responsive grid |
 | `params.js` | **generated** — every parameter, its positions, and each position's value |
 | `layout.js` | hand written — panels, groups, both names per control, descriptions, option names |
-| `bridge.js` | host transport; absorbs every platform difference |
-| `app.js` | builds the panel and keeps it in step with the host |
+| `bridge.js` | host transport; absorbs every platform difference, and the version-1 handshake |
+| `app.js` | builds the panel and keeps it in step with the host; owns the selection, the banks and the restore banner |
+| `patchfile.js` | `.json`, `.zip`, folder and `.sy1` in and out; import validates before it adds |
+| `modal.js` | the dialog shell and its confirm and alert questions |
+| `browser.js` | the bank and slot browser |
 | `midi.js` | Web MIDI: a controller plays the panel and lights its keys; under a host that claims MIDI input (`window.SynthHostMidi`), never Web MIDI, only the host's input selection |
 | `bank.js` | **generated**, optional — the patch bank; see the note in .gitignore |
 
@@ -218,6 +221,11 @@ To the interface:
 {"type":"param","index":19,"value":80}
 {"type":"patch","name":"Computer","bank":"soundbank00"}
 ```
+
+A host that keeps a program of its own adds version-1 messages -- `restore`,
+`bank-saved`, and `v`, `origin` and `readOnly` on `bank` and `patch` -- and the
+page may then send `select`, `restore-retry` and `restore-discard`. See
+[Presets and banks](#presets-and-banks) and the header of `bridge.js`.
 
 `edit` brackets a gesture so a host recording automation records one move rather
 than the few hundred values a drag passes through.
@@ -294,6 +302,357 @@ Once one `archive` has arrived (`SynthBank.archive()` is not null):
 
 A host that never sends `archive` (a plugin, the browser build, the page on
 its own) keeps its own banks and reads a zip in the page as before.
+
+## Presets and banks
+
+The strip at the foot (at the top on a phone) says which preset the sound is,
+where it came from, and whether it has been changed:
+
+```text
+[PREV]  IMPORTED  042:Glass Pad *  Alfmeister Bank  [NEXT]  [Browser] [Save] [More]
+```
+
+`#bank-patch` is `NNN:Name` or the bare name and `#bank-name` is the bank's
+label, exactly as they always were. The origin chip (`#bank-origin`) and the
+edit marker (`#bank-dirty`) are their own elements, so nothing that reads the
+name has to know about them.
+
+### What the panel knows about the sound
+
+`SynthBank.selection()` is the one answer to "which preset is this": its
+`origin`, `source`, `bank`, `slot`, `presetName` and, for an archive preset,
+`archive: { bank, patch }`. It is kept apart from three things it used to be
+mistaken for -- the bank the browser is *looking at* (`current()`), the slot a
+Write is *aimed at*, and the live parameters.
+
+| origin | what it is | a slot? |
+|---|---|---|
+| `factory` | the bank compiled into the page, or the one a host calls that | yes |
+| `user` | a bank made here, or the one a host keeps for this instrument | yes |
+| `imported` | a bank opened from a file, a zip or a folder | yes |
+| `archive` | a bank inside the host's shared archive | never: `archive` carries its indexes |
+| `file` | one patch opened from a file | never |
+| `session` | the sound as it is, with nothing behind it ("Unsaved") | never |
+
+`SynthBank.status()` is one of `loading`, `unavailable`, `dirty`, `readonly`
+or `clean`, the first that applies. **`dirty` means the sound differs from what
+the selection was stored as and nothing more**: it is not, and nothing in the
+interface may say it is, the host's project having unsaved changes. A sound with
+no slot is measured against what it was loaded or last exported with.
+`SynthBank.readOnly()` says the last part separately.
+
+The factory bank is read-only wherever nothing keeps what is written to it:
+anywhere but the browser build (which has `store.js`) or a host that sends
+`"readOnly":false`. An archive bank always is. Save on anything read-only, or
+imported, or with no slot, opens Save As and never overwrites its source.
+
+### Opening the editor is not an edit
+
+Issue #13: reopening a plugin's editor, or toggling a project offline and
+online, reset the program and the bank, because the page loaded slot 0 of its
+own bank and sent that sound to the host. Two rules came out of it, and both
+have tests (`tests/ui/preset-reopen.test.mjs`):
+
+- A page whose host holds the sound -- every plugin and the standalone
+  daemon's page, which is `SynthBank.hosted()` with the engine *not* in the
+  page (`SynthBridge.inPage` is false) -- never loads a patch and never sends a
+  `state` when it starts. A page whose engine is in the page (the browser build
+  and Quesynth Pad, where `host.js` claims `SynthVolume`) has been told nothing
+  and keeps selecting slot 0, as it always did.
+- Adopting a bank the host sends changes the list of banks and nothing else. It
+  does not load a slot, change the sound, or send a `state`, a `select` or a
+  `bank` back. Which preset is playing is the host's `state`, `patch` and
+  `restore`.
+
+### Restoring what the host asked for
+
+A host that restored a program and bank when the project loaded says how that
+went (`restore`, in the header of `bridge.js`). A failure keeps the sound, the
+bank and the program, and the banner (`#restore-banner`, `role="alert"`) says so:
+
+> Could not restore `Alfmeister Bank / 042`. The current sound was kept.
+> [Retry] [Choose bank]
+
+and, for a missing bank only,
+
+> The saved bank is unavailable. Load Factory / Init instead?
+> [Load Factory / Init] [Keep current sound]
+
+Those words are in `index.html` and `pad.html` and are the contract; `app.js`
+fills in only the bank and slot. **Nothing ever substitutes the factory bank for
+one that could not be found unless the person presses Load Factory / Init.**
+Retry sends `restore-retry`, Keep current sound `restore-discard`, Choose bank
+opens the browser; choosing any preset replaces the identity the host was
+holding. A failure that cannot be retried (`recoverable: false`) disables Retry,
+and one that is not a missing bank gets a Dismiss button instead of the second
+line. `SynthBank.restoreState()` is `{ state: "notRequested" | "restoring" |
+"restored" | "failed", error, recoverable, origin, bank, slot, name }`.
+
+The host can also choose by itself. A MIDI Program Change is a choice like any
+other, and the host's session lets go of the failed restore it was holding, so
+a `patch` that names a preset ends a failed restore on the page too, and the
+banner goes. A failure the host still holds is sent again straight after its
+`patch`, so a patch is never the last word on one (`sync` answers in the order
+bank, state, patch, restore for the same reason).
+
+A retry that is waiting is left to its own answer, which the host always gives:
+the restored bank and preset, the same failure again, or
+
+```json
+{"type":"restore","v":1,"state":"notRequested"}
+```
+
+when there is nothing left to retry because the instance has moved on. That
+state is only ever an answer to a retry; at `sync` a host with nothing to say
+says nothing. Without it a Retry would leave the banner busy, with Retry
+disabled and `loadPreset` refusing with `RestorationConflict`, until the person
+pressed Keep current sound.
+
+### Version 1 of the protocol
+
+`"v":1` is the whole of the handshake: the page sends `select`,
+`restore-retry`, `restore-discard` and the new fields of `bank` only after it has
+received a host message that carries a `v`, so a legacy host (the standalone
+daemon's adapter answers an unknown type with an `error`) never hears one.
+Nothing that existed is renamed or dropped. The messages are written out in the
+header of `bridge.js`; `SynthBridge.PROTOCOL`, `version()` and `sendV1()` are
+how the rest of the panel uses them, and a transport that throws makes `send()`
+return `false` with the reason in `SynthBridge.error()`.
+
+### Writing, saving and moving
+
+`SynthBank.writePreset({ bank, slot, name, overwrite })` is the one door
+through which a sound becomes part of a bank. It writes exactly that slot or
+refuses and changes nothing; it never asks a question, and never assumes the
+answer -- `overwrite: true` is the caller saying a person agreed. `copySlot`
+and `moveSlot` take `{ bank, slot }` for both ends and the same flag. Every
+refusal is `{ ok: false, error: { code, message } }`:
+
+| code | when |
+|---|---|
+| `InvalidSlot` | not an integer 0..127, or not a bank that is open |
+| `ReadOnlyBank` | factory with nothing to keep it, archive, a bank not yet read, a move out of a read-only bank |
+| `InvalidName` | empty, control characters, or over 48 UTF-8 bytes (the host's limit: it truncates silently, so the panel refuses); the same for a bank's name typed for New bank or Rename, and a name another open bank already has |
+| `OverwriteDenied` | the slot holds a sound and `overwrite` was not `true` |
+| `PersistenceFailed` | the host answered `bank-saved` with `ok: false`; the sound is in the bank here, the message says it is kept for this session only |
+
+`loadPreset` refuses with `UnavailableSource`, `InvalidPreset`, `HostRejected`
+or `RestorationConflict` and never loads a bank to find out. Results are shown in
+the strip (`#bank-status`, `role="status"`) and handed to whoever asked to hear
+(`SynthBank.onResult`).
+
+`bankText()` and Export write **what is stored**. The sound being edited is no
+longer substituted for its slot, so an export or a keep never contains something
+nobody chose to put there, and an export of a dirty sound says "Unsaved changes
+to Glass Pad were not included." Interior empty slots are written as `null`, so
+every patch comes back at the slot it left.
+
+A host keeps one saved bank per instrument, and a `bank` with `"save":true`
+replaces it whole, so at most one bank has `persisted: true` in
+`SynthBank.list()`: the one a version-1 host last sent with `"kept":true` and
+not read-only, or last answered `bank-saved` with `ok: true`. Taking the
+standing leaves every other bank open to play and edit and never sends it to be
+saved. A Retry is how two banks come to claim it: an instance whose saved bank
+was missing started on the compiled-in `Factory`, and when the file came back
+the host sent the user's bank beside it. Before this, a plain click on a
+`Factory` preset then replaced the user's bank file with `Factory`.
+
+`kept` is the host saying which bank it keeps, and nothing else says it:
+
+```json
+{"type":"bank","text":"...","v":1,"origin":"user","readOnly":false,"kept":true}
+```
+
+It is true for the host's saved bank, and for the compiled-in one while there
+is no saved file (writing it is what creates one), and false for a bank the host
+only plays: one the page made with New bank or Duplicate, one opened from a
+file, one embedded in the project. `origin` is a name to show and no help here,
+since a bank the person made is `user` too. Taking every `user` bank for the
+kept one made `Scratch` persisted after the editor was reopened, and its next
+Write replaced the user's whole saved bank. A version-1 `bank` without `kept` is
+not persisted, and a host without `"v":1` keeps bank zero, as it always did.
+
+Only a write asks the host to save. A load, a switch of bank, Load Factory /
+Init and the answer to a restore send the bank with `"save":false`, even when
+it is the bank the host keeps: the host plays the page's copy and its file is
+not touched. It knows the bank it keeps by its name and by what the bank
+holds, so that copy is not embedded in the project: the state still names the
+file, and a reload plays the file as it is then and not a snapshot of what the
+page showed. A bank of any other name, or of that name and other sounds -- a
+New bank, an imported file, or an older copy of the kept bank -- is one the
+host was handed, and travels with the project.
+`"save":true` is sent for the kept bank by Write, Save, copy, move, clear and
+Keep, and by renaming it while it plays, because the name is stored with it.
+A host with no `"v":1` is still taken to keep bank zero, and is sent that bank
+to keep by the same writes and no longer by playing it again.
+
+The host holds a bank's label in 48 UTF-8 bytes too, cut at a character
+boundary, and names the bank by that label in `bank-saved`, `bank` and
+`patch`. So the page holds the same label: a name typed for New bank or
+Rename is refused over 48 bytes, and a name the page makes up -- after a
+file, a zip or a folder, Duplicate's `<name> copy`, the `Name 2` that keeps
+names apart -- is cut as the host cuts it, with room left for the suffix.
+Two banks are the same bank when their cut labels are, which is how a
+host's answer is matched and why no two open banks may share one. Holding
+the whole name made the answer to Keep of a long-named bank match nothing:
+the bank kept before stayed persisted, and its next Write replaced the file
+just kept.
+
+### Opening files
+
+An import validates the whole file before it touches anything, then adds one
+`imported` bank under a name that is not already taken (`Name 2`, `Name 3`),
+cut to 48 bytes as the host would cut it, and
+that is all: not the bank in view, not the selection, not the sound, and nothing
+is sent to the host. A bad file leaves all of those as they were and fails with a
+code, and the message it always had:
+
+| code | for |
+|---|---|
+| `UnsupportedFormat` | another `format`, a newer `version`, a container or reader this build lacks, text that is not a patch |
+| `InvalidBank` | it does not parse, holds nothing, names a parameter that does not exist, a damaged patch |
+| `TooManySlots` | a JSON bank with more than 128 patches: refused, not cut |
+| `ReadFailed` | the file could not be read |
+
+A zip or a folder with more than 128 patches fills a bank with the first 128 --
+the archive's own order for a zip, the file names as numbers for a folder -- and
+reports "(N left out)". The number stays on the bank (`bankInfo(i).leftOut`),
+so exporting it later says "N patches of the original were left out when it
+was opened." as a warning rather than passing the 128 for the whole file. A zip
+of zips stays a list: no inner archive is read until somebody opens it. One
+`.sy1` or patch `.json` is not a bank; it becomes the sound, as a `file`.
+`tests/ui/preset-import.test.mjs` covers every row.
+
+### Dialogs
+
+`modal.js` stacks: `SynthModal.confirm({ title, message, confirmLabel })` and
+`SynthModal.alert(...)` open *in front of* a dialog that is already up instead of
+closing it, because a question that closed the browser would lose the
+destination it was asked about. Escape, the close mark, the backdrop and Cancel
+all answer no, focus starts on Cancel, Tab cannot leave, and focus goes back to
+whatever opened it.
+
+### The preset browser
+
+`SynthBrowser.open()` opens the **preset view**; `SynthBrowser.open({ view:
+"slots" })`, or the Slots tab, opens the bank and slot view, which is the browser
+as it was before there was a preset view (`.browser-source`, `.browser-slot`,
+`.browser-slot.on`, `.browser-archive-path` and the rest are unchanged). The two
+are tabs of one dialog, `role="tablist"`, and the arrows move between them.
+
+The preset view is for finding a sound by name:
+
+- **Search** is over the names of the presets the panel already knows
+  (`SynthBank.presets()`), case-insensitively, as you type. A bank that is listed
+  but not opened -- one row of a zip of banks, or an archive bank the host has
+  not opened -- contributes no names, **is never opened by searching**, and the
+  list says so in a note, with how to open it. Opening a bank is a click on it in
+  Banks.
+- **Filters** are toggle buttons (`aria-pressed`): Factory, User, Imported,
+  Archives, Current session (which includes a single patch opened from a file),
+  then Favorites and Recent. None pressed means everything; several sources
+  pressed show their union; Favorites and Recent narrow what is left.
+- The order is the panel's and does not move: origin, then the order the banks
+  were opened, then slot. Recent is its own, most recent first.
+- Each row has the slot number, the name, where it is from (`Imported /
+  Alfmeister Bank`) and a star. An empty slot is not a preset, so it is not
+  listed here; it is always listed in the slot view.
+
+A click, or Enter, **loads** the preset through `SynthBank.loadPreset`, and the
+row that says it is playing (`aria-selected`) follows `SynthBank.selection()`:
+it moves when the sound has. An archive preset is asked of the host and shows
+`Loading…` until the host answers; a refusal is read in the dialog with its name.
+What the view can be in is always said in words: an empty list says why it is
+empty; `Read-only`, `Loading…` and `Unavailable` are on the row or in the line
+that says what is playing (`SynthBank.status()`); the last thing the panel
+reported is in `.browser-feedback`, `role="status"`.
+
+**Favorites and Recent are the person's, not the instrument's** (the spec's
+UI-only decision). They are never in a bank, never in an export, never in the
+plugin's state and never in a message to a host. With `store.js` -- the browser
+build -- they are kept under `quesynth.prefs.v1`, apart from `quesynth.state.v1`,
+through `SynthStore.prefs()` and `SynthStore.setPrefs({ favorites, recent })`:
+lists of preset keys, `origin NUL bank NUL slot-or-archive-position NUL name`
+(`presets()[].key`), Recent most recent first and at most 20. Without it, which
+is every plugin, they last as long as the editor does. A key is the preset's
+whole address, so a slot that was rewritten, or a bank that was renamed or closed,
+makes the favorite **unavailable**: still listed, with that word on it, never
+loadable, and never replaced by another preset that happens to have the same
+name. Recent records every load a person makes -- a click, NEXT or PREV, a call
+to `loadPreset` -- when it has happened (`SynthBank.onLoad`), and an archive
+preset when the host has answered.
+
+By keyboard: Arrow Down from the search box enters the list at the preset that is
+playing; Up and Down, Home and End move between rows, Enter or Space loads, and
+the list is one tab stop with the star of its current row next. Escape clears the
+search first and closes the dialog second; Tab cannot leave the dialog and focus
+returns to whatever opened it. Every control has an accessible name; the star is
+`Favorite <name>`.
+
+#### Banks
+
+The Banks pane lists every open bank with where it came from (`Factory`,
+`User`, `Imported`, `Archive`) and `Read-only` where nothing can be written to
+it. The buttons beside it act on the bank in view and leave the sound, the
+selection and the host alone:
+
+- **New bank...** asks for a name of at most 48 UTF-8 bytes, the most the host
+  keeps, and opens an empty bank of your own. The name
+  is a small form in the pane; Escape or Cancel closes the form and not the
+  dialog, and a name the panel refuses is said beside it with the form kept.
+- **Import file...** and **Import folder...** add an `imported` bank (see
+  [Opening files](#opening-files)). A refusal is read in the dialog with its
+  code, and a bank that did not fit says how many patches were left out.
+  `SynthBrowser.importBank()` is the same file picker for the strip's menu,
+  where a refusal is an alert. The archive path field and its Open and Close
+  are as they were.
+- **Rename...** is for a bank of your own or one you opened, to a name of at
+  most 48 bytes that no other open bank has. The factory bank, a bank the
+  host keeps, and an archive refuse in the panel's words.
+- **Duplicate** makes a writable `User` copy called `<name> copy` of a bank
+  that has been opened, a read-only one included; a long name is cut so that
+  ` copy` still fits in 48 bytes.
+- **Export bank** writes the stored slots of a bank that has been opened,
+  interior empties kept, and says so when the sound has unsaved changes.
+- **Close bank** takes a bank out of the session: never the last one, never one
+  the host keeps, and never the sound that is playing, which stays as it is
+  with no slot behind it. A bank whose content is in no file -- one you made,
+  or one you opened and then wrote into -- is asked about first.
+
+#### Where a sound is put
+
+`SynthBrowser.saveAs()` and `write()` open one destination dialog. Both choose
+a slot and a name and go through `SynthBank.writePreset`, and neither loads
+anything.
+
+- **Save As** (what Save opens for a sound with nowhere to go back to) lists
+  the banks that can take a preset, never an archive and never a read-only
+  bank, plus New bank.... It starts on the first empty slot of the bank in
+  view, with the name in focus.
+- **Write** keeps its old default, the sound's own slot, and lists every
+  ordinary bank with the read-only ones marked: writing into one is refused
+  with the panel's `ReadOnlyBank` message and the dialog stays open.
+
+A slot that holds another preset is asked about first; the sound's own slot is
+not. Cancelling puts back the bank that was in view, because NEXT and PREV
+step through it.
+
+#### Copy and move
+
+In the slot view each filled slot has **Copy** and **Move**, which open a
+picker over the browser: choose a bank and a slot, which may be empty, in the
+same bank or another that can be written to. The picker says what will happen
+and what is already there, and then asks, naming both ends, **before** anything
+is written; Cancel, Escape and the backdrop change nothing. It calls
+`SynthBank.copySlot` or `moveSlot` once, so a move is one change, and shows
+what the panel answered: a read-only destination, the same slot, or a move out
+of a read-only bank is refused in words and the picker stays for another try.
+A move of the preset that is playing takes the selection to its new slot. There
+is no undo afterwards, which is why the question comes first.
+
+In the preset view there is no Copy or Move, and in write mode there is no
+preset view: a destination is a slot, so it is the slot view, and a click
+chooses where to write and loads nothing.
 
 ## Using it
 

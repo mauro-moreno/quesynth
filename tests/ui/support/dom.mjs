@@ -15,8 +15,8 @@ export class Event {
     Object.assign(this, init);
   }
   preventDefault() { this.defaultPrevented = true; }
-  stopPropagation() {}
-  stopImmediatePropagation() {}
+  stopPropagation() { this.propagationStopped = true; }
+  stopImmediatePropagation() { this.propagationStopped = true; this.immediateStopped = true; }
 }
 
 class Listeners {
@@ -34,7 +34,10 @@ class Listeners {
   dispatch(target, event) {
     if (!event.target) event.target = target;
     event.currentTarget = target;
-    for (const fn of [...(this.byType.get(event.type) || [])]) fn.call(target, event);
+    for (const fn of [...(this.byType.get(event.type) || [])]) {
+      fn.call(target, event);
+      if (event.immediateStopped) break;
+    }
     return !event.defaultPrevented;
   }
   count(type) { return (this.byType.get(type) || []).length; }
@@ -68,7 +71,18 @@ class Node {
     if (at < 0) throw new Error("removeChild: not a child");
     this.childNodes.splice(at, 1);
     node.parentNode = null;
+    // A browser hands focus back to the document when the focused element
+    // leaves it; the panel's focus handling (modal.js) has to cope with that.
+    const document = this.ownerDocument;
+    if (document && document.activeElement && node.contains(document.activeElement)) {
+      document.activeElement = document.body;
+    }
     return node;
+  }
+
+  contains(node) {
+    for (let n = node; n; n = n.parentNode) if (n === this) return true;
+    return false;
   }
 
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
@@ -182,6 +196,25 @@ function queryAll(root, selector) {
   return descendants(root).filter(el => chains.some(chain => matchesChain(el, chain)));
 }
 
+// An event that bubbles goes up through the parents until a listener stops it,
+// which is what lets a test press a key on the focused element and have the
+// dialog behind it hear Escape only if nothing in between took it.
+//
+// The path is fixed before the first listener runs, as a browser fixes it: a
+// handler that takes its own element out of the page (a form that closes on
+// Escape) does not thereby keep the event from the dialog above it, and a test
+// that let it would pass for a page that lets Escape through.
+function dispatchThrough(target, event) {
+  if (!event.target) event.target = target;
+  const path = [];
+  for (let node = target; node; node = event.bubbles ? node.parentNode : null) path.push(node);
+  for (const node of path) {
+    if (node.listeners) node.listeners.dispatch(node, event);
+    if (event.propagationStopped) break;
+  }
+  return !event.defaultPrevented;
+}
+
 class Element extends Node {
   constructor(ownerDocument, namespaceURI, qualifiedName) {
     super(ownerDocument);
@@ -254,7 +287,7 @@ class Element extends Node {
 
   addEventListener(type, fn) { this.listeners.add(type, fn); }
   removeEventListener(type, fn) { this.listeners.remove(type, fn); }
-  dispatchEvent(event) { return this.listeners.dispatch(this, event); }
+  dispatchEvent(event) { return dispatchThrough(this, event); }
 
   querySelector(selector) { return queryAll(this, selector)[0] || null; }
   querySelectorAll(selector) { return queryAll(this, selector); }
@@ -276,8 +309,14 @@ class Element extends Node {
   scrollIntoView() {}
   scrollTo() {}
   scrollBy() {}
-  focus() {}
-  blur() {}
+  // Like a browser, focus goes nowhere for something disabled or hidden, itself
+  // or by an ancestor: the panel's focus handling depends on that refusal.
+  focus() {
+    if (this.disabled) return;
+    for (let el = this; el; el = el.parentElement) if (el.hasAttribute("hidden")) return;
+    this.ownerDocument.activeElement = this;
+  }
+  blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body; }
   select() {}
   click() { this.dispatchEvent(new Event("click", { bubbles: true })); }
   setPointerCapture() {}
@@ -297,6 +336,7 @@ class Document extends Node {
     this.appendChild(this.documentElement);
     this.documentElement.appendChild(this.head);
     this.documentElement.appendChild(this.body);
+    this.activeElement = this.body;
   }
   createElement(tag) { return new Element(this, HTML_NS, String(tag).toLowerCase()); }
   createElementNS(namespaceURI, tag) { return new Element(this, namespaceURI, String(tag)); }
@@ -341,17 +381,61 @@ export function mountIndexSkeleton(document) {
     ]),
   ]));
 
+  // The bank strip, attribute for attribute as ui/index.html has it. The test
+  // in tests/ui/preset-markup.test.mjs compares the two, so this cannot drift.
   body.appendChild(h("div", { id: "bank", class: "bank" }, [
-    h("button", { type: "button", class: "bank-step", "data-step": "-1", "data-icon": "previous" }, ["PREV"]),
+    h("button", { type: "button", class: "bank-step", "data-step": "-1", "data-icon": "previous", "aria-label": "Previous patch" }, ["PREV"]),
     h("div", { class: "bank-read" }, [
-      h("span", { class: "bank-patch", id: "bank-patch" }, ["000:Init"]),
-      h("span", { class: "bank-name", id: "bank-name" }, ["00:soundbank00"]),
+      h("span", { class: "bank-origin", id: "bank-origin" }),
+      h("span", { class: "bank-patch", id: "bank-patch" }, ["Untitled"]),
+      h("span", { class: "bank-dirty", id: "bank-dirty", role: "img", "aria-label": "Unsaved changes", title: "Unsaved changes", hidden: "" }, ["*"]),
+      h("span", { class: "bank-name", id: "bank-name" }),
     ]),
-    h("button", { type: "button", class: "bank-step", "data-step": "1", "data-icon": "next" }, ["NEXT"]),
+    h("button", { type: "button", class: "bank-step", "data-step": "1", "data-icon": "next", "aria-label": "Next patch" }, ["NEXT"]),
+    h("div", { class: "bank-actions" }, [
+      h("button", { type: "button", class: "bank-action", id: "preset-browse", "data-icon": "open", "aria-label": "Open the preset browser" }, ["Browser"]),
+      h("button", { type: "button", class: "bank-action", id: "preset-save", "data-icon": "save", "aria-label": "Save preset" }, ["Save"]),
+      h("div", { class: "bank-menu" }, [
+        h("button", { type: "button", class: "bank-action", id: "preset-menu", "data-icon": "config", "aria-haspopup": "menu",
+          "aria-expanded": "false", "aria-controls": "preset-menu-list", "aria-label": "More preset actions" }, ["More"]),
+        h("div", { class: "bank-menu-list", id: "preset-menu-list", role: "menu", "aria-label": "Preset actions", hidden: "" }, [
+          h("button", { type: "button", role: "menuitem", "data-action": "save-as" }, ["Save As..."]),
+          h("button", { type: "button", role: "menuitem", "data-action": "export-patch" }, ["Export patch"]),
+          h("button", { type: "button", role: "menuitem", "data-action": "export-bank" }, ["Export bank"]),
+          h("button", { type: "button", role: "menuitem", "data-action": "import-bank" }, ["Import bank..."]),
+          h("button", { type: "button", role: "menuitem", "data-action": "write" }, ["Write to slot..."]),
+        ]),
+      ]),
+    ]),
     h("div", { class: "bank-vol" }, [
       h("label", { for: "master-vol" }, ["Vol"]),
-      h("input", { type: "range", id: "master-vol", min: "0", max: "100", value: "80" }),
+      h("input", { type: "range", id: "master-vol", min: "0", max: "100", value: "80", "aria-label": "Master volume" }),
       h("span", { class: "bank-vol-read", id: "master-vol-read" }, ["80"]),
+    ]),
+    h("div", { class: "bank-notices" }, [
+      h("div", { class: "restore-banner", id: "restore-banner", role: "alert", hidden: "" }, [
+        h("p", { class: "restore-line restore-ok", id: "restore-ok", role: "status", hidden: "" }, [
+          "Restored ", h("span", { class: "restore-id", id: "restore-ok-id" }),
+        ]),
+        h("div", { class: "restore-failed", id: "restore-failed", hidden: "" }, [
+          h("p", { class: "restore-line", id: "restore-failed-text" }, [
+            "Could not restore ", h("code", { class: "restore-id", id: "restore-failed-id" }), ". The current sound was kept.",
+          ]),
+          h("div", { class: "restore-actions" }, [
+            h("button", { type: "button", id: "restore-retry" }, ["Retry"]),
+            h("button", { type: "button", id: "restore-choose" }, ["Choose bank"]),
+            h("button", { type: "button", id: "restore-dismiss" }, ["Dismiss"]),
+          ]),
+        ]),
+        h("div", { class: "restore-missing", id: "restore-missing", hidden: "" }, [
+          h("p", { class: "restore-line" }, ["The saved bank is unavailable. Load Factory / Init instead?"]),
+          h("div", { class: "restore-actions" }, [
+            h("button", { type: "button", id: "restore-factory" }, ["Load Factory / Init"]),
+            h("button", { type: "button", id: "restore-keep" }, ["Keep current sound"]),
+          ]),
+        ]),
+      ]),
+      h("p", { class: "bank-status", id: "bank-status", role: "status", "aria-live": "polite", hidden: "" }),
     ]),
   ]));
 

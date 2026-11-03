@@ -3,7 +3,6 @@ package synth_vst3
 
 import "base:runtime"
 
-import "../../src/patch"
 import "../../src/vst3"
 import "../panel"
 
@@ -159,13 +158,13 @@ editor_volume :: proc(user: rawptr, amount: f32) {
 // is exactly what the panel produced; then it is parsed into this instance's
 // slots, because a program change has to select out of the bank that is on
 // screen and not the one loaded at startup.
-editor_set_bank :: proc(user: rawptr, text: string, save: bool) {
+editor_set_bank :: proc(user: rawptr, text: string, save: bool, origin: panel.Origin) -> panel.Bank_Result {
 	ed := (^Editor)(user)
 	if ed == nil || ed.plugin == nil || text == "" {
-		return
+		return .Invalid_Bank
 	}
 
-	plugin_set_bank(ed.plugin, text, save)
+	return plugin_set_bank(ed.plugin, text, save, origin)
 }
 
 // The bank this instance is playing out of, for the panel to show.
@@ -177,8 +176,61 @@ editor_read_bank :: proc(user: rawptr) -> string {
 	return plugin_read_bank(ed.plugin)
 }
 
-// The whole parameter set, after a state load: the panel is showing the patch
-// from before it and has no way to know otherwise.
+// Which preset this instance is on, and how the last restore stands, for the
+// panel to be told. Borrowed from the instance.
+editor_read_session :: proc(user: rawptr) -> panel.Instance_View {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return {}
+	}
+	return {&ed.plugin.session, &ed.plugin.slots}
+}
+
+// The panel loaded a preset. Only a slot of the bank this instance is playing
+// moves its program: a preset from anywhere else has no slot here.
+editor_select :: proc(user: rawptr, selection: panel.Selection) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	p := ed.plugin
+	if panel.session_select(&p.session, &p.slots, selection) && p.session.selection.bound {
+		p.program = i32(p.session.selection.slot)
+	}
+}
+
+editor_restore_retry :: proc(user: rawptr) -> bool {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return false
+	}
+	p := ed.plugin
+	result, bank_changed := panel.session_retry_saved(&p.session, &p.slots)
+	if result.has_program {
+		p.program = i32(result.program)
+	}
+	return bank_changed
+}
+
+editor_restore_discard :: proc(user: rawptr) {
+	ed := (^Editor)(user)
+	if ed == nil || ed.plugin == nil {
+		return
+	}
+	panel.session_discard(&ed.plugin.session)
+}
+
+// Everything the panel asks for when it loads, sent unasked: after a state load
+// the panel is showing the bank, the sound and the preset from before it, and
+// has no way to know otherwise.
+editor_send_sync :: proc(ed: ^Editor) {
+	if ed == nil {
+		return
+	}
+	panel.send_sync(&ed.panel)
+}
+
+// The whole parameter set, after the host set the program on the controller.
 editor_send_state :: proc(ed: ^Editor) {
 	if ed == nil {
 		return
@@ -188,19 +240,11 @@ editor_send_state :: proc(ed: ^Editor) {
 
 // Which patch is loaded, by name and by number, so the strip follows a
 // program change instead of naming the one before it.
-editor_send_patch :: proc(ed: ^Editor, program: int) {
+editor_send_selection :: proc(ed: ^Editor) {
 	if ed == nil {
 		return
 	}
-	if ed.plugin == nil {
-		return
-	}
-	panel.send_patch(
-		&ed.panel,
-		patch.slots_name(&ed.plugin.slots, program),
-		program,
-		patch.slots_label(&ed.plugin.slots),
-	)
+	panel.send_selection(&ed.panel)
 }
 
 // One parameter that changed somewhere else -- an automation lane, or the
@@ -376,6 +420,30 @@ VIEW_VTBL := vst3.IPlugView_Vtbl {
 
 // -- creating the editor -----------------------------------------------------
 
+// What the panel asks of this instance. Apart from make_editor so that the
+// protocol can be driven against the real callbacks without a web view under
+// it.
+editor_host :: proc(ed: ^Editor) -> panel.Host {
+	return panel.Host {
+		user            = rawptr(ed),
+		param_count     = PARAM_COUNT,
+		read_values     = editor_read_values,
+		set_param       = editor_set_param,
+		set_state       = editor_set_state,
+		edit            = editor_edit,
+		note            = editor_note,
+		bend            = editor_bend,
+		control         = editor_control,
+		volume          = editor_volume,
+		set_bank        = editor_set_bank,
+		read_bank       = editor_read_bank,
+		read_session    = editor_read_session,
+		select          = editor_select,
+		restore_retry   = editor_restore_retry,
+		restore_discard = editor_restore_discard,
+	}
+}
+
 make_editor :: proc(p: ^Plugin) -> ^Editor {
 	// The panel sits one level up in Resources, which is the layout
 	// tools/build-vst3.ps1 assembles.
@@ -398,19 +466,6 @@ make_editor :: proc(p: ^Plugin) -> ^Editor {
 	ed.panel.height = panel.HEIGHT
 	ed.panel.ctx = p.ctx
 	ed.panel.view.content_dir = content
-	ed.panel.host = panel.Host {
-		user        = rawptr(ed),
-		param_count = PARAM_COUNT,
-		read_values = editor_read_values,
-		set_param   = editor_set_param,
-		set_state   = editor_set_state,
-		edit        = editor_edit,
-		note        = editor_note,
-		bend        = editor_bend,
-		control     = editor_control,
-		volume      = editor_volume,
-		set_bank    = editor_set_bank,
-		read_bank   = editor_read_bank,
-	}
+	ed.panel.host = editor_host(ed)
 	return ed
 }

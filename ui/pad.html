@@ -111,14 +111,63 @@
 <div id="bank" class="bank">
   <button type="button" class="bank-step" data-step="-1" data-icon="previous" aria-label="Previous patch">PREV</button>
   <div class="bank-read">
-    <span class="bank-patch" id="bank-patch">000:Init</span>
-    <span class="bank-name" id="bank-name">00:soundbank00</span>
+    <span class="bank-origin" id="bank-origin"></span>
+    <span class="bank-patch" id="bank-patch">Untitled</span>
+    <span class="bank-dirty" id="bank-dirty" role="img" aria-label="Unsaved changes"
+          title="Unsaved changes" hidden>*</span>
+    <span class="bank-name" id="bank-name"></span>
   </div>
   <button type="button" class="bank-step" data-step="1" data-icon="next" aria-label="Next patch">NEXT</button>
+  <div class="bank-actions">
+    <button type="button" class="bank-action" id="preset-browse" data-icon="open"
+            aria-label="Open the preset browser">Browser</button>
+    <button type="button" class="bank-action" id="preset-save" data-icon="save"
+            aria-label="Save preset">Save</button>
+    <div class="bank-menu">
+      <button type="button" class="bank-action" id="preset-menu" data-icon="config"
+              aria-haspopup="menu" aria-expanded="false" aria-controls="preset-menu-list"
+              aria-label="More preset actions">More</button>
+      <div class="bank-menu-list" id="preset-menu-list" role="menu"
+           aria-label="Preset actions" hidden>
+        <button type="button" role="menuitem" data-action="save-as">Save As...</button>
+        <button type="button" role="menuitem" data-action="export-patch">Export patch</button>
+        <button type="button" role="menuitem" data-action="export-bank">Export bank</button>
+        <button type="button" role="menuitem" data-action="import-bank">Import bank...</button>
+        <button type="button" role="menuitem" data-action="write">Write to slot...</button>
+      </div>
+    </div>
+  </div>
   <div class="bank-vol">
     <label for="master-vol">Vol</label>
-    <input type="range" id="master-vol" min="0" max="100" value="80" aria-label="Master volume">
+    <input type="range" id="master-vol" min="0" max="100" value="80"
+           aria-label="Master volume">
     <span class="bank-vol-read" id="master-vol-read">80</span>
+  </div>
+  <div class="bank-notices">
+    <!-- What became of the program and bank the host asked this editor to show.
+         The strings are the contract (specs, section 3.4); app.js fills in only
+         the bank, slot and name. -->
+    <div class="restore-banner" id="restore-banner" role="alert" hidden>
+      <p class="restore-line restore-ok" id="restore-ok" role="status" hidden>Restored <span class="restore-id" id="restore-ok-id"></span></p>
+      <div class="restore-failed" id="restore-failed" hidden>
+        <p class="restore-line" id="restore-failed-text">Could not restore <code class="restore-id" id="restore-failed-id"></code>. The current sound was kept.</p>
+        <div class="restore-actions">
+          <button type="button" id="restore-retry">Retry</button>
+          <button type="button" id="restore-choose">Choose bank</button>
+          <button type="button" id="restore-dismiss">Dismiss</button>
+        </div>
+      </div>
+      <div class="restore-missing" id="restore-missing" hidden>
+        <p class="restore-line">The saved bank is unavailable. Load Factory / Init instead?</p>
+        <div class="restore-actions">
+          <button type="button" id="restore-factory">Load Factory / Init</button>
+          <button type="button" id="restore-keep">Keep current sound</button>
+        </div>
+      </div>
+    </div>
+    <!-- Results of Save, Export, Write and Import, and of a host that could not
+         keep a bank. Never a dialog: the sound must stay playable while it says so. -->
+    <p class="bank-status" id="bank-status" role="status" aria-live="polite" hidden></p>
   </div>
 </div>
 

@@ -72,7 +72,7 @@ What each message of `ui/bridge.js` does here:
 |---|---|
 | `sync` | nothing; the page is sent `bank`, `state`, `patch`, `archive` (only from a daemon that shares one), `midi`, in that order |
 | `set` | `parameter.set <id> <value>` |
-| `state` | see below: dropped, `patch.load <k>`, or `patch.apply` then `patch.clear` |
+| `state` | see below: `patch.load <k>`, or `patch.apply` then `patch.clear` |
 | `edit` | nothing, by design: gesture brackets are for hosts that record automation, and the daemon records none |
 | `note` | `midi 144\|128 <note> <velocity>` (on the message's channel) |
 | `wheel` | pitch: `midi 224 <lsb> <msb>` (−1..1 onto 0..16383); mod: `midi 176 1 <0..127>` |
@@ -117,12 +117,8 @@ indices (`archive_bank`/`archive_patch` at least 0: it stops once that archive
 is closed or replaced); otherwise null. So patch 5 of an archive bank is never
 mistaken for slot 5 of the ordinary bank.
 
-A `state` is a whole patch, and three things send one:
+A `state` is a whole patch, and two things send one:
 
-- **The page's echo of a bank it was sent.** Adopting a bank makes the panel
-  select slot 0 (or Init when slot 0 is empty) and post it back. The bank came
-  from the daemon, so this is not a request; the first `state` equal to that
-  sound after each `bank` (within two seconds) is dropped.
 - **A slot of the bank the page was shown**, when the values are exactly a
   filled slot's (the page's PREV/NEXT and bank browser load by value). It
   becomes `patch.load <k>`, the slot already current if it matches, else the
@@ -135,6 +131,14 @@ A `state` is a whole patch, and three things send one:
   batch edit that leaves them running. A `set` is still `parameter.set`. An
   empty slot's Init values are anything else too: the page never sends
   `patch.load <slot> init` (only the TUI does), so the daemon names nothing.
+
+Adopting a bank sends nothing back: the page does not select a slot of it,
+load a patch or post its sound, so a `state` is always somebody's request and
+is acted on, however soon after a `bank` it comes. Choosing slot 0 (or Init
+when slot 0 is empty) just after a bank arrived is `patch.load 0` (or
+`patch.apply` then `patch.clear`) like any other choice. The adapter serves the
+page it is tested with, so it keeps no allowance for an older page that echoed
+the bank's slot 0.
 
 A `bank` from the page is how the panel stores a patch (`SynthBank.store`): it
 posts the whole bank with one slot changed. When exactly one slot differs, it
@@ -243,7 +247,8 @@ answer says what moved. If `bank_rev` moved, the bank is dumped with
 shows go as `param`s, or as one `state` when more than eight moved; if the
 identity moved (its slot, bank label, name, `source` or archive indices), a
 `patch` follows. A new bank is always followed by a full `state` and a
-`patch`, because adopting it moved the page to slot 0. If `archive_rev` moved,
+`patch`: the page adopts a bank without loading anything from it, so those two
+are what tell it which sound is playing. If `archive_rev` moved,
 or the last read of the archive was cut short, the archive is read again and
 an `archive` sent. Each poll then asks `midi.current`; if `midi_rev` moved,
 `midi.list` is read and a `midi` sent. That is how a selection made in the
@@ -267,8 +272,8 @@ holds those seven at their defaults while the page keeps the earlier ones. A
 
 An identity with no name (a fresh daemon, or after `patch.clear`) is sent to
 the page as `Untitled`, the panel's own name for an unnamed sound: the panel
-ignores an empty name and would keep showing the first patch of the bank it
-just adopted while the daemon plays something else.
+ignores an empty name and would keep showing whatever name it had before while
+the daemon plays something else.
 
 ## When things go wrong
 

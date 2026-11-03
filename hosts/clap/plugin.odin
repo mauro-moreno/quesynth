@@ -118,6 +118,11 @@ Synth :: struct {
 	// per process because the panel can change it, and loaded once in
 	// init() where allocating is legal.
 	slots:        patch.Slots,
+	// Which preset of it the instance is on, where the bank came from, and
+	// what became of the last attempt to restore either. On the instance
+	// and not on the editor: the editor is made and destroyed whenever the
+	// host likes, and which preset this is has to outlive it.
+	session:      panel.Session,
 }
 
 synth_of :: proc "contextless" (plugin: ^clap.Plugin) -> ^Synth {
@@ -249,6 +254,9 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 	values, ok := patch.slots_patch(&s.slots, program)
 	if !ok {return}
 	s.program = program
+	// The exact slot of the bank this instance is playing, which is the only
+	// bank a Program Change has ever selected from.
+	panel.session_select_slot(&s.session, program)
 
 	changed := false
 	for i in 0 ..< PARAM_COUNT {
@@ -263,15 +271,16 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 	if changed {
 		s.params_dirty = true
 		s.notify_host = true
+	}
 
-		// And the panel, which is showing the patch from before this one.
-		// Not from here: this is the audio thread, and the web view belongs
-		// to the main one. request_callback is documented thread-safe and is
-		// exactly the hand-off it is for.
-		s.panel_stale = true
-		if s.host != nil && s.host.request_callback != nil {
-			s.host.request_callback(s.host)
-		}
+	// And the panel, which is showing the patch from before this one -- also
+	// when the values did not move, because two slots can hold the same
+	// sound and the strip names a slot. Not from here: this is the audio
+	// thread, and the web view belongs to the main one. request_callback is
+	// documented thread-safe and is exactly the hand-off it is for.
+	s.panel_stale = true
+	if s.host != nil && s.host.request_callback != nil {
+		s.host.request_callback(s.host)
 	}
 }
 
@@ -426,8 +435,9 @@ plugin_init :: proc "c" (plugin: ^clap.Plugin) -> bool {
 	// allocate, and because it only actually parses once per process however
 	// many instances a host makes.
 	patch.factory_prepare()
-	// And the saved bank over the top of it, if this machine has one.
-	panel.bank_load(&s.slots)
+	// And the saved bank over the top of it, if this machine has one. Which of
+	// the two it was decides whether a saved project has to carry the bank.
+	panel.session_init(&s.session, panel.bank_load(&s.slots))
 
 	if s.host != nil && s.host.get_extension != nil {
 		s.host_params = (^clap.Host_Params)(s.host.get_extension(s.host, clap.EXT_PARAMS))
@@ -656,12 +666,7 @@ plugin_on_main_thread :: proc "c" (plugin: ^clap.Plugin) {
 	// The name and the number as well as the values. Without this every
 	// knob moves and the strip goes on naming the patch from before, which
 	// looks like the interface telling you what you are playing.
-	panel.send_patch(
-		&s.editor,
-		patch.slots_name(&s.slots, s.program),
-		s.program,
-		patch.slots_label(&s.slots),
-	)
+	panel.send_selection(&s.editor)
 }
 
 plugin_get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
