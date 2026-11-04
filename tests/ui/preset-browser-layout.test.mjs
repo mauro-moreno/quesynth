@@ -351,3 +351,83 @@ for (const size of Object.keys(SIZES)) {
     } finally { await page.close(); }
   });
 }
+
+// ---------------------------------------------------- the window changing size
+
+test("resizing the window across 620px with the dialog open shuts the pane and the details, and widening opens them", {skip}, async () => {
+  const page = await start("wide");
+  try {
+    const pane = page.locator(".browser-sources");
+    const toggle = page.locator(".browser-filters-toggle");
+    assert.ok(await visible(pane));
+    assert.ok(await visible(page.locator(".browser-details-body")));
+    await page.locator(".browser-chip", {hasText: "Favorites"}).focus();
+
+    await page.setViewportSize(SIZES.phone);
+    await page.waitForFunction(() => document.querySelector(".browser-sources").hidden);
+    assert.equal(await visible(pane), false, "the pane is not a sheet over the list");
+    assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(await visible(page.locator(".browser-details-body")), false, "and the details are a section that is shut");
+    assert.match(await focusedClass(page), /browser-filters-toggle/, "the focus that was in the pane is on its button");
+    assert.ok(await visible(page.locator(".browser-results")), "the list is on view");
+    const modal = await box(page.locator(".modal"));
+    const work = await box(page.locator("#browser-view"));
+    assert.ok(work.height / modal.height >= 0.38, `the list has ${Math.round(100 * work.height / modal.height)}% of the dialog`);
+    assert.ok(modal.x >= 0 && modal.x + modal.width <= SIZES.phone.width + 1, "inside the narrower window");
+    assert.deepEqual(await sideways(page), {page: 0});
+    await shoot(page, "phone", "resized-narrow");
+
+    await page.setViewportSize(SIZES.wide);
+    await page.waitForFunction(() => !document.querySelector(".browser-sources").hidden);
+    assert.ok(await visible(pane), "the pane is open again");
+    assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+    assert.ok(await visible(page.locator(".browser-details-body")), "and the details");
+    const side = await box(pane);
+    const list = await box(page.locator("#browser-view"));
+    assert.ok(side.x < list.x && side.x + side.width <= list.x + 1, "beside the list again");
+    assert.deepEqual(await sideways(page), {page: 0});
+    await shoot(page, "wide", "resized-wide");
+    assert.deepEqual(page.errors, []);
+  } finally { await page.close(); }
+});
+
+// ---------------------------------------------------- press and hold on a touch screen
+
+// Chromium's touch input is driven through the DevTools protocol, which is the
+// only way to hold a finger down for a while; Playwright's touchscreen only
+// taps. So this is Chromium's, and the stand-in DOM test has the rest.
+test("a finger held on a slot asks about it and opens its menu without loading it; a tap still loads", {
+  skip: skip || (engine.name !== "chromium" && "a held touch is driven through the Chrome DevTools protocol"),
+}, async () => {
+  const context = await engine.browser.newContext({viewport: SIZES.phone, hasTouch: true});
+  const page = await context.newPage();
+  page.setDefaultTimeout(5000);
+  try {
+    await page.goto(`http://127.0.0.1:${server.address().port}/index.html`, {waitUntil: "networkidle"});
+    await fill(page);
+    await page.locator("#preset-browse").tap();
+    await page.locator(".browser").waitFor();
+    await page.locator(".browser-tab", {hasText: "Slots"}).tap();
+
+    const zither = page.locator(".browser-slot", {hasText: "Zither"});
+    const at = await box(zither);
+    const cdp = await context.newCDPSession(page);
+    const point = {x: Math.round(at.x + at.width / 2), y: Math.round(at.y + at.height / 2), id: 1};
+    await cdp.send("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [point]});
+    assert.equal(await visible(page.locator(".browser-details [role=menu]")), false, "not at once");
+    await page.waitForTimeout(700);
+    assert.ok(await visible(page.locator(".browser-details [role=menu]")), "a finger held for a while opens the menu");
+    await cdp.send("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+    await page.waitForTimeout(150);
+    assert.equal(await page.locator(".browser-detail-name").textContent(), "Zither", "the details are of that slot");
+    assert.match(await page.locator(".browser-now").textContent(), /Playing 000 Solar Winds MW/, "and it was not loaded");
+    await shoot(page, "phone", "touch-hold-menu");
+
+    await page.keyboard.press("Escape");
+    await page.locator(".browser-slot", {hasText: "Harp"}).tap();
+    assert.match(await page.locator(".browser-now").textContent(), /Playing 006 Harp/, "a tap loads");
+    assert.deepEqual(await sideways(page), {page: 0});
+  } finally {
+    await context.close();
+  }
+});

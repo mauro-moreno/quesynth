@@ -160,10 +160,11 @@ chosen that keeps what was there:
   yet loaded and a `[Load]` button. Changing what a click does is a change of
   behaviour, so the details are of the slot that is playing, or of the one that
   has been *looked at*: the one with the keyboard focus, or asked about with the
-  menu key, Shift+F10 or a right click, which also opens its More menu. Load is
-  in the details for that slot. A touch screen that sends no contextmenu event
-  on a long press has no way to look at a slot it has not loaded; that is the
-  cost of the choice and is deferred.
+  menu key, Shift+F10, a right click or, on a touch screen, a press and hold
+  (a touch or a pen held for 480ms, with pointer events, because iOS Safari
+  sends no contextmenu event for a long press), which also open its More menu.
+  The click that lifting a finger after a hold makes is swallowed, and a quick
+  tap is still a load. Load is in the details for that slot.
 - **Favorite is not mirrored in the details.** The star stays in its row as its
   own control, with its own name (`Favorite <name>`) and its own place in the
   arrow keys, which the tests pin; a second button of that name would be two
@@ -182,9 +183,10 @@ chosen that keeps what was there:
 - **The pane is open on a wide window.** The mock says "collapsible pane on
   desktop", not which way it starts; it starts open, as it was, and the button
   shuts it. On a narrow window (620px, as the old stacking rule) it is a sheet
-  over the workspace, shut to begin with. The choice is made when the dialog is
-  built; a window resized across 620px while it is open changes the layout but
-  not whether the pane is open.
+  over the workspace, shut to begin with. The width is watched while the dialog
+  is open: crossing 620px in either direction puts the pane and the details as
+  they would have been at that width (so a pane left open never becomes a sheet
+  over the list), and a person's own choice does not outlast a crossing.
 - **Escape in the pane.** On a narrow window it shuts the sheet and gives the
   focus back; beside the workspace it is not intercepted and closes the dialog
   as it did. Choosing a bank in the sheet shuts it.
@@ -213,6 +215,5 @@ unchanged in what they assert; where a control moved, the helpers in
 open the menu -- and the few assertions that named "the button that asked" name
 the menu's button.
 
-Deferred, not done: looking at a slot without loading it on a touch screen with
-no long-press menu; listening for a resize across 620px to reset the pane; a
-bottom sheet for the details (they are a section under the workspace).
+Deferred, not done: a bottom sheet for the details (they are a section under
+the workspace).

@@ -404,9 +404,8 @@
     // the button, and choosing a bank shuts it too, because the reason for
     // choosing one is to look at what is in it. Shut, it is hidden, so what
     // is in it is not in the Tab order or in what a screen reader reads.
-    function narrow() {
-      return !!(window.matchMedia && window.matchMedia("(max-width: 620px)").matches);
-    }
+    var width = window.matchMedia ? window.matchMedia("(max-width: 620px)") : null;
+    function narrow() { return !!(width && width.matches); }
     var drawerToggle = button("browser-filters-toggle", picking ? "Banks" : "Filters");
     drawerToggle.setAttribute("aria-controls", left.id);
     function setDrawerOpen(open, focusIn) {
@@ -415,6 +414,11 @@
       if (open && focusIn) {
         var first = left.querySelector("button, input");
         if (first) first.focus();
+      }
+      // A menu that was open in what has just gone is not left open in it.
+      if (!open) {
+        if (addMenu) addMenu.close();
+        if (toolsMenu) toolsMenu.close();
       }
     }
     // A bank has been chosen, and the sheet is over what it was chosen to look
@@ -976,6 +980,25 @@
       paintSlotDetails();
     }
 
+    // Press and hold, which is what a finger has for the menu key and a right
+    // click: a touch screen taps to load, and some browsers (iOS Safari) send
+    // no contextmenu event for a long press, so a slot that is not playing
+    // could not be looked at without being loaded. A touch or a pen held on a
+    // slot for HOLD_MS asks about it, as the right click does, and the click
+    // that its release makes is not a load. A mouse never starts one: it has
+    // a right button.
+    //
+    // Kept here and not per slot, because a repaint rebuilds every slot and the
+    // finger is still down on the one that was there.
+    var HOLD_MS = 480;
+    var HOLD_SLOP = 8;
+    var hold = null;
+    var swallowUntil = 0;
+    function cancelHold() {
+      if (hold) clearTimeout(hold.timer);
+      hold = null;
+    }
+
     function focusSlot(i) {
       var goal = right.querySelector('.browser-slot[data-slot="' + i + '"]');
       if (goal) goal.focus();
@@ -1042,11 +1065,26 @@
         b.appendChild(element("span", "browser-slot-num", pad3(i)));
         b.appendChild(element("span", "browser-slot-name", slot ? slot.name : "—"));
 
-        b.addEventListener("click", function () {
+        b.addEventListener("click", function (e) {
           if (picking) {
             setTarget(i);
             paintSlots();
           } else {
+            // The release of a press and hold is a click on the slot, and the
+            // hold already said what it was for. It goes no further either:
+            // a click that reached the document would shut the menu the hold
+            // opened, as a click anywhere else does.
+            if (swallowUntil) {
+              var swallow = Date.now() < swallowUntil;
+              swallowUntil = 0;
+              if (swallow) {
+                e.stopPropagation();
+                // Releasing a finger on a button focuses it, which took the
+                // focus out of the menu the hold had opened.
+                if (!more.list.hidden) more.open(true, "first");
+                return;
+              }
+            }
             if (browsing) api().loadBrowsed(i);
             else api().load(i);
             paintSlots();
@@ -1063,15 +1101,43 @@
           // to it, and by the menu key or a right click, which ask about it.
           // A click is still a load, as it always was.
           b.addEventListener("focus", function () { inspect(i); });
-          function ask(e) {
-            e.preventDefault();
+          function askAbout() {
             inspect(i);
             if (movable && slot) {
               setDetailsOpen(true);
               more.open(true, "first");
             }
           }
+          function ask(e) {
+            e.preventDefault();
+            askAbout();
+          }
           b.addEventListener("contextmenu", ask);
+          b.addEventListener("pointerdown", function (e) {
+            cancelHold();
+            swallowUntil = 0;
+            if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+            var h = { x: e.clientX, y: e.clientY, held: false, timer: 0 };
+            h.timer = setTimeout(function () {
+              h.held = true;
+              askAbout();
+            }, HOLD_MS);
+            hold = h;
+          });
+          b.addEventListener("pointermove", function (e) {
+            if (!hold || hold.held) return;
+            if (Math.abs(e.clientX - hold.x) > HOLD_SLOP || Math.abs(e.clientY - hold.y) > HOLD_SLOP) cancelHold();
+          });
+          b.addEventListener("pointerup", function () {
+            if (hold && hold.held) swallowUntil = Date.now() + 600;
+            cancelHold();
+          });
+          b.addEventListener("pointercancel", cancelHold);
+          b.addEventListener("pointerleave", function () {
+            // After the hold has fired the finger is still down and may roll
+            // off the slot on its way up: the release is still the hold's.
+            if (hold && !hold.held) cancelHold();
+          });
           // The menu key and Shift+F10 are what a keyboard has for the same
           // thing. A browser turns them into a contextmenu event of its own,
           // but not everywhere and not under automation, and this is the one
@@ -1496,9 +1562,29 @@
     function setDetailsOpen(open) {
       detailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
       detailsBody.hidden = !open;
+      if (!open && more) more.close();
     }
-    setDetailsOpen(!(window.matchMedia && window.matchMedia("(max-width: 620px)").matches));
+    setDetailsOpen(!narrow());
     detailsToggle.addEventListener("click", function () { setDetailsOpen(detailsBody.hidden); });
+
+    // The window crossing the breakpoint while the dialog is open: a plugin
+    // window dragged narrower, a phone turned. What was chosen for the width
+    // it had is no longer right for the width it has -- a pane left open would
+    // now be a sheet over the list -- so each is put as it would have been had
+    // the dialog been opened at this width. Whoever had the focus in what is
+    // hidden by it has it on the button that opens it, which is where they
+    // would look for it.
+    function widthChanged() {
+      var active = document.activeElement;
+      var inPane = left.contains(active);
+      var inDetails = detailsBody.contains(active);
+      setDrawerOpen(!narrow());
+      setDetailsOpen(!narrow());
+      if (narrow() && inPane) drawerToggle.focus();
+      else if (narrow() && inDetails) detailsToggle.focus();
+    }
+    if (width && width.addEventListener) width.addEventListener("change", widthChanged);
+    else if (width && width.addListener) width.addListener(widthChanged);
 
     // `model`: { name, facts: [[label, value], ...], actions, hint }. A fact
     // with nothing to say is left out rather than shown as a dash.
@@ -1648,7 +1734,7 @@
           ["Status", status.join(" · ")],
         ],
         actions: actions,
-        hint: v.movable ? "Press the menu key or right-click a slot to act on it without loading it." : "",
+        hint: v.movable ? "Press the menu key, right-click or press and hold a slot to act on it without loading it." : "",
       });
     }
 
@@ -1840,7 +1926,15 @@
     paintAll();
 
     wrap.refresh = function () { paintAll(); };
-    wrap.dispose = function () { stopListening(); more.close(); addMenu.close(); toolsMenu.close(); };
+    wrap.dispose = function () {
+      stopListening();
+      cancelHold();
+      more.close();
+      addMenu.close();
+      toolsMenu.close();
+      if (width && width.removeEventListener) width.removeEventListener("change", widthChanged);
+      else if (width && width.removeListener) width.removeListener(widthChanged);
+    };
     wrap.focusField = function () { if (field) { field.focus(); field.select(); } };
     wrap.focusSearch = function () { if (parts && parts.search) parts.search.focus(); };
     wrap.commit = commitTransfer;

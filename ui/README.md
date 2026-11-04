@@ -574,7 +574,13 @@ to begin with; opening it moves the focus in, Escape shuts it and gives the focu
 back to the button, and so does choosing a bank. Shut, it is `hidden`, so what is
 in it is neither in the Tab order nor read to a screen reader. The details go
 under the workspace on a phone, so the column is the header, the tabs, the list,
-and a section that opens: never three dense panes stacked.
+and a section that opens: never three dense panes stacked. The width is watched
+while the dialog is open (`matchMedia("(max-width: 620px)")`, and its `change`
+event): a plugin window dragged narrower, or a phone turned, shuts the pane and
+the details, as if the dialog had been opened at that width, so a pane left open
+is never a sheet over the list; widening opens them again. Whoever had the focus
+in what is hidden has it on the button that opens it. A person's own opening or
+shutting is not remembered across a crossing.
 
 Whatever is not done on most visits is behind a **menu button**, in the pattern
 the strip's menu uses (`aria-haspopup="menu"`, `aria-expanded`, `aria-controls`,
@@ -592,9 +598,14 @@ button and still addressable. All 128, `000` to `127`, in the same order and
 the same columns. A click loads, a double click loads and closes, as they did;
 the details are of the slot that is playing, or of the one a person has looked
 at **without loading it**, which is the one with the keyboard focus, or the one
-asked about with the menu key, Shift+F10 or a right click -- which also opens
-its More menu. (A touch screen that does not send a contextmenu event on a long
-press has no way to look at a slot it has not loaded.)
+asked about with the menu key, Shift+F10, a right click or, on a touch screen, a
+**press and hold** -- which also open its More menu. A touch or a pen held on a
+slot for about half a second (480ms, cancelled by lifting, by a move of more
+than 8px, or by the browser taking the touch for a scroll) asks about it the way
+a right click does, and the click that lifting the finger makes is not a load; a
+quick tap is still a load, and a mouse never starts a hold. It is done with
+pointer events and not left to the browser's contextmenu event, which iOS Safari
+does not send for a long press.
 
 The preset view is for finding a sound by name:
 

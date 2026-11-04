@@ -621,3 +621,277 @@ test("on a phone a destination's banks are a sheet too, and a bank chosen in it 
   assert.equal(focused(page), toggle(page));
   assert.equal(label(body(page).querySelector(".browser-save-slot")), "Slot 000");
 });
+
+// -------------------------------------------------- press and hold, on a touch screen
+
+// A clock the test owns: what the page asks to run later is kept with how long
+// it asked to wait, and runs when the test says that long has passed.
+function timers(window) {
+  const queue = [];
+  let next = 0;
+  window.setTimeout = (fn, ms) => { queue.push({id: ++next, fn, ms: ms || 0}); return next; };
+  window.clearTimeout = id => { const at = queue.findIndex(t => t.id === id); if (at >= 0) queue.splice(at, 1); };
+  window.pending = () => queue.map(t => t.ms);
+  window.elapse = ms => { for (const t of queue.filter(t => t.ms <= ms)) { queue.splice(queue.indexOf(t), 1); t.fn(); } };
+}
+const touchy = () => browser({before: timers});
+const pointer = (type, init = {}) => new Event(type, {bubbles: true, pointerType: "touch", clientX: 100, clientY: 100, ...init});
+const HOLD = 480;
+const held = page => page.window.pending().filter(ms => ms >= 300 && ms <= 800);
+
+test("a touch held on a slot asks about it as a right click does, and the release does not load it", () => {
+  const page = touchy();
+  page.window.SynthBank.newBank("My Bank");
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 0, name: "Alpha"});
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 1, name: "Bravo"});
+  page.window.SynthBank.loadPreset({bank: "My Bank", slot: 0});
+  page.window.SynthBank.select(plain(page.window.SynthBank.list()).findIndex(b => b.label === "My Bank"), true);
+  open(page, {view: "slots"});
+  const before = plain(page.window.SynthBank.selection());
+
+  cell(page, "Bravo").dispatchEvent(pointer("pointerdown"));
+  assert.equal(held(page).length, 1, "a hold has been started");
+  assert.ok(held(page)[0] >= 400 && held(page)[0] <= 600, `and it is ${held(page)[0]}ms`);
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-expanded"), "false", "nothing yet");
+
+  page.window.elapse(HOLD);
+  const trigger = details(page).querySelector(".browser-more");
+  assert.equal(label(details(page).querySelector(".browser-detail-name")), "Bravo");
+  assert.equal(trigger.getAttribute("aria-label"), "More actions for Bravo");
+  assert.equal(trigger.getAttribute("aria-expanded"), "true", "its menu is open");
+  assert.equal(focused(page), page.document.querySelector('[aria-label="Copy Bravo to..."]'));
+  assert.deepEqual(plain(page.window.SynthBank.selection()), before, "and it was not loaded");
+
+  cell(page, "Bravo").dispatchEvent(pointer("pointerup"));
+  focusOn(page, cell(page, "Bravo")); // a browser focuses the button the finger is lifted from
+  cell(page, "Bravo").click();
+  assert.deepEqual(plain(page.window.SynthBank.selection()), before, "the click the release makes does not load it");
+  assert.ok(dialog(page));
+  assert.equal(trigger.getAttribute("aria-expanded"), "true", "nor does it shut the menu, as a click elsewhere would");
+  assert.equal(focused(page), page.document.querySelector('[aria-label="Copy Bravo to..."]'), "and the focus is back in the menu");
+
+  cell(page, "Bravo").click();
+  assert.equal(plain(page.window.SynthBank.selection()).presetName, "Bravo", "only that one click: the next is a load");
+});
+
+test("a quick tap is still a load, and a hold that was let go of in time is nothing", () => {
+  const page = touchy();
+  page.window.SynthBank.newBank("My Bank");
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 0, name: "Alpha"});
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 1, name: "Bravo"});
+  page.window.SynthBank.loadPreset({bank: "My Bank", slot: 0});
+  page.window.SynthBank.select(plain(page.window.SynthBank.list()).findIndex(b => b.label === "My Bank"), true);
+  open(page, {view: "slots"});
+
+  cell(page, "Bravo").dispatchEvent(pointer("pointerdown"));
+  cell(page, "Bravo").dispatchEvent(pointer("pointerup"));
+  assert.equal(held(page).length, 0, "let go: the hold is cancelled");
+  cell(page, "Bravo").click();
+  assert.equal(plain(page.window.SynthBank.selection()).presetName, "Bravo", "a tap loads");
+
+  cell(page, "Alpha").dispatchEvent(pointer("pointerdown"));
+  cell(page, "Alpha").dispatchEvent(pointer("pointerup"));
+  page.window.elapse(1000);
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-expanded"), "false", "and nothing opens late");
+});
+
+test("a hold is not one if the finger moves more than a few pixels, or the browser takes the touch for a scroll or the finger leaves", () => {
+  const page = touchy();
+  page.window.SynthBank.newBank("My Bank");
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 0, name: "Alpha"});
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 1, name: "Bravo"});
+  page.window.SynthBank.loadPreset({bank: "My Bank", slot: 0});
+  page.window.SynthBank.select(plain(page.window.SynthBank.list()).findIndex(b => b.label === "My Bank"), true);
+  open(page, {view: "slots"});
+  const bravo = () => cell(page, "Bravo");
+  const trigger = () => details(page).querySelector(".browser-more");
+
+  bravo().dispatchEvent(pointer("pointerdown"));
+  bravo().dispatchEvent(pointer("pointermove", {clientX: 104, clientY: 97}));
+  assert.equal(held(page).length, 1, "a finger is never perfectly still");
+  bravo().dispatchEvent(pointer("pointermove", {clientX: 100, clientY: 112}));
+  assert.equal(held(page).length, 0, "twelve pixels is a scroll");
+  page.window.elapse(1000);
+  assert.equal(trigger().getAttribute("aria-label"), "More actions for Alpha");
+
+  for (const type of ["pointercancel", "pointerleave"]) {
+    bravo().dispatchEvent(pointer("pointerdown"));
+    assert.equal(held(page).length, 1, type);
+    bravo().dispatchEvent(pointer(type));
+    assert.equal(held(page).length, 0, type);
+  }
+  page.window.elapse(1000);
+  assert.equal(label(details(page).querySelector(".browser-detail-name")), "Alpha");
+});
+
+test("a mouse never starts a hold, a pen does, and a native contextmenu on top of one changes nothing", () => {
+  const page = touchy();
+  page.window.SynthBank.newBank("My Bank");
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 0, name: "Alpha"});
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 1, name: "Bravo"});
+  page.window.SynthBank.loadPreset({bank: "My Bank", slot: 0});
+  page.window.SynthBank.select(plain(page.window.SynthBank.list()).findIndex(b => b.label === "My Bank"), true);
+  open(page, {view: "slots"});
+  const before = plain(page.window.SynthBank.selection());
+
+  cell(page, "Bravo").dispatchEvent(pointer("pointerdown", {pointerType: "mouse"}));
+  assert.equal(held(page).length, 0, "a mouse has a right button");
+
+  cell(page, "Bravo").dispatchEvent(pointer("pointerdown", {pointerType: "pen"}));
+  assert.equal(held(page).length, 1);
+  page.window.elapse(HOLD);
+  const trigger = details(page).querySelector(".browser-more");
+  assert.equal(trigger.getAttribute("aria-expanded"), "true");
+  const native = cell(page, "Bravo").dispatchEvent(new Event("contextmenu", {bubbles: true, cancelable: true}));
+  assert.equal(native, false, "the browser's own menu is kept off");
+  assert.equal(trigger.getAttribute("aria-expanded"), "true", "the menu is still open, not toggled shut");
+  assert.equal(page.document.querySelectorAll('[aria-label="Copy Bravo to..."]').length, 1);
+  cell(page, "Bravo").dispatchEvent(pointer("pointerup", {pointerType: "pen"}));
+  cell(page, "Bravo").click();
+  assert.deepEqual(plain(page.window.SynthBank.selection()), before);
+});
+
+test("a destination has no press and hold: a touch there is a tap that chooses", () => {
+  const page = touchy();
+  page.window.SynthBrowser.write();
+  cells(page)[7].dispatchEvent(pointer("pointerdown"));
+  assert.equal(held(page).length, 0);
+  cells(page)[7].dispatchEvent(pointer("pointerup"));
+  cells(page)[7].click();
+  assert.equal(label(body(page).querySelector(".browser-save-slot")), "Slot 007");
+});
+
+test("the details say how to look at a slot without loading it, in one sentence that includes the hold", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const hint = label(details(page).querySelector(".browser-detail-hint"));
+  assert.match(hint, /press and hold/);
+  assert.match(hint, /menu key/);
+  assert.match(hint, /right-click/);
+  assert.equal((hint.match(/\./g) || []).length, 1, hint);
+});
+
+// ----------------------------------------------- the window crossing 620px
+
+// A matchMedia the test owns: the width query has an answer it can change, and
+// whoever listens is told, as a browser tells them.
+function resizable(window) {
+  const listeners = new Set();
+  const query = {
+    media: "(max-width: 620px)", matches: false,
+    addEventListener(type, fn) { if (type === "change") listeners.add(fn); },
+    removeEventListener(type, fn) { if (type === "change") listeners.delete(fn); },
+  };
+  window.resize = narrow => { query.matches = narrow; for (const fn of [...listeners]) fn({matches: narrow, media: query.media}); };
+  window.listening = () => listeners.size;
+  window.matchMedia = media => media === query.media ? query : {media, matches: false, addEventListener() {}, removeEventListener() {}};
+}
+const sizing = () => browser({before: resizable});
+const state = page => ({
+  pane: !pane(page).hidden,
+  toggle: toggle(page).getAttribute("aria-expanded"),
+  details: !details(page).querySelector(".browser-details-body").hidden,
+  detailsToggle: details(page).querySelector(".browser-details-toggle").getAttribute("aria-expanded"),
+});
+
+test("shrinking the window across 620px with the dialog open shuts the pane and the details, as if it had been opened narrow", () => {
+  const page = sizing();
+  open(page);
+  assert.deepEqual(state(page), {pane: true, toggle: "true", details: true, detailsToggle: "true"});
+  page.window.resize(true);
+  assert.deepEqual(state(page), {pane: false, toggle: "false", details: false, detailsToggle: "false"},
+    "the pane would otherwise be a sheet over the list");
+  assert.equal(options(page).length, 5, "the list is there");
+});
+
+test("widening it opens them again, as at build time, and a person's own choice does not outlast a crossing", () => {
+  const page = sizing();
+  open(page);
+  toggle(page).click();
+  assert.equal(state(page).pane, false, "shut by the person on a wide window");
+  page.window.resize(true);
+  toggle(page).click();
+  assert.equal(state(page).pane, true, "opened by the person on a narrow one");
+  page.window.resize(false);
+  assert.deepEqual(state(page), {pane: true, toggle: "true", details: true, detailsToggle: "true"});
+  page.window.resize(true);
+  page.window.resize(true);
+  assert.equal(state(page).pane, false, "and a change that is not a crossing is not one more");
+});
+
+test("a window that was narrow to begin with, and the dialog of a destination, follow the same crossing", () => {
+  const phoneFirst = browser({before: window => { resizable(window); window.resize(true); }});
+  open(phoneFirst);
+  assert.deepEqual(state(phoneFirst), {pane: false, toggle: "false", details: false, detailsToggle: "false"});
+  phoneFirst.window.resize(false);
+  assert.deepEqual(state(phoneFirst), {pane: true, toggle: "true", details: true, detailsToggle: "true"});
+
+  const page = sizing();
+  page.window.SynthBrowser.write();
+  assert.equal(pane(page).hidden, false);
+  page.window.resize(true);
+  assert.equal(pane(page).hidden, true);
+  assert.equal(toggle(page).getAttribute("aria-expanded"), "false");
+  page.window.resize(false);
+  assert.equal(pane(page).hidden, false);
+});
+
+test("focus that was in the pane when the window narrows goes to Filters", () => {
+  const page = sizing();
+  open(page);
+  chip(page, "Favorites").focus();
+  page.window.resize(true);
+  assert.equal(focused(page), toggle(page));
+});
+
+test("focus that was in the details goes to their button and the menu open there is shut; focus on a slot stays", () => {
+  const page = sizing();
+  open(page, {view: "slots"});
+  const slotCell = cell(page, "Init");
+  focusOn(page, slotCell);
+  const trigger = details(page).querySelector(".browser-more");
+  trigger.click();
+  assert.ok(details(page).contains(focused(page)), "the focus is in the menu in the details");
+
+  page.window.resize(true);
+  assert.equal(focused(page), details(page).querySelector(".browser-details-toggle"));
+  assert.equal(page.document.getElementById(trigger.getAttribute("aria-controls")).hidden, true);
+  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+
+  page.window.resize(false);
+  slotCell.focus();
+  page.window.resize(true);
+  assert.equal(focused(page), slotCell, "a slot is in neither, and keeps it");
+});
+
+test("the browser listens for the crossing while it is open and stops when it is closed", () => {
+  const page = sizing();
+  assert.equal(page.window.listening(), 0);
+  open(page);
+  assert.equal(page.window.listening(), 1);
+  page.window.SynthBrowser.write();
+  assert.equal(page.window.listening(), 1, "a destination replaces it, and takes its place");
+  press(page.document.activeElement, "Escape");
+  assert.equal(page.window.listening(), 0, "nothing is left listening once the dialog is gone");
+  page.window.resize(true);
+  page.window.resize(false);
+});
+
+test("a matchMedia that has only the old addListener is listened to the same way", () => {
+  const listeners = new Set();
+  const page = browser({before: window => {
+    const query = {
+      media: "(max-width: 620px)", matches: false,
+      addListener(fn) { listeners.add(fn); },
+      removeListener(fn) { listeners.delete(fn); },
+    };
+    window.matchMedia = media => media === query.media ? query : {media, matches: false};
+    window.shrink = () => { query.matches = true; for (const fn of [...listeners]) fn(); };
+  }});
+  open(page);
+  assert.equal(listeners.size, 1);
+  page.window.shrink();
+  assert.equal(pane(page).hidden, true);
+  press(page.document.activeElement, "Escape");
+  assert.equal(listeners.size, 0);
+});

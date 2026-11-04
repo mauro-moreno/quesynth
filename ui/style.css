@@ -1610,6 +1610,9 @@ body.modal-open { overflow: hidden; }
   border-radius: 6px;
   cursor: pointer;
 }
+/* A slot is pressed and held on a touch screen to ask about it, and a finger
+ * held on text would select it and, on iOS, raise the callout over it. */
+.browser-slot { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .browser-slot:hover, .browser-slot.inspected { background: #16161b; color: var(--ink); }
 /* One way a slot is marked, whether it is the sound that is playing or, in a
  * destination, the place the sound will go. */
