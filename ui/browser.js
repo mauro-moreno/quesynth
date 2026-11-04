@@ -86,6 +86,103 @@
   var serial = 0;
   function uid(prefix) { return prefix + "-" + (++serial); }
 
+  // -------------------------------------------------------------- menu buttons
+  //
+  // What is not done every visit is behind a button that opens a menu, as the
+  // WAI-ARIA practices describe one and as the strip's menu does it (ui/app.js,
+  // buildActions): it opens on click, Enter, Space and the arrow keys, the
+  // focus moves into it and stays in it, Escape shuts it and gives the focus
+  // back to the button, and so does choosing something -- before the action
+  // runs, so that a dialog the action opens takes the button as the place the
+  // focus goes back to, and not an item that has just been hidden. Tab shuts
+  // it, and so does a click anywhere else. Shut, it is hidden and not only out
+  // of sight, so that neither a keyboard nor a screen reader meets what is in
+  // it.
+  //
+  // The list is in the flow, under its button, and not laid over what is
+  // beside it: it has to open inside a region that scrolls and in a dialog as
+  // narrow as a phone, and a list that floats is clipped by the one and runs
+  // off the other.
+  //
+  // `config`: { label, name, listLabel, className, listClass }. The caller puts
+  // `trigger` and `list` where they belong and adds the items; an item that
+  // does not apply is marked `aria-disabled` by the caller and still runs, so
+  // that whoever decides what is allowed is the one that says no.
+  function menuButton(config) {
+    var list = element("div", config.listClass);
+    list.id = uid("browser-menu");
+    list.setAttribute("role", "menu");
+    list.setAttribute("aria-label", config.listLabel);
+    list.hidden = true;
+    var trigger = button(config.className, config.label);
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-controls", list.id);
+    if (config.name) trigger.setAttribute("aria-label", config.name);
+    var items = [];
+    var listening = false;
+
+    function outside(e) {
+      if (!list.contains(e.target) && !trigger.contains(e.target)) setOpen(false);
+    }
+
+    function setOpen(open, which) {
+      list.hidden = !open;
+      trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open && !listening) { document.addEventListener("click", outside); listening = true; }
+      if (!open && listening) { document.removeEventListener("click", outside); listening = false; }
+      if (open && items.length) items[which === "last" ? items.length - 1 : 0].focus();
+    }
+
+    function move(from, by) {
+      items[(from + by + items.length) % items.length].focus();
+    }
+
+    trigger.addEventListener("click", function () { setOpen(list.hidden, "first"); });
+    trigger.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setOpen(true, e.key === "ArrowUp" ? "last" : "first");
+      } else if (e.key === "Escape" && !list.hidden) {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen(false);
+      }
+    });
+
+    return {
+      trigger: trigger,
+      list: list,
+      open: setOpen,
+      close: function () { setOpen(false); },
+      add: function (label, onSelect) {
+        var item = button("browser-menuitem", label);
+        item.setAttribute("role", "menuitem");
+        var at = items.length;
+        items.push(item);
+        item.addEventListener("click", function () {
+          setOpen(false);
+          trigger.focus();
+          onSelect();
+        });
+        item.addEventListener("keydown", function (e) {
+          if (e.key === "ArrowDown") { e.preventDefault(); move(at, 1); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); move(at, -1); }
+          else if (e.key === "Home") { e.preventDefault(); items[0].focus(); }
+          else if (e.key === "End") { e.preventDefault(); items[items.length - 1].focus(); }
+          else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+            trigger.focus();
+          } else if (e.key === "Tab") setOpen(false);
+        });
+        list.appendChild(item);
+        return item;
+      },
+    };
+  }
+
   // ------------------------------------------- favourites and recently used
   //
   // The person's habits, and nothing else's business. They are kept apart from
@@ -749,39 +846,42 @@
         (there ? "holds " + there.name + " and would be replaced." : "is empty.");
     }
 
-    // The preset in a slot, taken somewhere else. Opened from the slot, over
-    // the browser, and asks the person to choose where.
-    function slotTools(cell, i, slot, bankLabel) {
-      var tl = element("span", "browser-slot-tools");
-      [["copy", "Copy"], ["move", "Move"]].forEach(function (kind) {
-        var b = button("browser-mini browser-slot-tool", kind[1]);
-        b.setAttribute("aria-label", kind[1] + " " + slot.name + " to...");
-        b.setAttribute("data-slot", String(i));
-        b.setAttribute("data-tool", kind[0]);
-        b.addEventListener("click", function () {
-          openTransfer(kind[0], { bank: bankLabel, slot: i }, slot.name);
-        });
-        tl.appendChild(b);
-      });
-      cell.appendChild(tl);
-    }
-
     // A repaint rebuilds every slot, so the one that had the focus is found
-    // again afterwards, and the tool on it if that is what had it.
+    // again afterwards.
     function heldSlot() {
       var el = document.activeElement;
-      if (!el || !el.getAttribute || !right.contains(el) || el.getAttribute("data-slot") === null) return null;
-      return { slot: el.getAttribute("data-slot"), tool: el.getAttribute("data-tool") };
+      if (!el || !el.getAttribute || !right.contains(el)) return null;
+      return el.getAttribute("data-slot");
     }
 
     function giveSlot(held) {
-      if (!held) return;
-      var mine = right.querySelectorAll('[data-slot="' + held.slot + '"]');
-      var goal = null;
-      for (var i = 0; i < mine.length; i++) {
-        if (mine[i].getAttribute("data-tool") === held.tool) goal = mine[i];
-        else if (!goal && mine[i].getAttribute("data-tool") === null) goal = mine[i];
-      }
+      if (held === null) return;
+      var goal = right.querySelector('[data-slot="' + held + '"]');
+      if (goal) goal.focus();
+    }
+
+    // What the slot view last painted, for the details to be about.
+    var slotView = null;
+    // A slot that has been looked at and not loaded: the focus is on it, or it
+    // was asked about with the menu key or a right click. Remembered with the
+    // sound it was looked at beside, so that it is not the one the details
+    // are about once the sound has moved, and with the bank, so that looking
+    // at another bank and back does not lose it.
+    var inspected = null;
+
+    function inspectedAt(v) {
+      return inspected && inspected.bank === v.bankLabel && inspected.here === v.here
+        ? inspected.slot : v.here;
+    }
+
+    function inspect(i) {
+      if (picking || !slotView || i === inspectedAt(slotView)) return;
+      inspected = { bank: slotView.bankLabel, slot: i, here: slotView.here };
+      paintSlotDetails();
+    }
+
+    function focusSlot(i) {
+      var goal = right.querySelector('.browser-slot[data-slot="' + i + '"]');
       if (goal) goal.focus();
     }
 
@@ -811,28 +911,17 @@
       head.appendChild(title);
       head.appendChild(count);
       right.appendChild(head);
-      if (!picking && api().archive()) {
-        var provenance = api().playing();
-        var line = element("div", "browser-playing");
-        var position = provenance && provenance.source === "archive"
-          ? (provenance.archive ? provenance.archive.patch : null)
-          : (provenance ? provenance.index : null);
-        line.textContent = "Playing: " + (provenance ? provenance.name : "Untitled") +
-          (provenance && provenance.bank ? " · " + provenance.bank : "") +
-          (position !== null ? " · " + (provenance.source === "archive" ? "#" : "slot ") + position : "");
-        right.appendChild(line);
-      }
-
       var grid = element("div", "browser-grid");
       var here = browsing ? browsing.index : api().index();
       // Copy and Move are of the page's own banks: a patch in the host's
       // archive is not held here to take anywhere.
       var movable = !picking && (!browsing || browsing.bank < 0);
       var bankLabel = browsing ? browsing.label : api().label();
+      var cells = [];
+      slotView = { slots: slots, here: here, bankLabel: bankLabel, browsing: browsing, movable: movable, cells: cells };
 
       slots.forEach(function (slot, i) {
         var marked = picking ? i === target : i === here;
-        var cell = element("div", "browser-cell");
         var b = button("browser-slot" + (slot ? "" : " empty") +
                        (marked ? (picking ? " target" : " on") : ""));
         if (marked) b.setAttribute("aria-current", "true");
@@ -861,16 +950,28 @@
             else api().load(i);
             window.SynthModal.close();
           });
+          // A slot is looked at, in the details, without being loaded: by the
+          // keyboard, which has the focus on it before it has done anything
+          // to it, and by the menu key or a right click, which ask about it.
+          // A click is still a load, as it always was.
+          b.addEventListener("focus", function () { inspect(i); });
+          b.addEventListener("contextmenu", function (e) {
+            e.preventDefault();
+            inspect(i);
+            if (movable && slot) {
+              setDetailsOpen(true);
+              more.open(true, "first");
+            }
+          });
         }
-        cell.appendChild(b);
-        if (movable && slot) slotTools(cell, i, slot, bankLabel);
-        grid.appendChild(cell);
+        cells.push(b);
+        grid.appendChild(b);
       });
 
       right.appendChild(grid);
       layoutGrid(grid, slots.length);
       paintNow();
-      paintSlotDetails(slots, here);
+      paintSlotDetails();
 
       var on = grid.querySelector(".browser-slot.on, .browser-slot.target");
       if (on) setTimeout(function () { on.scrollIntoView({ block: "center" }); }, 0);
@@ -1288,9 +1389,11 @@
     var detailName = element("p", "browser-detail-name");
     var detailFacts = element("dl", "browser-detail-facts");
     var detailActions = element("div", "browser-detail-actions");
+    var detailHint = element("p", "browser-detail-hint");
     detailsBody.appendChild(detailName);
     detailsBody.appendChild(detailFacts);
     detailsBody.appendChild(detailActions);
+    detailsBody.appendChild(detailHint);
     details.appendChild(detailsToggle);
     details.appendChild(detailsBody);
 
@@ -1301,8 +1404,13 @@
     setDetailsOpen(!(window.matchMedia && window.matchMedia("(max-width: 620px)").matches));
     detailsToggle.addEventListener("click", function () { setDetailsOpen(detailsBody.hidden); });
 
-    // `model`: { name, facts: [[label, value], ...] }. A fact with nothing to
-    // say is left out rather than shown as a dash.
+    // `model`: { name, facts: [[label, value], ...], actions, hint }. A fact
+    // with nothing to say is left out rather than shown as a dash.
+    //
+    // `actions` are elements. The ones that are made once and wanted again
+    // are left where they are, so that a button that has the focus keeps it
+    // through a repaint; the ones made afresh each time are found again by
+    // their place, as the rows are.
     function showDetails(model) {
       detailName.textContent = model.name;
       detailFacts.textContent = "";
@@ -1311,13 +1419,23 @@
         detailFacts.appendChild(element("dt", null, fact[0]));
         detailFacts.appendChild(element("dd", null, fact[1]));
       });
-      // The actions are made afresh for what has the attention, so the one
-      // that had the focus is found again, as the rows' are after a repaint.
-      var kept = keep(detailActions);
-      detailActions.textContent = "";
-      (model.actions || []).forEach(function (action) { detailActions.appendChild(action); });
-      detailActions.hidden = !detailActions.children.length;
-      give(detailActions, kept);
+      detailHint.textContent = model.hint || "";
+      detailHint.hidden = !model.hint;
+
+      var wanted = model.actions || [];
+      var held = document.activeElement;
+      var holding = !!held && detailActions.contains(held);
+      var kept = holding ? keep(detailActions) : -1;
+      [].slice.call(detailActions.children).forEach(function (child) {
+        if (wanted.indexOf(child) < 0) detailActions.removeChild(child);
+      });
+      wanted.forEach(function (action, at) {
+        if (detailActions.children[at] !== action) {
+          detailActions.insertBefore(action, detailActions.children[at] || null);
+        }
+      });
+      detailActions.hidden = !wanted.length;
+      if (holding && !detailActions.contains(held)) give(detailActions, kept);
     }
 
     // The preset the list has its attention on: the one the arrows reached or
@@ -1364,22 +1482,77 @@
       });
     }
 
-    // The slot that is playing, in the bank in view.
-    function paintSlotDetails(slots, here) {
-      if (picking) return;
+    // The slot that has the attention in the bank in view: the one that is
+    // playing, unless another has been looked at.
+    //
+    // What can be done to it is here and not on the slot: Load, for a slot
+    // that is not the sound, and a menu for the two things that take its
+    // preset somewhere else. Both are made once, so that a repaint does not
+    // take the focus from under them.
+    var slotLoad = button("browser-action", "Load");
+    slotLoad.addEventListener("click", function () {
+      var v = slotView;
+      var at = inspectedAt(v);
+      if (v.browsing) api().loadBrowsed(at);
+      else api().load(at);
+      paintSlots();
+      focusSlot(at);
+    });
+    var more = menuButton({
+      label: "More", listLabel: "Slot actions", className: "browser-more", listClass: "browser-menu-list",
+    });
+    var slotMenu = element("div", "browser-menu");
+    slotMenu.appendChild(more.trigger);
+    slotMenu.appendChild(more.list);
+    function startTransfer(kind) {
+      var v = slotView;
+      var at = inspectedAt(v);
+      var slot = at >= 0 ? v.slots[at] : null;
+      if (slot) openTransfer(kind, { bank: v.bankLabel, slot: at }, slot.name);
+    }
+    var copyItem = more.add("Copy", function () { startTransfer("copy"); });
+    var moveItem = more.add("Move", function () { startTransfer("move"); });
+    copyItem.setAttribute("data-tool", "copy");
+    moveItem.setAttribute("data-tool", "move");
+
+    function paintSlotDetails() {
+      if (picking || !slotView) return;
+      var v = slotView;
+      var at = inspectedAt(v);
       var row = viewRow();
-      var slot = here >= 0 ? slots[here] : null;
+      var slot = at >= 0 ? v.slots[at] : null;
+      var playing = at >= 0 && at === v.here;
       var status = [];
-      if (here >= 0) status.push("Playing");
+      if (playing) status.push("Playing");
       if (row && row.readOnly) status.push("Read-only");
+      v.cells.forEach(function (cell, i) { cell.classList.toggle("inspected", i === at && !playing); });
+
+      var actions = [];
+      if (at >= 0 && !playing) {
+        slotLoad.setAttribute("aria-label", "Load " + (slot ? slot.name : "slot " + pad3(at)));
+        actions.push(slotLoad);
+      }
+      if (v.movable && slot) {
+        more.trigger.setAttribute("aria-label", "More actions for " + slot.name);
+        more.trigger.setAttribute("data-slot", String(at));
+        [[copyItem, "Copy"], [moveItem, "Move"]].forEach(function (pair) {
+          pair[0].setAttribute("aria-label", pair[1] + " " + slot.name + " to...");
+          pair[0].setAttribute("data-slot", String(at));
+        });
+        actions.push(slotMenu);
+      } else {
+        more.close();
+      }
       showDetails({
-        name: here < 0 ? "No slot selected" : slot ? slot.name : "Empty slot",
+        name: at < 0 ? "No slot selected" : slot ? slot.name : "Empty slot",
         facts: [
           ["Source", row ? api().originLabel(row.origin) : ""],
           ["Bank", row ? row.label : ""],
-          ["Slot", here >= 0 ? pad3(here) : ""],
+          ["Slot", at >= 0 ? pad3(at) : ""],
           ["Status", status.join(" · ")],
         ],
+        actions: actions,
+        hint: v.movable ? "Press the menu key or right-click a slot to act on it without loading it." : "",
       });
     }
 
@@ -1507,6 +1680,8 @@
       });
     }
 
+    if (picking) wrap.appendChild(element("p", "browser-destination", "Choose destination"));
+
     // The write row: present the whole time in write mode, because it is the
     // point of the dialog rather than something hidden behind a button.
     if (forms) {
@@ -1562,7 +1737,7 @@
     paintAll();
 
     wrap.refresh = function () { paintAll(); };
-    wrap.dispose = function () { stopListening(); };
+    wrap.dispose = function () { stopListening(); more.close(); };
     wrap.focusField = function () { if (field) { field.focus(); field.select(); } };
     wrap.focusSearch = function () { if (parts && parts.search) parts.search.focus(); };
     wrap.commit = commitTransfer;
@@ -1659,8 +1834,9 @@
         body.dispose();
         if (inPage && api().current() !== was) api().select(was, true);
         window.SynthBrowser.refresh();
-        // What had the focus is a button that was rebuilt under it.
-        var again = document.querySelector('.browser-slot-tool[data-slot="' + from.slot + '"][data-tool="' + mode + '"]') ||
+        // What had the focus is the menu that asked, which a repaint keeps; or,
+        // if the details have moved on, the slot it was.
+        var again = document.querySelector('.browser-more[data-slot="' + from.slot + '"]') ||
           document.querySelector('.browser-slot[data-slot="' + from.slot + '"]');
         if (again) again.focus();
       },

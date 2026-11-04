@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
-import {all, badges, dialogs, feedback, focused, front, label, open, press, settle, slotTool} from "./support/browser.mjs";
+import {all, ask, badges, dialogs, feedback, focused, front, label, open, press, settle, slotMenu, slotTool} from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
 const within = (el, selector) => [...el.querySelectorAll(selector)];
@@ -57,30 +57,37 @@ const world = page => plain({
 test("every preset in a slot can be copied or moved, and an empty slot has nothing to take", () => {
   const page = app();
   open(page, {view: "slots"});
-  const tools = all(page, ".browser-slot-tool");
-  assert.equal(tools.length, 6, "two for each of Alpha, Bravo and Delta");
-  assert.deepEqual(tools.map(t => t.getAttribute("aria-label")),
-    ["Copy Alpha to...", "Move Alpha to...", "Copy Bravo to...", "Move Bravo to...", "Copy Delta to...", "Move Delta to..."]);
-  assert.deepEqual(tools.map(label), ["Copy", "Move", "Copy", "Move", "Copy", "Move"], "the name on it is part of the name it has");
   assert.equal(all(page, ".browser-slot.empty").length, 125);
-  assert.equal(all(page, ".browser-cell").filter(c => c.querySelector(".browser-slot.empty") && c.querySelector(".browser-slot-tool")).length, 0);
+  // One menu, for the slot that has the attention: read what it offers as each is asked about.
+  const tools = ["Alpha", "Bravo", "Delta"].flatMap(name =>
+    ["Copy", "Move"].map(kind => { const t = slotTool(page, kind, name); return t && [t.getAttribute("aria-label"), label(t)]; }));
+  assert.ok(tools.every(Boolean), "two for each of Alpha, Bravo and Delta");
+  assert.deepEqual(tools.map(t => t[0]),
+    ["Copy Alpha to...", "Move Alpha to...", "Copy Bravo to...", "Move Bravo to...", "Copy Delta to...", "Move Delta to..."]);
+  assert.deepEqual(tools.map(t => t[1]), ["Copy", "Move", "Copy", "Move", "Copy", "Move"], "the name on it is part of the name it has");
+  assert.equal(all(page, ".browser-slot-tool").length, 0, "and none of them is on a slot");
+
+  ask(page, all(page, ".browser-slot")[2]);
+  assert.equal(all(page, ".browser-more").length, 0, "slot 002 is empty: nothing to take");
 });
 
 test("the preset view and a destination have no Copy and Move of their own", () => {
   const page = app();
   open(page);
-  assert.equal(all(page, ".browser-slot-tool").length, 0);
+  assert.equal(all(page, ".browser-more, .browser-menuitem").length, 0);
   page.window.SynthBrowser.write();
-  assert.equal(all(page, ".browser-slot-tool").length, 0);
+  assert.equal(all(page, ".browser-more, .browser-menuitem").length, 0);
 });
 
 test("a patch in the host's archive is not held here to copy, so none of them offers it", () => {
   const page = bootPanel({bank: FACTORY});
   page.send({type: "archive", rev: 1, open: true, path: "/p.zip", banks: ["a.zip"], bank: 0, patches: ["Pad", "Bass"]});
   open(page, {view: "slots"});
-  assert.ok(all(page, ".browser-slot-tool").length > 0, "the page's own bank still does");
+  assert.ok(slotTool(page, "Copy", "Strings"), "the page's own bank still does");
   within(page.document, ".browser-source").find(r => /a\.zip/.test(r.textContent)).click();
-  assert.equal(all(page, ".browser-slot-tool").length, 0);
+  ask(page, all(page, ".browser-slot").find(b => label(b.querySelector(".browser-slot-name")) === "Pad"));
+  assert.equal(all(page, ".browser-more").length, 0);
+  assert.equal(slotTool(page, "Copy", "Pad"), null);
 });
 
 test("the picker for a copy or a move lists the page's own banks and never an archive's", () => {
@@ -140,7 +147,7 @@ test("Copy to... asks where, then asks whether, and only then writes", async () 
   assert.deepEqual(plain(page.window.SynthBank.selection()), before.selection);
   assert.equal(feedback(page).textContent, "Copied Bravo from My Bank / 001 to Second Bank / 005.");
   assert.equal(page.window.SynthBank.label(), "My Bank", "the browser is looking where it was");
-  assert.equal(focused(page), slotTool(page, "Copy", "Bravo"), "and the focus is back on the button that asked");
+  assert.equal(focused(page), slotMenu(page, "Bravo"), "and the focus is back on the button that asked");
 });
 
 test("Cancel, at either question, changes nothing, and the picker is left as it was to choose again", async () => {
@@ -163,7 +170,7 @@ test("Cancel, at either question, changes nothing, and the picker is left as it 
   assert.equal(dialogs(page).length, 1);
   assert.deepEqual(world(page), before);
   assert.equal(page.window.SynthBank.label(), "My Bank", "even looking elsewhere is put back");
-  assert.equal(focused(page), slotTool(page, "Copy", "Bravo"));
+  assert.equal(focused(page), slotMenu(page, "Bravo"));
   assert.deepEqual(plain(page.window.SynthBank.lastResult()), last, "no copy was ever attempted, so nothing was reported");
 });
 
@@ -386,5 +393,5 @@ test("Tab stays in the dialog that is in front, and Escape takes them away one a
   assert.equal(front(page).getAttribute("aria-label"), "Copy Bravo to...");
   press(focused(page), "Escape");
   assert.equal(dialogs(page).length, 1);
-  assert.ok(focused(page) === slotTool(page, "Copy", "Bravo"), "and the person is where they started");
+  assert.ok(focused(page) === slotMenu(page, "Bravo"), "and the person is where they started");
 });

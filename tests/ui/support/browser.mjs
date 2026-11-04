@@ -58,7 +58,24 @@ export const sourceNames = page => all(page, ".browser-source").map(r => r.query
 export const badges = row => [...row.querySelectorAll(".browser-badge")].map(label);
 export const tool = (page, text) => all(page, ".browser-bank-tools button").find(b => label(b) === text);
 export const heading = (page, text) => all(page, ".browser-heading .browser-heading-actions button").find(b => label(b) === text);
-export const slotTool = (page, kind, name) => page.document.querySelector(`[aria-label="${kind} ${name} to..."]`);
+
+// Copy and Move are in the details, in a menu, for the slot that has the
+// attention. A click on a slot loads it, as it always did, so the way to ask
+// about a slot without loading it is the menu key or a right click on it, which
+// is also what opens the menu. `ask` does that, and `slotTool` is what a person
+// then reaches for: the item for Copy or Move on the slot called `name`, or
+// null where the slot has no such item.
+export function ask(page, cell) {
+  cell.dispatchEvent(new Event("contextmenu", {bubbles: true}));
+}
+export function slotTool(page, kind, name) {
+  const cell = all(page, ".browser-slot").find(b => label(b.querySelector(".browser-slot-name")) === name);
+  if (!cell) return null;
+  ask(page, cell);
+  return page.document.querySelector(`[aria-label="${kind} ${name} to..."]`);
+}
+// The button that opens that menu, which is where the focus goes back to.
+export const slotMenu = (page, name) => page.document.querySelector(`[aria-label="More actions for ${name}"]`);
 export const disabled = el => el.getAttribute("aria-disabled") === "true";
 export const dialogs = page => all(page, ".modal");
 export const front = page => dialogs(page).at(-1);

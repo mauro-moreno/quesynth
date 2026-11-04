@@ -50,7 +50,7 @@ test("every control in the browser has a name, in both views and in the destinat
   page.window.SynthBank.writePreset({bank: "Third", slot: 0, name: "Alpha"});
   slotTool(page, "Copy", "Alpha").click();
   assert.deepEqual(nameless(), [], "the dialog that chooses where a copy goes");
-  assert.ok(all(page, ".browser-slot-tool").length > 0);
+  assert.ok(all(page, ".browser-more").length > 0);
 });
 
 test("each filter says whether it is pressed, each star says which preset it is for, and the statuses are status regions", () => {

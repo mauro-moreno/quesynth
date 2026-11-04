@@ -1596,32 +1596,42 @@ body.modal-open { overflow: hidden; }
   align-content: start;
 }
 
+/* A slot, index first: the number in a column of its own, so that a run of
+ * them reads down the page, and the name after it. Roomier than it was, with
+ * the type as it was. */
 .browser-slot {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 12px;
   appearance: none;
-  padding: 5px 7px;
+  padding: 8px 10px;
   font: inherit;
   font-size: 12px;
   text-align: left;
-  color: var(--ink-dim);
+  color: var(--ink);
   background: none;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
 }
-.browser-slot:hover { background: #16161b; color: var(--ink); }
-.browser-slot.on { background: #23232b; color: var(--ink); }
-.browser-slot.empty .browser-slot-name { color: var(--ink-faint); }
+.browser-slot:hover, .browser-slot.inspected { background: #16161b; color: var(--ink); }
+/* One way a slot is marked, whether it is the sound that is playing or, in a
+ * destination, the place the sound will go. */
+.browser-slot.on, .browser-slot.target { background: #23232b; color: var(--ink); }
+/* An empty slot is a place and nothing else, so it is a dash and no more: it
+ * is still there to be chosen and it does not compete with the ones that hold
+ * something. */
+.browser-slot.empty { color: var(--ink-faint); }
+.browser-slot.empty .browser-slot-name { opacity: 0.7; }
 
 .browser-slot-num {
   flex: 0 0 auto;
+  min-width: 3ch;
   font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--ink-faint);
 }
-.browser-slot.on .browser-slot-num { color: var(--ink-dim); }
+.browser-slot.on .browser-slot-num, .browser-slot.target .browser-slot-num { color: var(--ink-dim); }
 .browser-slot-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -1691,16 +1701,6 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .browser-mini:hover { color: var(--ink); border-color: var(--metal-dark); }
-
-/* Where the sound is about to go. Marked differently from the slot you are
- * playing, because in write mode they are not the same thing and confusing
- * them is how a patch gets overwritten by accident. */
-.browser-slot.target {
-  background: #2a2118;
-  color: var(--ink);
-  outline: 1px solid #6b5334;
-}
-.browser-slot.target .browser-slot-num { color: #c39a5e; }
 
 /* A bank that is listed but not read yet -- one row of a zip of banks. Dimmer,
  * because its name is all that is known about it until it is opened. */
@@ -1923,6 +1923,20 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .browser-action:hover { background: #16161b; }
+.browser-detail-hint { margin: 14px 0 0; line-height: 1.4; color: var(--ink-faint); }
+.browser-detail-hint[hidden] { display: none; }
+
+/* What a destination dialog is for, said above the slots it lists. */
+.browser-destination {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 16px;
+  font-size: var(--type-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--panel-edge);
+}
 .browser-notes:empty { display: none; }
 .browser-note {
   margin: 0;
@@ -2129,27 +2143,52 @@ body.modal-open { overflow: hidden; }
   .browser-bank-tools .browser-mini { flex: 1 1 0; min-width: 0; }
 }
 
-/* A slot, and the two things that can be done to what is in it. The tools
- * lie over the end of the row and show when the row is pointed at, has focus
- * or is the one that is playing; where nothing points they are always shown. */
-.browser-cell { position: relative; display: flex; min-width: 0; }
-.browser-cell .browser-slot { flex: 1 1 auto; min-width: 0; }
-.browser-slot-tools {
-  position: absolute;
-  right: 2px;
-  top: 50%;
+/* A menu button and what it opens, in the flow under it: this is in a region
+ * that scrolls and in a dialog that is as narrow as a phone, and a list laid
+ * over what is beside it would be clipped by the one and run off the other.
+ * The trigger is a quiet button, because what is behind it is not what most
+ * visits are for. */
+.browser-menu { flex: 1 0 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.browser-more {
+  appearance: none;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: var(--type-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.browser-more:hover, .browser-more[aria-expanded="true"] { color: var(--ink); border-color: var(--metal-dark); }
+.browser-more::after { content: " \25BE"; }
+.browser-menu-list {
+  align-self: stretch;
   display: flex;
-  gap: 2px;
-  transform: translateY(-50%);
-  opacity: 0;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  background: #121216;
 }
-.browser-cell:hover .browser-slot-tools,
-.browser-cell:focus-within .browser-slot-tools,
-.browser-cell .browser-slot.on ~ .browser-slot-tools { opacity: 1; }
-.browser-slot-tool { background: #16161b; }
-@media (hover: none) {
-  .browser-slot-tools { opacity: 1; }
+.browser-menu-list[hidden] { display: none; }
+.browser-menuitem {
+  appearance: none;
+  min-height: 34px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: var(--type-body);
+  text-align: left;
+  color: var(--ink-dim);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
 }
+.browser-menuitem:hover, .browser-menuitem:focus-visible { background: #1b1b22; color: var(--ink); }
+.browser-menuitem[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 
 /* The slot a copy or a move is of, in the dialog that chooses where it goes. */
 .browser-slot.source { outline: 1px dashed var(--metal-dark); }
@@ -2694,7 +2733,7 @@ input[type="range"] { min-height: 28px; }
 .modal-action { min-height: 34px; }
 .browser-mini, .browser-chip, .browser-source, .browser-slot,
 .browser-archive-path, .browser-search, .browser-form-name { min-height: 28px; }
-.browser-tab, .browser-star, .browser-action { min-height: 34px; }
+.browser-tab, .browser-star, .browser-action, .browser-more { min-height: 34px; }
 .browser-star { min-width: 28px; }
 .browser-slot, .browser-source, .browser-mini { align-items: center; }
 

@@ -14,7 +14,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
-import {all, body, chip, label, open, option, options, press, searchBox, star, tab} from "./support/browser.mjs";
+import {Event} from "./support/dom.mjs";
+import {all, body, chip, dialog, focused, label, open, option, options, press, searchBox, star, tab} from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
 
@@ -199,4 +200,193 @@ test("Load in the details loads what the arrows have reached, and is not offered
   assert.equal(plain(page.window.SynthBank.selection()).presetName, "Brass");
   assert.deepEqual(offered(), [], "there is nothing left to load");
   assert.equal(page.document.activeElement, option(page, "Brass"), "and the focus is on the row, which is still there");
+});
+
+// ---------------------------------------------------------------- the slots
+
+const cells = page => all(page, ".browser-slot");
+const cell = (page, name) => cells(page).find(b => label(b.querySelector(".browser-slot-name")) === name);
+const focusOn = (page, el) => { el.focus(); el.dispatchEvent(new Event("focus")); };
+
+// A bank with a preset in the first slots and a gap, so that what is empty is
+// among what is not.
+function bank() {
+  const page = browser();
+  page.window.SynthBank.newBank("My Bank");
+  for (const [slot, name] of [[0, "Alpha"], [1, "Bravo"], [3, "Delta"]]) page.window.SynthBank.writePreset({bank: "My Bank", slot, name});
+  page.window.SynthBank.loadPreset({bank: "My Bank", slot: 3});
+  page.window.SynthBank.select(plain(page.window.SynthBank.list()).findIndex(b => b.label === "My Bank"), true);
+  return page;
+}
+
+test("the slot view lists all 128 slots by index, 000 to 127, and an empty one is a dash", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  assert.equal(cells(page).length, 128);
+  assert.deepEqual(cells(page).map(b => label(b.querySelector(".browser-slot-num"))),
+    Array.from({length: 128}, (_, i) => String(i).padStart(3, "0")));
+  assert.equal(label(cell(page, "Delta").querySelector(".browser-slot-num")), "003");
+  assert.equal(label(cells(page)[2].querySelector(".browser-slot-name")), "—");
+  assert.ok(cells(page)[2].classList.contains("empty"));
+  assert.ok(cells(page).every(b => b.tagName === "BUTTON"), "and every one is a control, empty or not");
+});
+
+test("a slot is its index and its name and nothing else: no tools on it, whatever it holds", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  for (const b of cells(page)) {
+    assert.deepEqual([...b.children].map(c => c.className), ["browser-slot-num", "browser-slot-name"]);
+    assert.equal(b.parentNode.className, "browser-grid", "and it is not wrapped in a cell that carries more");
+  }
+  assert.equal(all(page, ".browser-slot-tool, .browser-slot-tools, .browser-cell").length, 0);
+});
+
+test("Copy and Move are in the details, in a menu that is shut until it is asked for", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const trigger = details(page).querySelector(".browser-more");
+  assert.ok(trigger, "the slot that is playing is a preset in a bank of the page's own");
+  assert.equal(label(trigger), "More");
+  assert.equal(trigger.getAttribute("aria-label"), "More actions for Delta");
+  assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
+  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+  const list = page.document.getElementById(trigger.getAttribute("aria-controls"));
+  assert.equal(list.getAttribute("role"), "menu");
+  assert.equal(list.getAttribute("aria-label"), "Slot actions");
+  assert.equal(list.hidden, true, "shut is hidden, so a keyboard or a screen reader does not meet it");
+  assert.deepEqual([...list.children].map(i => [i.getAttribute("role"), label(i), i.getAttribute("aria-label")]),
+    [["menuitem", "Copy", "Copy Delta to..."], ["menuitem", "Move", "Move Delta to..."]]);
+});
+
+test("the menu opens on a click and on the arrows, moves with the arrows, Home and End, and shuts on Escape, Tab and a click elsewhere", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const trigger = details(page).querySelector(".browser-more");
+  const list = page.document.getElementById(trigger.getAttribute("aria-controls"));
+  const [copy, move] = [...list.children];
+
+  trigger.focus();
+  trigger.click();
+  assert.equal(list.hidden, false);
+  assert.equal(trigger.getAttribute("aria-expanded"), "true");
+  assert.equal(focused(page), copy, "the focus moves in, to the first");
+  press(copy, "ArrowDown");
+  assert.equal(focused(page), move);
+  press(move, "ArrowDown");
+  assert.equal(focused(page), copy, "round");
+  press(copy, "ArrowUp");
+  assert.equal(focused(page), move);
+  press(move, "Home");
+  assert.equal(focused(page), copy);
+  press(copy, "End");
+  assert.equal(focused(page), move);
+
+  const escape = press(move, "Escape");
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(list.hidden, true);
+  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+  assert.equal(focused(page), trigger, "and the focus goes back to the button");
+  assert.ok(dialog(page), "Escape took the menu and not the dialog");
+
+  press(trigger, "ArrowDown");
+  assert.equal(list.hidden, false);
+  assert.equal(focused(page), copy);
+  press(copy, "Tab");
+  assert.equal(list.hidden, true, "Tab leaves it and shuts it");
+
+  press(trigger, "ArrowUp");
+  assert.equal(focused(page), move, "up from the button opens it on the last");
+  page.document.dispatchEvent(new Event("click", {bubbles: true}));
+  assert.equal(list.hidden, true, "a click elsewhere shuts it");
+  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+});
+
+test("Escape on the button of an open menu shuts the menu before it shuts the dialog", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const trigger = details(page).querySelector(".browser-more");
+  press(trigger, "ArrowDown");
+  trigger.focus();
+  press(trigger, "Escape");
+  assert.ok(dialog(page), "the dialog is still there");
+  assert.equal(page.document.getElementById(trigger.getAttribute("aria-controls")).hidden, true);
+  press(trigger, "Escape");
+  assert.equal(dialog(page), null);
+});
+
+test("choosing Copy gives the focus to the button first, so the dialog it opens gives it back there", async () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const trigger = details(page).querySelector(".browser-more");
+  trigger.click();
+  const copy = page.document.querySelector('[aria-label="Copy Delta to..."]');
+  copy.click();
+  assert.equal(all(page, ".modal").length, 2, "the picker is over the browser");
+  assert.equal(page.document.getElementById(trigger.getAttribute("aria-controls")).hidden, true);
+  press(focused(page), "Escape");
+  assert.equal(all(page, ".modal").length, 1);
+  assert.equal(focused(page), trigger);
+});
+
+test("a slot that has the focus, and not the one that is playing, is what the details are about, and is not loaded", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const before = plain(page.window.SynthBank.selection());
+  focusOn(page, cell(page, "Bravo"));
+  assert.equal(label(details(page).querySelector(".browser-detail-name")), "Bravo");
+  assert.deepEqual(facts(page), {Source: "User", Bank: "My Bank", Slot: "001"});
+  assert.deepEqual(details(page).querySelectorAll(".browser-action").map(label), ["Load"]);
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-label"), "More actions for Bravo");
+  assert.ok(cell(page, "Bravo").classList.contains("inspected"));
+  assert.deepEqual(plain(page.window.SynthBank.selection()), before, "looking is not loading");
+  assert.equal(label(now(page)).startsWith("Playing 003 Delta"), true, "and the header still says what is playing");
+
+  details(page).querySelector(".browser-action").click();
+  assert.equal(plain(page.window.SynthBank.selection()).presetName, "Bravo");
+  assert.deepEqual(facts(page).Status, "Playing");
+  assert.equal(details(page).querySelectorAll(".browser-action").length, 0, "nothing is left to load");
+  assert.equal(focused(page), cell(page, "Bravo"), "and the focus is on the slot, which is still there");
+});
+
+test("asking about a slot with a right click opens its menu, and an empty slot or an archive's has none to open", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const before = plain(page.window.SynthBank.selection());
+  const asked = cell(page, "Alpha").dispatchEvent(new Event("contextmenu", {bubbles: true, cancelable: true}));
+  assert.equal(asked, false, "the browser's own menu is not wanted over it");
+  const trigger = details(page).querySelector(".browser-more");
+  assert.equal(trigger.getAttribute("aria-expanded"), "true");
+  assert.equal(focused(page), page.document.querySelector('[aria-label="Copy Alpha to..."]'));
+  assert.deepEqual(plain(page.window.SynthBank.selection()), before);
+
+  cells(page)[2].dispatchEvent(new Event("contextmenu", {bubbles: true}));
+  assert.equal(details(page).querySelectorAll(".browser-more").length, 0, "slot 002 holds nothing to take");
+  assert.equal(label(details(page).querySelector(".browser-detail-name")), "Empty slot");
+});
+
+test("a click on a slot still loads it and a double click loads it and closes the browser", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  cell(page, "Alpha").click();
+  assert.equal(plain(page.window.SynthBank.selection()).presetName, "Alpha");
+  assert.ok(dialog(page));
+  cell(page, "Bravo").dispatchEvent(new Event("dblclick", {bubbles: true}));
+  assert.equal(plain(page.window.SynthBank.selection()).presetName, "Bravo");
+  assert.equal(dialog(page), null);
+});
+
+// ---------------------------------------------------- choosing a destination
+
+test("a destination is still a slot to choose with the form beneath, said to be a destination, and adds nothing to a slot", () => {
+  const page = bank();
+  page.window.SynthBrowser.write();
+  assert.equal(label(body(page).querySelector(".browser-destination")), "Choose destination");
+  assert.equal(cells(page).length, 128);
+  assert.equal(all(page, ".browser-more, .browser-menuitem, .browser-action, .browser-details").length, 0);
+  assert.ok(body(page).querySelector(".browser-save"));
+  for (const b of cells(page)) assert.deepEqual([...b.children].map(c => c.className), ["browser-slot-num", "browser-slot-name"]);
+  assert.equal(body(page).querySelectorAll(".browser-tab").length, 0);
+  cells(page)[7].click();
+  assert.equal(label(body(page).querySelector(".browser-save-slot")), "Slot 007");
+  assert.equal(plain(page.window.SynthBank.selection()).presetName, "Delta", "choosing a place loads nothing");
 });
