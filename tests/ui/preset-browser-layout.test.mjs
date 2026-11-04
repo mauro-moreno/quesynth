@@ -137,6 +137,18 @@ async function sideways(page) {
   }, OVERFLOW);
 }
 
+// The brightness of a computed `rgb(r, g, b)`: enough to say which of two inks is the quieter.
+const luminance = color => {
+  const [r, g, b] = color.match(/[\d.]+/g).map(Number);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+// The banks, which the narrow sizes keep behind the button.
+async function openPane(page) {
+  const toggle = page.locator(".browser-filters-toggle");
+  if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+}
+
 for (const size of Object.keys(SIZES)) {
   const narrow = NARROW.includes(size);
 
@@ -219,7 +231,7 @@ for (const size of Object.keys(SIZES)) {
     } finally { await page.close(); }
   });
 
-  test(`${size}: Filters opens and shuts the banks, and a narrow window gets a sheet over the list`, {skip}, async () => {
+  test(`${size}: Browse opens and shuts the banks, and a narrow window gets a sheet over the list`, {skip}, async () => {
     const page = await start(size);
     try {
       const pane = page.locator(".browser-sources");
@@ -348,6 +360,121 @@ for (const size of Object.keys(SIZES)) {
       assert.equal(await dialog.locator(".browser-filters-toggle").textContent(), "Banks");
       assert.deepEqual(await sideways(page), {page: 0});
       await shoot(page, size, "write");
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: the pane is headed Sources, Banks and Manage banks, in that order, in quiet words that are not controls`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      await openPane(page);
+      const titles = page.locator(".browser-sources .browser-section-title");
+      assert.deepEqual(await titles.allTextContents(), ["Sources", "Banks", "Manage banks"]);
+      const pane = await box(page.locator(".browser-sources"));
+      const name = await page.locator(".browser-source.on .browser-source-name").evaluate(el => getComputedStyle(el).color);
+      let last = -1;
+      for (const title of await titles.all()) {
+        const words = await title.textContent();
+        assert.ok(await visible(title), `${words} is on view`);
+        const at = await box(title);
+        assert.ok(at.y > last, `${words} is below the one before it`);
+        last = at.y;
+        assert.ok(at.x >= pane.x && at.x + at.width <= pane.x + pane.width + 1, `${words} is inside the pane`);
+        const style = await title.evaluate(el => {
+          const s = getComputedStyle(el);
+          return {size: parseFloat(s.fontSize), caps: s.textTransform, color: s.color, weight: Number(s.fontWeight), controls: el.querySelectorAll("button, input, a").length};
+        });
+        assert.ok(style.size >= 11 && style.size <= 12, `${words} is ${style.size}px`);
+        assert.equal(style.caps, "uppercase", words);
+        assert.ok(style.weight < 600, `${words} is not set heavier than a name`);
+        assert.ok(luminance(style.color) < luminance(name), `${words} is quieter than the name of the bank in view`);
+        assert.equal(style.controls, 0, words);
+        assert.equal(await title.evaluate(el => el.tabIndex), -1, `${words} is not in the Tab order`);
+      }
+      await shoot(page, size, "pane-sections");
+      assert.deepEqual(await sideways(page), {page: 0});
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: a bank's name leads, and where it came from is quiet words level with it, under it`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      await openPane(page);
+      const rows = page.locator(".browser-source");
+      const count = await rows.count();
+      assert.ok(count >= 3, "a bank of each kind");
+      for (let i = 0; i < count; i++) {
+        const row = rows.nth(i);
+        const [name, line] = [await box(row.locator(".browser-source-name")), await box(row.locator(".browser-source-badges"))];
+        assert.ok(line.y >= name.y + name.height - 1, "what is said about it is under its name");
+        assert.ok(Math.abs(line.x - name.x) <= 2, `and level with it, not set away from it (${line.x - name.x}px)`);
+        const style = await row.evaluate(el => {
+          const of = selector => getComputedStyle(el.querySelector(selector));
+          return {
+            nameSize: parseFloat(of(".browser-source-name").fontSize), nameColor: of(".browser-source-name").color,
+            lineSize: parseFloat(of(".browser-badge").fontSize), lineColor: of(".browser-badge").color,
+            caps: of(".browser-badge").textTransform, border: of(".browser-badge").borderTopWidth,
+            spill: el.scrollWidth - el.clientWidth,
+          };
+        });
+        assert.ok(style.nameSize > style.lineSize, `the name is ${style.nameSize}px and the line ${style.lineSize}px`);
+        assert.ok(style.lineSize >= 11, "and the line is still legible");
+        assert.ok(luminance(style.lineColor) < luminance(style.nameColor), "and in a quieter ink");
+        assert.equal(style.caps, "none", "in words, not capitals that read as a label or a button");
+        assert.equal(style.border, "0px", "and not in a box");
+        assert.ok(style.spill <= 1, `the row does not run off the side (${style.spill}px)`);
+      }
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: the filters and the menu buttons in the pane are text, and still a target a finger can hit`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      await openPane(page);
+      const triggers = page.locator(".browser-sources .browser-more");
+      assert.equal(await triggers.count(), 2, "Add bank and Bank actions");
+      assert.deepEqual((await triggers.allTextContents()).map(t => t.trim()), ["Add bank", "Bank actions"]);
+      for (const trigger of await triggers.all()) {
+        const at = await box(trigger);
+        const style = await trigger.evaluate(el => { const s = getComputedStyle(el); return {border: s.borderTopWidth, background: s.backgroundColor}; });
+        assert.ok(at.height >= 34, `${await trigger.textContent()} is ${at.height}px tall`);
+        assert.equal(style.border, "0px", "no box round it");
+        assert.equal(style.background, "rgba(0, 0, 0, 0)", "and no fill");
+      }
+      for (const chip of await page.locator(".browser-sources .browser-chip").all()) {
+        const at = await box(chip);
+        const caps = await chip.evaluate(el => getComputedStyle(el).textTransform);
+        assert.ok(at.height >= 28, `${await chip.textContent()} is ${at.height}px tall`);
+        assert.equal(caps, "none", "a filter is in words, as a heading is in capitals");
+      }
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: Close bank and Move are set apart from the other items of their menus by a rule`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      const rules = list => list.locator("[role=menuitem]").evaluateAll(els => els.map(el => {
+        const at = el.getBoundingClientRect();
+        return {words: el.textContent, rule: parseFloat(getComputedStyle(el).borderTopWidth), top: at.top, bottom: at.bottom};
+      }));
+      await openPane(page);
+      await page.locator(".browser-bank-tools .browser-more").click();
+      const bank = await rules(page.locator(".browser-bank-tools [role=menu]"));
+      assert.deepEqual(bank.map(i => i.words), ["Rename...", "Duplicate", "Export bank", "Close bank"]);
+      assert.deepEqual(bank.map(i => i.rule > 0), [false, false, false, true]);
+      assert.ok(bank[3].top >= bank[2].bottom + 2, "with room above it as well as a rule");
+      await shoot(page, size, "bank-menu-tiers");
+      await page.keyboard.press("Escape");
+      if (narrow) await page.locator(".browser-filters-toggle").click();
+
+      await page.locator(".browser-tab", {hasText: "Slots"}).click();
+      if (narrow) await page.locator(".browser-details-toggle").click();
+      await page.locator(".browser-slot", {hasText: "Zither"}).focus();
+      await page.keyboard.press("ContextMenu");
+      const slot = await rules(page.locator(".browser-details [role=menu]"));
+      assert.deepEqual(slot.map(i => i.words), ["Copy", "Move"]);
+      assert.deepEqual(slot.map(i => i.rule > 0), [false, true]);
+      assert.ok(slot[1].top >= slot[0].bottom + 2);
+      assert.equal((await page.locator(".browser-details .browser-more").textContent()).trim(), "Slot actions");
     } finally { await page.close(); }
   });
 }

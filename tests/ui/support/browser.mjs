@@ -57,7 +57,7 @@ export const sourceRow = (page, name) => all(page, ".browser-source")
 export const sourceNames = page => all(page, ".browser-source").map(r => r.querySelector(".browser-source-name").textContent);
 export const badges = row => [...row.querySelectorAll(".browser-badge")].map(label);
 
-// The banks are kept behind the button that says Filters, and what is done to a
+// The banks are kept behind the button that says Browse, and what is done to a
 // bank, or to make one, behind a menu in them. A person who wants one opens the
 // pane if it is shut and the menu if it is shut, which is what these do, and
 // what they return is the item they would then press.
@@ -98,7 +98,7 @@ export function slotTool(page, kind, name) {
   return page.document.querySelector(`[aria-label="${kind} ${name} to..."]`);
 }
 // The button that opens that menu, which is where the focus goes back to.
-export const slotMenu = (page, name) => page.document.querySelector(`[aria-label="More actions for ${name}"]`);
+export const slotMenu = (page, name) => page.document.querySelector(`[aria-label="Slot actions for ${name}"]`);
 export const disabled = el => el.getAttribute("aria-disabled") === "true";
 export const dialogs = page => all(page, ".modal");
 export const front = page => dialogs(page).at(-1);

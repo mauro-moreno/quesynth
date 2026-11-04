@@ -1507,14 +1507,16 @@ body.modal-open { overflow: hidden; }
 }
 
 /* The banks, and what the presets are narrowed by: a pane beside the workspace
- * where there is room, and shut with the button that says Filters. Where there
- * is not, a sheet over it; see the narrow rules below. */
+ * where there is room, and shut with the button that says Browse. Where there
+ * is not, a sheet over it; see the narrow rules below. Three parts, each under
+ * a heading -- Sources, Banks, Manage banks -- in the order of what a visit is
+ * for; see ui/browser.js. */
 .browser-sources {
   flex: 0 0 232px;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   padding: 12px;
   overflow-y: auto;
   border-right: 1px solid var(--panel-edge);
@@ -1640,7 +1642,7 @@ body.modal-open { overflow: hidden; }
 }
 
 /* On a phone the banks are not a pane at all: they are a sheet over the
- * workspace, opened from Filters, and the details go under the workspace as a
+ * workspace, opened from Browse, and the details go under the workspace as a
  * section that opens. Three dense panes stacked in a column was what this
  * replaces. */
 @media (max-width: 620px) {
@@ -1656,23 +1658,40 @@ body.modal-open { overflow: hidden; }
   }
 }
 
-/* The heading of the banks: its name, and the menu that makes one or opens one
- * from a file. */
+/* A part of the pane, and what it is for. The heading is small quiet capitals
+ * and the controls under it are words, so that what labels something and what
+ * does something are not mistaken for each other. A part is set off from the
+ * one above it by a rule and room, not by a box. */
+.browser-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.browser-section[hidden] { display: none; }
+.browser-section:not([hidden]) + .browser-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-edge);
+}
+.browser-section-title {
+  margin: 0;
+  font: inherit;
+  font-size: var(--type-micro);
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* The heading of Manage banks, and beside it the menu that makes one or opens
+ * one from a file. */
 .browser-heading {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 2px 0 4px;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-.browser-sources .browser-heading {
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--panel-edge);
 }
 
 .browser-sources .browser-heading .browser-more,
@@ -1875,15 +1894,14 @@ body.modal-open { overflow: hidden; }
 }
 .browser-toolbar .browser-search { margin-bottom: 0; }
 /* The filters are in the pane with the banks, one above them. */
-.browser-filters { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--panel-edge); }
+.browser-filters { display: flex; flex-wrap: wrap; gap: 4px; }
 .browser-filters[hidden] { display: none; }
 
 .browser-chip {
   appearance: none;
   padding: 0 10px;
   font: inherit;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
   color: var(--ink-dim);
   background: none;
   border: 1px solid var(--panel-edge);
@@ -2142,7 +2160,7 @@ body.modal-open { overflow: hidden; }
 
 /* A bank's row says where it came from and whether it can be written to, on a
  * line of its own under the name, so a long name keeps the width it has. */
-.browser-source { flex-wrap: wrap; }
+.browser-source { flex-wrap: wrap; row-gap: 2px; font-size: var(--type-read); }
 .browser-source-badges {
   flex: 1 0 100%;
   display: flex;
@@ -2186,11 +2204,6 @@ body.modal-open { overflow: hidden; }
   gap: 6px;
   padding: 2px 0 4px;
 }
-.browser-sources .browser-bank-tools {
-  margin-top: 2px;
-  padding-top: 8px;
-  border-top: 1px solid var(--panel-edge);
-}
 .browser-bank-tools[hidden] { display: none; }
 .browser-bank-tools-name {
   flex: 1 1 0;
@@ -2203,19 +2216,16 @@ body.modal-open { overflow: hidden; }
 .browser-mini[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 
 /* A bank's row says where it came from, and whether it can be written to, in
- * plain words after its name and not as boxes of their own. */
+ * plain words under its name and level with it, and not as boxes of their
+ * own: the name is what the row is, and this is what is known about it. */
 .browser-source-badges .browser-badge {
   padding: 0;
   border: 0;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--ink-faint);
 }
 .browser-source-badges .browser-badge + .browser-badge::before { content: "\00b7"; margin: 0 6px; }
-.browser-sources .browser-source-badges {
-  padding-left: 28px;
-  font-size: 10px;
-  opacity: 0.78;
-}
 
 /* A menu button and what it opens, in the flow under it: this is in a region
  * that scrolls and in a dialog that is as narrow as a phone, and a list laid
@@ -2263,6 +2273,12 @@ body.modal-open { overflow: hidden; }
 }
 .browser-menuitem:hover, .browser-menuitem:focus-visible { background: #1b1b22; color: var(--ink); }
 .browser-menuitem[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+/* What replaces or removes something is last, and set apart by a rule. */
+.browser-menuitem.destructive {
+  margin-top: 4px;
+  border-top: 1px solid var(--track);
+  border-radius: 0 0 4px 4px;
+}
 
 /* The slot a copy or a move is of, in the dialog that chooses where it goes. */
 .browser-slot.source { outline: 1px dashed var(--metal-dark); }

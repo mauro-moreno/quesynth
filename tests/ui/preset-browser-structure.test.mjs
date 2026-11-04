@@ -246,8 +246,8 @@ test("Copy and Move are in the details, in a menu that is shut until it is asked
   open(page, {view: "slots"});
   const trigger = details(page).querySelector(".browser-more");
   assert.ok(trigger, "the slot that is playing is a preset in a bank of the page's own");
-  assert.equal(label(trigger), "More");
-  assert.equal(trigger.getAttribute("aria-label"), "More actions for Delta");
+  assert.equal(label(trigger), "Slot actions");
+  assert.equal(trigger.getAttribute("aria-label"), "Slot actions for Delta");
   assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
   assert.equal(trigger.getAttribute("aria-expanded"), "false");
   const list = page.document.getElementById(trigger.getAttribute("aria-controls"));
@@ -336,7 +336,7 @@ test("a slot that has the focus, and not the one that is playing, is what the de
   assert.equal(label(details(page).querySelector(".browser-detail-name")), "Bravo");
   assert.deepEqual(facts(page), {Source: "User", Bank: "My Bank", Slot: "001"});
   assert.deepEqual(details(page).querySelectorAll(".browser-action").map(label), ["Load"]);
-  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-label"), "More actions for Bravo");
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-label"), "Slot actions for Bravo");
   assert.ok(cell(page, "Bravo").classList.contains("inspected"));
   assert.deepEqual(plain(page.window.SynthBank.selection()), before, "looking is not loading");
   assert.equal(label(now(page)).startsWith("Playing 003 Delta"), true, "and the header still says what is playing");
@@ -378,7 +378,7 @@ test("the menu key and Shift+F10 on a slot ask about it the way a right click do
   assert.equal(focused(page), trigger());
 
   press(cell(page, "Alpha"), "F10", {shiftKey: true});
-  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-label"), "More actions for Alpha");
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-label"), "Slot actions for Alpha");
   assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-expanded"), "true");
   press(cell(page, "Delta"), "F10");
   assert.equal(label(details(page).querySelector(".browser-detail-name")), "Alpha", "F10 alone is not the menu key");
@@ -433,12 +433,13 @@ const narrowWindow = window => {
 };
 const phone = () => browser({before: narrowWindow});
 const menuOf = (owner) => ({trigger: owner.querySelector(".browser-more"), list: owner.querySelector('[role="menu"]')});
+const named = el => el.getAttribute("aria-label") || label(el);
 const itemsOf = list => [...list.children].map(label);
 
-test("the banks and the filters are behind a button that says Filters, and says whether it is open and what it opens", () => {
+test("the banks and the filters are behind a button that says Browse, and says whether it is open and what it opens", () => {
   const page = browser();
   open(page);
-  assert.equal(label(toggle(page)), "Filters");
+  assert.equal(label(toggle(page)), "Browse");
   assert.equal(toggle(page).getAttribute("aria-controls"), pane(page).id);
   assert.ok(pane(page).id, "the pane has an id for it to name");
   assert.equal(toggle(page).getAttribute("aria-expanded"), "true", "with room beside the workspace, it is open to begin with");
@@ -458,14 +459,14 @@ test("the pane is where the filters are, and it says on its button when the list
   open(page);
   assert.ok(pane(page).contains(chip(page, "Favorites")));
   assert.ok(pane(page).contains(chip(page, "Factory")));
-  assert.equal(label(toggle(page)), "Filters");
+  assert.equal(label(toggle(page)), "Browse");
   chip(page, "Factory").click();
   chip(page, "Recent").click();
-  assert.equal(label(toggle(page)), "Filters · 2", "narrowed by two, and it is the button that is in view");
+  assert.equal(label(toggle(page)), "Browse · 2", "narrowed by two, and it is the button that is in view");
   chip(page, "Recent").click();
-  assert.equal(label(toggle(page)), "Filters · 1");
+  assert.equal(label(toggle(page)), "Browse · 1");
   chip(page, "Factory").click();
-  assert.equal(label(toggle(page)), "Filters");
+  assert.equal(label(toggle(page)), "Browse");
 });
 
 test("a filter that is pressed is still pressed when the other tab has been and gone", () => {
@@ -477,15 +478,15 @@ test("a filter that is pressed is still pressed when the other tab has been and 
   tab(page, "Presets").click();
   assert.equal(pane(page).querySelector('[aria-label="Filters"]').hidden, false);
   assert.equal(chip(page, "Favorites").getAttribute("aria-pressed"), "true", "the list is still narrowed, and the button says so");
-  assert.equal(label(toggle(page)), "Filters · 1");
+  assert.equal(label(toggle(page)), "Browse · 1");
 });
 
-test("the notes that send a person to the banks say where they are now: under Filters", () => {
+test("the notes that send a person to the banks say where they are now: under Browse", () => {
   const page = browser();
   page.window.SynthBank.addLazy("Unopened Bank", () => Promise.resolve([patch("Hidden", 1)]));
   open(page);
   const hints = all(page, ".browser-note").filter(n => n.getAttribute("data-kind") === "hint").map(label).join(" ");
-  assert.match(hints, /Open one under Filters to include it/);
+  assert.match(hints, /Open one under Browse to include it/);
   assert.doesNotMatch(hints, /in Banks/);
 });
 
@@ -557,8 +558,8 @@ test("New bank... and the imports are in a menu of their own, with the semantics
   const page = bank();
   open(page);
   const {trigger, list} = menuOf(pane(page).querySelector(".browser-heading"));
-  assert.equal(label(trigger), "Add");
-  assert.equal(trigger.getAttribute("aria-label"), "Add a bank");
+  assert.equal(label(trigger), "Add bank");
+  assert.equal(named(trigger), "Add bank", "its name is the words on it");
   assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
   assert.equal(trigger.getAttribute("aria-expanded"), "false");
   assert.equal(trigger.getAttribute("aria-controls"), list.id);
@@ -584,7 +585,7 @@ test("what is done to the bank in view is in its menu, named for it, and says wh
   const tools = pane(page).querySelector(".browser-bank-tools");
   const {trigger, list} = menuOf(tools);
   assert.equal(label(tools.querySelector(".browser-bank-tools-name")), "My Bank");
-  assert.equal(trigger.getAttribute("aria-label"), "More actions for the bank My Bank");
+  assert.equal(trigger.getAttribute("aria-label"), "Bank actions for My Bank");
   assert.equal(list.getAttribute("aria-label"), "Bank actions");
   assert.equal(list.hidden, true);
   assert.deepEqual(itemsOf(list), ["Rename...", "Duplicate", "Export bank", "Close bank"]);
@@ -622,6 +623,157 @@ test("on a phone a destination's banks are a sheet too, and a bank chosen in it 
   assert.equal(label(body(page).querySelector(".browser-save-slot")), "Slot 000");
 });
 
+// ------------------------------------------- what each part of the pane is for
+
+const titles = page => [...pane(page).querySelectorAll(".browser-section-title")];
+const sectionOf = el => {
+  for (let node = el; node; node = node.parentNode) if (node.classList && node.classList.contains("browser-section")) return node;
+  return null;
+};
+const onView = (page, scope) => [...scope.querySelectorAll("button")].filter(b => {
+  for (let el = b; el && el !== pane(page); el = el.parentNode) if (el.hidden) return false;
+  return true;
+});
+
+test("the pane says what each part of it is for -- Sources, Banks, Manage banks, in that order -- in headings that are words and nothing to press", () => {
+  const page = bank();
+  open(page);
+  assert.deepEqual(titles(page).map(label), ["Sources", "Banks", "Manage banks"]);
+  for (const t of titles(page)) {
+    assert.match(t.tagName, /^H[1-6]$/, "a heading, so that it is found as one");
+    assert.equal(t.querySelectorAll("button, input, a, [tabindex]").length, 0);
+    assert.equal(t.getAttribute("tabindex"), null);
+  }
+  const [sources, banks, manage] = titles(page).map(sectionOf);
+  assert.deepEqual([...pane(page).children].map(c => c === sources ? "sources" : c === banks ? "banks" : c === manage ? "manage" : c.className),
+    ["sources", "banks", "manage"], "the pane is those three and nothing beside them");
+
+  assert.equal(sources.querySelectorAll(".browser-chip").length, 7, "Sources are the filters");
+  assert.ok(sources.contains(chip(page, "Favorites")));
+  assert.ok([...sources.querySelectorAll("button")].every(b => b.classList.contains("browser-chip")), "and nothing else is pressed there");
+
+  assert.ok(banks.querySelector(".browser-search"), "Banks are the search of them");
+  assert.ok(all(page, ".browser-source").length > 1 && all(page, ".browser-source").every(r => banks.contains(r)), "and the list");
+  assert.ok([...banks.querySelectorAll("button")].every(b => b.classList.contains("browser-source")), "with nothing to do to one among them");
+
+  assert.ok(manage.contains(pane(page).querySelector(".browser-heading .browser-more")), "Manage banks is where a bank is made...");
+  assert.ok(manage.contains(pane(page).querySelector(".browser-bank-tools")), "...and what is done to the one in view");
+  assert.ok(manage.contains(pane(page).querySelector(".browser-archive")), "...and the archive");
+});
+
+test("Sources go with their filters: in the preset view, and not in the slot view, which has none", () => {
+  const page = bank();
+  open(page);
+  const sources = sectionOf(titles(page)[0]);
+  assert.equal(sources.hidden, false);
+  tab(page, "Slots").click();
+  assert.equal(sources.hidden, true, "no heading is left standing over nothing");
+  assert.deepEqual(titles(page).filter(t => !sectionOf(t).hidden).map(label), ["Banks", "Manage banks"]);
+  tab(page, "Presets").click();
+  assert.equal(sources.hidden, false);
+  assert.equal(chip(page, "Factory").getAttribute("aria-pressed"), "false", "and the filters are as they were");
+});
+
+test("a destination has Banks and Manage banks and no Sources: it is choosing a place, not narrowing a list", () => {
+  const page = bank();
+  page.window.SynthBrowser.write();
+  assert.deepEqual(titles(page).map(label), ["Banks", "Manage banks"]);
+  const manage = sectionOf(titles(page)[1]);
+  assert.deepEqual(itemsOf(menuOf(manage.querySelector(".browser-heading")).list), ["New bank..."]);
+  assert.equal(manage.querySelector(".browser-bank-tools").hidden, true);
+  assert.equal(manage.querySelector(".browser-archive").hidden, true, "and an archive is not somewhere to put a sound");
+});
+
+test("the archive's path, Open and Close are still a labelled form, under Manage banks, and there only when there is an archive", () => {
+  const without = browser();
+  open(without);
+  assert.equal(body(without).querySelector(".browser-archive").hidden, true);
+
+  const page = bootPanel({bank: FACTORY});
+  page.send({type: "archive", rev: 1, open: true, path: "/p.zip", banks: ["a.zip", "b.zip"], bank: 1, patches: ["Pad", "Bass"]});
+  open(page);
+  const archive = body(page).querySelector(".browser-archive");
+  assert.equal(archive.hidden, false);
+  const manage = sectionOf(titles(page).find(t => label(t) === "Manage banks"));
+  assert.ok(manage && manage.contains(archive), "it is in Manage banks");
+  assert.equal(label(archive.querySelector("label")), "Archive");
+  assert.ok(archive.querySelector('input[aria-label="Archive path"]'));
+  assert.deepEqual([...archive.querySelectorAll("button")].map(b => b.getAttribute("aria-label")), ["Open archive", "Close archive"]);
+  assert.equal(archive.querySelectorAll('[role="menu"], [role="menuitem"]').length, 0, "a form, and not a menu of actions");
+});
+
+test("a menu button says what it is a menu of, and its name has those words in it and names the thing it is for", () => {
+  const page = bank();
+  open(page);
+  const add = menuOf(pane(page).querySelector(".browser-heading"));
+  const tools = menuOf(pane(page).querySelector(".browser-bank-tools"));
+  assert.equal(label(add.trigger), "Add bank");
+  assert.equal(named(add.trigger), "Add bank");
+  assert.equal(label(tools.trigger), "Bank actions");
+  assert.equal(named(tools.trigger), "Bank actions for My Bank");
+  page.window.SynthBank.select(0, true);
+  page.window.SynthBrowser.refresh();
+  assert.equal(named(tools.trigger), "Bank actions for Quesynth Factory", "it follows the bank in view");
+  page.window.SynthBank.select(plain(page.window.SynthBank.list()).findIndex(b => b.label === "My Bank"), true);
+  page.window.SynthBrowser.refresh();
+
+  tab(page, "Slots").click();
+  const slot = details(page).querySelector(".browser-more");
+  assert.equal(label(slot), "Slot actions");
+  assert.equal(named(slot), "Slot actions for Delta");
+
+  for (const trigger of [add.trigger, tools.trigger, slot]) {
+    assert.ok(named(trigger).startsWith(label(trigger)), `"${named(trigger)}" starts with the words on the button, "${label(trigger)}"`);
+  }
+  assert.deepEqual([add, tools].map(m => m.list.getAttribute("aria-label")), ["Add a bank", "Bank actions"], "the lists are named as they were");
+  assert.equal(page.document.getElementById(slot.getAttribute("aria-controls")).getAttribute("aria-label"), "Slot actions");
+});
+
+test("no button in the dialog is called just More, Add or Filters: each says what it is for", () => {
+  const page = bank();
+  open(page);
+  tab(page, "Slots").click();
+  const words = all(page, ".modal button").map(label);
+  for (const generic of ["More", "Add", "Filters"]) assert.ok(!words.includes(generic), `a button says ${generic}`);
+  const destination = bank();
+  destination.window.SynthBrowser.write();
+  const there = all(destination, ".modal button").map(label);
+  for (const generic of ["More", "Add", "Filters"]) assert.ok(!there.includes(generic), `a button in a destination says ${generic}`);
+});
+
+test("what is on view in the pane is the filters, the banks and two menu buttons: every other action is behind one of them", () => {
+  const page = bank();
+  open(page);
+  const rest = onView(page, pane(page)).filter(b => !b.classList.contains("browser-chip") && !b.classList.contains("browser-source"));
+  assert.deepEqual(rest.map(named), ["Add bank", "Bank actions for My Bank"]);
+  assert.ok(rest.every(b => b.getAttribute("aria-haspopup") === "menu"));
+  assert.equal(onView(page, pane(page)).filter(b => b.getAttribute("role") === "menuitem").length, 0);
+});
+
+test("what replaces or removes something is the last item of its menu and set apart from the others: Close bank, and Move", () => {
+  const page = bank();
+  open(page);
+  const tools = menuOf(pane(page).querySelector(".browser-bank-tools"));
+  const add = menuOf(pane(page).querySelector(".browser-heading"));
+  assert.deepEqual([...tools.list.querySelectorAll(".destructive")].map(label), ["Close bank"]);
+  assert.equal(label([...tools.list.children].at(-1)), "Close bank");
+  assert.equal(add.list.querySelectorAll(".destructive").length, 0, "making a bank takes nothing away");
+
+  tab(page, "Slots").click();
+  const slot = menuOf(details(page));
+  assert.deepEqual([...slot.list.querySelectorAll(".destructive")].map(label), ["Move"]);
+  assert.equal(label([...slot.list.children].at(-1)), "Move");
+
+  for (const list of [tools.list, slot.list]) {
+    assert.ok([...list.children].every(i => i.getAttribute("role") === "menuitem"), "every child is an item the arrows land on");
+  }
+  tools.trigger.click();
+  press(focused(page), "End");
+  assert.equal(label(focused(page)), "Close bank", "the arrows still reach it");
+  press(focused(page), "ArrowDown");
+  assert.equal(label(focused(page)), "Rename...", "and go round");
+});
+
 // -------------------------------------------------- press and hold, on a touch screen
 
 // A clock the test owns: what the page asks to run later is kept with how long
@@ -657,7 +809,7 @@ test("a touch held on a slot asks about it as a right click does, and the releas
   page.window.elapse(HOLD);
   const trigger = details(page).querySelector(".browser-more");
   assert.equal(label(details(page).querySelector(".browser-detail-name")), "Bravo");
-  assert.equal(trigger.getAttribute("aria-label"), "More actions for Bravo");
+  assert.equal(trigger.getAttribute("aria-label"), "Slot actions for Bravo");
   assert.equal(trigger.getAttribute("aria-expanded"), "true", "its menu is open");
   assert.equal(focused(page), page.document.querySelector('[aria-label="Copy Bravo to..."]'));
   assert.deepEqual(plain(page.window.SynthBank.selection()), before, "and it was not loaded");
@@ -712,7 +864,7 @@ test("a hold is not one if the finger moves more than a few pixels, or the brows
   bravo().dispatchEvent(pointer("pointermove", {clientX: 100, clientY: 112}));
   assert.equal(held(page).length, 0, "twelve pixels is a scroll");
   page.window.elapse(1000);
-  assert.equal(trigger().getAttribute("aria-label"), "More actions for Alpha");
+  assert.equal(trigger().getAttribute("aria-label"), "Slot actions for Alpha");
 
   for (const type of ["pointercancel", "pointerleave"]) {
     bravo().dispatchEvent(pointer("pointerdown"));
@@ -836,7 +988,7 @@ test("a window that was narrow to begin with, and the dialog of a destination, f
   assert.equal(pane(page).hidden, false);
 });
 
-test("focus that was in the pane when the window narrows goes to Filters", () => {
+test("focus that was in the pane when the window narrows goes to its button", () => {
   const page = sizing();
   open(page);
   chip(page, "Favorites").focus();

@@ -81,6 +81,12 @@
     return b;
   }
 
+  // What a part of a pane is for, said above it: words, and not something to
+  // press. A heading and not a label, so that it is found as one.
+  function sectionTitle(words) {
+    return element("h3", "browser-section-title", words);
+  }
+
   // One id for each thing a button controls, so that two browsers open at once
   // -- a destination chosen over the browser -- never share one.
   var serial = 0;
@@ -108,6 +114,11 @@
   // `trigger` and `list` where they belong and adds the items; an item that
   // does not apply is marked `aria-disabled` by the caller and still runs, so
   // that whoever decides what is allowed is the one that says no.
+  //
+  // An item that replaces or removes something is added with
+  // `{ destructive: true }` and put last: it is set apart by a rule above it
+  // and not by a separator element, so that every child of the list is an item
+  // and the arrow keys land on all of them.
   function menuButton(config) {
     var list = element("div", config.listClass);
     list.id = uid("browser-menu");
@@ -155,8 +166,8 @@
       list: list,
       open: setOpen,
       close: function () { setOpen(false); },
-      add: function (label, onSelect) {
-        var item = button("browser-menuitem", label);
+      add: function (label, onSelect, options) {
+        var item = button("browser-menuitem" + (options && options.destructive ? " destructive" : ""), label);
         item.setAttribute("role", "menuitem");
         var at = items.length;
         items.push(item);
@@ -406,7 +417,7 @@
     // is in it is not in the Tab order or in what a screen reader reads.
     var width = window.matchMedia ? window.matchMedia("(max-width: 620px)") : null;
     function narrow() { return !!(width && width.matches); }
-    var drawerToggle = button("browser-filters-toggle", picking ? "Banks" : "Filters");
+    var drawerToggle = button("browser-filters-toggle", picking ? "Banks" : "Browse");
     drawerToggle.setAttribute("aria-controls", left.id);
     function setDrawerOpen(open, focusIn) {
       left.hidden = !open;
@@ -666,7 +677,7 @@
     tools.setAttribute("aria-label", "Bank actions");
     var toolsName = element("span", "browser-bank-tools-name");
     var toolsMenu = menuButton({
-      label: "More", listLabel: "Bank actions", className: "browser-more", listClass: "browser-menu-list",
+      label: "Bank actions", listLabel: "Bank actions", className: "browser-more", listClass: "browser-menu-list",
     });
     var toolsWrap = element("div", "browser-menu");
     toolsWrap.appendChild(toolsMenu.trigger);
@@ -739,14 +750,14 @@
     var toolRename = toolsMenu.add("Rename...", renameBank);
     var toolDuplicate = toolsMenu.add("Duplicate", duplicateBank);
     var toolExport = toolsMenu.add("Export bank", exportBank);
-    var toolClose = toolsMenu.add("Close bank", closeBank);
+    var toolClose = toolsMenu.add("Close bank", closeBank, { destructive: true });
 
     function paintTools() {
       var row = viewRow();
       tools.hidden = picking || !row || row.kind === "archive";
       if (tools.hidden) { toolsMenu.close(); return; }
       toolsName.textContent = row.label;
-      toolsMenu.trigger.setAttribute("aria-label", "More actions for the bank " + row.label);
+      toolsMenu.trigger.setAttribute("aria-label", "Bank actions for " + row.label);
       applies(toolRename, row.origin !== "factory", "The factory bank belongs to the instrument and cannot be renamed.");
       applies(toolDuplicate, row.used !== null, "Open this bank before copying it.");
       applies(toolExport, row.used !== null, "Open this bank before exporting it.");
@@ -759,7 +770,7 @@
     // played lately. Built once; `paintFilters` says which are pressed, and
     // how many, on the button that opens this, so that a list that has been
     // narrowed says so while the filters are out of sight.
-    var filters = null;
+    var filters = null, sources = null;
     var chips = [];
     function buildFilters() {
       filters = element("div", "browser-filters");
@@ -782,32 +793,70 @@
       });
       chip("Favorites", function () { return favoritesOn; }, function () { favoritesOn = !favoritesOn; });
       chip("Recent", function () { return recentOn; }, function () { recentOn = !recentOn; });
-      left.appendChild(filters);
+      sources = element("div", "browser-section browser-section-sources");
+      sources.appendChild(sectionTitle("Sources"));
+      sources.appendChild(filters);
+      left.appendChild(sources);
     }
 
     function paintFilters() {
       if (!filters) return;
       filters.hidden = view !== "presets";
+      sources.hidden = filters.hidden;
       var on = 0;
       chips.forEach(function (c) {
         var is = c.isOn();
         if (is) on++;
         c.el.setAttribute("aria-pressed", is ? "true" : "false");
       });
-      drawerToggle.textContent = "Filters" + (on ? " \u00b7 " + on : "");
+      drawerToggle.textContent = "Browse" + (on ? " \u00b7 " + on : "");
     }
 
     var addMenu = null;
     function buildHeader() {
       if (!picking) buildFilters();
 
-      var head = element("div", "browser-heading");
-      head.appendChild(element("span", null, "Banks"));
+      // Bank names, not patch names.
+      //
+      // Searching the patches would mean opening every bank to read them, and
+      // for a zip of a hundred and seventy-five that is exactly the eleven
+      // megabytes of work the listing avoids. What can be searched is what is
+      // already known, which is the names. The preset view's own box searches
+      // the patch names of the banks that are open, and says what it left out.
+      var find = element("input", "browser-search");
+      find.type = "search";
+      find.placeholder = "Search banks";
+      find.setAttribute("aria-label", "Search banks by name");
+      find.addEventListener("input", function () {
+        query = find.value.trim().toLowerCase();
+        paintSources();
+      });
+      // A search box inside a dialog swallows Escape in some browsers to clear
+      // itself; let it through so the dialog still closes on the first press.
+      find.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && !find.value) return;
+        if (e.key === "Escape") {
+          find.value = "";
+          query = "";
+          paintSources();
+          e.stopPropagation();
+        }
+      });
+
+      // The pane is in the order of what a visit is for: narrow the presets,
+      // choose a bank, and last, because it is least often, make one or do
+      // something to one. Each part says what it is in a heading.
+      var banks = element("div", "browser-section browser-section-banks");
+      banks.appendChild(sectionTitle("Banks"));
+      banks.appendChild(find);
+      banks.appendChild(rows);
+      banks.appendChild(empty);
+      left.appendChild(banks);
 
       // New and the imports are menu items: how a bank comes to be is not
       // what most visits are for.
       addMenu = menuButton({
-        label: "Add", name: "Add a bank", listLabel: "Add a bank", className: "browser-more", listClass: "browser-menu-list",
+        label: "Add bank", listLabel: "Add a bank", className: "browser-more", listClass: "browser-menu-list",
       });
       var addWrap = element("div", "browser-menu");
       addWrap.appendChild(addMenu.trigger);
@@ -840,41 +889,16 @@
         var folder = addMenu.add("Import folder...", function () { pickWith("pickFolder"); });
         folder.title = "Open a folder of .sy1 patches";
       }
-      head.appendChild(addWrap);
-      left.appendChild(head);
-      left.appendChild(formHost);
-      left.appendChild(archiveArea);
 
-      // Bank names, not patch names.
-      //
-      // Searching the patches would mean opening every bank to read them, and
-      // for a zip of a hundred and seventy-five that is exactly the eleven
-      // megabytes of work the listing avoids. What can be searched is what is
-      // already known, which is the names. The preset view's own box searches
-      // the patch names of the banks that are open, and says what it left out.
-      var find = element("input", "browser-search");
-      find.type = "search";
-      find.placeholder = "Search banks";
-      find.setAttribute("aria-label", "Search banks by name");
-      find.addEventListener("input", function () {
-        query = find.value.trim().toLowerCase();
-        paintSources();
-      });
-      // A search box inside a dialog swallows Escape in some browsers to clear
-      // itself; let it through so the dialog still closes on the first press.
-      find.addEventListener("keydown", function (e) {
-        if (e.key === "Escape" && !find.value) return;
-        if (e.key === "Escape") {
-          find.value = "";
-          query = "";
-          paintSources();
-          e.stopPropagation();
-        }
-      });
-      left.appendChild(find);
-      left.appendChild(tools);
-      left.appendChild(rows);
-      left.appendChild(empty);
+      var head = element("div", "browser-heading");
+      head.appendChild(sectionTitle("Manage banks"));
+      head.appendChild(addWrap);
+      var manage = element("div", "browser-section browser-section-manage");
+      manage.appendChild(head);
+      manage.appendChild(formHost);
+      manage.appendChild(tools);
+      manage.appendChild(archiveArea);
+      left.appendChild(manage);
     }
 
     function paintSources() {
@@ -1454,15 +1478,15 @@
         lines.push({
           text: unopened.length + (unopened.length === 1 ? " bank is" : " banks are") +
             " listed but not open, so " + (unopened.length === 1 ? "its presets are" : "their presets are") +
-            " not searched. Open one under Filters to include it.",
+            " not searched. Open one under Browse to include it.",
           kind: "hint",
         });
       }
       if (a && (a.open ? unopenedArchive.length > 0 : !!a.path)) {
         lines.push({
           text: a.open
-            ? "Archive banks are searched once they are open. Open one under Filters to include its presets."
-            : "The archive is not open, so Archives has no presets to search. Open it under Filters.",
+            ? "Archive banks are searched once they are open. Open one under Browse to include its presets."
+            : "The archive is not open, so Archives has no presets to search. Open it under Browse.",
           kind: "hint",
         });
       }
@@ -1681,7 +1705,7 @@
       focusSlot(at);
     });
     var more = menuButton({
-      label: "More", listLabel: "Slot actions", className: "browser-more", listClass: "browser-menu-list",
+      label: "Slot actions", listLabel: "Slot actions", className: "browser-more", listClass: "browser-menu-list",
     });
     var slotMenu = element("div", "browser-menu");
     slotMenu.appendChild(more.trigger);
@@ -1693,7 +1717,7 @@
       if (slot) openTransfer(kind, { bank: v.bankLabel, slot: at }, slot.name);
     }
     var copyItem = more.add("Copy", function () { startTransfer("copy"); });
-    var moveItem = more.add("Move", function () { startTransfer("move"); });
+    var moveItem = more.add("Move", function () { startTransfer("move"); }, { destructive: true });
     copyItem.setAttribute("data-tool", "copy");
     moveItem.setAttribute("data-tool", "move");
 
@@ -1715,7 +1739,7 @@
         actions.push(slotLoad);
       }
       if (v.movable && slot) {
-        more.trigger.setAttribute("aria-label", "More actions for " + slot.name);
+        more.trigger.setAttribute("aria-label", "Slot actions for " + slot.name);
         more.trigger.setAttribute("data-slot", String(at));
         [[copyItem, "Copy"], [moveItem, "Move"]].forEach(function (pair) {
           pair[0].setAttribute("aria-label", pair[1] + " " + slot.name + " to...");
