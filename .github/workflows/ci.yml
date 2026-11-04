@@ -340,6 +340,15 @@ jobs:
       - name: Synth1 patch loads through the WebKit file chooser
         run: node --test tests/ui/file-load-webkit.test.mjs
 
+      # The browser's layout, measured in the same WebKit: the header, how much
+      # of the dialog the list has, the banks as a pane or a shut sheet, nothing
+      # running off the side from 1180 to 320 wide. The stand-in DOM never lays
+      # anything out, so none of this is reached by the preset tests above. Here
+      # because this job already has Playwright and WebKit; the other runners
+      # would fetch a browser for one file. It writes build/ui-layout/.
+      - name: The patch browser lays out at plugin and phone sizes (WebKit)
+        run: node --test tests/ui/preset-browser-layout.test.mjs
+
       # Uploaded even when the step above fails: the screenshot is taken before
       # the assertions, and a picture of a broken panel is the fastest way to
       # see what broke.
@@ -349,6 +358,14 @@ jobs:
         with:
           name: macos-ui-panel-screenshot-${{ matrix.os }}
           path: build/ui-smoke/panel.png
+          if-no-files-found: warn
+
+      - name: Keep the patch browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ui-layout-screenshots-${{ matrix.os }}
+          path: build/ui-layout/
           if-no-files-found: warn
 
       # The point of this runner. The Audio Unit is macOS-only -- it cannot be

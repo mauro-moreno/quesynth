@@ -1807,8 +1807,12 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .browser-filters-toggle:hover, .browser-filters-toggle[aria-expanded="true"] { color: var(--ink); border-color: var(--metal-dark); }
-.browser-filters-toggle::after { content: " \25BE"; }
-.browser-filters-toggle[aria-expanded="true"]::after { content: " \25B4"; }
+/* The arrow on a button that opens something is decoration. The second
+ * declaration gives it no text for a screen reader, where that is understood,
+ * and the first is what everywhere else draws; here and in the rules for the
+ * other buttons that open something. */
+.browser-filters-toggle::after { content: " \25BE"; content: " \25BE" / ""; }
+.browser-filters-toggle[aria-expanded="true"]::after { content: " \25B4"; content: " \25B4" / ""; }
 .browser-tab {
   appearance: none;
   padding: 0 14px;
@@ -1915,8 +1919,8 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .browser-details-toggle:hover { color: var(--ink); }
-.browser-details-toggle::after { content: " \25BE"; }
-.browser-details-toggle[aria-expanded="true"]::after { content: " \25B4"; }
+.browser-details-toggle::after { content: " \25BE"; content: " \25BE" / ""; }
+.browser-details-toggle[aria-expanded="true"]::after { content: " \25B4"; content: " \25B4" / ""; }
 .browser-details-body { padding: 0 16px 16px; }
 .browser-detail-name {
   margin: 0 0 10px;
@@ -1965,7 +1969,7 @@ body.modal-open { overflow: hidden; }
     flex: 0 0 auto;
     min-width: 0;
     max-width: none;
-    max-height: 45%;
+    max-height: 55%;
     border-left: 0;
     border-top: 1px solid var(--panel-edge);
   }
@@ -2198,7 +2202,7 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .browser-more:hover, .browser-more[aria-expanded="true"] { color: var(--ink); border-color: var(--metal-dark); }
-.browser-more::after { content: " \25BE"; }
+.browser-more::after { content: " \25BE"; content: " \25BE" / ""; }
 .browser-menu-list {
   align-self: stretch;
   display: flex;
@@ -2238,6 +2242,18 @@ body.modal-open { overflow: hidden; }
   border-top: 1px solid var(--panel-edge);
   background: #121216;
   overflow-wrap: anywhere;
+}
+
+/* A phone has the height the dialog needs and not an inch to spare, so the
+ * dialog takes all of it and the chrome around the workspace is tightened:
+ * what the person came for is the list, and it gets what is left. */
+@media (max-width: 620px) {
+  .modal.modal-browser { height: 100%; }
+  .browser-current { padding: 8px 12px 6px; }
+  .browser-bar { padding: 6px 8px 0; }
+  .browser-toolbar { padding: 8px 12px 6px; }
+  .browser-details-toggle { padding: 8px 12px; }
+  .browser-details-body { padding: 0 12px 12px; }
 }
 
 /* --------------------------------------------------------------- configure */

@@ -126,7 +126,7 @@ test("every option in the list is still a row of the listbox, whatever is beside
 const patch = (n, seed) => ({n, v: sound(seed)});
 
 test("a row is a number, a name and one quiet line of where it is, and no badge", () => {
-  const page = browser();
+  const page = bootPanel({bank: FACTORY, host: null}); // nothing keeps the factory bank: its rows are read-only
   page.window.SynthBank.newBank("My Bank");
   page.window.SynthBank.writePreset({bank: "My Bank", slot: 3, name: "Glass Pad"});
   page.window.SynthBank.importBank("Alfmeister Bank", [patch("Zither", 5), null, patch("Harp", 6)]);
@@ -362,6 +362,38 @@ test("asking about a slot with a right click opens its menu, and an empty slot o
   cells(page)[2].dispatchEvent(new Event("contextmenu", {bubbles: true}));
   assert.equal(details(page).querySelectorAll(".browser-more").length, 0, "slot 002 holds nothing to take");
   assert.equal(label(details(page).querySelector(".browser-detail-name")), "Empty slot");
+});
+
+test("the menu key and Shift+F10 on a slot ask about it the way a right click does, and do not load it", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  const before = plain(page.window.SynthBank.selection());
+  const trigger = () => details(page).querySelector(".browser-more");
+  focusOn(page, cell(page, "Bravo"));
+  const menuKey = press(cell(page, "Bravo"), "ContextMenu");
+  assert.equal(menuKey.defaultPrevented, true, "so the browser does not open its own");
+  assert.equal(trigger().getAttribute("aria-expanded"), "true");
+  assert.equal(focused(page), page.document.querySelector('[aria-label="Copy Bravo to..."]'));
+  press(focused(page), "Escape");
+  assert.equal(focused(page), trigger());
+
+  press(cell(page, "Alpha"), "F10", {shiftKey: true});
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-label"), "More actions for Alpha");
+  assert.equal(details(page).querySelector(".browser-more").getAttribute("aria-expanded"), "true");
+  press(cell(page, "Delta"), "F10");
+  assert.equal(label(details(page).querySelector(".browser-detail-name")), "Alpha", "F10 alone is not the menu key");
+  assert.deepEqual(plain(page.window.SynthBank.selection()), before);
+});
+
+test("with an archive open, the slot view still says what is playing, beside the bank it is browsing, and so does the header", () => {
+  const page = bootPanel({bank: FACTORY});
+  page.send({type: "archive", rev: 1, open: true, path: "/p.zip", banks: ["a.zip"], bank: 0, patches: ["Pad", "Bass"]});
+  page.send({type: "patch", name: "Strings", index: 1, bank: "Quesynth Factory", source: "bank", v: 1, origin: "factory"});
+  open(page, {view: "slots"});
+  all(page, ".browser-source").find(r => /a\.zip/.test(r.textContent)).click();
+  assert.equal(label(body(page).querySelector(".browser-playing")), "Playing: Strings \u00b7 Quesynth Factory \u00b7 slot 1");
+  assert.match(label(body(page).querySelector(".browser-bank-name")), /^Browsing: a\.zip/);
+  assert.match(label(now(page)), /^Playing 001 Strings \u00b7 Factory \/ Quesynth Factory/);
 });
 
 test("a click on a slot still loads it and a double click loads it and closes the browser", () => {

@@ -540,6 +540,62 @@ as it was before there was a preset view (`.browser-source`, `.browser-slot`,
 `.browser-slot.on`, `.browser-archive-path` and the rest are unchanged). The two
 are tabs of one dialog, `role="tablist"`, and the arrows move between them.
 
+#### How the browser is laid out
+
+The same shell serves both tabs, and what it is made of is what a person asks of
+it, in the order they ask:
+
+1. **The sound that is playing**, above the tabs (`.browser-current`, with the
+   `.browser-now` status line in it): its number and name, then where it is
+   from, then its state in plain words -- `Loading…`, `Unavailable: <why>`,
+   `Unsaved changes`, `Read-only`. It is there in the preset view and the slot
+   view alike, so the answer to "what am I on?" never takes reading a list of
+   banks. `data-status` on it is `SynthBank.status()`. A destination dialog has
+   no such header: it is choosing a place, not looking at a sound.
+2. **The tabs**, Presets and Slots, and at the far end one button: **Filters**.
+   It says whether it is open (`aria-expanded`) and what it opens
+   (`aria-controls`), and says how many filters are pressed (`Filters · 2`)
+   because a list that has been narrowed should say so while the filters are out
+   of sight. In a destination dialog, which has no tabs, it says **Banks**.
+3. **The workspace**, the list of presets or the numbered slots, which gets most
+   of the dialog's height.
+4. **The details** (`.browser-details`), beside the workspace at about one part
+   in three: the preset the arrows are on, or the slot that is playing or has the
+   focus, said at length -- source, bank, slot, status -- with what can be done
+   to it: **Load**, and for a slot of the page's own banks a **More** menu with
+   Copy and Move. It is a button (`aria-expanded`, `aria-controls`) and is shut
+   until asked for on a phone.
+
+What the Filters button opens is the **pane** (`.browser-sources`): the filters
+of the preset view, then the banks and what is done with them. Where there is
+room (wider than 620px) it is beside the workspace, open to begin with, and the
+button shuts it. On a narrower window it is a **sheet over the workspace**, shut
+to begin with; opening it moves the focus in, Escape shuts it and gives the focus
+back to the button, and so does choosing a bank. Shut, it is `hidden`, so what is
+in it is neither in the Tab order nor read to a screen reader. The details go
+under the workspace on a phone, so the column is the header, the tabs, the list,
+and a section that opens: never three dense panes stacked.
+
+Whatever is not done on most visits is behind a **menu button**, in the pattern
+the strip's menu uses (`aria-haspopup="menu"`, `aria-expanded`, `aria-controls`,
+`role="menu"` and `menuitem`): it opens on a click and on the arrows, the arrows,
+Home and End move in it, Escape and Tab shut it, so does a click elsewhere, and
+choosing an item gives the focus to the button *before* the item runs, so that a
+dialog the item opens gives it back there. Shut, it is `hidden`. There are three:
+**Add** in the banks' heading (New bank..., Import file..., Import folder...),
+**More** on the bank in view (Rename..., Duplicate, Export bank, Close bank),
+and **More** in the details of a slot (Copy, Move).
+
+The slot view is a slot and an index and nothing else: the number first, in a
+column of its own, then the name, and an empty slot is a dash that is still a
+button and still addressable. All 128, `000` to `127`, in the same order and
+the same columns. A click loads, a double click loads and closes, as they did;
+the details are of the slot that is playing, or of the one a person has looked
+at **without loading it**, which is the one with the keyboard focus, or the one
+asked about with the menu key, Shift+F10 or a right click -- which also opens
+its More menu. (A touch screen that does not send a contextmenu event on a long
+press has no way to look at a slot it has not loaded.)
+
 The preset view is for finding a sound by name:
 
 - **Search** is over the names of the presets the panel already knows
@@ -547,24 +603,29 @@ The preset view is for finding a sound by name:
   but not opened -- one row of a zip of banks, or an archive bank the host has
   not opened -- contributes no names, **is never opened by searching**, and the
   list says so in a note, with how to open it. Opening a bank is a click on it in
-  Banks.
-- **Filters** are toggle buttons (`aria-pressed`): Factory, User, Imported,
+  the pane under Filters.
+- **Filters**, in the pane under the Filters button, are toggle buttons
+  (`aria-pressed`): Factory, User, Imported,
   Archives, Current session (which includes a single patch opened from a file),
   then Favorites and Recent. None pressed means everything; several sources
   pressed show their union; Favorites and Recent narrow what is left.
 - The order is the panel's and does not move: origin, then the order the banks
   were opened, then slot. Recent is its own, most recent first.
-- Each row has the slot number, the name, where it is from (`Imported /
-  Alfmeister Bank`) and a star. An empty slot is not a preset, so it is not
-  listed here; it is always listed in the slot view.
+- Each row has the slot number, the name, one line under the name of where it is
+  from (`Imported / Alfmeister Bank`, with `Read-only` after it in words where
+  that is so) and a star. A badge is only for the two states that change what a
+  click does, `Loading…` and `Unavailable`, so a row has at most one. An empty
+  slot is not a preset, so it is not listed here; it is always listed in the
+  slot view. The row that is playing is the one that is marked; nothing else
+  is marked in a second way.
 
 A click, or Enter, **loads** the preset through `SynthBank.loadPreset`, and the
 row that says it is playing (`aria-selected`) follows `SynthBank.selection()`:
 it moves when the sound has. An archive preset is asked of the host and shows
 `Loading…` until the host answers; a refusal is read in the dialog with its name.
 What the view can be in is always said in words: an empty list says why it is
-empty; `Read-only`, `Loading…` and `Unavailable` are on the row or in the line
-that says what is playing (`SynthBank.status()`); the last thing the panel
+empty; `Read-only`, `Loading…` and `Unavailable` are on the row, in the details
+or in the line that says what is playing (`SynthBank.status()`); the last thing the panel
 reported is in `.browser-feedback`, `role="status"`.
 
 **Favorites and Recent are the person's, not the instrument's** (the spec's
@@ -587,14 +648,19 @@ playing; Up and Down, Home and End move between rows, Enter or Space loads, and
 the list is one tab stop with the star of its current row next. Escape clears the
 search first and closes the dialog second; Tab cannot leave the dialog and focus
 returns to whatever opened it. Every control has an accessible name; the star is
-`Favorite <name>`.
+`Favorite <name>`. **Load** in the details loads what the arrows have reached,
+for a keyboard that would otherwise go back to the row; it is not offered for
+what is playing, loading or not there.
 
 #### Banks
 
-The Banks pane lists every open bank with where it came from (`Factory`,
+The pane under Filters lists every open bank with where it came from (`Factory`,
 `User`, `Imported`, `Archive`) and `Read-only` where nothing can be written to
-it. The buttons beside it act on the bank in view and leave the sound, the
-selection and the host alone:
+it, as words after the name. What is done to banks is in its two menus -- **Add**
+for the first three and **More** on the bank in view for the rest -- and leaves
+the sound, the selection and the host alone. An item that does not apply says so
+(`aria-disabled`, and why on hover) and is still pressed, so the panel is the one
+that refuses, in its own words:
 
 - **New bank...** asks for a name of at most 48 UTF-8 bytes, the most the host
   keeps, and opens an empty bank of your own. The name
@@ -639,8 +705,9 @@ step through it.
 
 #### Copy and move
 
-In the slot view each filled slot has **Copy** and **Move**, which open a
-picker over the browser: choose a bank and a slot, which may be empty, in the
+In the slot view the slot that has the attention -- playing, or looked at with the
+keyboard or a right click -- has **Copy** and **Move** in the **More** menu of
+its details, which open a picker over the browser: choose a bank and a slot, which may be empty, in the
 same bank or another that can be written to. The picker says what will happen
 and what is already there, and then asks, naming both ends, **before** anything
 is written; Cancel, Escape and the backdrop change nothing. It calls
@@ -648,7 +715,8 @@ is written; Cancel, Escape and the backdrop change nothing. It calls
 what the panel answered: a read-only destination, the same slot, or a move out
 of a read-only bank is refused in words and the picker stays for another try.
 A move of the preset that is playing takes the selection to its new slot. There
-is no undo afterwards, which is why the question comes first.
+is no undo afterwards, which is why the question comes first. When the picker
+closes the focus goes back to the More button that asked.
 
 In the preset view there is no Copy or Move, and in write mode there is no
 preset view: a destination is a slot, so it is the slot view, and a click

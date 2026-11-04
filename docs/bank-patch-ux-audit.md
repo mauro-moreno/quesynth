@@ -131,3 +131,88 @@ The bank list should not consume a full viewport-height pane. Make bank/source s
 - The 128-slot compatibility view remains complete and index-stable.
 - The primary patch list remains usable at narrow plugin sizes without stacking three dense panes.
 - Existing restoration, persistence, keyboard, and screen-reader contracts remain unchanged.
+
+## Implementation notes
+
+The redesign is in `ui/browser.js` and `ui/style.css`; nothing in `ui/app.js`,
+`ui/bank.js`, `ui/bridge.js`, `ui/store.js`, `hosts/` or `src/` changed, and no
+message to a host did. `ui/README.md` describes the result ("The preset
+browser", "How the browser is laid out"). The slices above were done in order and
+each is its own commit.
+
+Where the mock and the existing contracts disagreed, the contracts and the
+existing tests won. Every place that happened, and every place a reading was
+chosen that keeps what was there:
+
+- **The header has the sound and not the actions.** The mock's `[Save] [More ▾]`
+  are not in the header: the strip already has Browser, Save and More, and a
+  second Save would be a second way to do the one thing with its own rules. The
+  header is `.browser-now`, the status line the tests already read, in the same
+  words, with the name set apart and the state in plain words. A destination
+  dialog has no header: it is choosing a place.
+- **The slot view's `[Write here]` is not added.** Write and Save As are the
+  strip's and the dialogs'; "In write mode, change the details pane to Choose
+  destination" is done by keeping the form that was the destination's surface
+  (`.browser-save`, `.browser-transfer`) and saying so above it
+  (`.browser-destination`, "Choose destination"). Nothing was added to a slot
+  there.
+- **A click on a slot still loads it.** The mock has a selected slot that is not
+  yet loaded and a `[Load]` button. Changing what a click does is a change of
+  behaviour, so the details are of the slot that is playing, or of the one that
+  has been *looked at*: the one with the keyboard focus, or asked about with the
+  menu key, Shift+F10 or a right click, which also opens its More menu. Load is
+  in the details for that slot. A touch screen that sends no contextmenu event
+  on a long press has no way to look at a slot it has not loaded; that is the
+  cost of the choice and is deferred.
+- **Favorite is not mirrored in the details.** The star stays in its row as its
+  own control, with its own name (`Favorite <name>`) and its own place in the
+  arrow keys, which the tests pin; a second button of that name would be two
+  answers to a lookup by label. It stays in the faintest ink tier that still
+  meets the contrast of the rest of the page; receding it further would have
+  put it under 3:1.
+- **Badges.** A preset row has at most one: `Loading…` or `Unavailable`, the two
+  states that change what a click does. `Read-only` is words on the row's one
+  line, and a bank's origin and `Read-only` are words after its name. They are
+  still `.browser-badge` elements in the bank list, with the weight taken off,
+  because the tests read them there.
+- **One way to mark a row or a slot.** The sound that is playing, or in a
+  destination the place the sound will go, is marked the same way; the amber
+  of the destination, and the brighter ink of a loading row, are gone. A slot
+  that has been looked at is marked as a hover is, quieter than either.
+- **The pane is open on a wide window.** The mock says "collapsible pane on
+  desktop", not which way it starts; it starts open, as it was, and the button
+  shuts it. On a narrow window (620px, as the old stacking rule) it is a sheet
+  over the workspace, shut to begin with. The choice is made when the dialog is
+  built; a window resized across 620px while it is open changes the layout but
+  not whether the pane is open.
+- **Escape in the pane.** On a narrow window it shuts the sheet and gives the
+  focus back; beside the workspace it is not intercepted and closes the dialog
+  as it did. Choosing a bank in the sheet shuts it.
+- **The archive area is as it was**: its path field, Open and Close and its
+  status are a labelled form and not an action menu, so they stay in the pane,
+  shown only when there is an archive.
+- **Menus reach Copy, Move, Rename, Duplicate, Export bank, Close bank, New
+  bank and the imports.** An item that does not apply is `aria-disabled` with
+  the reason on hover and is still pressed, so the panel is the one that
+  refuses, as before. Overwrite is, as it was, a question in a dialog, and the
+  modal's own Export, Keep and Done are untouched.
+- **The filters are built once**, in the pane. As a result a filter that is
+  pressed is shown pressed after the slot view has come and gone; before, the
+  list stayed narrowed and the chip said it was not.
+- **Notes that sent a person to "Banks" say "under Filters".**
+
+How the criteria above are checked: `tests/ui/preset-browser-structure.test.mjs`
+(stand-in DOM: header, rows, details, menus, pane, sheet, destination) and
+`tests/ui/preset-browser-layout.test.mjs` (a real engine, five sizes from 1180
+to 320 wide: where the header is, how much of the dialog the list has, that the
+pane is beside the list or a shut sheet, that nothing overflows sideways, that
+all 128 slots are there as `000` to `127`, that the menus open inside the
+dialog; screenshots in `build/ui-layout/`). The existing preset suites pass
+unchanged in what they assert; where a control moved, the helpers in
+`tests/ui/support/browser.mjs` reach it the way a person does -- open the pane,
+open the menu -- and the few assertions that named "the button that asked" name
+the menu's button.
+
+Deferred, not done: looking at a slot without loading it on a touch screen with
+no long-press menu; listening for a resize across 620px to reset the pane; a
+bottom sheet for the details (they are a section under the workspace).

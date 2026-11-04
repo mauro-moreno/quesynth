@@ -1007,6 +1007,18 @@
       head.appendChild(title);
       head.appendChild(count);
       right.appendChild(head);
+      if (!picking && api().archive()) {
+        var provenance = api().playing();
+        var line = element("div", "browser-playing");
+        var position = provenance && provenance.source === "archive"
+          ? (provenance.archive ? provenance.archive.patch : null)
+          : (provenance ? provenance.index : null);
+        line.textContent = "Playing: " + (provenance ? provenance.name : "Untitled") +
+          (provenance && provenance.bank ? " · " + provenance.bank : "") +
+          (position !== null ? " · " + (provenance.source === "archive" ? "#" : "slot ") + position : "");
+        right.appendChild(line);
+      }
+
       var grid = element("div", "browser-grid");
       var here = browsing ? browsing.index : api().index();
       // Copy and Move are of the page's own banks: a patch in the host's
@@ -1051,13 +1063,22 @@
           // to it, and by the menu key or a right click, which ask about it.
           // A click is still a load, as it always was.
           b.addEventListener("focus", function () { inspect(i); });
-          b.addEventListener("contextmenu", function (e) {
+          function ask(e) {
             e.preventDefault();
             inspect(i);
             if (movable && slot) {
               setDetailsOpen(true);
               more.open(true, "first");
             }
+          }
+          b.addEventListener("contextmenu", ask);
+          // The menu key and Shift+F10 are what a keyboard has for the same
+          // thing. A browser turns them into a contextmenu event of its own,
+          // but not everywhere and not under automation, and this is the one
+          // way along 128 slots to the menu in the details without tabbing
+          // through all of them.
+          b.addEventListener("keydown", function (e) {
+            if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) ask(e);
           });
         }
         cells.push(b);
