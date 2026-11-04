@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound, syncAnswer} from "./support/panel.mjs";
 import {folder, patches, sy1, zip} from "./support/files.mjs";
 import {
-  all, badges, body, choose, dialog, dialogs, disabled, feedback, focused, front, heading, label, open, press, settle, sourceNames,
-  sourceRow, star, submit, tool, type, wait, withFiles,
+  all, badges, body, choose, dialog, dialogs, disabled, feedback, focused, front, heading, headingLabels, headingMenu, label, open, press, settle, sourceNames,
+  sourceRow, star, submit, tool, toolsMenu, type, wait, withFiles,
 } from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
@@ -91,7 +91,7 @@ test("New bank... asks for a name, makes an empty bank of the person's own, and 
   assert.equal(sourceRow(page, "Pads").querySelector(".browser-source-count").textContent, "0");
   assert.equal(page.window.SynthBank.label(), "Pads", "it is the bank in view");
   assert.equal(page.document.querySelector(".browser-form"), null, "the form has done its job");
-  assert.equal(focused(page), make, "and the focus is back on the button that asked");
+  assert.equal(focused(page), headingMenu(page), "and the focus is back on the button that asked");
   assert.match(feedback(page).textContent, /^Made Pads\./);
   assert.deepEqual(page.values(), values, "and the sound that is playing was not touched");
   assert.deepEqual(plain(page.window.SynthBank.selection()), selection);
@@ -124,9 +124,9 @@ test("Escape and Cancel close the form and not the dialog, and put the focus bac
   press(page.document.querySelector(".browser-form-name"), "Escape");
   assert.equal(page.document.querySelector(".browser-form"), null);
   assert.ok(dialog(page), "the dialog is still open");
-  assert.equal(focused(page), make);
+  assert.equal(focused(page), headingMenu(page));
 
-  make.click();
+  heading(page, "New bank...").click();
   all(page, ".browser-form button").find(b => label(b) === "Cancel").click();
   assert.equal(page.document.querySelector(".browser-form"), null);
   assert.equal(sourceNames(page).length, 3, "and no bank was made");
@@ -140,7 +140,7 @@ test("Rename... renames the bank in view, and a bank that was playing from it is
   page.window.SynthBank.loadPreset({bank: "My Bank", slot: 3});
   open(page);
   sourceRow(page, "My Bank").click();
-  assert.equal(tool(page, "Rename...").parentNode.parentNode.querySelector(".browser-bank-tools-name").textContent, "My Bank");
+  assert.equal(tool(page, "Rename...").closest(".browser-bank-tools").querySelector(".browser-bank-tools-name").textContent, "My Bank");
   tool(page, "Rename...").click();
   const field = page.document.querySelector(".browser-form-name");
   assert.equal(field.value, "My Bank");
@@ -196,7 +196,7 @@ test("a bank the host keeps cannot be renamed either, and the refusal is read in
   assert.match(feedback(page).textContent, /Hosted belongs to the host and cannot be renamed\. \(ReadOnlyBank\)/);
   assert.ok(sourceNames(page).includes("Hosted"));
   assert.ok(page.document.querySelector(".browser-form") === null, "another name would not help, so the form does not wait for one");
-  assert.ok(focused(page) === tool(page, "Rename..."), "and the focus is back on the button that asked");
+  assert.ok(focused(page) === toolsMenu(page), "and the focus is back on the button that asked");
 });
 
 // ------------------------------------------------------------------ duplicate
@@ -485,9 +485,9 @@ test("while a shared archive is open a ZIP is not opened in the page, and the di
 test("Import is offered where a bank is being browsed and nowhere a destination is being chosen", () => {
   const page = banks();
   open(page);
-  assert.deepEqual(all(page, ".browser-heading .browser-heading-actions button").map(label), ["New bank...", "Import file...", "Import folder..."]);
+  assert.deepEqual(headingLabels(page), ["New bank...", "Import file...", "Import folder..."]);
   page.window.SynthBrowser.write();
-  assert.deepEqual(all(page, ".browser-heading .browser-heading-actions button").map(label), ["New bank..."]);
+  assert.deepEqual(headingLabels(page), ["New bank..."]);
   assert.equal(body(page).querySelector(".browser-bank-tools").hidden, true);
 });
 

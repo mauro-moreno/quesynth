@@ -387,9 +387,52 @@
     var tabs = null;
     var main = element("div", "browser-main");
     var left = element("div", "browser-sources");
+    left.id = uid("browser-sources");
     var right = element("div", "browser-slots");
     main.appendChild(left);
     main.appendChild(right);
+
+    // Where a bank is chosen, what is done to one, and what the presets are
+    // narrowed by: behind one button, and not a pane that is always there.
+    // The workspace is the point of the dialog, and a person who is looking
+    // for a sound should not have to read past a list of banks to find it.
+    //
+    // Where there is room it is a pane beside the workspace, open to begin
+    // with and shut with the button. Where there is not, a phone or a narrow
+    // plugin window, it is a sheet over the workspace, shut to begin with:
+    // opened it takes the focus, Escape shuts it and gives the focus back to
+    // the button, and choosing a bank shuts it too, because the reason for
+    // choosing one is to look at what is in it. Shut, it is hidden, so what
+    // is in it is not in the Tab order or in what a screen reader reads.
+    function narrow() {
+      return !!(window.matchMedia && window.matchMedia("(max-width: 620px)").matches);
+    }
+    var drawerToggle = button("browser-filters-toggle", picking ? "Banks" : "Filters");
+    drawerToggle.setAttribute("aria-controls", left.id);
+    function setDrawerOpen(open, focusIn) {
+      left.hidden = !open;
+      drawerToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open && focusIn) {
+        var first = left.querySelector("button, input");
+        if (first) first.focus();
+      }
+    }
+    // A bank has been chosen, and the sheet is over what it was chosen to look
+    // at: out of the way, and the focus where the person started.
+    function leaveSheet() {
+      if (left.hidden || !narrow()) return;
+      setDrawerOpen(false);
+      drawerToggle.focus();
+    }
+    setDrawerOpen(!narrow());
+    drawerToggle.addEventListener("click", function () { setDrawerOpen(left.hidden, narrow()); });
+    left.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape" || left.hidden || !narrow()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDrawerOpen(false);
+      drawerToggle.focus();
+    });
 
     // The sound that is playing, above everything and in both views: the
     // question the person arrives with is "what am I on?", and it should not
@@ -618,14 +661,14 @@
     tools.setAttribute("role", "group");
     tools.setAttribute("aria-label", "Bank actions");
     var toolsName = element("span", "browser-bank-tools-name");
-    var toolRename = button("browser-mini", "Rename...");
-    var toolDuplicate = button("browser-mini", "Duplicate");
-    var toolExport = button("browser-mini", "Export bank");
-    var toolClose = button("browser-mini", "Close bank");
-    var toolRow = element("div", "browser-heading-actions");
-    [toolRename, toolDuplicate, toolExport, toolClose].forEach(function (b) { toolRow.appendChild(b); });
+    var toolsMenu = menuButton({
+      label: "More", listLabel: "Bank actions", className: "browser-more", listClass: "browser-menu-list",
+    });
+    var toolsWrap = element("div", "browser-menu");
+    toolsWrap.appendChild(toolsMenu.trigger);
+    toolsWrap.appendChild(toolsMenu.list);
     tools.appendChild(toolsName);
-    tools.appendChild(toolRow);
+    tools.appendChild(toolsWrap);
 
     // A tool that does not apply looks it, and says why on hover; it is not
     // taken out of reach. The panel decides what is allowed and answers a press
@@ -635,45 +678,33 @@
       b.title = ok ? "" : why;
     }
 
-    function paintTools() {
-      var row = viewRow();
-      tools.hidden = picking || !row || row.kind === "archive";
-      if (tools.hidden) return;
-      toolsName.textContent = row.label;
-      applies(toolRename, row.origin !== "factory", "The factory bank belongs to the instrument and cannot be renamed.");
-      applies(toolDuplicate, row.used !== null, "Open this bank before copying it.");
-      applies(toolExport, row.used !== null, "Open this bank before exporting it.");
-      applies(toolClose, row.closable, api().list().length < 2
-        ? "The last bank cannot be closed." : row.label + " cannot be closed.");
-    }
-
-    toolRename.addEventListener("click", function () {
+    function renameBank() {
       var row = viewRow();
       if (!row) return;
       // The two it can never be are refused by asking, which is where the
       // reason is written; the others get the form.
       if (row.origin === "factory") { api().renameBank(row.label, row.label); return; }
       showForm({
-        label: "New name for " + row.label, value: row.label, submit: "Rename", opener: toolRename,
+        label: "New name for " + row.label, value: row.label, submit: "Rename", opener: toolsMenu.trigger,
         onSubmit: function (name) {
           var result = api().renameBank(row.label, name);
           paintAll();
           return result;
         },
       });
-    });
-    toolDuplicate.addEventListener("click", function () {
+    }
+    function duplicateBank() {
       var row = viewRow();
       if (!row) return;
       api().duplicateBank(row.label);
       paintAll();
-    });
-    toolExport.addEventListener("click", function () {
+    }
+    function exportBank() {
       var row = viewRow();
       if (!row) return;
       if (files() && files().saveBank) files().saveBank(row.index);
-    });
-    toolClose.addEventListener("click", function () {
+    }
+    function closeBank() {
       var row = viewRow();
       if (!row) return;
       // What is in a bank of the person's own, or put into one they opened,
@@ -700,20 +731,88 @@
       }
       api().removeBank(row.label);
       paintAll();
-    });
+    }
+    var toolRename = toolsMenu.add("Rename...", renameBank);
+    var toolDuplicate = toolsMenu.add("Duplicate", duplicateBank);
+    var toolExport = toolsMenu.add("Export bank", exportBank);
+    var toolClose = toolsMenu.add("Close bank", closeBank);
 
+    function paintTools() {
+      var row = viewRow();
+      tools.hidden = picking || !row || row.kind === "archive";
+      if (tools.hidden) { toolsMenu.close(); return; }
+      toolsName.textContent = row.label;
+      toolsMenu.trigger.setAttribute("aria-label", "More actions for the bank " + row.label);
+      applies(toolRename, row.origin !== "factory", "The factory bank belongs to the instrument and cannot be renamed.");
+      applies(toolDuplicate, row.used !== null, "Open this bank before copying it.");
+      applies(toolExport, row.used !== null, "Open this bank before exporting it.");
+      applies(toolClose, row.closable, api().list().length < 2
+        ? "The last bank cannot be closed." : row.label + " cannot be closed.");
+    }
+
+    // What the presets are narrowed by, kept with the banks they come from:
+    // where a sound came from, whether it is a favourite, whether it was
+    // played lately. Built once; `paintFilters` says which are pressed, and
+    // how many, on the button that opens this, so that a list that has been
+    // narrowed says so while the filters are out of sight.
+    var filters = null;
+    var chips = [];
+    function buildFilters() {
+      filters = element("div", "browser-filters");
+      filters.setAttribute("role", "group");
+      filters.setAttribute("aria-label", "Filters");
+      function chip(label, isOn, flip) {
+        var c = button("browser-chip", label);
+        c.setAttribute("aria-pressed", "false");
+        c.addEventListener("click", function () {
+          flip();
+          paintFilters();
+          paintResults();
+        });
+        chips.push({ el: c, isOn: isOn });
+        filters.appendChild(c);
+      }
+      SOURCES.forEach(function (s) {
+        chip(s.label, function () { return pressed[s.id] === true; },
+          function () { pressed[s.id] = !pressed[s.id]; });
+      });
+      chip("Favorites", function () { return favoritesOn; }, function () { favoritesOn = !favoritesOn; });
+      chip("Recent", function () { return recentOn; }, function () { recentOn = !recentOn; });
+      left.appendChild(filters);
+    }
+
+    function paintFilters() {
+      if (!filters) return;
+      filters.hidden = view !== "presets";
+      var on = 0;
+      chips.forEach(function (c) {
+        var is = c.isOn();
+        if (is) on++;
+        c.el.setAttribute("aria-pressed", is ? "true" : "false");
+      });
+      drawerToggle.textContent = "Filters" + (on ? " \u00b7 " + on : "");
+    }
+
+    var addMenu = null;
     function buildHeader() {
+      if (!picking) buildFilters();
+
       var head = element("div", "browser-heading");
       head.appendChild(element("span", null, "Banks"));
 
-      var actions = element("span", "browser-heading-actions");
+      // New and the imports are menu items: how a bank comes to be is not
+      // what most visits are for.
+      addMenu = menuButton({
+        label: "Add", name: "Add a bank", listLabel: "Add a bank", className: "browser-more", listClass: "browser-menu-list",
+      });
+      var addWrap = element("div", "browser-menu");
+      addWrap.appendChild(addMenu.trigger);
+      addWrap.appendChild(addMenu.list);
 
       // Somewhere to write to that is not the factory bank.
-      var make = button("browser-mini", "New bank...");
-      make.title = "A new empty bank";
-      make.addEventListener("click", function () {
+      var make = addMenu.add("New bank...", function () {
         showForm({
-          label: "Name for the new bank", value: "New Bank", submit: "Create", opener: make,
+          label: "Name for the new bank", value: "New Bank", submit: "Create", opener: addMenu.trigger,
           onSubmit: function (name) {
             var made = api().newBank(name);
             // The new bank is in view and empty: its first slot is the start.
@@ -723,25 +822,21 @@
           },
         });
       });
-      actions.appendChild(make);
+      make.title = "A new empty bank";
 
       if (!picking) {
         // A bank from a file, joining the list rather than replacing it.
-        var add = button("browser-mini", "Import file...");
+        var add = addMenu.add("Import file...", function () { pickWith("pick"); });
         add.title = "Open a .json bank, a .zip of patches, or one .sy1 patch";
-        add.addEventListener("click", function () { pickWith("pick"); });
 
         // And the third shape a bank comes in: a folder of .sy1 files, which is
-        // how the reference keeps its own. Its own button rather than something
+        // how the reference keeps its own. Its own item rather than something
         // the file picker guesses at, because a folder and a file are chosen in
         // different dialogs and the browser has to be told which to open.
-        var folder = button("browser-mini", "Import folder...");
+        var folder = addMenu.add("Import folder...", function () { pickWith("pickFolder"); });
         folder.title = "Open a folder of .sy1 patches";
-        folder.addEventListener("click", function () { pickWith("pickFolder"); });
-        actions.appendChild(add);
-        actions.appendChild(folder);
       }
-      head.appendChild(actions);
+      head.appendChild(addWrap);
       left.appendChild(head);
       left.appendChild(formHost);
       left.appendChild(archiveArea);
@@ -808,7 +903,7 @@
         row.addEventListener("click", function () {
           // In the page's own bank list an archive bank is never a destination,
           // and there is only the one bank to be in.
-          if (picking && api().archive()) { setTarget(mode === "write" ? 0 : firstEmpty()); paintAll(); return; }
+          if (picking && api().archive()) { setTarget(mode === "write" ? 0 : firstEmpty()); paintAll(); leaveSheet(); return; }
           // Quietly when picking a destination: choosing which bank to save
           // into must not load anything, or the sound being saved is the one it
           // replaces. The preset view is quiet too: there a click on a bank is
@@ -824,6 +919,7 @@
             if (state === "loading") { paintSources(); return; }
             if (picking) setTarget(mode === "write" ? 0 : firstEmpty());
             paintAll();
+            leaveSheet();
           });
         });
         rows.appendChild(row);
@@ -1135,27 +1231,6 @@
       });
       parts.search = search;
       bar.appendChild(search);
-
-      var filters = element("div", "browser-filters");
-      filters.setAttribute("role", "group");
-      filters.setAttribute("aria-label", "Filters");
-      function chip(label, isOn, flip) {
-        var c = button("browser-chip", label);
-        c.setAttribute("aria-pressed", "false");
-        c.addEventListener("click", function () {
-          flip();
-          c.setAttribute("aria-pressed", isOn() ? "true" : "false");
-          paintResults();
-        });
-        filters.appendChild(c);
-      }
-      SOURCES.forEach(function (s) {
-        chip(s.label, function () { return pressed[s.id] === true; },
-          function () { pressed[s.id] = !pressed[s.id]; });
-      });
-      chip("Favorites", function () { return favoritesOn; }, function () { favoritesOn = !favoritesOn; });
-      chip("Recent", function () { return recentOn; }, function () { recentOn = !recentOn; });
-      bar.appendChild(filters);
       right.appendChild(bar);
 
       parts.notes = element("div", "browser-notes");
@@ -1292,15 +1367,15 @@
         lines.push({
           text: unopened.length + (unopened.length === 1 ? " bank is" : " banks are") +
             " listed but not open, so " + (unopened.length === 1 ? "its presets are" : "their presets are") +
-            " not searched. Open one in Banks to include it.",
+            " not searched. Open one under Filters to include it.",
           kind: "hint",
         });
       }
       if (a && (a.open ? unopenedArchive.length > 0 : !!a.path)) {
         lines.push({
           text: a.open
-            ? "Archive banks are searched once they are open. Open one in Banks to include its presets."
-            : "The archive is not open, so Archives has no presets to search. Open it in Banks.",
+            ? "Archive banks are searched once they are open. Open one under Filters to include its presets."
+            : "The archive is not open, so Archives has no presets to search. Open it under Filters.",
           kind: "hint",
         });
       }
@@ -1578,6 +1653,7 @@
 
     function paintAll() {
       paintSources();
+      paintFilters();
       paintRight();
     }
 
@@ -1589,6 +1665,7 @@
       right.className = view === "presets" ? "browser-presets" : "browser-slots";
       parts = null;
       paintTabs();
+      paintFilters();
       paintRight();
     }
 
@@ -1617,8 +1694,13 @@
       });
       right.id = "browser-view";
       right.setAttribute("role", "tabpanel");
-      wrap.appendChild(tabs);
     }
+    // The tabs, and at the far end the button for everything that narrows or
+    // manages what the tabs show. A destination has no tabs, only the button.
+    var bar = element("div", "browser-bar");
+    if (tabs) bar.appendChild(tabs);
+    bar.appendChild(drawerToggle);
+    wrap.appendChild(bar);
     wrap.appendChild(main);
     if (!picking) main.appendChild(details);
 
@@ -1737,7 +1819,7 @@
     paintAll();
 
     wrap.refresh = function () { paintAll(); };
-    wrap.dispose = function () { stopListening(); more.close(); };
+    wrap.dispose = function () { stopListening(); more.close(); addMenu.close(); toolsMenu.close(); };
     wrap.focusField = function () { if (field) { field.focus(); field.select(); } };
     wrap.focusSearch = function () { if (parts && parts.search) parts.search.focus(); };
     wrap.commit = commitTransfer;

@@ -1506,24 +1506,20 @@ body.modal-open { overflow: hidden; }
   border-color: var(--metal-dark);
 }
 
+/* The banks, and what the presets are narrowed by: a pane beside the workspace
+ * where there is room, and shut with the button that says Filters. Where there
+ * is not, a sheet over it; see the narrow rules below. */
 .browser-sources {
-  flex: 0 0 190px;
+  flex: 0 0 232px;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 10px;
+  gap: 6px;
+  padding: 12px;
   overflow-y: auto;
   border-right: 1px solid var(--panel-edge);
 }
-
-.browser-heading {
-  padding: 2px 6px 6px;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
+.browser-sources[hidden] { display: none; }
 
 .browser-source,
 .browser-open {
@@ -1640,40 +1636,41 @@ body.modal-open { overflow: hidden; }
   white-space: nowrap;
 }
 
-/* On a phone the two panes stack: sources across the top, slots below. */
+/* On a phone the banks are not a pane at all: they are a sheet over the
+ * workspace, opened from Filters, and the details go under the workspace as a
+ * section that opens. Three dense panes stacked in a column was what this
+ * replaces. */
 @media (max-width: 620px) {
   .modal { max-height: 88vh; }
-  .browser-main { flex-direction: column; }
+  .browser-main { position: relative; flex-direction: column; }
   .browser-sources {
-    flex: 0 0 auto;
-    max-height: 30vh;
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    flex: none;
     border-right: 0;
-    border-bottom: 1px solid var(--panel-edge);
+    background: var(--panel);
   }
 }
 
-/* The preset view is about the list, so on a phone the banks it draws on come
- * after it rather than taking the top third of the dialog. */
-@media (max-width: 620px) {
-  .browser[data-view="presets"] .browser-sources {
-    order: 2;
-    border-bottom: 0;
-    border-top: 1px solid var(--panel-edge);
-  }
-}
-
-/* New and Add, beside the "Banks" heading. Small, because they are the two
- * least frequent things in the dialog and the list is the point. */
-/* The label on one line and the three actions on the next.
- * Side by side they did not fit: the pane is 190px, and BANKS plus New, Add
- * and Folder overflowed it and put a horizontal scrollbar under a list that
- * scrolls vertically. */
+/* The heading of the banks: its name, and the menu that makes one or opens one
+ * from a file. */
 .browser-heading {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 6px;
+  padding: 2px 0 4px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
 }
+/* The trigger and its list take part in the row of whatever holds them: the
+ * trigger beside the name, the list on a line of its own under both. */
+.browser-heading .browser-menu, .browser-bank-tools .browser-menu { display: contents; }
+.browser-heading .browser-menu-list, .browser-bank-tools .browser-menu-list { flex: 1 0 100%; }
 
 .browser-heading-actions {
   display: flex;
@@ -1681,6 +1678,13 @@ body.modal-open { overflow: hidden; }
 }
 
 .browser-heading-actions .browser-mini {
+  flex: 1 1 0;
+  text-align: center;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+.browser-mini {
   flex: 1 1 0;
   text-align: center;
   padding-left: 2px;
@@ -1772,14 +1776,39 @@ body.modal-open { overflow: hidden; }
 
 /* ------------------------------------------------------- preset browser */
 
-/* The two views, as tabs above both panes. */
-.browser-views {
+/* The two views, as tabs, and at the far end the button for what narrows and
+ * manages what they show. One row above the workspace. */
+.browser-bar {
   flex: 0 0 auto;
   display: flex;
-  gap: 4px;
-  padding: 8px 10px 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 0;
   border-bottom: 1px solid var(--panel-edge);
 }
+.browser-views {
+  display: flex;
+  gap: 4px;
+}
+.browser-filters-toggle {
+  appearance: none;
+  align-self: center;
+  margin-bottom: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: var(--type-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.browser-filters-toggle:hover, .browser-filters-toggle[aria-expanded="true"] { color: var(--ink); border-color: var(--metal-dark); }
+.browser-filters-toggle::after { content: " \25BE"; }
+.browser-filters-toggle[aria-expanded="true"]::after { content: " \25B4"; }
 .browser-tab {
   appearance: none;
   padding: 0 14px;
@@ -1812,11 +1841,13 @@ body.modal-open { overflow: hidden; }
  * that is typed into, so it takes the whole width and the filters wrap. */
 .browser-toolbar {
   flex: 0 0 auto;
-  padding: 10px 14px 6px;
+  padding: 12px 16px 8px;
   border-bottom: 1px solid var(--panel-edge);
 }
-.browser-toolbar .browser-search { margin-bottom: 6px; }
-.browser-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.browser-toolbar .browser-search { margin-bottom: 0; }
+/* The filters are in the pane with the banks, one above them. */
+.browser-filters { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--panel-edge); }
+.browser-filters[hidden] { display: none; }
 
 .browser-chip {
   appearance: none;
@@ -1884,6 +1915,8 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .browser-details-toggle:hover { color: var(--ink); }
+.browser-details-toggle::after { content: " \25BE"; }
+.browser-details-toggle[aria-expanded="true"]::after { content: " \25B4"; }
 .browser-details-body { padding: 0 16px 16px; }
 .browser-detail-name {
   margin: 0 0 10px;
@@ -1925,6 +1958,18 @@ body.modal-open { overflow: hidden; }
 .browser-action:hover { background: #16161b; }
 .browser-detail-hint { margin: 14px 0 0; line-height: 1.4; color: var(--ink-faint); }
 .browser-detail-hint[hidden] { display: none; }
+
+/* Under the workspace on a phone, and shut until it is asked for. */
+@media (max-width: 620px) {
+  .browser-details {
+    flex: 0 0 auto;
+    min-width: 0;
+    max-width: none;
+    max-height: 45%;
+    border-left: 0;
+    border-top: 1px solid var(--panel-edge);
+  }
+}
 
 /* What a destination dialog is for, said above the slots it lists. */
 .browser-destination {
@@ -2103,45 +2148,35 @@ body.modal-open { overflow: hidden; }
 }
 .browser-form .browser-mini { flex: 1 1 0; }
 
-/* What can be done to the bank in view. */
+/* The bank in view, named, and the menu of what can be done to it. */
 .browser-bank-tools {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 2px 0 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0 4px;
 }
 .browser-bank-tools[hidden] { display: none; }
 .browser-bank-tools-name {
-  color: var(--ink-faint);
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--ink-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.browser-bank-tools .browser-heading-actions { flex-wrap: wrap; }
-.browser-bank-tools .browser-mini { flex: 1 1 40%; }
 .browser-mini[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 
-/* New bank..., Import file... and Import folder... are longer than the New,
- * Add and Folder they replaced, and three of them side by side overflow the
- * pane again: the horizontal scrollbar that the heading's comment above says
- * it was made to avoid. They wrap instead. */
-.browser-heading .browser-heading-actions { flex-wrap: wrap; }
-.browser-heading .browser-heading-actions .browser-mini { flex: 1 1 40%; }
-
-/* A phone's pane is as wide as the dialog and a third of the screen high, so
- * what took a line of its own down the side goes across: the badges beside the
- * name, the bank's actions in a row. The list of banks is what the pane is for,
- * and with each row two lines tall and the actions in a block it was out of
- * sight below them. */
-@media (max-width: 620px) {
-  .browser-source { flex-wrap: nowrap; align-items: center; }
-  .browser-source-badges { order: 1; flex: 0 0 auto; flex-wrap: nowrap; }
-  .browser-source-count { order: 2; }
-  .browser-heading .browser-heading-actions,
-  .browser-bank-tools .browser-heading-actions { flex-wrap: nowrap; }
-  .browser-heading .browser-heading-actions .browser-mini,
-  .browser-bank-tools .browser-mini { flex: 1 1 0; min-width: 0; }
+/* A bank's row says where it came from, and whether it can be written to, in
+ * plain words after its name and not as boxes of their own. */
+.browser-source-badges .browser-badge {
+  padding: 0;
+  border: 0;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
 }
+.browser-source-badges .browser-badge + .browser-badge::before { content: "\00b7"; margin: 0 6px; }
 
 /* A menu button and what it opens, in the flow under it: this is in a region
  * that scrolls and in a dialog that is as narrow as a phone, and a list laid
@@ -2733,7 +2768,7 @@ input[type="range"] { min-height: 28px; }
 .modal-action { min-height: 34px; }
 .browser-mini, .browser-chip, .browser-source, .browser-slot,
 .browser-archive-path, .browser-search, .browser-form-name { min-height: 28px; }
-.browser-tab, .browser-star, .browser-action, .browser-more { min-height: 34px; }
+.browser-tab, .browser-star, .browser-action, .browser-more, .browser-filters-toggle { min-height: 34px; }
 .browser-star { min-width: 28px; }
 .browser-slot, .browser-source, .browser-mini { align-items: center; }
 

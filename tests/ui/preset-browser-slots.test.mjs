@@ -68,15 +68,16 @@ test("every preset in a slot can be copied or moved, and an empty slot has nothi
   assert.equal(all(page, ".browser-slot-tool").length, 0, "and none of them is on a slot");
 
   ask(page, all(page, ".browser-slot")[2]);
-  assert.equal(all(page, ".browser-more").length, 0, "slot 002 is empty: nothing to take");
+  assert.equal(all(page, ".browser-details .browser-more").length, 0, "slot 002 is empty: nothing to take");
 });
 
 test("the preset view and a destination have no Copy and Move of their own", () => {
   const page = app();
   open(page);
-  assert.equal(all(page, ".browser-more, .browser-menuitem").length, 0);
+  const transfers = () => all(page, "button").filter(b => /^(Copy|Move) /.test(b.getAttribute("aria-label") || ""));
+  assert.equal(transfers().length, 0);
   page.window.SynthBrowser.write();
-  assert.equal(all(page, ".browser-more, .browser-menuitem").length, 0);
+  assert.equal(transfers().length, 0);
 });
 
 test("a patch in the host's archive is not held here to copy, so none of them offers it", () => {
@@ -86,7 +87,7 @@ test("a patch in the host's archive is not held here to copy, so none of them of
   assert.ok(slotTool(page, "Copy", "Strings"), "the page's own bank still does");
   within(page.document, ".browser-source").find(r => /a\.zip/.test(r.textContent)).click();
   ask(page, all(page, ".browser-slot").find(b => label(b.querySelector(".browser-slot-name")) === "Pad"));
-  assert.equal(all(page, ".browser-more").length, 0);
+  assert.equal(all(page, ".browser-details .browser-more").length, 0);
   assert.equal(slotTool(page, "Copy", "Pad"), null);
 });
 

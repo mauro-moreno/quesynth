@@ -382,11 +382,210 @@ test("a destination is still a slot to choose with the form beneath, said to be 
   page.window.SynthBrowser.write();
   assert.equal(label(body(page).querySelector(".browser-destination")), "Choose destination");
   assert.equal(cells(page).length, 128);
-  assert.equal(all(page, ".browser-more, .browser-menuitem, .browser-action, .browser-details").length, 0);
+  assert.equal(all(page, ".browser-details, .browser-action, [data-tool]").length, 0);
+  assert.equal(all(page, "button").filter(b => /^(Copy|Move) /.test(b.getAttribute("aria-label") || "")).length, 0);
   assert.ok(body(page).querySelector(".browser-save"));
   for (const b of cells(page)) assert.deepEqual([...b.children].map(c => c.className), ["browser-slot-num", "browser-slot-name"]);
   assert.equal(body(page).querySelectorAll(".browser-tab").length, 0);
   cells(page)[7].click();
   assert.equal(label(body(page).querySelector(".browser-save-slot")), "Slot 007");
   assert.equal(plain(page.window.SynthBank.selection()).presetName, "Delta", "choosing a place loads nothing");
+});
+
+// ------------------------------------------------- the filters and the banks
+
+const pane = page => body(page).querySelector(".browser-sources");
+const toggle = page => body(page).querySelector(".browser-filters-toggle");
+const narrowWindow = window => {
+  window.matchMedia = media => ({media, matches: /max-width:\s*620px/.test(media), addEventListener() {}, removeEventListener() {}});
+};
+const phone = () => browser({before: narrowWindow});
+const menuOf = (owner) => ({trigger: owner.querySelector(".browser-more"), list: owner.querySelector('[role="menu"]')});
+const itemsOf = list => [...list.children].map(label);
+
+test("the banks and the filters are behind a button that says Filters, and says whether it is open and what it opens", () => {
+  const page = browser();
+  open(page);
+  assert.equal(label(toggle(page)), "Filters");
+  assert.equal(toggle(page).getAttribute("aria-controls"), pane(page).id);
+  assert.ok(pane(page).id, "the pane has an id for it to name");
+  assert.equal(toggle(page).getAttribute("aria-expanded"), "true", "with room beside the workspace, it is open to begin with");
+  assert.equal(pane(page).hidden, false);
+  assert.ok(pane(page).querySelector(".browser-source"), "and it has the banks in it");
+  assert.equal(pane(page).querySelectorAll(".browser-chip").length, 7, "and the filters");
+
+  toggle(page).click();
+  assert.equal(toggle(page).getAttribute("aria-expanded"), "false");
+  assert.equal(pane(page).hidden, true, "shut is hidden: neither the Tab order nor a screen reader meets what is in it");
+  toggle(page).click();
+  assert.equal(pane(page).hidden, false);
+});
+
+test("the pane is where the filters are, and it says on its button when the list has been narrowed", () => {
+  const page = browser();
+  open(page);
+  assert.ok(pane(page).contains(chip(page, "Favorites")));
+  assert.ok(pane(page).contains(chip(page, "Factory")));
+  assert.equal(label(toggle(page)), "Filters");
+  chip(page, "Factory").click();
+  chip(page, "Recent").click();
+  assert.equal(label(toggle(page)), "Filters · 2", "narrowed by two, and it is the button that is in view");
+  chip(page, "Recent").click();
+  assert.equal(label(toggle(page)), "Filters · 1");
+  chip(page, "Factory").click();
+  assert.equal(label(toggle(page)), "Filters");
+});
+
+test("a filter that is pressed is still pressed when the other tab has been and gone", () => {
+  const page = browser();
+  open(page);
+  chip(page, "Favorites").click();
+  tab(page, "Slots").click();
+  assert.equal(pane(page).querySelector('[aria-label="Filters"]').hidden, true, "filters are of the presets, so the slot view has none");
+  tab(page, "Presets").click();
+  assert.equal(pane(page).querySelector('[aria-label="Filters"]').hidden, false);
+  assert.equal(chip(page, "Favorites").getAttribute("aria-pressed"), "true", "the list is still narrowed, and the button says so");
+  assert.equal(label(toggle(page)), "Filters · 1");
+});
+
+test("the notes that send a person to the banks say where they are now: under Filters", () => {
+  const page = browser();
+  page.window.SynthBank.addLazy("Unopened Bank", () => Promise.resolve([patch("Hidden", 1)]));
+  open(page);
+  const hints = all(page, ".browser-note").filter(n => n.getAttribute("data-kind") === "hint").map(label).join(" ");
+  assert.match(hints, /Open one under Filters to include it/);
+  assert.doesNotMatch(hints, /in Banks/);
+});
+
+test("on a phone the pane is shut to begin with, and the workspace is the only thing in the column", () => {
+  const page = phone();
+  open(page);
+  assert.equal(toggle(page).getAttribute("aria-expanded"), "false");
+  assert.equal(pane(page).hidden, true);
+  assert.equal(details(page).querySelector(".browser-details-toggle").getAttribute("aria-expanded"), "false");
+  assert.equal(details(page).querySelector(".browser-details-body").hidden, true, "and the details are a section that opens");
+  assert.equal(focused(page), searchBox(page), "the search is what the dialog opens on");
+  assert.equal(options(page).length, 5, "the list is there, and not under three panes");
+});
+
+test("opening the sheet on a phone moves the focus into it, Escape shuts it and gives the focus back, and the dialog stays", () => {
+  const page = phone();
+  open(page);
+  toggle(page).focus();
+  toggle(page).click();
+  assert.equal(pane(page).hidden, false);
+  assert.ok(pane(page).contains(focused(page)), "the focus is in the sheet");
+  assert.equal(toggle(page).getAttribute("aria-expanded"), "true");
+
+  const escape = press(focused(page), "Escape");
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(pane(page).hidden, true);
+  assert.equal(toggle(page).getAttribute("aria-expanded"), "false");
+  assert.equal(focused(page), toggle(page));
+  assert.ok(dialog(page), "Escape took the sheet and not the dialog");
+  press(toggle(page), "Escape");
+  assert.equal(dialog(page), null, "and the next one takes the dialog");
+});
+
+test("on a phone, choosing a bank shuts the sheet over what it was chosen to look at", () => {
+  const page = phone();
+  page.window.SynthBank.newBank("My Bank");
+  page.window.SynthBank.writePreset({bank: "My Bank", slot: 0, name: "Alpha"});
+  open(page, {view: "slots"});
+  toggle(page).click();
+  all(page, ".browser-source").find(r => label(r.querySelector(".browser-source-name")) === "My Bank").click();
+  assert.equal(page.window.SynthBank.label(), "My Bank");
+  assert.equal(pane(page).hidden, true);
+  assert.equal(focused(page), toggle(page));
+});
+
+test("in the pane beside the workspace, Escape is not for the pane: it goes on to the dialog", () => {
+  const page = browser();
+  open(page);
+  const row = all(page, ".browser-source")[0];
+  row.focus();
+  press(row, "Escape");
+  assert.equal(dialog(page), null);
+});
+
+test("the pane's actions are not on view: a heading and a bank say a name and a menu button each", () => {
+  const page = bank();
+  open(page);
+  const heading = pane(page).querySelector(".browser-heading");
+  const visible = all(page, ".browser-sources button").filter(b => {
+    for (let el = b; el && el !== pane(page); el = el.parentNode) if (el.hidden) return false;
+    return true;
+  });
+  assert.deepEqual(visible.filter(b => b.getAttribute("role") === "menuitem").map(label), [], "no action is a button on view");
+  assert.equal(heading.querySelectorAll("button").length, 4, "the menu button and its three items");
+  assert.equal(heading.querySelectorAll(".browser-heading-actions").length, 0);
+});
+
+test("New bank... and the imports are in a menu of their own, with the semantics of the others", () => {
+  const page = bank();
+  open(page);
+  const {trigger, list} = menuOf(pane(page).querySelector(".browser-heading"));
+  assert.equal(label(trigger), "Add");
+  assert.equal(trigger.getAttribute("aria-label"), "Add a bank");
+  assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
+  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+  assert.equal(trigger.getAttribute("aria-controls"), list.id);
+  assert.equal(list.getAttribute("role"), "menu");
+  assert.equal(list.hidden, true);
+  assert.deepEqual(itemsOf(list), ["New bank...", "Import file...", "Import folder..."]);
+  assert.ok([...list.children].every(i => i.getAttribute("role") === "menuitem"));
+
+  trigger.click();
+  assert.equal(list.hidden, false);
+  assert.equal(focused(page), list.children[0]);
+  press(list.children[0], "ArrowUp");
+  assert.equal(focused(page), list.children[2], "round");
+  press(list.children[2], "Escape");
+  assert.equal(list.hidden, true);
+  assert.equal(focused(page), trigger);
+  assert.ok(dialog(page));
+});
+
+test("what is done to the bank in view is in its menu, named for it, and says why when it does not apply", () => {
+  const page = bank();
+  open(page);
+  const tools = pane(page).querySelector(".browser-bank-tools");
+  const {trigger, list} = menuOf(tools);
+  assert.equal(label(tools.querySelector(".browser-bank-tools-name")), "My Bank");
+  assert.equal(trigger.getAttribute("aria-label"), "More actions for the bank My Bank");
+  assert.equal(list.getAttribute("aria-label"), "Bank actions");
+  assert.equal(list.hidden, true);
+  assert.deepEqual(itemsOf(list), ["Rename...", "Duplicate", "Export bank", "Close bank"]);
+
+  page.window.SynthBank.select(0, true);
+  page.window.SynthBrowser.refresh();
+  const rename = [...menuOf(tools).list.children].find(i => label(i) === "Rename...");
+  assert.equal(rename.getAttribute("aria-disabled"), "true", "the factory bank is not renamed");
+  assert.match(rename.title, /belongs to the instrument/);
+  assert.equal(label(tools.querySelector(".browser-bank-tools-name")), "Quesynth Factory");
+});
+
+test("a destination has a button that says Banks, no filters, and a menu with only New bank...", () => {
+  const page = bank();
+  page.window.SynthBrowser.write();
+  assert.equal(label(toggle(page)), "Banks");
+  assert.equal(toggle(page).getAttribute("aria-controls"), pane(page).id);
+  assert.equal(pane(page).querySelectorAll(".browser-chip").length, 0);
+  assert.deepEqual(itemsOf(menuOf(pane(page).querySelector(".browser-heading")).list), ["New bank..."]);
+  assert.equal(pane(page).querySelector(".browser-bank-tools").hidden, true);
+});
+
+test("on a phone a destination's banks are a sheet too, and a bank chosen in it is the one the slots are of", () => {
+  const page = bootPanel({bank: FACTORY, host: null, store: true, before: narrowWindow});
+  page.window.SynthBank.newBank("My Bank");
+  page.window.SynthBank.newBank("Second Bank");
+  page.window.SynthBrowser.write();
+  assert.equal(pane(page).hidden, true);
+  toggle(page).click();
+  assert.equal(pane(page).hidden, false);
+  all(page, ".browser-source").find(r => label(r.querySelector(".browser-source-name")) === "My Bank").click();
+  assert.equal(pane(page).hidden, true);
+  assert.equal(page.window.SynthBank.label(), "My Bank");
+  assert.equal(focused(page), toggle(page));
+  assert.equal(label(body(page).querySelector(".browser-save-slot")), "Slot 000");
 });

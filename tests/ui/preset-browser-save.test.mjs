@@ -10,7 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
 import {
-  all, badges, dialog, dialogs, feedback, focused, front, heading, label, press, settle, sourceNames, sourceRow, submit, type,
+  all, badges, dialog, dialogs, feedback, focused, front, heading, headingLabels, label, press, settle, sourceNames, sourceRow, submit, type,
 } from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
@@ -68,7 +68,7 @@ test("Save As offers the banks that can take a preset, and New bank... for one t
   api.select(0, true);
   page.window.SynthBrowser.saveAs();
   assert.deepEqual(sourceNames(page), ["Mine", "Theirs"], "the factory bank has nowhere to keep it, so it is not offered");
-  assert.deepEqual(all(page, ".browser-heading .browser-heading-actions button").map(label), ["New bank..."]);
+  assert.deepEqual(headingLabels(page), ["New bank..."]);
   assert.equal(api.label(), "Mine", "and the one in view is one that can take it");
 });
 

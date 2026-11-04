@@ -56,8 +56,31 @@ export const sourceRow = (page, name) => all(page, ".browser-source")
   .find(r => r.querySelector(".browser-source-name").textContent === name);
 export const sourceNames = page => all(page, ".browser-source").map(r => r.querySelector(".browser-source-name").textContent);
 export const badges = row => [...row.querySelectorAll(".browser-badge")].map(label);
-export const tool = (page, text) => all(page, ".browser-bank-tools button").find(b => label(b) === text);
-export const heading = (page, text) => all(page, ".browser-heading .browser-heading-actions button").find(b => label(b) === text);
+
+// The banks are kept behind the button that says Filters, and what is done to a
+// bank, or to make one, behind a menu in them. A person who wants one opens the
+// pane if it is shut and the menu if it is shut, which is what these do, and
+// what they return is the item they would then press.
+export const filtersToggle = page => page.document.querySelector(".browser-filters-toggle");
+export function revealBanks(page) {
+  const toggle = filtersToggle(page);
+  if (toggle && toggle.getAttribute("aria-expanded") === "false") toggle.click();
+}
+function menuItems(page, scope) {
+  revealBanks(page);
+  const owner = page.document.querySelector(scope);
+  const trigger = owner.querySelector(".browser-more");
+  const list = owner.querySelector('[role="menu"]');
+  if (list.hidden) trigger.click();
+  return [...list.querySelectorAll('[role="menuitem"]')];
+}
+// New bank..., Import file..., Import folder...
+export const heading = (page, text) => menuItems(page, ".browser-heading").find(b => label(b) === text);
+export const headingLabels = page => menuItems(page, ".browser-heading").map(label);
+export const headingMenu = page => page.document.querySelector(".browser-heading .browser-more");
+// Rename..., Duplicate, Export bank, Close bank, of the bank in view.
+export const tool = (page, text) => menuItems(page, ".browser-bank-tools").find(b => label(b) === text);
+export const toolsMenu = page => page.document.querySelector(".browser-bank-tools .browser-more");
 
 // Copy and Move are in the details, in a menu, for the slot that has the
 // attention. A click on a slot loads it, as it always did, so the way to ask
