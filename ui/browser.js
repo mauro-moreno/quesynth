@@ -843,15 +843,17 @@
         }
       });
 
-      // The pane is in the order of what a visit is for: narrow the presets,
-      // choose a bank, and last, because it is least often, make one or do
-      // something to one. Each part says what it is in a heading.
+      // The pane is in three parts, and each says what it is in a heading:
+      // what narrows the presets, what is done to banks, and the banks. The
+      // banks are last because there may be a hundred and seventy-five of them
+      // and every one is a Tab stop: what comes after them cannot be reached
+      // without passing them, and Add bank and Bank actions must not depend on
+      // how many there are.
       var banks = element("div", "browser-section browser-section-banks");
       banks.appendChild(sectionTitle("Banks"));
       banks.appendChild(find);
       banks.appendChild(rows);
       banks.appendChild(empty);
-      left.appendChild(banks);
 
       // New and the imports are menu items: how a bank comes to be is not
       // what most visits are for.
@@ -899,6 +901,7 @@
       manage.appendChild(tools);
       manage.appendChild(archiveArea);
       left.appendChild(manage);
+      left.appendChild(banks);
     }
 
     function paintSources() {

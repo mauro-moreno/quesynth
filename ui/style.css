@@ -1509,8 +1509,8 @@ body.modal-open { overflow: hidden; }
 /* The banks, and what the presets are narrowed by: a pane beside the workspace
  * where there is room, and shut with the button that says Browse. Where there
  * is not, a sheet over it; see the narrow rules below. Three parts, each under
- * a heading -- Sources, Banks, Manage banks -- in the order of what a visit is
- * for; see ui/browser.js. */
+ * a heading -- Sources, Manage banks, Banks -- with the list of banks last,
+ * because it is the one that grows; see ui/browser.js. */
 .browser-sources {
   flex: 0 0 232px;
   min-height: 0;

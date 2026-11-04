@@ -363,12 +363,12 @@ for (const size of Object.keys(SIZES)) {
     } finally { await page.close(); }
   });
 
-  test(`${size}: the pane is headed Sources, Banks and Manage banks, in that order, in quiet words that are not controls`, {skip}, async () => {
+  test(`${size}: the pane is headed Sources, Manage banks and Banks, in that order, in quiet words that are not controls`, {skip}, async () => {
     const page = await start(size);
     try {
       await openPane(page);
       const titles = page.locator(".browser-sources .browser-section-title");
-      assert.deepEqual(await titles.allTextContents(), ["Sources", "Banks", "Manage banks"]);
+      assert.deepEqual(await titles.allTextContents(), ["Sources", "Manage banks", "Banks"]);
       const pane = await box(page.locator(".browser-sources"));
       const name = await page.locator(".browser-source.on .browser-source-name").evaluate(el => getComputedStyle(el).color);
       let last = -1;

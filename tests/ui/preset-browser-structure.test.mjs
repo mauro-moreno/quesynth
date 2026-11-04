@@ -635,18 +635,18 @@ const onView = (page, scope) => [...scope.querySelectorAll("button")].filter(b =
   return true;
 });
 
-test("the pane says what each part of it is for -- Sources, Banks, Manage banks, in that order -- in headings that are words and nothing to press", () => {
+test("the pane says what each part of it is for -- Sources, Manage banks, Banks, in that order -- in headings that are words and nothing to press", () => {
   const page = bank();
   open(page);
-  assert.deepEqual(titles(page).map(label), ["Sources", "Banks", "Manage banks"]);
+  assert.deepEqual(titles(page).map(label), ["Sources", "Manage banks", "Banks"]);
   for (const t of titles(page)) {
     assert.match(t.tagName, /^H[1-6]$/, "a heading, so that it is found as one");
     assert.equal(t.querySelectorAll("button, input, a, [tabindex]").length, 0);
     assert.equal(t.getAttribute("tabindex"), null);
   }
-  const [sources, banks, manage] = titles(page).map(sectionOf);
-  assert.deepEqual([...pane(page).children].map(c => c === sources ? "sources" : c === banks ? "banks" : c === manage ? "manage" : c.className),
-    ["sources", "banks", "manage"], "the pane is those three and nothing beside them");
+  const [sources, manage, banks] = titles(page).map(sectionOf);
+  assert.deepEqual([...pane(page).children].map(c => c === sources ? "sources" : c === manage ? "manage" : c === banks ? "banks" : c.className),
+    ["sources", "manage", "banks"], "the pane is those three and nothing beside them");
 
   assert.equal(sources.querySelectorAll(".browser-chip").length, 7, "Sources are the filters");
   assert.ok(sources.contains(chip(page, "Favorites")));
@@ -668,17 +668,17 @@ test("Sources go with their filters: in the preset view, and not in the slot vie
   assert.equal(sources.hidden, false);
   tab(page, "Slots").click();
   assert.equal(sources.hidden, true, "no heading is left standing over nothing");
-  assert.deepEqual(titles(page).filter(t => !sectionOf(t).hidden).map(label), ["Banks", "Manage banks"]);
+  assert.deepEqual(titles(page).filter(t => !sectionOf(t).hidden).map(label), ["Manage banks", "Banks"]);
   tab(page, "Presets").click();
   assert.equal(sources.hidden, false);
   assert.equal(chip(page, "Factory").getAttribute("aria-pressed"), "false", "and the filters are as they were");
 });
 
-test("a destination has Banks and Manage banks and no Sources: it is choosing a place, not narrowing a list", () => {
+test("a destination has Manage banks and Banks and no Sources: it is choosing a place, not narrowing a list", () => {
   const page = bank();
   page.window.SynthBrowser.write();
-  assert.deepEqual(titles(page).map(label), ["Banks", "Manage banks"]);
-  const manage = sectionOf(titles(page)[1]);
+  assert.deepEqual(titles(page).map(label), ["Manage banks", "Banks"]);
+  const manage = sectionOf(titles(page)[0]);
   assert.deepEqual(itemsOf(menuOf(manage.querySelector(".browser-heading")).list), ["New bank..."]);
   assert.equal(manage.querySelector(".browser-bank-tools").hidden, true);
   assert.equal(manage.querySelector(".browser-archive").hidden, true, "and an archive is not somewhere to put a sound");
@@ -748,6 +748,34 @@ test("what is on view in the pane is the filters, the banks and two menu buttons
   assert.deepEqual(rest.map(named), ["Add bank", "Bank actions for My Bank"]);
   assert.ok(rest.every(b => b.getAttribute("aria-haspopup") === "menu"));
   assert.equal(onView(page, pane(page)).filter(b => b.getAttribute("role") === "menuitem").length, 0);
+});
+
+// A zip of banks lists a hundred and seventy-five, and every one is a button
+// and a Tab stop: what is done to banks has to come before them, or reaching it
+// would take a Tab for each.
+test("the menu buttons come before the list of banks, so that reaching them does not take a Tab for each bank", () => {
+  const stops = extra => {
+    const page = browser();
+    for (let i = 0; i < extra; i++) page.window.SynthBank.newBank("Bank " + i);
+    open(page);
+    const tabStops = [...pane(page).querySelectorAll("button, input")].filter(el => {
+      for (let node = el; node && node !== pane(page); node = node.parentNode) if (node.hidden) return false;
+      return true;
+    });
+    return {
+      banks: all(page, ".browser-source").length,
+      first: tabStops[0],
+      add: tabStops.indexOf(menuOf(pane(page).querySelector(".browser-heading")).trigger),
+      tools: tabStops.indexOf(menuOf(pane(page).querySelector(".browser-bank-tools")).trigger),
+      row: tabStops.indexOf(all(page, ".browser-source")[0]),
+    };
+  };
+  const few = stops(2);
+  const many = stops(40);
+  assert.ok(many.banks >= 30 && many.banks > few.banks);
+  assert.equal(many.add, few.add, "Add bank is the same number of Tabs in, however many banks there are");
+  assert.equal(many.tools, few.tools, "and so is Bank actions");
+  assert.ok(many.add < many.row && many.tools < many.row, "and both are before the first bank");
 });
 
 test("what replaces or removes something is the last item of its menu and set apart from the others: Close bank, and Move", () => {
