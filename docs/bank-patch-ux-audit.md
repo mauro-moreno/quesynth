@@ -201,7 +201,7 @@ chosen that keeps what was there:
 - **The filters are built once**, in the pane. As a result a filter that is
   pressed is shown pressed after the slot view has come and gone; before, the
   list stayed narrowed and the chip said it was not.
-- **Notes that sent a person to "Banks" say "under Filters".**
+- **Notes that sent a person to "Banks" say "under Browse".**
 
 How the criteria above are checked: `tests/ui/preset-browser-structure.test.mjs`
 (stand-in DOM: header, rows, details, menus, pane, sheet, destination) and
@@ -214,6 +214,68 @@ unchanged in what they assert; where a control moved, the helpers in
 `tests/ui/support/browser.mjs` reach it the way a person does -- open the pane,
 open the menu -- and the few assertions that named "the button that asked" name
 the menu's button.
+
+A second pass, from a review of the sidebar and the buttons in the dialog, changed
+how the pane and the dialogs say what they are and what to press. It changed no
+behaviour, no message to a host and nothing that is stored:
+
+- **The button says Browse.** It opened filters, banks, what is done to banks
+  and an archive's path, so "Filters" promised less than it did. It says
+  `Browse`, and `Browse · 2` with two filters pressed; a destination, which has
+  no filters, still says `Banks`. The filters' group keeps its name, `Filters`.
+- **The pane is three headed parts**: `Sources` (the filters, in the preset view
+  only), `Manage banks` (Add bank, Bank actions for the bank in view and, with an
+  archive, its path, Open and Close, which stay a labelled form) and `Banks` (the
+  search and the list). The headings are small quiet capitals and nothing to
+  press; the controls are words, so that what labels and what acts are not
+  mistaken. **The list of banks is last**, in the DOM, the Tab order and on the
+  screen alike: a zip lists a hundred and seventy-five banks, each a Tab stop, so
+  with the list first Add bank and Bank actions were that many stops away. A
+  structure test pins that the number of stops to them does not depend on the
+  number of banks. The Tab order through the pane is therefore filters, Add
+  bank, Bank actions, archive, bank search, banks; before it was filters, Add,
+  archive, search, More, banks.
+- **Names say what for.** `Add` is `Add bank`, and the two `More` are `Bank
+  actions` and `Slot actions`; the accessible names begin with the words on the
+  button and keep the thing (`Bank actions for My Bank`, `Slot actions for
+  Delta`). The names of the menus, the items, the group and every other control
+  are as they were. There is no `Preset actions`: the details of a preset have
+  one action, Load, and the star is not mirrored there, as above.
+- **What replaces or removes is last in its menu and set apart by a rule.**
+  Close bank and Move. It is a rule on the item and not a separator element, so
+  that every child of a menu is an item the arrows land on; an item that does
+  not apply is still pressed and refused by the panel.
+- **A bank's name leads.** It is the larger text, and where it came from and
+  `Read-only` are words under it and level with it, in the quiet ink, not
+  capitals and not boxes. One selected treatment for the bank in view.
+- **Dialogs are titled for the task**: `Browse presets`, `Write to slot`, `Save
+  preset as`; a copy and a move already were (`Copy <name> to...`). The note on a
+  ZIP that has to be opened by path says `in the Archive field under Browse`.
+- **Three tiers of action, one at a time.** The primary is filled (Done, Write
+  or Save, Load, a question's confirm); what is beside it is outlined and
+  quieter (Export, Keep, Cancel, Slot actions); an action that replaces or
+  removes something is in a destructive tier, which is a flag on the action
+  (`{ destructive: true }`) and not a colour: no fill and the brightest edge, in
+  the same silver. A question sets its confirm there when it is an Overwrite, a
+  Close bank, a Move, or a Copy onto a slot that holds something; a Copy into an
+  empty slot is a primary and nothing more. No new colour was added.
+- **What the last action said is where the action was.** Browsing, it is under
+  the tabs and over the workspace, where it is in view with the pane and the
+  details shut -- not under a list that has to be scrolled; the first message
+  makes the workspace one line shorter. A destination says it directly under its
+  form, as it did. There is still one `.browser-feedback` and one status region
+  for a message. The archive's and the bank form's own messages stay beside their
+  own controls.
+
+These are checked in `tests/ui/preset-browser-structure.test.mjs` and
+`tests/ui/preset-modal.test.mjs` (the stand-in DOM: headings, order, names, the
+rule, the tiers, titles and where the message is) and
+`tests/ui/preset-browser-layout.test.mjs` (a real engine: that the headings are
+on view in order and quiet, that a bank's name is larger than what is said about
+it, that the quiet controls are still targets, that the primary is filled and a
+destructive confirm is not, and that a message is on view under the tabs on a
+narrow window). WebKit's engine was not available where this was done, so the
+layout checks ran in Chromium only.
 
 Deferred, not done: a bottom sheet for the details (they are a section under
 the workspace).
