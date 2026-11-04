@@ -59,7 +59,10 @@
   }
 
   // Show a dialog. `title` names it, `body` is an element to put inside, and
-  // `actions` is an optional array of { label, onClick, primary } for the foot.
+  // `actions` is an optional array of { label, onClick, primary, destructive }
+  // for the foot. `destructive` puts an action that replaces or removes
+  // something in a tier of its own; in a question it is the confirm, and still
+  // the one primary.
   //
   // `options` are all optional: `stacked` puts it in front of what is open
   // instead of replacing it, `focus` is the index of the action that takes
@@ -112,7 +115,7 @@
       actions.forEach(function (a) {
         var b = document.createElement("button");
         b.type = "button";
-        b.className = "modal-action" + (a.primary ? " primary" : "");
+        b.className = "modal-action" + (a.primary ? " primary" : "") + (a.destructive ? " destructive" : "");
         b.textContent = a.label;
         // The button is handed over too, so an action can report back on it
         // -- keeping a bank writes a file nobody can see happen.
@@ -187,8 +190,9 @@
 
   // Ask before something that cannot be taken back.
   //
-  // `{ title, message, confirmLabel, cancelLabel, focus }`; resolves true only
-  // for the confirm button. Escape, the close mark, the backdrop and Cancel all
+  // `{ title, message, confirmLabel, cancelLabel, focus, destructive }`; resolves
+  // true only for the confirm button, which is set in the destructive tier when
+  // what it confirms replaces or removes something. Escape, the close mark, the backdrop and Cancel all
   // resolve false, so that dismissing the dialog is always the safe answer.
   // Focus starts on Cancel unless `focus` is "confirm": the person asked to
   // overwrite a sound should have to reach for it, and Enter on an unread
@@ -204,7 +208,7 @@
       var body = paragraphs(options.message);
       show(options.title || "Are you sure?", body, [
         { label: options.cancelLabel || "Cancel", onClick: function (closeIt) { closeIt(); } },
-        { label: options.confirmLabel || "OK", primary: true,
+        { label: options.confirmLabel || "OK", primary: true, destructive: !!options.destructive,
           onClick: function (closeIt) { settle(true); closeIt(); } },
       ], {
         stacked: true,

@@ -349,7 +349,8 @@ for (const size of Object.keys(SIZES)) {
     try {
       await page.evaluate(() => window.SynthBrowser.write());
       const dialog = page.locator(".modal").last();
-      assert.equal((await dialog.getAttribute("aria-label")), "Write");
+      assert.equal((await dialog.getAttribute("aria-label")), "Write to slot")
+      assert.equal((await dialog.locator(".modal-title").textContent()), "Write to slot");
       assert.equal(await dialog.locator(".browser-slot").count(), 128);
       assert.equal(await dialog.locator(".browser-tab").count(), 0);
       assert.equal(await dialog.locator(".browser-grid .browser-mini").count(), 0);
@@ -475,6 +476,100 @@ for (const size of Object.keys(SIZES)) {
       assert.deepEqual(slot.map(i => i.rule > 0), [false, true]);
       assert.ok(slot[1].top >= slot[0].bottom + 2);
       assert.equal((await page.locator(".browser-details .browser-more").textContent()).trim(), "Slot actions");
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: the dialogs are titled for the task they are for`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      const title = page.locator(".modal-title").last();
+      assert.equal(await title.textContent(), "Browse presets");
+      assert.equal(await page.locator(".modal").last().getAttribute("aria-label"), "Browse presets");
+      assert.ok(await visible(title));
+      assert.equal(await title.evaluate(el => el.scrollWidth - el.clientWidth <= 1), true, "and the title is all there");
+      await page.evaluate(() => window.SynthBrowser.saveAs());
+      assert.equal(await page.locator(".modal-title").last().textContent(), "Save preset as");
+      await page.evaluate(() => window.SynthBrowser.write());
+      assert.equal(await page.locator(".modal-title").last().textContent(), "Write to slot");
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: what an action says is under the tabs and over the list, and is in view with the pane and the details shut`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      await page.locator(".browser-result", {hasText: "Cathedral Strings"}).click();
+      const said = page.locator(".browser-feedback");
+      await said.waitFor({state: "visible"});
+      assert.ok((await said.textContent()).trim().length > 0);
+      const [at, bar, main, list, modal] = await Promise.all([said, page.locator(".browser-bar"), page.locator(".browser-main"),
+        page.locator(".browser-results"), page.locator(".modal")].map(box));
+      assert.ok(at.y >= bar.y + bar.height - 1, "under the tabs");
+      assert.ok(at.y + at.height <= main.y + 1, "and over the workspace");
+      assert.ok(at.x >= modal.x && at.x + at.width <= modal.x + modal.width + 1, "inside the dialog");
+      assert.equal(await visible(page.locator(".browser-details-body")), !narrow, "where the details are shut on a narrow window, it is still on view");
+      assert.ok(list.height >= 100, `and the list still has ${list.height}px`);
+      assert.ok(list.y >= at.y + at.height - 1, "under it");
+      assert.deepEqual(await sideways(page), {page: 0});
+      await shoot(page, size, "feedback");
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: choosing where to write says what was refused directly under the form that was asked`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      await page.evaluate(() => window.SynthBrowser.write());
+      const dialog = page.locator(".modal").last();
+      await dialog.locator(".browser-save-name").fill("");
+      await dialog.locator(".browser-save .modal-action").click();
+      const said = dialog.locator(".browser-feedback");
+      await said.waitFor({state: "visible"});
+      assert.match(await said.textContent(), /A name cannot be empty/);
+      const [at, form, foot, modal] = await Promise.all([said, dialog.locator(".browser-save"), dialog.locator(".modal-foot"), dialog].map(box));
+      assert.ok(at.y >= form.y + form.height - 1 && at.y - (form.y + form.height) <= 4, `directly under the form (${at.y - (form.y + form.height)}px)`);
+      assert.ok(at.y + at.height <= foot.y + 1, "and over the foot of the dialog");
+      assert.ok(at.x >= modal.x && at.x + at.width <= modal.x + modal.width + 1);
+      assert.deepEqual(await sideways(page), {page: 0});
+      await shoot(page, size, "write-refused");
+    } finally { await page.close(); }
+  });
+
+  test(`${size}: the primary action is filled, the others are quieter, and a confirm that replaces something is set apart from both`, {skip}, async () => {
+    const page = await start(size);
+    try {
+      const CLEAR = "rgba(0, 0, 0, 0)";
+      const style = locator => locator.evaluate(el => {
+        const s = getComputedStyle(el);
+        return {fill: s.backgroundColor, ink: s.color, edge: s.borderTopColor};
+      });
+      const done = await style(page.locator(".modal-foot .modal-action", {hasText: "Done"}));
+      const exported = await style(page.locator(".modal-foot .modal-action", {hasText: "Export"}));
+      assert.notEqual(done.fill, CLEAR, "Done is filled");
+      assert.equal(exported.fill, CLEAR, "Export is not");
+      assert.ok(luminance(done.ink) > luminance(exported.ink), "in a brighter ink");
+      assert.ok(luminance(done.edge) > luminance(exported.edge), "and a brighter edge");
+
+      await page.locator(".browser-tab", {hasText: "Slots"}).click();
+      if (narrow) await page.locator(".browser-details-toggle").click();
+      await page.locator(".browser-slot", {hasText: "Zither"}).focus();
+      const load = await style(page.locator(".browser-details .browser-action"));
+      const actions = await style(page.locator(".browser-details .browser-more"));
+      assert.notEqual(load.fill, CLEAR, "Load is filled");
+      assert.equal(actions.fill, CLEAR, "Slot actions is not");
+      assert.ok(luminance(load.ink) > luminance(actions.ink) && luminance(load.edge) > luminance(actions.edge));
+
+      await page.keyboard.press("ContextMenu");
+      await page.locator(".browser-details [role=menuitem]", {hasText: "Move"}).click();
+      await page.locator(".modal-foot .modal-action", {hasText: "Move here"}).click();
+      const confirm = page.locator(".modal-confirm");
+      await confirm.waitFor();
+      assert.equal(await confirm.locator(".modal-action.primary").count(), 1, "one primary in the question");
+      const sure = await style(confirm.locator(".modal-action.destructive"));
+      const cancel = await style(confirm.locator(".modal-action", {hasText: "Cancel"}));
+      assert.equal(await confirm.locator(".modal-action.destructive").count(), 1);
+      assert.ok(luminance(sure.ink) > luminance(cancel.ink) && luminance(sure.edge) > luminance(cancel.edge), "it is not the quiet one");
+      assert.notEqual(sure.fill, done.fill, "and not filled as the primary is");
+      assert.ok(luminance(sure.edge) > luminance(done.edge), "with the brightest edge there is");
+      await shoot(page, size, "confirm-destructive");
     } finally { await page.close(); }
   });
 }

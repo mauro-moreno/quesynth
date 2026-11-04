@@ -1415,7 +1415,16 @@ body.modal-open { overflow: hidden; }
   cursor: pointer;
 }
 .modal-action:hover { color: var(--ink); border-color: var(--metal-dark); }
-.modal-action.primary { color: var(--ink); border-color: var(--metal-dark); }
+
+/* Three tiers, and one of them at a time. The primary is the one that is
+ * filled; what is beside it -- Export, Keep, Cancel -- is outlined and quiet.
+ * A question that replaces or removes something sets its confirm apart from
+ * both: no fill, and the brightest edge there is, in the same silver as
+ * everything else; its words (Overwrite, Close bank, Move) say what it does. */
+.modal-action.primary { color: var(--ink); background: #23232b; border-color: var(--metal-dark); }
+.modal-action.primary:hover { border-color: var(--metal); }
+.modal-action.destructive { color: var(--ink); background: none; border-color: var(--metal); }
+.modal-action.destructive:hover { background: #16161b; border-color: var(--metal-lit); }
 
 /* A question or an error over whatever is open: narrow, because it is a
  * sentence and not a list, and opened in front of the browser rather than
@@ -1997,12 +2006,12 @@ body.modal-open { overflow: hidden; }
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--ink);
-  background: none;
+  background: #23232b;
   border: 1px solid var(--metal-dark);
   border-radius: 6px;
   cursor: pointer;
 }
-.browser-action:hover { background: #16161b; }
+.browser-action:hover { border-color: var(--metal); }
 .browser-detail-hint { margin: 14px 0 0; line-height: 1.4; color: var(--ink-faint); }
 .browser-detail-hint[hidden] { display: none; }
 
@@ -2155,6 +2164,8 @@ body.modal-open { overflow: hidden; }
 .browser-feedback[data-kind="error"],
 .browser-feedback[data-kind="warn"] { color: var(--ink); }
 .browser-feedback[data-kind="error"] { border-left: 3px solid var(--metal); padding-left: 11px; }
+/* Browsing, it is under the tabs, so its rule is below it. */
+.browser[data-mode="load"] .browser-feedback { border-top: 0; border-bottom: 1px solid var(--panel-edge); }
 
 /* ------------------------------------------------------ bank management */
 

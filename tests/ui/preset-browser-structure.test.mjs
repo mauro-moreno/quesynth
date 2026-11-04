@@ -15,7 +15,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
 import {Event} from "./support/dom.mjs";
-import {all, body, chip, dialog, focused, label, open, option, options, press, searchBox, star, tab} from "./support/browser.mjs";
+import {
+  all, body, chip, dialog, feedback, focused, front, label, open, option, options, press, searchBox, slotTool, star, submit, tab, tool, type,
+} from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
 
@@ -1074,4 +1076,136 @@ test("a matchMedia that has only the old addListener is listened to the same way
   assert.equal(pane(page).hidden, true);
   press(page.document.activeElement, "Escape");
   assert.equal(listeners.size, 0);
+});
+
+// ------------------------------------------- what a dialog is for, and what to press in it
+
+const title = page => label(front(page).querySelector(".modal-title"));
+const footer = page => [...front(page).querySelectorAll(".modal-foot .modal-action")];
+const primaries = page => [...front(page).querySelectorAll(".modal-action.primary")].map(label);
+const destructive = page => [...front(page).querySelectorAll(".modal-action.destructive")].map(label);
+const pickerSlot = (page, i) => front(page).querySelectorAll(".browser-slot")[i];
+const pressFoot = (page, words) => footer(page).find(b => label(b) === words).click();
+
+test("each dialog is titled for the task it is for, and is named by that title", () => {
+  const cases = [
+    ["browsing", page => open(page), "Browse presets"],
+    ["Write", page => page.window.SynthBrowser.write(), "Write to slot"],
+    ["Save As", page => page.window.SynthBrowser.saveAs(), "Save preset as"],
+    ["Copy", page => { open(page, {view: "slots"}); slotTool(page, "Copy", "Alpha").click(); }, "Copy Alpha to..."],
+    ["Move", page => { open(page, {view: "slots"}); slotTool(page, "Move", "Alpha").click(); }, "Move Alpha to..."],
+  ];
+  for (const [what, show, words] of cases) {
+    const page = bank();
+    show(page);
+    assert.equal(title(page), words, what);
+    assert.equal(front(page).getAttribute("aria-label"), words, what);
+  }
+});
+
+test("each dialog has one primary action, where it belongs, and what is beside it is quieter", () => {
+  const browse = bank();
+  open(browse);
+  assert.deepEqual(footer(browse).map(label), ["Export", "Done"]);
+  assert.deepEqual(primaries(browse), ["Done"]);
+
+  const slots = bank();
+  open(slots, {view: "slots"});
+  focusOn(slots, cell(slots, "Bravo"));
+  const actions = details(slots).querySelector(".browser-detail-actions");
+  assert.deepEqual(actions.querySelectorAll(".browser-action").map(label), ["Load"], "in the details, Load is the one");
+  assert.equal(actions.querySelector(".browser-more").classList.contains("browser-action"), false, "and the menu beside it is not another");
+
+  const write = bank();
+  write.window.SynthBrowser.write();
+  assert.deepEqual(primaries(write), ["Write"], "in a destination, the form's");
+  assert.deepEqual(footer(write).map(label), ["Cancel"]);
+
+  const move = bank();
+  open(move, {view: "slots"});
+  slotTool(move, "Move", "Alpha").click();
+  assert.deepEqual(footer(move).map(label), ["Cancel", "Move here"]);
+  assert.deepEqual(primaries(move), ["Move here"]);
+});
+
+test("a question that replaces or removes something sets its confirm in the destructive tier, and is still the one primary", async () => {
+  const overwrite = bank();
+  overwrite.window.SynthBrowser.write();
+  pickerSlot(overwrite, 1).click();
+  submit(overwrite.document.querySelector(".browser-save"));
+  assert.equal(front(overwrite).getAttribute("aria-label"), "Overwrite slot 001?");
+  assert.deepEqual(destructive(overwrite), ["Overwrite"], "writing over another sound");
+  assert.deepEqual(primaries(overwrite), ["Overwrite"]);
+  assert.equal(footer(overwrite).find(b => label(b) === "Cancel").classList.contains("destructive"), false);
+
+  const move = bank();
+  open(move, {view: "slots"});
+  slotTool(move, "Move", "Alpha").click();
+  pressFoot(move, "Move here");
+  assert.equal(front(move).getAttribute("aria-label"), "Move Alpha?");
+  assert.deepEqual(destructive(move), ["Move"], "a move, even into an empty slot, empties the one it came from");
+
+  const over = bank();
+  open(over, {view: "slots"});
+  slotTool(over, "Copy", "Alpha").click();
+  pickerSlot(over, 1).click();
+  pressFoot(over, "Copy here");
+  assert.deepEqual(destructive(over), ["Overwrite"], "a copy onto something");
+
+  const close = bank();
+  open(close);
+  tool(close, "Close bank").click();
+  assert.equal(front(close).getAttribute("aria-label"), "Close My Bank?");
+  assert.deepEqual(destructive(close), ["Close bank"], "closing a bank that holds what is in no file");
+  assert.deepEqual(primaries(close), ["Close bank"]);
+});
+
+test("a copy into an empty slot takes nothing away, so its question is not in the destructive tier", () => {
+  const page = bank();
+  open(page, {view: "slots"});
+  slotTool(page, "Copy", "Alpha").click();
+  pressFoot(page, "Copy here");
+  assert.equal(front(page).getAttribute("aria-label"), "Copy Alpha?");
+  assert.deepEqual(destructive(page), []);
+  assert.deepEqual(primaries(page), ["Copy"]);
+});
+
+// ---------------------------------------------- where what an action said is read
+
+test("when browsing, what the last action said is under the tabs and over the workspace, where the details and the pane being shut do not hide it", () => {
+  const page = browser();
+  const api = page.window.SynthBank;
+  open(page);
+  star(page, "Brass").click();
+  api.loadPreset({bank: 0, slot: 1});
+  api.writePreset({bank: 0, slot: 2, name: "Horn", overwrite: true});
+  chip(page, "Favorites").click();
+  option(page, "Brass").click();
+  const said = feedback(page);
+  assert.equal(said.hidden, false);
+  assert.match(label(said), /Brass is not available now/);
+
+  const kids = [...body(page).children];
+  assert.equal(kids.indexOf(said), kids.indexOf(body(page).querySelector(".browser-bar")) + 1, "directly under the tabs");
+  assert.equal(kids.indexOf(body(page).querySelector(".browser-main")), kids.indexOf(said) + 1, "and over the workspace, not under it");
+  assert.equal(pane(page).contains(said) || details(page).contains(said), false, "and not in what a narrow window shuts");
+  assert.equal(all(page, '.modal [role="status"]').filter(el => label(el) === label(said)).length, 1, "said once, in one status region");
+});
+
+test("choosing where to put something says what happened beside the form or the line that was asked, and not apart from it", () => {
+  const write = bank();
+  write.window.SynthBrowser.write();
+  type(write, write.document.querySelector(".browser-save-name"), "");
+  submit(write.document.querySelector(".browser-save"));
+  assert.match(label(feedback(write)), /A name cannot be empty/);
+  let kids = [...body(write).children];
+  assert.equal(kids.indexOf(feedback(write)), kids.indexOf(body(write).querySelector(".browser-save")) + 1, "under the form");
+  assert.equal(kids.indexOf(feedback(write)), kids.length - 1);
+
+  const move = bank();
+  open(move, {view: "slots"});
+  slotTool(move, "Move", "Alpha").click();
+  const picker = front(move).querySelector(".browser");
+  kids = [...picker.children];
+  assert.equal(kids.indexOf(picker.querySelector(".browser-feedback")), kids.indexOf(picker.querySelector(".browser-transfer")) + 1, "under the line that says what a move would do");
 });

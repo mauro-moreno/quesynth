@@ -48,7 +48,7 @@ test("Save As opens on the first empty slot of the bank, with the name of the so
   opener.focus();
   page.window.SynthBrowser.saveAs();
 
-  assert.equal(front(page).getAttribute("aria-label"), "Save As");
+  assert.equal(front(page).getAttribute("aria-label"), "Save preset as");
   assert.equal(page.document.querySelector(".browser").getAttribute("data-mode"), "saveas");
   assert.equal(all(page, '[role="tab"]').length, 0, "a destination is a slot");
   assert.equal(page.document.querySelector(".browser-bank-name").textContent, "My Bank");
@@ -197,7 +197,7 @@ test("Save, on a sound that has nowhere to go back to, opens this dialog; on one
   page.window.SynthBank.loadPreset({bank: "Theirs", slot: 0});
   page.$("preset-save").focus();
   page.$("preset-save").click();
-  assert.equal(front(page).getAttribute("aria-label"), "Save As", "somebody else's bank is not overwritten");
+  assert.equal(front(page).getAttribute("aria-label"), "Save preset as", "somebody else's bank is not overwritten");
   assert.equal(focused(page), field(page));
 });
 
@@ -218,7 +218,7 @@ test("Save As goes through writePreset and nothing else: its answer is what the 
 test("Write keeps the legacy default: the sound's own slot, with every bank listed and the read-only ones marked", () => {
   const page = app({store: false});
   page.window.SynthBrowser.write();
-  assert.equal(front(page).getAttribute("aria-label"), "Write");
+  assert.equal(front(page).getAttribute("aria-label"), "Write to slot");
   assert.equal(label(page.document.querySelector(".browser-save .modal-action")), "Write");
   assert.equal(target(page), 1, "the preset that is playing is Bravo, in slot 1");
   assert.equal(where(page), "Slot 001");

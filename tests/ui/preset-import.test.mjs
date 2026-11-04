@@ -196,7 +196,7 @@ test("while the host's shared archive is open, a bank cannot be opened in the pa
   assert.equal(await code(page.window.SynthPatchFile.importBytes(zip(patches(2)), "x.zip")), "UnsupportedFormat");
   assert.equal(await code(page.window.SynthPatchFile.importBytes(text(bankDoc([GOOD])), "x.json")), "UnsupportedFormat");
   assert.deepEqual(world(page), before);
-  await assert.rejects(page.window.SynthPatchFile.loadBytes(zip(patches(2)), "x.zip"), /Archive field in Patches/);
+  await assert.rejects(page.window.SynthPatchFile.loadBytes(zip(patches(2)), "x.zip"), /Archive field under Browse/);
 });
 
 test("the picker says what happened in the strip, whichever way it went, and hands the error on with its code", async () => {

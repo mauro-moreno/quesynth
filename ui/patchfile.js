@@ -327,7 +327,7 @@
         // decoded zip as `bank` would replace the ordinary bank and leave
         // every other client without the archive it came from.
         if (window.SynthBank && window.SynthBank.archive && window.SynthBank.archive()) {
-          throw failure("UnsupportedFormat", "Open this ZIP by its path in the Archive field in Patches.");
+          throw failure("UnsupportedFormat", "Open this ZIP by its path in the Archive field under Browse.");
         }
         if (!window.SynthSy1) throw failure("UnsupportedFormat", "the .sy1 reader is not loaded");
         var found;

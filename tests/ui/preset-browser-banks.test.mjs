@@ -478,7 +478,7 @@ test("while a shared archive is open a ZIP is not opened in the page, and the di
   open(page);
   const sent = page.sent.length;
   await choose(page, heading(page, "Import file..."), {name: "x.zip", bytes: zip(patches(2))});
-  assert.match(feedback(page).textContent, /Open this ZIP by its path in the Archive field in Patches\. ?\(UnsupportedFormat\)$/);
+  assert.match(feedback(page).textContent, /Open this ZIP by its path in the Archive field under Browse\. ?\(UnsupportedFormat\)$/);
   assert.equal(page.sent.length, sent);
 });
 

@@ -737,6 +737,7 @@
             "Export it first if you want to keep it.",
           ],
           confirmLabel: "Close bank",
+          destructive: true,
         }).then(function (yes) {
           if (!yes) return;
           api().removeBank(row.label);
@@ -1835,6 +1836,12 @@
     if (tabs) bar.appendChild(tabs);
     bar.appendChild(drawerToggle);
     wrap.appendChild(bar);
+    // What the last thing said is read where the action was. Browsing, that is
+    // the whole dialog's: under the tabs, where it is in view whether the pane
+    // and the details are open or shut, and over the workspace, so that it is
+    // not under a list that has to be scrolled. A destination says it beside
+    // its form, below.
+    if (!picking) wrap.appendChild(feedback);
     wrap.appendChild(main);
     if (!picking) main.appendChild(details);
 
@@ -1866,6 +1873,7 @@
           "Writing " + (name.trim() || "this sound") + " there will replace it.",
         ],
         confirmLabel: "Overwrite",
+        destructive: true,
       }).then(function (yes) { if (yes) write(true); });
     }
 
@@ -1887,6 +1895,9 @@
         title: verb + " " + job.name + "?",
         message: message,
         confirmLabel: there ? "Overwrite" : verb,
+        // A copy onto something replaces it, and a move empties where it came
+        // from; a copy into an empty slot takes nothing away.
+        destructive: !!there || mode === "move",
       }).then(function (yes) {
         if (!yes) return;
         var result = mode === "copy"
@@ -1925,7 +1936,7 @@
       where.setAttribute("role", "status");
       wrap.appendChild(where);
     }
-    wrap.appendChild(feedback);
+    if (picking) wrap.appendChild(feedback);
 
     // Anything the panel reports while the dialog is up -- a load that the host
     // refused, a bank that would not open, a copy that was refused -- is said
@@ -2011,7 +2022,7 @@
       });
     }
 
-    window.SynthModal.show("Patches", body, actions, { className: "modal-browser", onClose: body.dispose });
+    window.SynthModal.show("Browse presets", body, actions, { className: "modal-browser", onClose: body.dispose });
     if (view === "presets") body.focusSearch();
   }
 
@@ -2027,7 +2038,7 @@
     var was = api().current();
     var inPage = !api().archive();
     var body = build(mode);
-    window.SynthModal.show(mode === "saveas" ? "Save As" : "Write", body,
+    window.SynthModal.show(mode === "saveas" ? "Save preset as" : "Write to slot", body,
       [{ label: "Cancel", onClick: function (close) { close(); } }], {
         className: "modal-browser",
         onClose: function () {

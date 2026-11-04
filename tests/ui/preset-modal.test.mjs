@@ -61,6 +61,28 @@ test("every way of dismissing a confirmation is a no", async () => {
   }
 });
 
+test("an action can be primary, destructive or neither, and a destructive confirm is still the one primary", () => {
+  const p = page();
+  p.window.SynthModal.show("Remove it", null, [
+    {label: "Cancel", onClick: close => close()},
+    {label: "Remove", primary: true, destructive: true, onClick: close => close()},
+  ]);
+  const [cancel, remove] = buttons(dialogs(p)[0]).filter(b => b.classList.contains("modal-action"));
+  assert.deepEqual([cancel, remove].map(b => [b.classList.contains("primary"), b.classList.contains("destructive")]), [[false, false], [true, true]]);
+  p.window.SynthModal.close();
+
+  p.window.SynthModal.confirm({title: "Sure?", message: "x", confirmLabel: "Overwrite", destructive: true});
+  const asked = buttons(dialogs(p)[0]).filter(b => b.classList.contains("modal-action"));
+  assert.deepEqual(asked.map(b => [label(b), b.classList.contains("primary"), b.classList.contains("destructive")]),
+    [["Cancel", false, false], ["Overwrite", true, true]]);
+  p.window.SynthModal.close();
+
+  p.window.SynthModal.confirm({title: "Sure?", message: "x", confirmLabel: "Copy"});
+  p.window.SynthModal.alert({title: "Told", message: "x"});
+  const plain = [...dialogs(p)].flatMap(d => buttons(d).filter(b => b.classList.contains("modal-action")));
+  assert.equal(plain.filter(b => b.classList.contains("destructive")).length, 0, "a question that does not say so, and a notice, are not");
+});
+
 test("focus starts on Cancel, so that Enter on an unread question is not an overwrite", async () => {
   const p = page();
   p.window.SynthModal.confirm({title: "Sure?", message: "x", confirmLabel: "Overwrite"});

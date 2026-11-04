@@ -252,7 +252,7 @@ test("the hosted bank dialog browses the shared archive without replacing the or
   // ZIP input is deliberately not the panel's old local parser in this mode.
   const sent = page.sent.length;
   await assert.rejects(w.SynthPatchFile.loadBytes(new Uint8Array([80, 75, 3, 4]), "banks.zip"),
-    /Archive field in Patches/);
+    /Archive field under Browse/);
   assert.equal(page.sent.length, sent);
   assert.deepEqual(env.daemon.commands("bank.load_file"), []);
 
