@@ -1670,6 +1670,28 @@ body.modal-open { overflow: hidden; }
   text-transform: uppercase;
   color: var(--ink-faint);
 }
+.browser-sources .browser-heading {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--panel-edge);
+}
+
+.browser-sources .browser-heading .browser-more,
+.browser-sources .browser-bank-tools .browser-more {
+  padding: 3px 0;
+  color: var(--ink-faint);
+  border: 0;
+  border-radius: 0;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.browser-sources .browser-heading .browser-more:hover,
+.browser-sources .browser-heading .browser-more[aria-expanded="true"],
+.browser-sources .browser-bank-tools .browser-more:hover,
+.browser-sources .browser-bank-tools .browser-more[aria-expanded="true"] {
+  color: var(--ink);
+  border-color: transparent;
+}
 /* The trigger and its list take part in the row of whatever holds them: the
  * trigger beside the name, the list on a line of its own under both. */
 .browser-heading .browser-menu, .browser-bank-tools .browser-menu { display: contents; }
@@ -2164,6 +2186,11 @@ body.modal-open { overflow: hidden; }
   gap: 6px;
   padding: 2px 0 4px;
 }
+.browser-sources .browser-bank-tools {
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-edge);
+}
 .browser-bank-tools[hidden] { display: none; }
 .browser-bank-tools-name {
   flex: 1 1 0;
@@ -2184,6 +2211,11 @@ body.modal-open { overflow: hidden; }
   color: var(--ink-faint);
 }
 .browser-source-badges .browser-badge + .browser-badge::before { content: "\00b7"; margin: 0 6px; }
+.browser-sources .browser-source-badges {
+  padding-left: 28px;
+  font-size: 10px;
+  opacity: 0.78;
+}
 
 /* A menu button and what it opens, in the flow under it: this is in a region
  * that scrolls and in a dialog that is as narrow as a phone, and a list laid
