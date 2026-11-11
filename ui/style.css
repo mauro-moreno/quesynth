@@ -2151,7 +2151,9 @@ body.modal-open { overflow: hidden; }
 
 /* What the last thing that happened said. An error reads in the brightest tier
  * and carries a rule beside it, so it is not mistaken for the quiet text
- * around it; no new colour, the words carry the meaning. */
+ * around it; no new colour, the words carry the meaning. It is never above the
+ * list, where a message that arrives would move every row under the pointer:
+ * under the workspace, or in the details; see placeFeedback in ui/browser.js. */
 .browser-feedback {
   flex: 0 0 auto;
   margin: 0;
@@ -2164,8 +2166,16 @@ body.modal-open { overflow: hidden; }
 .browser-feedback[data-kind="error"],
 .browser-feedback[data-kind="warn"] { color: var(--ink); }
 .browser-feedback[data-kind="error"] { border-left: 3px solid var(--metal); padding-left: 11px; }
-/* Browsing, it is under the tabs, so its rule is below it. */
-.browser[data-mode="load"] .browser-feedback { border-top: 0; border-bottom: 1px solid var(--panel-edge); }
+/* In the details, beside the list, it follows what they say and what they
+ * offer, and is stuck to the foot of the column where the column is short
+ * enough to scroll, so that it is read without scrolling to it. */
+.browser-details > .browser-feedback {
+  position: sticky;
+  bottom: 0;
+  padding: 10px 16px;
+  background: var(--panel);
+}
+.browser-details > .browser-feedback[data-kind="error"] { padding-left: 13px; }
 
 /* ------------------------------------------------------ bank management */
 

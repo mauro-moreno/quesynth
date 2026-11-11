@@ -1172,8 +1172,8 @@ test("a copy into an empty slot takes nothing away, so its question is not in th
 
 // ---------------------------------------------- where what an action said is read
 
-test("when browsing, what the last action said is under the tabs and over the workspace, where the details and the pane being shut do not hide it", () => {
-  const page = browser();
+test("when browsing, what the last action said is never above the workspace: in the details beside it, and under it where the window is narrow", () => {
+  const page = sizing();
   const api = page.window.SynthBank;
   open(page);
   star(page, "Brass").click();
@@ -1184,12 +1184,42 @@ test("when browsing, what the last action said is under the tabs and over the wo
   const said = feedback(page);
   assert.equal(said.hidden, false);
   assert.match(label(said), /Brass is not available now/);
+  assert.equal(said.getAttribute("role"), "status");
 
-  const kids = [...body(page).children];
-  assert.equal(kids.indexOf(said), kids.indexOf(body(page).querySelector(".browser-bar")) + 1, "directly under the tabs");
-  assert.equal(kids.indexOf(body(page).querySelector(".browser-main")), kids.indexOf(said) + 1, "and over the workspace, not under it");
-  assert.equal(pane(page).contains(said) || details(page).contains(said), false, "and not in what a narrow window shuts");
+  const main = body(page).querySelector(".browser-main");
+  const kids = () => [...body(page).children];
+  assert.equal(kids().indexOf(said), -1, "not a child of the dialog's body, over or under the workspace, where there is room for the details");
+  assert.equal(details(page).lastElementChild, said, "it is in the details, after what they say and what they offer");
+  assert.equal(details(page).querySelector(".browser-details-body").contains(said), false, "and not in the part of them that a person shuts");
+  assert.equal(pane(page).contains(said), false, "nor in the pane");
   assert.equal(all(page, '.modal [role="status"]').filter(el => label(el) === label(said)).length, 1, "said once, in one status region");
+
+  page.window.resize(true);
+  assert.equal(feedback(page), said, "the same element, not a second one");
+  assert.equal(kids().indexOf(said), kids().indexOf(main) + 1, "on a narrow window it is directly under the workspace");
+  assert.equal(kids().at(-1), said, "and nothing is under it");
+  assert.equal(main.contains(said), false, "not in what the sheet of banks covers, or in the details that are shut");
+  assert.match(label(said), /Brass is not available now/, "saying what it said");
+  assert.equal(all(page, '.modal [role="status"]').filter(el => label(el) === label(said)).length, 1);
+
+  page.window.resize(false);
+  assert.equal(details(page).lastElementChild, said, "and back in the details when there is room for them");
+  assert.equal(kids().indexOf(said), -1);
+});
+
+test("a dialog that is opened narrow has what the last action said under the workspace from the start, and never above it", () => {
+  const page = phone();
+  open(page);
+  const said = feedback(page);
+  const main = body(page).querySelector(".browser-main");
+  const kids = [...body(page).children];
+  assert.equal(said.hidden, true, "nothing said yet");
+  assert.equal(kids.indexOf(said), kids.indexOf(main) + 1, "under the workspace");
+  option(page, "Brass").click();
+  assert.match(label(said), /Loaded Quesynth Factory \/ 002 Brass/);
+  assert.equal(said.hidden, false);
+  assert.equal([...body(page).children].at(-1), said, "and it is the last thing in the dialog's body");
+  assert.ok(kids.indexOf(said) > kids.indexOf(body(page).querySelector(".browser-bar")), "never over the tabs' row either");
 });
 
 test("choosing where to put something says what happened beside the form or the line that was asked, and not apart from it", () => {

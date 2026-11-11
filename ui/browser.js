@@ -466,7 +466,8 @@
 
     // What the last thing said, where it is read. The strip says it too, but
     // the strip is behind the dialog: a refusal nobody can see is the one way
-    // a write can go wrong without the person knowing why.
+    // a write can go wrong without the person knowing why. Where it goes in the
+    // dialog is `placeFeedback`'s to say.
     var feedback = element("p", "browser-feedback");
     feedback.setAttribute("role", "status");
     feedback.hidden = true;
@@ -1608,6 +1609,7 @@
       var inDetails = detailsBody.contains(active);
       setDrawerOpen(!narrow());
       setDetailsOpen(!narrow());
+      placeFeedback();
       if (narrow() && inPane) drawerToggle.focus();
       else if (narrow() && inDetails) detailsToggle.focus();
     }
@@ -1836,14 +1838,36 @@
     if (tabs) bar.appendChild(tabs);
     bar.appendChild(drawerToggle);
     wrap.appendChild(bar);
-    // What the last thing said is read where the action was. Browsing, that is
-    // the whole dialog's: under the tabs, where it is in view whether the pane
-    // and the details are open or shut, and over the workspace, so that it is
-    // not under a list that has to be scrolled. A destination says it beside
-    // its form, below.
-    if (!picking) wrap.appendChild(feedback);
+    // What the last thing said is read beside the thing it was said about and
+    // never above the list. A message that is added above it -- its first one
+    // is a line, and one that wraps is three -- pushes every row down under a
+    // pointer that is still on the row it clicked, so a second click, or a
+    // double-click, loads its neighbour. So it goes where adding to it moves
+    // nothing a person is aiming at:
+    //
+    //   beside the list, in the details, where there is a column for them: the
+    //   list is not in that column, and nor is what the details are asked to
+    //   do, which comes first in it;
+    //
+    //   under the list, where there is not, which is the width of a phone and a
+    //   narrow plugin window: the details are a shut section there and the pane
+    //   is a sheet over the whole workspace, so a message in either would be
+    //   under what a person has just done. Under the list, the list gives up
+    //   its bottom and keeps its top.
+    //
+    // One element and one status region either way; it is moved when the window
+    // crosses the breakpoint, with the rest. A destination says it directly
+    // under its form, below.
+    function placeFeedback() {
+      if (picking) return;
+      var home = narrow() ? wrap : details;
+      if (feedback.parentNode !== home) home.appendChild(feedback);
+    }
     wrap.appendChild(main);
-    if (!picking) main.appendChild(details);
+    if (!picking) {
+      main.appendChild(details);
+      placeFeedback();
+    }
 
     // Put the sound that is playing in the slot that is chosen, or ask first.
     //
