@@ -89,7 +89,6 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if changed {
 		p.params_dirty = true
 	}
-	vst3_notify_program(p)
 }
 
 // `select_program` for the main thread.
@@ -103,7 +102,9 @@ vst3_notify_program :: proc "contextless" (p: ^Plugin) {
 	if p == nil || p.handler == nil {return}
 	handler := (^vst3.IComponentHandler)(p.handler)
 	if handler.vtbl.perform_edit != nil {
+		if handler.vtbl.begin_edit != nil {handler.vtbl.begin_edit(p.handler, PROGRAM_PARAM_ID)}
 		handler.vtbl.perform_edit(p.handler, PROGRAM_PARAM_ID, program_normalized(p.program))
+		if handler.vtbl.end_edit != nil {handler.vtbl.end_edit(p.handler, PROGRAM_PARAM_ID)}
 	}
 }
 
@@ -118,7 +119,6 @@ stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 		return
 	}
 	panel.session_select_slot(&p.session, program)
-	vst3_notify_program(p)
 	// A program is the whole patch, so there is nothing of the current set to
 	// carry over; and a program the instrument already holds changes nothing.
 	for i in 0 ..< PARAM_COUNT {

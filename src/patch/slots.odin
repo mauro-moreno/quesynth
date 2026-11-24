@@ -61,8 +61,14 @@ slots_load :: proc(s: ^Slots, bank: Bank) {
 	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
 	if revision & 1 == 0 {revision += 1}
 	intrinsics.atomic_store_explicit(&s.revision, revision, .Release)
-	s^ = {}
-	intrinsics.atomic_store_explicit(&s.revision, revision, .Relaxed)
+	// Clear payload only; copying a zero Slots here would overwrite the
+	// seqlock and briefly publish an even revision over half-written data.
+	s.values = {}
+	s.filled = {}
+	s.names = {}
+	s.name_len = {}
+	s.label = {}
+	s.label_len = 0
 	put_name(&s.label, &s.label_len, bank.name if bank.name != "" else "Bank")
 
 	for p, i in bank.patches {
@@ -84,8 +90,13 @@ slots_load_factory :: proc(s: ^Slots) {
 	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
 	if revision & 1 == 0 {revision += 1}
 	intrinsics.atomic_store_explicit(&s.revision, revision, .Release)
-	s^ = {}
-	intrinsics.atomic_store_explicit(&s.revision, revision, .Relaxed)
+	// Clear payload only; preserve the odd lock state while filling it.
+	s.values = {}
+	s.filled = {}
+	s.names = {}
+	s.name_len = {}
+	s.label = {}
+	s.label_len = 0
 	put_name(&s.label, &s.label_len, "Factory")
 	for i in 0 ..< FACTORY_SLOTS {
 		values, ok := factory_patch(i)
@@ -105,7 +116,9 @@ slots_replace :: proc(dst, src: ^Slots) {
 	revision := intrinsics.atomic_load_explicit(&dst.revision, .Relaxed) + 1
 	if revision & 1 == 0 {revision += 1}
 	intrinsics.atomic_store_explicit(&dst.revision, revision, .Release)
-	dst^ = src^
+	next := src^
+	next.revision = revision
+	dst^ = next
 	intrinsics.atomic_store_explicit(&dst.revision, revision + 1, .Release)
 }
 

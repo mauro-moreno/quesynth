@@ -223,8 +223,7 @@ Session :: struct {
 	has_pending:     bool,
 	pending:         Selection,
 	pending_saved:   bool,
-	pending_bank:    [65536]u8,
-	pending_bank_len: int,
+	pending_bank:    string,
 	selection_revision: u32,
 }
 
@@ -327,19 +326,42 @@ session_init :: proc "contextless" (s: ^Session, source: Bank_Source) {
 // else. A program change is a choice like any other and ends whatever restore
 // was waiting to be retried.
 session_select_slot :: proc "contextless" (s: ^Session, slot: int) {
-	// Publish the complete selection as one seqlocked update so project capture
-	// cannot pair an old slot with a new bank/name.
-	revision := intrinsics.atomic_load_explicit(&s.selection_revision, .Relaxed) + 1
-	if revision & 1 == 0 {revision += 1}
-	intrinsics.atomic_store_explicit(&s.selection_revision, revision, .Release)
+	selection_begin_write(s)
 	s.selection.origin = s.bank_origin if s.bank_origin != .None else .Factory
 	s.selection.has_slot = true
 	s.selection.slot = slot
 	s.selection.bound = true
+	selection_end_write(s)
 	s.has_pending = false
 	s.restore = .Not_Requested
 	s.restore_error = .None
+}
+
+@(private)
+selection_begin_write :: proc "contextless" (s: ^Session) -> u32 {
+	revision := intrinsics.atomic_load_explicit(&s.selection_revision, .Relaxed) + 1
+	if revision & 1 == 0 {revision += 1}
+	intrinsics.atomic_store_explicit(&s.selection_revision, revision, .Release)
+	return revision
+}
+
+@(private)
+selection_end_write :: proc "contextless" (s: ^Session) {
+	revision := intrinsics.atomic_load_explicit(&s.selection_revision, .Relaxed)
 	intrinsics.atomic_store_explicit(&s.selection_revision, revision + 1, .Release)
+}
+
+// Copy the complete selection, retrying if an audio-thread program change
+// overlaps the save.  The revision belongs to the handoff, not to an
+// individual field, so a trailer cannot combine two selections.
+selection_snapshot :: proc "contextless" (s: ^Session) -> Selection {
+	for {
+		before := intrinsics.atomic_load_explicit(&s.selection_revision, .Acquire)
+		if before & 1 != 0 {continue}
+		selection := s.selection
+		after := intrinsics.atomic_load_explicit(&s.selection_revision, .Acquire)
+		if before == after {return selection}
+	}
 }
 
 // The panel says what it selected.
@@ -355,7 +377,9 @@ session_select :: proc(s: ^Session, slots: ^patch.Slots, request: Selection) -> 
 		sel.origin = s.bank_origin if sel.has_slot else .Session
 	}
 	selection_bind(&sel, slots)
+	selection_begin_write(s)
 	s.selection = sel
+	selection_end_write(s)
 	session_forget_restore(s)
 	return true
 }
@@ -367,8 +391,9 @@ selection_bind :: proc(sel: ^Selection, slots: ^patch.Slots) {
 	sel.bound = sel.has_slot && text_get(&sel.label) == patch.slots_label(slots)
 }
 
-session_forget_restore :: proc "contextless" (s: ^Session) {
-	s.pending_bank_len = 0
+session_forget_restore :: proc (s: ^Session) {
+	if s.pending_bank != "" {delete(s.pending_bank)}
+	s.pending_bank = ""
 	s.has_pending = false
 	s.pending = {}
 	s.restore = .Not_Requested
@@ -486,7 +511,10 @@ session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.a
 		if p.has_slot && text_get(&p.label) != label {
 			// A bank opened after a failed restore is the bank the next project
 			// must carry; never return early with only the stale restore identity.
-			if s.bank_source == .Adopted && s.pending_bank_len > 0 {
+			// Once the user opens another bank, that adopted bank is the only
+			// bank the next project can reproduce. Never write the stale failed
+			// identity with no bank (or embed a previous failed bank).
+			if s.bank_source == .Adopted {
 				t.origin = .Session
 				t.has_slot = false
 				json := patch.slots_write_json(slots, allocator)
@@ -496,14 +524,14 @@ session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.a
 				return trailer_encode(&t, allocator)
 			}
 			t.bank_saved = s.pending_saved
-			if s.pending_bank_len > 0 {
+			if len(s.pending_bank) > 0 {
 				t.embedded = true
-				t.bank_json = s.pending_bank[:s.pending_bank_len]
+				t.bank_json = transmute([]u8)s.pending_bank
 			}
 			return trailer_encode(&t, allocator)
 		}
 	} else if selection_known(&s.selection) {
-		selection := s.selection
+		selection := selection_snapshot(s)
 		view := selection_view(&selection, slots)
 		if view.has_slot && view.label != label {
 			// A slot of some other bank than the one playing is not a slot of
@@ -583,7 +611,9 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 
 	switch status {
 	case .Absent:
+		selection_begin_write(s)
 		s.selection = {}
+		selection_end_write(s)
 		session_forget_restore(s)
 		return {}
 	case .Unknown_Version:
@@ -682,8 +712,12 @@ restore_failed :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error:
 }
 
 restore_failed_with_bank :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error: Restore_Error, bank_json: []u8) -> Restore_Result {
-	s.pending_bank_len = min(len(bank_json), len(s.pending_bank))
-	for i in 0 ..< s.pending_bank_len {s.pending_bank[i] = bank_json[i]}
+	if s.pending_bank != "" {delete(s.pending_bank)}
+	if len(bank_json) > 0 {
+		s.pending_bank = strings.clone(transmute(string)bank_json, context.allocator)
+	} else {
+		s.pending_bank = ""
+	}
 	s.restore = .Failed
 	s.restore_error = error
 	s.has_pending = wanted != nil
@@ -706,7 +740,9 @@ restore_succeeded :: proc(s: ^Session, wanted: Selection) -> Restore_Result {
 	// the label and name are the bank's from here on.
 	sel.bound = sel.has_slot
 	sel.slot_empty = false
+	selection_begin_write(s)
 	s.selection = sel
+	selection_end_write(s)
 	s.has_pending = false
 	s.pending = {}
 	s.restore = .Restored
@@ -752,7 +788,7 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 	}
 
 	if from_file {
-		slots^ = saved^
+		patch.slots_replace(slots, saved)
 		s.bank_source = .Saved
 		s.bank_origin = .User
 		bank_changed = true
@@ -761,6 +797,6 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 }
 
 // The user dismissed it. Nothing is put back and nothing is remembered.
-session_discard :: proc "contextless" (s: ^Session) {
+session_discard :: proc (s: ^Session) {
 	session_forget_restore(s)
 }

@@ -396,7 +396,13 @@ a_failed_restore_does_not_put_the_playing_bank_under_the_missing_ones_name :: pr
 	trailer, status := panel.trailer_decode(saved)
 	testing.expect_value(t, status, panel.Trailer_Status.Ok)
 	testing.expect_value(t, panel.text_get(&trailer.label), "My Bank")
-	testing.expect(t, !trailer.embedded, "the imported bank was written as if it were My Bank")
+	testing.expect(t, trailer.embedded, "the opened bank was not carried with the pending restore")
+	bank, err := patch.parse_bank_json(trailer.bank_json)
+	testing.expect_value(t, err, patch.Json_Error.None)
+	if err == .None {
+		defer patch.destroy_bank(bank)
+		testing.expect_value(t, bank.name, "Imported Meanwhile")
+	}
 }
 
 @(test)
