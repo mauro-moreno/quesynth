@@ -3,6 +3,7 @@ package synth_vst3
 import "base:intrinsics"
 
 import "../../src/patch"
+import "../../src/vst3"
 import "../panel"
 
 // The bank this instance plays out of, and keeping it.
@@ -88,6 +89,7 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if changed {
 		p.params_dirty = true
 	}
+	vst3_notify_program(p)
 }
 
 // `select_program` for the main thread.
@@ -97,6 +99,14 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 // controller must not change it under a block that is rendering. The other
 // path -- a program change arriving as a parameter change inside `process` --
 // is the audio thread already and stays a direct write.
+vst3_notify_program :: proc "contextless" (p: ^Plugin) {
+	if p == nil || p.handler == nil {return}
+	handler := (^vst3.IComponentHandler)(p.handler)
+	if handler.vtbl.perform_edit != nil {
+		handler.vtbl.perform_edit(p.handler, PROGRAM_PARAM_ID, program_normalized(p.program))
+	}
+}
+
 stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if program < 0 || program >= patch.FACTORY_SLOTS {
 		return
@@ -108,6 +118,7 @@ stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 		return
 	}
 	panel.session_select_slot(&p.session, program)
+	vst3_notify_program(p)
 	// A program is the whole patch, so there is nothing of the current set to
 	// carry over; and a program the instrument already holds changes nothing.
 	for i in 0 ..< PARAM_COUNT {

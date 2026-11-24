@@ -196,6 +196,7 @@ editor_select :: proc(user: rawptr, selection: panel.Selection) {
 	p := ed.plugin
 	if panel.session_select(&p.session, &p.slots, selection) && p.session.selection.bound {
 		p.program = i32(p.session.selection.slot)
+		vst3_notify_program(p)
 	}
 }
 
@@ -208,6 +209,7 @@ editor_restore_retry :: proc(user: rawptr) -> bool {
 	result, bank_changed := panel.session_retry_saved(&p.session, &p.slots)
 	if result.has_program {
 		p.program = i32(result.program)
+		vst3_notify_program(p)
 	}
 	return bank_changed
 }

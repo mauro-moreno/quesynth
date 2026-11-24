@@ -248,6 +248,7 @@ load_state :: proc(p: ^Plugin, stream: ^vst3.IBStream) -> vst3.Result {
 	result := panel.session_restore(&p.session, &p.slots, tail[:])
 	if result.has_program {
 		p.program = i32(result.program)
+		vst3_notify_program(p)
 	}
 
 	// A session being loaded under an open editor. The panel asks for the whole

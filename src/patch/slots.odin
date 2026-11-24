@@ -1,5 +1,7 @@
 package patch
 
+import "base:intrinsics"
+
 // A bank a plugin can hold, change and save.
 //
 // The embedded factory bank in factory.odin is one copy for the whole process
@@ -28,6 +30,9 @@ Slots :: struct {
 	// What the bank calls itself, for the panel's strip.
 	label:    [SLOT_NAME_MAX]u8,
 	label_len: int,
+	// Seqlock for the main-thread bank replacement. Audio readers retry rather
+	// than observing a partially copied ~50 KB bank.
+	revision: u64,
 }
 
 @(private = "file")
@@ -52,7 +57,12 @@ put_name :: proc "contextless" (into: ^[SLOT_NAME_MAX]u8, length: ^int, text: st
 // Slots past the end of a short bank stay empty too, which is what pads a
 // sixteen-entry file back out to a hundred and twenty-eight.
 slots_load :: proc(s: ^Slots, bank: Bank) {
+	if s == nil {return}
+	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
+	if revision & 1 == 0 {revision += 1}
+	intrinsics.atomic_store_explicit(&s.revision, revision, .Release)
 	s^ = {}
+	intrinsics.atomic_store_explicit(&s.revision, revision, .Relaxed)
 	put_name(&s.label, &s.label_len, bank.name if bank.name != "" else "Bank")
 
 	for p, i in bank.patches {
@@ -64,12 +74,18 @@ slots_load :: proc(s: ^Slots, bank: Bank) {
 		s.filled[i] = true
 		put_name(&s.names[i], &s.name_len[i], p.name)
 	}
+	intrinsics.atomic_store_explicit(&s.revision, revision + 1, .Release)
 }
 
 // Fill from the bank compiled into the binary. What a plugin starts with when
 // nothing has been saved yet.
 slots_load_factory :: proc(s: ^Slots) {
+	if s == nil {return}
+	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
+	if revision & 1 == 0 {revision += 1}
+	intrinsics.atomic_store_explicit(&s.revision, revision, .Release)
 	s^ = {}
+	intrinsics.atomic_store_explicit(&s.revision, revision, .Relaxed)
 	put_name(&s.label, &s.label_len, "Factory")
 	for i in 0 ..< FACTORY_SLOTS {
 		values, ok := factory_patch(i)
@@ -80,13 +96,30 @@ slots_load_factory :: proc(s: ^Slots) {
 		s.filled[i] = true
 		put_name(&s.names[i], &s.name_len[i], factory_name(i))
 	}
+	intrinsics.atomic_store_explicit(&s.revision, revision + 1, .Release)
+}
+
+// Replace a live bank under the same seqlock used by slots_load.
+slots_replace :: proc(dst, src: ^Slots) {
+	if dst == nil || src == nil {return}
+	revision := intrinsics.atomic_load_explicit(&dst.revision, .Relaxed) + 1
+	if revision & 1 == 0 {revision += 1}
+	intrinsics.atomic_store_explicit(&dst.revision, revision, .Release)
+	dst^ = src^
+	intrinsics.atomic_store_explicit(&dst.revision, revision + 1, .Release)
 }
 
 // Contextless, because a program change arrives on the audio thread.
 slots_patch :: proc "contextless" (s: ^Slots, slot: int) -> (values: [PARAMETER_COUNT]i32, ok: bool) {
 	if s == nil || slot < 0 || slot >= FACTORY_SLOTS {return {}, false}
-	if !s.filled[slot] {return {}, false}
-	return s.values[slot], true
+	for {
+		before := intrinsics.atomic_load_explicit(&s.revision, .Acquire)
+		if before & 1 != 0 {continue}
+		filled := s.filled[slot]
+		if filled {values = s.values[slot]}
+		after := intrinsics.atomic_load_explicit(&s.revision, .Acquire)
+		if before == after {return values, filled}
+	}
 }
 
 slots_name :: proc "contextless" (s: ^Slots, slot: int) -> string {

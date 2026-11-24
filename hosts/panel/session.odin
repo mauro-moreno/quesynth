@@ -1,5 +1,6 @@
 package panel
 
+import "base:intrinsics"
 import "core:strings"
 
 import "../../src/patch"
@@ -222,6 +223,9 @@ Session :: struct {
 	has_pending:     bool,
 	pending:         Selection,
 	pending_saved:   bool,
+	pending_bank:    [65536]u8,
+	pending_bank_len: int,
+	selection_revision: u32,
 }
 
 // Whether the bank being played is the one this instance keeps, which is what
@@ -323,6 +327,11 @@ session_init :: proc "contextless" (s: ^Session, source: Bank_Source) {
 // else. A program change is a choice like any other and ends whatever restore
 // was waiting to be retried.
 session_select_slot :: proc "contextless" (s: ^Session, slot: int) {
+	// Publish the complete selection as one seqlocked update so project capture
+	// cannot pair an old slot with a new bank/name.
+	revision := intrinsics.atomic_load_explicit(&s.selection_revision, .Relaxed) + 1
+	if revision & 1 == 0 {revision += 1}
+	intrinsics.atomic_store_explicit(&s.selection_revision, revision, .Release)
 	s.selection.origin = s.bank_origin if s.bank_origin != .None else .Factory
 	s.selection.has_slot = true
 	s.selection.slot = slot
@@ -330,6 +339,7 @@ session_select_slot :: proc "contextless" (s: ^Session, slot: int) {
 	s.has_pending = false
 	s.restore = .Not_Requested
 	s.restore_error = .None
+	intrinsics.atomic_store_explicit(&s.selection_revision, revision + 1, .Release)
 }
 
 // The panel says what it selected.
@@ -358,6 +368,7 @@ selection_bind :: proc(sel: ^Selection, slots: ^patch.Slots) {
 }
 
 session_forget_restore :: proc "contextless" (s: ^Session) {
+	s.pending_bank_len = 0
 	s.has_pending = false
 	s.pending = {}
 	s.restore = .Not_Requested
@@ -473,13 +484,27 @@ session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.a
 		t.name = p.name
 		t.slot_empty = p.has_slot && p.slot_empty
 		if p.has_slot && text_get(&p.label) != label {
-			// It names a bank this instance is not playing, so what the
-			// instance is playing is not the bank this identity belongs to.
+			// A bank opened after a failed restore is the bank the next project
+			// must carry; never return early with only the stale restore identity.
+			if s.bank_source == .Adopted && s.pending_bank_len > 0 {
+				t.origin = .Session
+				t.has_slot = false
+				json := patch.slots_write_json(slots, allocator)
+				defer delete(json, allocator)
+				t.embedded = true
+				t.bank_json = transmute([]u8)json
+				return trailer_encode(&t, allocator)
+			}
 			t.bank_saved = s.pending_saved
+			if s.pending_bank_len > 0 {
+				t.embedded = true
+				t.bank_json = s.pending_bank[:s.pending_bank_len]
+			}
 			return trailer_encode(&t, allocator)
 		}
 	} else if selection_known(&s.selection) {
-		view := selection_view(&s.selection, slots)
+		selection := s.selection
+		view := selection_view(&selection, slots)
 		if view.has_slot && view.label != label {
 			// A slot of some other bank than the one playing is not a slot of
 			// this one, and written as one it would come back as somebody
@@ -585,7 +610,7 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 	if t.embedded {
 		parsed, err := patch.parse_bank_json(t.bank_json)
 		if err != .None {
-			return restore_failed(s, &wanted, t.bank_saved, .Host_State_Rejected)
+			return restore_failed_with_bank(s, &wanted, t.bank_saved, .Host_State_Rejected, t.bank_json)
 		}
 		defer patch.destroy_bank(parsed)
 		candidate = new(patch.Slots)
@@ -594,7 +619,7 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 		// A trailer that says one bank and carries another is not one this
 		// build wrote.
 		if t.has_slot && patch.slots_label(candidate) != label {
-			return restore_failed(s, &wanted, t.bank_saved, .Host_State_Rejected)
+			return restore_failed_with_bank(s, &wanted, t.bank_saved, .Host_State_Rejected, t.bank_json)
 		}
 	} else if t.has_slot && patch.slots_label(slots) != label {
 		return restore_failed(s, &wanted, t.bank_saved, .Missing_Bank)
@@ -604,12 +629,12 @@ session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restor
 	// the project carries, and refusing the slot first threw it away with the
 	// bank that was all there.
 	if t.has_slot && !slot_restorable(target, t.slot, t.slot_empty) {
-		return restore_failed(s, &wanted, t.bank_saved, .Invalid_Program)
+		return restore_failed_with_bank(s, &wanted, t.bank_saved, .Invalid_Program, t.bank_json if t.embedded else nil)
 	}
 
 	if t.embedded {
 		session_note_kept(s, slots)
-		slots^ = candidate^
+		patch.slots_replace(slots, candidate)
 		s.bank_source = .Adopted
 		// What the page called it when it handed it over is not in the state;
 		// an adopted bank that held a slot is somebody's imported bank.
@@ -653,6 +678,12 @@ slot_restorable :: proc "contextless" (slots: ^patch.Slots, slot: int, was_empty
 
 @(private)
 restore_failed :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error: Restore_Error) -> Restore_Result {
+	return restore_failed_with_bank(s, wanted, bank_saved, error, nil)
+}
+
+restore_failed_with_bank :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error: Restore_Error, bank_json: []u8) -> Restore_Result {
+	s.pending_bank_len = min(len(bank_json), len(s.pending_bank))
+	for i in 0 ..< s.pending_bank_len {s.pending_bank[i] = bank_json[i]}
 	s.restore = .Failed
 	s.restore_error = error
 	s.has_pending = wanted != nil

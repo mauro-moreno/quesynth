@@ -270,6 +270,8 @@ gui_select :: proc(user: rawptr, selection: panel.Selection) {
 	}
 	if panel.session_select(&s.session, &s.slots, selection) && s.session.selection.bound {
 		s.program = s.session.selection.slot
+		s.notify_host = true
+		if s.host != nil && s.host.request_callback != nil {s.host.request_callback(s.host)}
 	}
 }
 
@@ -281,6 +283,8 @@ gui_restore_retry :: proc(user: rawptr) -> bool {
 	result, bank_changed := panel.session_retry_saved(&s.session, &s.slots)
 	if result.has_program {
 		s.program = result.program
+		s.notify_host = true
+		if s.host != nil && s.host.request_callback != nil {s.host.request_callback(s.host)}
 	}
 	return bank_changed
 }
