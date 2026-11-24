@@ -398,7 +398,7 @@ test("with an archive open, the slot view still says what is playing, beside the
   assert.match(label(now(page)), /^Playing 001 Strings \u00b7 Factory \/ Quesynth Factory/);
 });
 
-test("a click on a slot still loads it and a double click loads it and closes the browser", () => {
+test("a click on a slot still loads it, and a double click loads it too and leaves the workspace open", () => {
   const page = bank();
   open(page, {view: "slots"});
   cell(page, "Alpha").click();
@@ -406,7 +406,7 @@ test("a click on a slot still loads it and a double click loads it and closes th
   assert.ok(dialog(page));
   cell(page, "Bravo").dispatchEvent(new Event("dblclick", {bubbles: true}));
   assert.equal(plain(page.window.SynthBank.selection()).presetName, "Bravo");
-  assert.equal(dialog(page), null);
+  assert.ok(dialog(page), "the workspace is closed by its own button and Escape, not by loading");
 });
 
 // ---------------------------------------------------- choosing a destination

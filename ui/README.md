@@ -629,7 +629,7 @@ item and the arrows land on all of them.
 The slot view is a slot and an index and nothing else: the number first, in a
 column of its own, then the name, and an empty slot is a dash that is still a
 button and still addressable. All 128, `000` to `127`, in the same order and
-the same columns. A click loads, a double click loads and closes, as they did;
+the same columns. A click loads, and so does a double click, which leaves the workspace open;
 the details are of the slot that is playing, or of the one a person has looked
 at **without loading it**, which is the one with the keyboard focus, or the one
 asked about with the menu key, Shift+F10, a right click or, on a touch screen, a

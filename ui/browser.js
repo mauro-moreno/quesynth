@@ -1125,7 +1125,7 @@
           b.addEventListener("dblclick", function () {
             if (browsing) api().loadBrowsed(i);
             else api().load(i);
-            closeWorkspace();
+            window.SynthModal.close();
           });
           // A slot is looked at, in the details, without being loaded: by the
           // keyboard, which has the focus on it before it has done anything
