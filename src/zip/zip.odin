@@ -27,6 +27,9 @@ METHOD_DEFLATE :: 8
 // plain u32s in the file, so without a cap one entry could demand 4 GiB.
 MAX_ENTRY_SIZE :: 64 * 1024 * 1024
 
+// zlib keeps at least this much working space while growing its output buffer.
+INFLATE_WORKING_MIN :: 1 * 1024 * 1024
+
 // The smallest central-directory file header, with no name, extra or comment.
 @(private)
 CENTRAL_MIN :: 46
@@ -258,7 +261,7 @@ inflate_entry :: proc(
 		budget := Inflate_Budget {
 			backing   = scratch.procedure != nil ? scratch : runtime.heap_allocator(),
 			// One byte over: zlib wants a spare slot past its last write.
-			max_alloc = max(want + 1, compress.COMPRESS_OUTPUT_ALLOCATE_MIN),
+			max_alloc = max(want + 1, INFLATE_WORKING_MIN),
 		}
 		buf: bytes.Buffer
 		err: zlib.Error
