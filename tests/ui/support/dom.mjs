@@ -52,6 +52,8 @@ class Node {
   get firstChild() { return this.childNodes[0] || null; }
   get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; }
   get children() { return this.childNodes.filter(n => n.nodeType === 1); }
+  get firstElementChild() { return this.children[0] || null; }
+  get lastElementChild() { return this.children[this.children.length - 1] || null; }
   get parentElement() { return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; }
 
   appendChild(node) { return this.insertBefore(node, null); }
@@ -393,7 +395,8 @@ export function mountIndexSkeleton(document) {
     ]),
     h("button", { type: "button", class: "bank-step", "data-step": "1", "data-icon": "next", "aria-label": "Next patch" }, ["NEXT"]),
     h("div", { class: "bank-actions" }, [
-      h("button", { type: "button", class: "bank-action", id: "preset-browse", "data-icon": "open", "aria-label": "Open the preset browser" }, ["Browser"]),
+      h("button", { type: "button", class: "bank-action", id: "preset-browse", "data-icon": "open", "aria-label": "Open the preset browser",
+        "aria-expanded": "false", "aria-controls": "browser-workspace" }, ["Browser"]),
       h("button", { type: "button", class: "bank-action", id: "preset-save", "data-icon": "save", "aria-label": "Save preset" }, ["Save"]),
       h("div", { class: "bank-menu" }, [
         h("button", { type: "button", class: "bank-action", id: "preset-menu", "data-icon": "config", "aria-haspopup": "menu",

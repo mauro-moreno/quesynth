@@ -263,7 +263,7 @@ test("Close bank takes a bank that was opened out of the session without touchin
   tool(page, "Close bank").click();
 
   assert.ok(!sourceNames(page).includes("Alfmeister Bank"));
-  assert.equal(dialogs(page).length, 1, "a bank that is somebody's file is closed without a question");
+  assert.equal(dialogs(page).length, 0, "a bank that is somebody's file is closed without a question");
   assert.deepEqual(page.values(), values, "the sound is as it was");
   assert.deepEqual(plain(page.window.SynthBank.selection()),
     {origin: "session", source: "none", bank: "", slot: null, presetName: "Harp", archive: null},
@@ -296,7 +296,7 @@ test("a bank the person made is asked about first, because closing it is the one
   all(page, ".modal-foot button").find(b => label(b) === "Close bank" && front(page).contains(b)).click();
   await settle();
   assert.ok(!sourceNames(page).includes("My Bank"));
-  assert.equal(dialogs(page).length, 1);
+  assert.equal(dialogs(page).length, 0, "the question is gone and the browser stays open");
 });
 
 test("a bank that was opened from a file is asked about too once something has been written into it, and not before", async () => {
@@ -333,7 +333,7 @@ test("a bank of the person's own with nothing in it closes without a question", 
   open(page);
   sourceRow(page, "Scratch").click();
   tool(page, "Close bank").click();
-  assert.equal(dialogs(page).length, 1);
+  assert.equal(dialogs(page).length, 0, "closing it asked nothing");
   assert.ok(!sourceNames(page).includes("Scratch"));
 });
 
@@ -487,8 +487,10 @@ test("Import is offered where a bank is being browsed and nowhere a destination 
   open(page);
   assert.deepEqual(headingLabels(page), ["New bank...", "Import file...", "Import folder..."]);
   page.window.SynthBrowser.write();
-  assert.deepEqual(headingLabels(page), ["New bank..."]);
-  assert.equal(body(page).querySelector(".browser-bank-tools").hidden, true);
+  const chooser = front(page);
+  assert.ok(chooser.classList.contains("modal"), "choosing a destination is a dialog over the browser");
+  assert.deepEqual([...chooser.querySelectorAll('.browser-heading [role="menuitem"]')].map(label), ["New bank..."]);
+  assert.equal(chooser.querySelector(".browser-bank-tools").hidden, true);
 });
 
 test("the archive area is as it was: a path, Open and Close, and what the host said", () => {
@@ -503,7 +505,7 @@ test("the archive area is as it was: a path, Open and Close, and what the host s
   area.querySelector('[aria-label="Close archive"]').click();
   assert.deepEqual(page.sent, [{type: "archive-close"}]);
   page.window.SynthBrowser.write();
-  assert.equal(body(page).querySelector(".browser-archive").hidden, true, "never offered where a destination is chosen");
+  assert.equal(front(page).querySelector(".browser-archive").hidden, true, "never offered where a destination is chosen");
 });
 
 // ------------------------------------------------- what stays the person's own

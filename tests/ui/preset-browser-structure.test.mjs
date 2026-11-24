@@ -1046,20 +1046,24 @@ test("focus that was in the details goes to their button and the menu open there
   assert.equal(focused(page), slotCell, "a slot is in neither, and keeps it");
 });
 
-test("the browser listens for the crossing while it is open and stops when it is closed", () => {
+test("the workspace listens for the crossing from the first time it is opened, once, and a destination listens only while it is open", () => {
   const page = sizing();
   assert.equal(page.window.listening(), 0);
   open(page);
   assert.equal(page.window.listening(), 1);
   page.window.SynthBrowser.write();
-  assert.equal(page.window.listening(), 1, "a destination replaces it, and takes its place");
+  assert.equal(page.window.listening(), 2, "a destination is one more, beside the workspace that stays under it");
   press(page.document.activeElement, "Escape");
-  assert.equal(page.window.listening(), 0, "nothing is left listening once the dialog is gone");
+  assert.equal(page.window.listening(), 1, "nothing of the destination is left listening once its dialog is gone");
+  page.document.querySelector(".browser-workspace-close").click();
+  assert.equal(page.window.listening(), 1, "the workspace is kept for the next time it is opened, and with it its listener");
+  open(page);
+  assert.equal(page.window.listening(), 1, "opening it again does not add another");
   page.window.resize(true);
   page.window.resize(false);
 });
 
-test("a matchMedia that has only the old addListener is listened to the same way", () => {
+test("a matchMedia that has only the old addListener is listened to the same way, and is listened to once however often the workspace is opened", () => {
   const listeners = new Set();
   const page = browser({before: window => {
     const query = {
@@ -1075,7 +1079,9 @@ test("a matchMedia that has only the old addListener is listened to the same way
   page.window.shrink();
   assert.equal(pane(page).hidden, true);
   press(page.document.activeElement, "Escape");
-  assert.equal(listeners.size, 0);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, true);
+  open(page);
+  assert.equal(listeners.size, 1);
 });
 
 // ------------------------------------------- what a dialog is for, and what to press in it
@@ -1186,21 +1192,22 @@ test("when browsing, what the last action said is never above the workspace: in 
   assert.match(label(said), /Brass is not available now/);
   assert.equal(said.getAttribute("role"), "status");
 
-  const main = body(page).querySelector(".browser-main");
+  const slots = body(page).querySelector('[role="tabpanel"]');
   const kids = () => [...body(page).children];
-  assert.equal(kids().indexOf(said), -1, "not a child of the dialog's body, over or under the workspace, where there is room for the details");
+  assert.equal(kids().indexOf(said), -1, "not a child of the browser's body, over or under the workspace, where there is room for the details");
   assert.equal(details(page).lastElementChild, said, "it is in the details, after what they say and what they offer");
   assert.equal(details(page).querySelector(".browser-details-body").contains(said), false, "and not in the part of them that a person shuts");
   assert.equal(pane(page).contains(said), false, "nor in the pane");
-  assert.equal(all(page, '.modal [role="status"]').filter(el => label(el) === label(said)).length, 1, "said once, in one status region");
+  assert.equal(all(page, '#browser-workspace [role="status"]').filter(el => label(el) === label(said)).length, 1, "said once, in one status region");
 
   page.window.resize(true);
   assert.equal(feedback(page), said, "the same element, not a second one");
-  assert.equal(kids().indexOf(said), kids().indexOf(main) + 1, "on a narrow window it is directly under the workspace");
-  assert.equal(kids().at(-1), said, "and nothing is under it");
-  assert.equal(main.contains(said), false, "not in what the sheet of banks covers, or in the details that are shut");
+  assert.equal(slots.lastElementChild, said, "on a narrow window, with the sheet of banks shut, it is the last thing in the workspace's own column");
+  assert.equal(kids().indexOf(said), -1, "so it is neither over the workspace nor outside it");
+  assert.equal(details(page).contains(said), false, "and not in the details that are shut");
+  assert.equal(pane(page).contains(said), false, "nor in what the sheet of banks covers");
   assert.match(label(said), /Brass is not available now/, "saying what it said");
-  assert.equal(all(page, '.modal [role="status"]').filter(el => label(el) === label(said)).length, 1);
+  assert.equal(all(page, '#browser-workspace [role="status"]').filter(el => label(el) === label(said)).length, 1);
 
   page.window.resize(false);
   assert.equal(details(page).lastElementChild, said, "and back in the details when there is room for them");
@@ -1211,15 +1218,17 @@ test("a dialog that is opened narrow has what the last action said under the wor
   const page = phone();
   open(page);
   const said = feedback(page);
-  const main = body(page).querySelector(".browser-main");
-  const kids = [...body(page).children];
+  const slots = body(page).querySelector('[role="tabpanel"]');
+  const bar = body(page).querySelector(".browser-bar");
   assert.equal(said.hidden, true, "nothing said yet");
-  assert.equal(kids.indexOf(said), kids.indexOf(main) + 1, "under the workspace");
+  assert.equal(slots.lastElementChild, said, "in the workspace's own column, under what it lists");
   option(page, "Brass").click();
-  assert.match(label(said), /Loaded Quesynth Factory \/ 002 Brass/);
+  assert.match(label(said), /Loaded Brass from Quesynth Factory \/ 002/);
   assert.equal(said.hidden, false);
-  assert.equal([...body(page).children].at(-1), said, "and it is the last thing in the dialog's body");
-  assert.ok(kids.indexOf(said) > kids.indexOf(body(page).querySelector(".browser-bar")), "never over the tabs' row either");
+  assert.equal(slots.lastElementChild, said, "and it is still the last thing in that column");
+  assert.equal(bar.contains(said), false, "never over the tabs' row either");
+  const inOrder = [...page.document.querySelectorAll("*")];
+  assert.ok(inOrder.indexOf(said) > inOrder.indexOf(bar), "it follows the tabs' row in the page");
 });
 
 test("choosing where to put something says what happened beside the form or the line that was asked, and not apart from it", () => {
