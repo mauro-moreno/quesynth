@@ -548,11 +548,14 @@ the button say what it does, and what it asks and what it does are as they were.
 
 ### The preset browser
 
-`SynthBrowser.open()` opens the **preset view**; `SynthBrowser.open({ view:
+`SynthBrowser.open()` opens the persistent in-page **preset view**; `SynthBrowser.open({ view:
 "slots" })`, or the Slots tab, opens the bank and slot view, which is the browser
 as it was before there was a preset view (`.browser-source`, `.browser-slot`,
 `.browser-slot.on`, `.browser-archive-path` and the rest are unchanged). The two
-are tabs of one dialog, `role="tablist"`, and the arrows move between them.
+are tabs of one workspace, `role="tablist"`, and the arrows move between them.
+The workspace keeps bank navigation visible in the page and is closed with its
+CLOSE button or Escape. Save As/Write, rename, overwrite/move/copy, import
+errors, and restoration recovery remain focused modal tasks.
 
 #### How the browser is laid out
 

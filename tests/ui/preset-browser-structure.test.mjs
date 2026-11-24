@@ -323,10 +323,10 @@ test("choosing Copy gives the focus to the button first, so the dialog it opens 
   trigger.click();
   const copy = page.document.querySelector('[aria-label="Copy Delta to..."]');
   copy.click();
-  assert.equal(all(page, ".modal").length, 2, "the picker is over the browser");
+  assert.equal(all(page, ".modal").length, 1, "the picker is focused over the workspace");
   assert.equal(page.document.getElementById(trigger.getAttribute("aria-controls")).hidden, true);
   press(focused(page), "Escape");
-  assert.equal(all(page, ".modal").length, 1);
+  assert.equal(all(page, ".modal").length, 0);
   assert.equal(focused(page), trigger);
 });
 
@@ -1080,8 +1080,8 @@ test("a matchMedia that has only the old addListener is listened to the same way
 
 // ------------------------------------------- what a dialog is for, and what to press in it
 
-const title = page => label(front(page).querySelector(".modal-title"));
-const footer = page => [...front(page).querySelectorAll(".modal-foot .modal-action")];
+const title = page => label(front(page).querySelector(".modal-title") || front(page).querySelector(".browser-workspace-head h1"));
+const footer = page => [...front(page).querySelectorAll(".modal-foot .modal-action, .browser-workspace-actions .modal-action")];
 const primaries = page => [...front(page).querySelectorAll(".modal-action.primary")].map(label);
 const destructive = page => [...front(page).querySelectorAll(".modal-action.destructive")].map(label);
 const pickerSlot = (page, i) => front(page).querySelectorAll(".browser-slot")[i];

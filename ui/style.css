@@ -1440,6 +1440,61 @@ body.modal-open { overflow: hidden; }
 .modal-message p { margin: 0 0 8px; }
 .modal-message p:last-child { margin-bottom: 0; }
 
+/* ------------------------------------------------------- browser workspace */
+
+/* Browsing is part of the panel, not an interruption. It occupies the same
+ * working area as the editor while the bank strip remains visible below it;
+ * focused forms and confirmations still use the modal shell. */
+.browser-workspace {
+  position: fixed;
+  inset: var(--head-h) 0 calc(var(--bank-h) + var(--keys-h, 0px)) 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--panel-edge);
+}
+.browser-workspace[hidden] { display: none; }
+.browser-workspace-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel-edge);
+}
+.browser-workspace-head h1 {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: var(--type-micro);
+  font-weight: 600;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.browser-workspace-actions { display: flex; gap: 6px; }
+.browser-workspace-close {
+  appearance: none;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: var(--type-micro);
+  letter-spacing: .08em;
+  color: var(--ink-dim);
+  background: none;
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.browser-workspace-close:hover { color: var(--ink); border-color: var(--metal-dark); }
+.browser-workspace-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.browser-workspace-body > .browser { min-height: 0; }
+
 /* ----------------------------------------------------------- bank browser */
 
 .browser {
@@ -2025,6 +2080,13 @@ body.modal-open { overflow: hidden; }
     border-left: 0;
     border-top: 1px solid var(--panel-edge);
   }
+  .browser-details .browser-menu-list {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--bank-h) + var(--keys-h, 0px) + 8px);
+    z-index: 35;
+  }
 }
 
 /* What a destination dialog is for, said above the slots it lists. */
@@ -2316,9 +2378,9 @@ body.modal-open { overflow: hidden; }
   overflow-wrap: anywhere;
 }
 
-/* A phone has the height the dialog needs and not an inch to spare, so the
- * dialog takes all of it and the chrome around the workspace is tightened:
- * what the person came for is the list, and it gets what is left. */
+/* A phone has the height the workspace needs and not an inch to spare, so its
+ * chrome is tightened: what the person came for is the list, and it gets what
+ * is left. */
 @media (max-width: 620px) {
   .modal.modal-browser { height: 100%; }
   .browser-current { padding: 8px 12px 6px; }
@@ -2326,6 +2388,15 @@ body.modal-open { overflow: hidden; }
   .browser-toolbar { padding: 8px 12px 6px; }
   .browser-details-toggle { padding: 8px 12px; }
   .browser-details-body { padding: 0 12px 12px; }
+  /* Feedback is status, not new content: keep the rows under the pointer at
+   * the same coordinates while it appears. */
+  .browser-workspace-body > .browser > .browser-feedback,
+  .browser > .browser-feedback {
+    flex: 0 0 auto;
+    position: relative;
+    z-index: 3;
+    background: var(--panel);
+  }
 }
 
 /* --------------------------------------------------------------- configure */

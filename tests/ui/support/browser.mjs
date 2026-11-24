@@ -5,7 +5,12 @@
 import {Event} from "./dom.mjs";
 import {FakeFileReader} from "./files.mjs";
 
-export const dialog = page => page.document.querySelector(".modal");
+export const dialog = page => {
+  const modal = page.document.querySelector(".modal");
+  if (modal) return modal;
+  const workspace = page.document.getElementById("browser-workspace");
+  return workspace && !workspace.hidden ? workspace : null;
+};
 export const body = page => page.document.querySelector(".browser");
 export const all = (page, selector) => page.document.querySelectorAll(selector);
 export const label = el => el.textContent.trim();
@@ -101,7 +106,7 @@ export function slotTool(page, kind, name) {
 export const slotMenu = (page, name) => page.document.querySelector(`[aria-label="Slot actions for ${name}"]`);
 export const disabled = el => el.getAttribute("aria-disabled") === "true";
 export const dialogs = page => all(page, ".modal");
-export const front = page => dialogs(page).at(-1);
+export const front = page => dialogs(page).at(-1) || dialog(page);
 export const submit = form => form.dispatchEvent(new Event("submit"));
 export const wait = (ms = 15) => new Promise(resolve => setTimeout(resolve, ms));
 

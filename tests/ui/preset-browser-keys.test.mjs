@@ -4,16 +4,17 @@
 // The contract (specs/2026-10-27-preset-bank-ux.md, 9): keyboard navigation,
 // Escape, focus return and screen-reader labels work. Concretely here: the
 // results are a listbox of options with a roving focus, Enter chooses, Escape
-// clears a search before it closes, Tab cannot leave the dialog, focus goes
-// back to whatever opened it, and every control has a name.
+// clears a search before it closes the workspace, focus returns to whatever
+// opened it, and every control has a name.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import {bootPanel, compiledBank, plain, sound} from "./support/panel.mjs";
-import {all, body, chip, dialog, feedback, focused, heading, label, names, open, option, options, press, pressed, searchBox, selected, slotTool, star, tab, type} from "./support/browser.mjs";
+import {all, body, chip, feedback, focused, heading, label, names, open, option, options, press, pressed, searchBox, selected, slotTool, star, tab, type} from "./support/browser.mjs";
 
 const FACTORY = compiledBank("Quesynth Factory", ["Init", "Strings", "Brass", "Bells", null, "Choir"], 70);
 const browser = () => bootPanel({bank: FACTORY, host: null, store: true});
+const workspace = page => page.document.getElementById("browser-workspace");
 
 // ------------------------------------------------------------------- the names
 
@@ -32,7 +33,7 @@ test("every control in the browser has a name, in both views and in the destinat
   const page = browser();
   page.window.SynthBank.newBank("Second");
   const named = el => (el.getAttribute("aria-label") || label(el) || el.getAttribute("title") || "").length > 0;
-  const nameless = () => all(page, ".modal button, .modal input, .modal [role='option'], .modal [role='tab']")
+  const nameless = () => all(page, "#browser-workspace button, #browser-workspace input, #browser-workspace [role='option'], #browser-workspace [role='tab'], .modal button, .modal input, .modal [role='option'], .modal [role='tab']")
     .filter(el => !named(el)).map(el => `${el.tagName} ${el.className}`);
 
   open(page);
@@ -228,13 +229,13 @@ test("Escape clears the search first, and closes only when there is nothing left
 
   const first = press(searchBox(page), "Escape");
   assert.equal(first.defaultPrevented, true);
-  assert.ok(dialog(page), "the dialog is still there");
+  assert.equal(workspace(page).hidden, false, "the workspace is still there");
   assert.equal(searchBox(page).value, "");
   assert.equal(names(page).length, 5);
   assert.equal(focused(page), searchBox(page));
 
   press(searchBox(page), "Escape");
-  assert.equal(dialog(page), null, "and the second press closes it");
+  assert.equal(workspace(page).hidden, true, "and the second press closes it");
   assert.equal(focused(page), opener, "with focus back on what opened it");
 });
 
@@ -245,11 +246,11 @@ test("Escape from a row clears the search too, and puts the focus in the box", (
   press(searchBox(page), "ArrowDown");
   assert.equal(focused(page), option(page, "Brass"));
   press(focused(page), "Escape");
-  assert.ok(dialog(page));
+  assert.equal(workspace(page).hidden, false);
   assert.equal(searchBox(page).value, "");
   assert.equal(focused(page), searchBox(page));
   press(focused(page), "Escape");
-  assert.equal(dialog(page), null);
+  assert.equal(workspace(page).hidden, true);
 });
 
 test("with no search to clear, Escape closes the browser at once", () => {
@@ -257,7 +258,7 @@ test("with no search to clear, Escape closes the browser at once", () => {
   const opener = page.$("preset-browse");
   open(page);
   press(searchBox(page), "Escape");
-  assert.equal(dialog(page), null);
+  assert.equal(workspace(page).hidden, true);
   assert.equal(focused(page), opener);
 });
 
@@ -266,7 +267,7 @@ test("Escape in the slot view closes it, as it always did", () => {
   const opener = page.$("preset-browse");
   open(page, {view: "slots"});
   press(all(page, ".browser-slot")[3], "Escape");
-  assert.equal(dialog(page), null);
+  assert.equal(workspace(page).hidden, true);
   assert.equal(focused(page), opener);
 });
 
@@ -275,31 +276,26 @@ test("Escape in the slot view closes it, as it always did", () => {
 test("focus goes back to whatever opened the browser, however it is closed", () => {
   for (const close of [
     page => press(searchBox(page), "Escape"),
-    page => all(page, ".modal-foot button").find(b => label(b) === "Done").click(),
-    page => page.document.querySelector(".modal-close").click(),
+    page => all(page, ".browser-workspace-actions .modal-action").find(b => label(b) === "Done").click(),
+    page => page.document.querySelector(".browser-workspace-close").click(),
   ]) {
     const page = browser();
     const opener = page.$("preset-menu");
     open(page, undefined, "preset-menu");
     close(page);
-    assert.equal(dialog(page), null);
+    assert.equal(workspace(page).hidden, true);
     assert.equal(focused(page), opener);
   }
 });
 
-test("Tab cannot leave the browser: it goes round from the last control to the first and back", () => {
+test("the persistent workspace exposes its close and action controls to keyboard users", () => {
   const page = browser();
   open(page);
-  const controls = all(page, ".modal button, .modal input, .modal [tabindex]").filter(el => el.getAttribute("tabindex") !== "-1");
-  const first = controls[0], last = controls[controls.length - 1];
-  assert.equal(label(first), "CLOSE");
-  assert.equal(label(last), "Done");
-
-  last.focus();
-  assert.equal(press(last, "Tab").defaultPrevented, true);
-  assert.equal(focused(page), first);
-  assert.equal(press(first, "Tab", {shiftKey: true}).defaultPrevented, true);
-  assert.equal(focused(page), last);
+  const controls = all(page, "#browser-workspace button, #browser-workspace input, #browser-workspace [tabindex]")
+    .filter(el => el.getAttribute("tabindex") !== "-1");
+  assert.equal(label(controls[0]), "CLOSE");
+  assert.ok(controls.some(control => label(control) === "Done"));
+  for (const control of controls) assert.ok((control.getAttribute("aria-label") || label(control)).length > 0);
 });
 
 test("a question asked over the browser leaves the browser as it was when it is answered", async () => {
@@ -308,10 +304,10 @@ test("a question asked over the browser leaves the browser as it was when it is 
   type(page, searchBox(page), "br");
   press(searchBox(page), "ArrowDown");
   const answer = page.window.SynthModal.confirm({title: "Sure?", message: "x"});
-  assert.equal(all(page, ".modal").length, 2);
+  assert.equal(all(page, ".modal").length, 1);
   press(focused(page), "Escape");
   assert.equal(await answer, false);
-  assert.equal(all(page, ".modal").length, 1);
+  assert.equal(all(page, ".modal").length, 0);
   assert.equal(searchBox(page).value, "br", "the search was not cleared by the answer");
   assert.equal(focused(page), option(page, "Brass"), "and the focus is back on the row it was on");
 });

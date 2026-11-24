@@ -431,6 +431,7 @@
         if (addMenu) addMenu.close();
         if (toolsMenu) toolsMenu.close();
       }
+      if (feedback) placeFeedback();
     }
     // A bank has been chosen, and the sheet is over what it was chosen to look
     // at: out of the way, and the focus where the person started.
@@ -475,6 +476,7 @@
       feedback.textContent = text || "";
       feedback.hidden = !text;
       feedback.setAttribute("data-kind", kind || "ok");
+      if (!picking && narrow()) placeFeedback();
     }
 
     // The bank the dialog is looking at, as `list()` describes it, or null.
@@ -1786,6 +1788,7 @@
       } else {
         paintSlots();
       }
+      if (!picking && narrow() && feedback.parentNode !== right) right.appendChild(feedback);
     }
 
     function paintAll() {
@@ -1860,7 +1863,7 @@
     // under its form, below.
     function placeFeedback() {
       if (picking) return;
-      var home = narrow() ? wrap : details;
+      var home = narrow() ? (left.hidden ? right : wrap) : details;
       if (feedback.parentNode !== home) home.appendChild(feedback);
     }
     wrap.appendChild(main);
@@ -1988,6 +1991,7 @@
     paintAll();
 
     wrap.refresh = function () { paintAll(); };
+    wrap.setView = setView;
     wrap.dispose = function () {
       stopListening();
       cancelHold();
@@ -2006,10 +2010,73 @@
 
   // -------------------------------------------------------------------- open
 
+  var workspaceBody = null;
+  var workspace = null;
+  var workspaceClose = null;
+  var workspaceOpener = null;
+
+  function closeWorkspace() {
+    if (!workspace) return;
+    workspace.hidden = true;
+    var opener = document.getElementById("preset-browse");
+    if (opener) opener.setAttribute("aria-expanded", "false");
+    if (workspaceOpener && workspaceOpener.focus) workspaceOpener.focus();
+  }
+
   function openBrowser(options) {
     if (!api()) return;
     var view = options && options.view === "slots" ? "slots" : "presets";
-    var body = build("load", view);
+    workspace = workspace || document.getElementById("browser-workspace");
+    if (!workspace) {
+      workspace = element("section", "browser-workspace");
+      workspace.id = "browser-workspace";
+      workspace.setAttribute("aria-label", "Browse presets");
+      var heading = element("header", "browser-workspace-head");
+      heading.appendChild(element("h1", null, "Browse presets"));
+      workspaceClose = button("browser-workspace-close", "CLOSE");
+      workspaceClose.setAttribute("aria-label", "Close preset browser");
+      heading.appendChild(workspaceClose);
+      workspace.appendChild(heading);
+      workspaceBody = element("div", "browser-workspace-body");
+      workspace.appendChild(workspaceBody);
+      document.body.appendChild(workspace);
+    }
+    workspaceClose = workspaceClose || workspace.querySelector(".browser-workspace-close");
+    workspaceBody = workspaceBody || workspace.querySelector(".browser-workspace-body");
+    if (workspaceClose && !workspaceClose._browserBound) {
+      workspaceClose._browserBound = true;
+      workspaceClose.addEventListener("click", closeWorkspace);
+      workspace.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && !e.defaultPrevented) {
+          e.preventDefault();
+          closeWorkspace();
+        }
+      });
+    }
+    var active = document.activeElement;
+    workspaceOpener = active && active !== document.body ? active : document.getElementById("preset-browse");
+    var body = workspace._browserBody;
+    if (body) {
+      if (body.setView) body.setView(view);
+      body.refresh();
+      workspace.hidden = false;
+      var opener = document.getElementById("preset-browse");
+      if (opener) {
+        opener.setAttribute("aria-expanded", "true");
+        opener.setAttribute("aria-controls", "browser-workspace");
+      }
+      if (view === "presets") body.focusSearch();
+      return;
+    }
+    body = build("load", view);
+    workspace._browserBody = body;
+    workspaceBody.appendChild(body);
+    workspace.hidden = false;
+    var opener = document.getElementById("preset-browse");
+    if (opener) {
+      opener.setAttribute("aria-expanded", "true");
+      opener.setAttribute("aria-controls", "browser-workspace");
+    }
 
     var actions = [
       {
@@ -2046,12 +2113,22 @@
       });
     }
 
-    window.SynthModal.show("Browse presets", body, actions, { className: "modal-browser", onClose: body.dispose });
+    var actionHost = workspace.querySelector(".browser-workspace-actions");
+    if (!actionHost) {
+      actionHost = element("div", "browser-workspace-actions");
+      workspace.querySelector(".browser-workspace-head").appendChild(actionHost);
+    }
+    actionHost.textContent = "";
+    actions.forEach(function (a) {
+      var b = button("modal-action" + (a.primary ? " primary" : ""), a.label);
+      b.addEventListener("click", function () { a.onClick(function () { closeWorkspace(); }, b); });
+      actionHost.appendChild(b);
+    });
     if (view === "presets") body.focusSearch();
   }
 
-  // Write and Save As: the dialog that chooses where the sound goes. Replaces
-  // the browser if it is open, as Write always did.
+  // Write and Save As: focused dialogs that choose where the sound goes. The
+  // persistent browser stays in the page underneath when it is open.
   //
   // Choosing looks at other banks, and the bank in view is the one NEXT and
   // PREV step through, so a dialog that was cancelled puts it back: leaving it

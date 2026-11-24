@@ -113,7 +113,8 @@ test("Copy to... asks where, then asks whether, and only then writes", async () 
   const before = world(page);
   page.forget();
 
-  assert.equal(dialogs(page).length, 2, "over the browser, not instead of it");
+  assert.equal(dialogs(page).length, 1, "one focused picker modal");
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false, "the workspace remains visible underneath");
   assert.equal(front(page).getAttribute("aria-label"), "Copy Bravo to...");
   assert.equal(sentence(page), "Copy Bravo from My Bank / 001 to My Bank / 002, which is empty.",
     "it starts on the first empty slot of the bank the preset is in");
@@ -130,7 +131,8 @@ test("Copy to... asks where, then asks whether, and only then writes", async () 
 
   foot(page, "Copy here").click();
   const question = front(page);
-  assert.equal(dialogs(page).length, 3);
+  assert.equal(dialogs(page).length, 2, "picker plus one focused confirmation modal");
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.equal(question.getAttribute("role"), "alertdialog");
   assert.equal(question.getAttribute("aria-label"), "Copy Bravo?");
   assert.deepEqual(within(question, ".modal-message p").map(p => p.textContent),
@@ -141,7 +143,8 @@ test("Copy to... asks where, then asks whether, and only then writes", async () 
 
   foot(page, "Copy").click();
   await settle();
-  assert.equal(dialogs(page).length, 1, "the picker closed behind it");
+  assert.equal(dialogs(page).length, 0, "the focused picker closed after the write");
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false, "the workspace remains open");
   assert.equal(names(page, "Second Bank")[5], "Bravo");
   assert.deepEqual(names(page, "My Bank"), before.names[0], "the original is where it was");
   assert.deepEqual(page.values(), before.values, "and the sound that is playing is not changed by a copy");
@@ -163,12 +166,13 @@ test("Cancel, at either question, changes nothing, and the picker is left as it 
   foot(page, "Copy here").click();
   foot(page, "Cancel").click();
   await settle();
-  assert.equal(dialogs(page).length, 2, "the question is gone and the picker is not");
+  assert.equal(dialogs(page).length, 1, "the question is gone and the picker remains");
   assert.equal(within(picker(page), ".browser-slot.target")[0], pickerSlot(page, 5), "with the choice still made");
   assert.equal(names(page, "Second Bank")[5], null);
 
   foot(page, "Cancel").click();
-  assert.equal(dialogs(page).length, 1);
+  assert.equal(dialogs(page).length, 0);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.deepEqual(world(page), before);
   assert.equal(page.window.SynthBank.label(), "My Bank", "even looking elsewhere is put back");
   assert.equal(focused(page), slotMenu(page, "Bravo"));
@@ -180,10 +184,12 @@ test("Escape and the backdrop are Cancel for the question as well", async () => 
   open(page, {view: "slots"});
   slotTool(page, "Copy", "Alpha").click();
   foot(page, "Copy here").click();
-  assert.equal(dialogs(page).length, 3);
+  assert.equal(dialogs(page).length, 2);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   page.document.dispatchEvent(Object.assign(new page.window.Event("keydown"), {key: "Escape"}));
   await settle();
-  assert.equal(dialogs(page).length, 2);
+  assert.equal(dialogs(page).length, 1);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.equal(names(page, "My Bank")[2], null, "nothing was copied into the first empty slot");
 });
 
@@ -275,7 +281,8 @@ test("a move out of a read-only bank is refused in the panel's words, and the pi
 
   assert.match(feedback(page).textContent, /Quesynth Factory is read-only, so nothing can be moved out of it\. \(ReadOnlyBank\)/);
   assert.equal(feedback(page).getAttribute("data-kind"), "error");
-  assert.equal(dialogs(page).length, 2, "the picker is still there");
+  assert.equal(dialogs(page).length, 1, "the picker is still there");
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.deepEqual(world(page), before);
   assert.equal(page.text("bank-status"), "Quesynth Factory is read-only, so nothing can be moved out of it.", "and the strip says it too");
 });
@@ -306,7 +313,8 @@ test("a read-only destination is listed and marked, and choosing it gets the pan
   foot(page, "Copy").click();
   await settle();
   assert.match(feedback(page).textContent, /Quesynth Factory is read-only\. \(ReadOnlyBank\)/);
-  assert.equal(dialogs(page).length, 2);
+  assert.equal(dialogs(page).length, 1);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.deepEqual(world(page), before);
 });
 
@@ -390,9 +398,11 @@ test("Tab stays in the dialog that is in front, and Escape takes them away one a
 
   press(focused(page), "Escape");
   await settle();
-  assert.equal(dialogs(page).length, 2);
+  assert.equal(dialogs(page).length, 1);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.equal(front(page).getAttribute("aria-label"), "Copy Bravo to...");
   press(focused(page), "Escape");
-  assert.equal(dialogs(page).length, 1);
+  assert.equal(dialogs(page).length, 0);
+  assert.equal(page.document.getElementById("browser-workspace").hidden, false);
   assert.ok(focused(page) === slotMenu(page, "Bravo"), "and the person is where they started");
 });

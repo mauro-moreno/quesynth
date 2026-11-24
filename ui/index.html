@@ -36,6 +36,14 @@
   </section>
 </div>
 
+<section id="browser-workspace" class="browser-workspace" hidden aria-label="Browse presets">
+  <header class="browser-workspace-head">
+    <h1>Browse presets</h1>
+    <button type="button" class="browser-workspace-close" aria-label="Close preset browser">CLOSE</button>
+  </header>
+  <div class="browser-workspace-body"></div>
+</section>
+
 <div id="bank" class="bank">
   <button type="button" class="bank-step" data-step="-1" data-icon="previous" aria-label="Previous patch">PREV</button>
   <div class="bank-read">
@@ -48,7 +56,8 @@
   <button type="button" class="bank-step" data-step="1" data-icon="next" aria-label="Next patch">NEXT</button>
   <div class="bank-actions">
     <button type="button" class="bank-action" id="preset-browse" data-icon="open"
-            aria-label="Open the preset browser">Browser</button>
+            aria-label="Open the preset browser" aria-expanded="false"
+            aria-controls="browser-workspace">Browser</button>
     <button type="button" class="bank-action" id="preset-save" data-icon="save"
             aria-label="Save preset">Save</button>
     <div class="bank-menu">

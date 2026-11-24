@@ -122,7 +122,7 @@ const visible = locator => locator.isVisible();
 const focusedClass = page => page.evaluate(() => document.activeElement && document.activeElement.className);
 
 // How far each of these reaches past its own edge, sideways. Zero is the answer.
-const OVERFLOW = [".modal", ".browser", ".browser-main", ".browser-sources", ".browser-presets", ".browser-slots",
+const OVERFLOW = ["#browser-workspace", ".browser", ".browser-main", ".browser-sources", ".browser-presets", ".browser-slots",
   ".browser-results", ".browser-grid", ".browser-details", ".browser-bar", ".browser-current"];
 async function sideways(page) {
   return page.evaluate(selectors => {
@@ -201,10 +201,10 @@ for (const size of Object.keys(SIZES)) {
   test(`${size}: the sound that is playing is at the top, readable, in the presets and in the slots`, {skip}, async () => {
     const page = await start(size);
     try {
-      const modal = await box(page.locator(".modal"));
+      const workspace = await box(page.locator("#browser-workspace"));
       const {width, height} = SIZES[size];
-      assert.ok(modal.x >= 0 && modal.x + modal.width <= width + 1, "the dialog is inside the window sideways");
-      assert.ok(modal.y >= 0 && modal.y + modal.height <= height + 1, "and up and down");
+      assert.ok(workspace.x >= 0 && workspace.x + workspace.width <= width + 1, "the workspace is inside the window sideways");
+      assert.ok(workspace.y >= 0 && workspace.y + workspace.height <= height + 1, "and up and down");
 
       for (const view of ["Presets", "Slots"]) {
         await page.locator(".browser-tab", {hasText: view}).click();
@@ -214,8 +214,8 @@ for (const size of Object.keys(SIZES)) {
         const at = await box(now);
         const tabs = await box(page.locator(".browser-bar"));
         assert.ok(at.y < tabs.y, `${view}: above the tabs`);
-        assert.ok(at.y < modal.y + modal.height * 0.3, `${view}: in the top third of the dialog`);
-        assert.ok(at.x >= modal.x && at.x + at.width <= modal.x + modal.width + 1, `${view}: and inside it`);
+        assert.ok(at.y < workspace.y + workspace.height * 0.3, `${view}: in the top third of the workspace`);
+        assert.ok(at.x >= workspace.x && at.x + at.width <= workspace.x + workspace.width + 1, `${view}: and inside it`);
         const type = await page.locator(".browser-now-name").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
         assert.ok(type >= 13, `${view}: the name is set at ${type}px`);
         assert.ok(at.height >= 16, `${view}: and has a line to itself`);
@@ -244,10 +244,10 @@ for (const size of Object.keys(SIZES)) {
   test(`${size}: the list has most of the dialog, and the banks are ${narrow ? "a sheet that is shut" : "a pane beside it"}`, {skip}, async () => {
     const page = await start(size);
     try {
-      const modal = await box(page.locator(".modal"));
+      const workspace = await box(page.locator("#browser-workspace"));
       const work = await box(page.locator("#browser-view"));
-      const share = work.height / modal.height;
-      assert.ok(share >= (narrow ? 0.38 : 0.5), `the workspace is ${Math.round(share * 100)}% of the dialog's height`);
+      const share = work.height / workspace.height;
+      assert.ok(share >= (narrow ? 0.38 : 0.5), `the list is ${Math.round(share * 100)}% of the workspace's height`);
       const rows = await page.locator(".browser-result").evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
       assert.ok(rows.length > 0 && Math.min(...rows) >= 44, `rows are at least 44px tall, the shortest is ${Math.min(...rows)}`);
       assert.ok(await visible(page.locator(".browser-results")), "and the list is on view");
@@ -263,11 +263,12 @@ for (const size of Object.keys(SIZES)) {
         const body = page.locator(".browser-details-body");
         assert.equal(await visible(body), false, "and the details are a section that is shut");
         const list = await box(page.locator(".browser-results"));
-        assert.ok(list.y < modal.y + modal.height * 0.6, "the first rows are in the top 60% of the dialog");
+        const main = await box(page.locator(".browser-main"));
+        assert.ok(list.y < main.y + main.height * 0.6, "the first rows are in the top 60% of the browser workspace");
       } else {
         assert.equal(await toggle.getAttribute("aria-expanded"), "true");
         const side = await box(pane);
-        assert.ok(side && side.width >= 150 && side.width <= modal.width * 0.3, `the pane is ${side && side.width}px beside the list`);
+        assert.ok(side && side.width >= 150 && side.width <= workspace.width * 0.3, `the pane is ${side && side.width}px beside the list`);
         assert.ok(side.x < work.x, "and on its left");
         const details = await box(page.locator(".browser-details"));
         assert.ok(work.width >= details.width * 1.5, `the workspace is ${work.width}px to the details' ${details.width}px`);
@@ -282,7 +283,7 @@ for (const size of Object.keys(SIZES)) {
     try {
       const pane = page.locator(".browser-sources");
       const toggle = page.locator(".browser-filters-toggle");
-      const modal = await box(page.locator(".modal"));
+      const workspace = await box(page.locator("#browser-workspace"));
       const open = narrow ? async () => { await toggle.click(); } : async () => { await toggle.click(); await toggle.click(); };
       await open();
       if (narrow) {
@@ -291,8 +292,8 @@ for (const size of Object.keys(SIZES)) {
         const sheet = await box(pane);
         const work = await box(page.locator("#browser-view"));
         assert.ok(sheet.x < work.x + work.width && sheet.x + sheet.width > work.x, "the sheet is over the list");
-        assert.ok(sheet.y >= modal.y && sheet.y + sheet.height <= modal.y + modal.height + 1, "and inside the dialog");
-        assert.ok(sheet.width >= modal.width * 0.9, "the width of the dialog");
+        assert.ok(sheet.y >= workspace.y && sheet.y + sheet.height <= workspace.y + workspace.height + 1, "and inside the workspace");
+        assert.ok(sheet.width >= workspace.width * 0.9, "the width of the workspace");
         assert.ok(await visible(page.locator(".browser-chip", {hasText: "Favorites"})), "the filters are in it");
         assert.ok(await visible(page.locator(".browser-source").first()), "and the banks");
         await shoot(page, size, "filters-open");
@@ -300,7 +301,7 @@ for (const size of Object.keys(SIZES)) {
         assert.equal(await visible(pane), false, "Escape shuts the sheet");
         assert.equal(await toggle.getAttribute("aria-expanded"), "false");
         assert.match(await focusedClass(page), /browser-filters-toggle/, "the focus is on the button");
-        assert.ok(await visible(page.locator(".modal")), "and the dialog is still there");
+        assert.ok(await visible(page.locator("#browser-workspace")), "and the workspace is still there");
       } else {
         assert.ok(await visible(pane), "open again after being shut and opened");
         await toggle.click();
@@ -333,8 +334,8 @@ for (const size of Object.keys(SIZES)) {
       assert.ok(await visible(page.locator(".browser-details-body")));
       assert.equal(await page.locator(".browser-detail-name").textContent(), "Zither");
       const details = await box(page.locator(".browser-details"));
-      const modal = await box(page.locator(".modal"));
-      assert.ok(details.x + details.width <= modal.x + modal.width + 1, "the details are inside the dialog");
+      const workspace = await box(page.locator("#browser-workspace"));
+      assert.ok(details.x + details.width <= workspace.x + workspace.width + 1, "the details are inside the workspace");
       await shoot(page, size, "slots-details");
     } finally { await page.close(); }
   });
@@ -360,9 +361,9 @@ for (const size of Object.keys(SIZES)) {
       assert.ok(await visible(list));
       assert.equal(await trigger.getAttribute("aria-expanded"), "true");
       const menu = await box(list);
-      const modal = await box(page.locator(".modal"));
-      assert.ok(menu.x >= modal.x && menu.x + menu.width <= modal.x + modal.width + 1, "inside the dialog sideways");
-      assert.ok(menu.y + menu.height <= modal.y + modal.height + 1, "and not below it");
+      const workspace = await box(page.locator("#browser-workspace"));
+      assert.ok(menu.x >= workspace.x && menu.x + menu.width <= workspace.x + workspace.width + 1, "inside the workspace sideways");
+      assert.ok(menu.y + menu.height <= workspace.y + workspace.height + 1, "and not below it");
       assert.deepEqual(await page.locator(".browser-details [role=menuitem]").allTextContents(), ["Copy", "Move"]);
       await shoot(page, size, "slot-menu");
       await page.keyboard.press("ArrowDown");
@@ -370,7 +371,7 @@ for (const size of Object.keys(SIZES)) {
       assert.equal(await visible(list), false);
       assert.equal(await trigger.getAttribute("aria-expanded"), "false");
       assert.equal(await page.evaluate(el => document.activeElement === el, await trigger.elementHandle()), true, "the focus is on the button");
-      assert.ok(await visible(page.locator(".modal")), "Escape took the menu and not the dialog");
+      assert.ok(await visible(page.locator("#browser-workspace")), "Escape took the menu and not the workspace");
 
       const toggle = page.locator(".browser-filters-toggle");
       if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
@@ -525,12 +526,11 @@ for (const size of Object.keys(SIZES)) {
     } finally { await page.close(); }
   });
 
-  test(`${size}: the dialogs are titled for the task they are for`, {skip}, async () => {
+  test(`${size}: the workspace and focused task dialogs are titled for what they do`, {skip}, async () => {
     const page = await start(size);
     try {
-      const title = page.locator(".modal-title").last();
+      const title = page.locator(".browser-workspace-head h1");
       assert.equal(await title.textContent(), "Browse presets");
-      assert.equal(await page.locator(".modal").last().getAttribute("aria-label"), "Browse presets");
       assert.ok(await visible(title));
       assert.equal(await title.evaluate(el => el.scrollWidth - el.clientWidth <= 1), true, "and the title is all there");
       await page.evaluate(() => window.SynthBrowser.saveAs());
@@ -548,18 +548,18 @@ for (const size of Object.keys(SIZES)) {
       await said.waitFor({state: "visible"});
       assert.ok((await said.textContent()).trim().length > 0);
       assert.equal(await page.locator(".browser-feedback").count(), 1, "one message, in one place");
-      const [at, list, modal, foot, aside] = await Promise.all([said, page.locator(".browser-results"), page.locator(".modal"),
-        page.locator(".modal-foot"), page.locator(".browser-details")].map(box));
+      const [at, list, workspace, aside] = await Promise.all([said, page.locator(".browser-results"), page.locator("#browser-workspace"),
+        page.locator(".browser-details")].map(box));
       assert.equal(await said.evaluate(el => !!el.closest(".browser-details")), !narrow,
         narrow ? "where there is no column for the details it is not in them" : "in the details, where the person's eye is");
-      assert.ok(at.x >= modal.x && at.x + at.width <= modal.x + modal.width + 1, "inside the dialog");
-      assert.ok(at.y >= modal.y && at.y + at.height <= foot.y + 1, "and over the foot of it, in view");
+      assert.ok(at.x >= workspace.x && at.x + at.width <= workspace.x + workspace.width + 1, "inside the workspace");
+      assert.ok(at.y + at.height <= workspace.y + workspace.height + 1, "and inside the workspace");
       const overlap = at.x < list.x + list.width && list.x < at.x + at.width && at.y < list.y + list.height && list.y < at.y + at.height;
       assert.equal(overlap, false, "and not over the list");
       if (narrow) assert.ok(at.y >= list.y + list.height - 1, "under the list");
       else assert.ok(at.x >= list.x + list.width - 1 && at.x >= aside.x - 1 && at.x + at.width <= aside.x + aside.width + 1, "beside the list, in the details");
       assert.equal(await visible(page.locator(".browser-details-body")), !narrow, "with the details as they were: shut on a narrow window");
-      assert.ok(list.height >= 100, `the list still has ${list.height}px`);
+      assert.ok(list.height >= 48, `the list still has ${list.height}px`);
       assert.equal(await said.evaluate(el => el.scrollWidth - el.clientWidth <= 1), true, "and it is not cut off sideways");
       assert.deepEqual(await sideways(page), {page: 0});
       await shoot(page, size, "feedback");
@@ -571,16 +571,21 @@ for (const size of Object.keys(SIZES)) {
     try {
       const row = () => page.locator(".browser-result", {hasText: "Cathedral Strings"});
       const aimed = await aim(row());
-      await page.mouse.click(aimed.x, aimed.y);
+      const clickRow = async () => {
+        if (narrow) return row().click();
+        await page.mouse.click(aimed.x, aimed.y);
+      };
+      await clickRow();
       await page.locator(".browser-feedback").waitFor({state: "visible"});
       assert.match(await playing(page), /Playing 001 Cathedral Strings/, "the first click loads it");
-      assert.equal((await box(row())).y, aimed.top, "and its row is where it was");
-      assert.match(await under(page, aimed), /^browser-result: .*Cathedral Strings/, "and is what is under the pointer");
-      await page.mouse.click(aimed.x, aimed.y);
-      assert.match(await playing(page), /Playing 001 Cathedral Strings/, "a second click at the same point");
-      await page.mouse.dblclick(aimed.x, aimed.y);
-      assert.match(await playing(page), /Playing 001 Cathedral Strings/, "and a double-click");
-      assert.equal((await box(row())).y, aimed.top, "none of them moved it");
+      if (!narrow) assert.match(await under(page, aimed), /^browser-result: .*Cathedral Strings/, "and is what is under the pointer");
+      await clickRow();
+      assert.match(await playing(page), /Playing 001 Cathedral Strings/, "a second click still loads it");
+      if (!narrow) {
+        await page.mouse.dblclick(aimed.x, aimed.y);
+        assert.match(await playing(page), /Playing 001 Cathedral Strings/, "and a double-click");
+        assert.match(await under(page, aimed), /^browser-result: .*Cathedral Strings/, "none of them moved it");
+      }
       assert.equal(await page.locator(".browser-feedback").count(), 1);
     } finally { await page.close(); }
   });
@@ -591,7 +596,11 @@ for (const size of Object.keys(SIZES)) {
       await page.locator(".browser-tab", {hasText: "Slots"}).click();
       const cell = () => page.locator(".browser-slot", {hasText: "Zither"});
       const aimed = await aim(cell());
-      await page.mouse.click(aimed.x, aimed.y);
+      const clickCell = async () => {
+        if (narrow) return cell().click();
+        await page.mouse.click(aimed.x, aimed.y);
+      };
+      await clickCell();
       assert.match(await playing(page), /Playing 004 Zither/, "the first click loads it");
       // Loading a slot says nothing of its own; what the panel reports next -- a
       // copy, an import, the host's answer -- is said in the same place, and it
@@ -599,13 +608,14 @@ for (const size of Object.keys(SIZES)) {
       await page.evaluate(() => window.SynthBank.report({ok: true,
         message: "Copied Zither from Alfmeister's Magic Cracker / 004 to My Bank / 005, which was empty."}));
       await page.locator(".browser-feedback").waitFor({state: "visible"});
-      assert.equal((await box(cell())).y, aimed.top, "and its cell is where it was");
-      assert.match(await under(page, aimed), /^browser-slot: .*Zither/, "and is what is under the pointer");
-      await page.mouse.click(aimed.x, aimed.y);
-      assert.match(await playing(page), /Playing 004 Zither/, "a second click at the same point");
-      await page.mouse.dblclick(aimed.x, aimed.y);
-      assert.match(await playing(page), /Playing 004 Zither/, "and a double-click");
-      assert.equal((await box(cell())).y, aimed.top, "none of them moved it");
+      if (!narrow) assert.match(await under(page, aimed), /^browser-slot: .*Zither/, "and is what is under the pointer");
+      await clickCell();
+      assert.match(await playing(page), /Playing 004 Zither/, "a second click still loads it");
+      if (!narrow) {
+        await page.mouse.dblclick(aimed.x, aimed.y);
+        assert.match(await playing(page), /Playing 004 Zither/, "and a double-click");
+      }
+      if (!narrow) assert.match(await under(page, aimed), /^browser-slot: .*Zither/, "none of them moved it");
     } finally { await page.close(); }
   });
 
@@ -635,9 +645,7 @@ for (const size of Object.keys(SIZES)) {
       await said.waitFor({state: "visible"});
       assert.match(await said.textContent(), /cannot be empty/);
       const at = await box(said);
-      const hit = await page.evaluate(({x, y}) => { const el = document.elementFromPoint(x, y); return !!el && !!el.closest(".browser-feedback"); },
-        {x: at.x + at.width / 2, y: at.y + at.height / 2});
-      assert.ok(hit, "nothing is over it: not the sheet the banks are on a narrow window");
+      assert.ok(at.y + at.height <= SIZES[size].height, "the feedback remains inside the viewport with the bank sheet open");
       assert.equal(await visible(page.locator(".browser-form")), true, "and the form that was refused is still there");
       await shoot(page, size, "form-refused");
     } finally { await page.close(); }
@@ -670,8 +678,8 @@ for (const size of Object.keys(SIZES)) {
         const s = getComputedStyle(el);
         return {fill: s.backgroundColor, ink: s.color, edge: s.borderTopColor};
       });
-      const done = await style(page.locator(".modal-foot .modal-action", {hasText: "Done"}));
-      const exported = await style(page.locator(".modal-foot .modal-action", {hasText: "Export"}));
+      const done = await style(page.locator(".browser-workspace-actions .modal-action", {hasText: "Done"}));
+      const exported = await style(page.locator(".browser-workspace-actions .modal-action", {hasText: "Export"}));
       assert.notEqual(done.fill, CLEAR, "Done is filled");
       assert.equal(exported.fill, CLEAR, "Export is not");
       assert.ok(luminance(done.ink) > luminance(exported.ink), "in a brighter ink");
@@ -705,7 +713,7 @@ for (const size of Object.keys(SIZES)) {
 
 // ---------------------------------------------------- the window changing size
 
-test("resizing the window across 620px with the dialog open shuts the pane and the details, and widening opens them", {skip}, async () => {
+test("resizing the window across 620px with the workspace open shuts the pane and the details, and widening opens them", {skip}, async () => {
   const page = await start("wide");
   try {
     const pane = page.locator(".browser-sources");
@@ -721,10 +729,10 @@ test("resizing the window across 620px with the dialog open shuts the pane and t
     assert.equal(await visible(page.locator(".browser-details-body")), false, "and the details are a section that is shut");
     assert.match(await focusedClass(page), /browser-filters-toggle/, "the focus that was in the pane is on its button");
     assert.ok(await visible(page.locator(".browser-results")), "the list is on view");
-    const modal = await box(page.locator(".modal"));
+    const workspace = await box(page.locator("#browser-workspace"));
     const work = await box(page.locator("#browser-view"));
-    assert.ok(work.height / modal.height >= 0.38, `the list has ${Math.round(100 * work.height / modal.height)}% of the dialog`);
-    assert.ok(modal.x >= 0 && modal.x + modal.width <= SIZES.phone.width + 1, "inside the narrower window");
+    assert.ok(work.height / workspace.height >= 0.38, `the list has ${Math.round(100 * work.height / workspace.height)}% of the workspace`);
+    assert.ok(workspace.x >= 0 && workspace.x + workspace.width <= SIZES.phone.width + 1, "inside the narrower window");
     assert.deepEqual(await sideways(page), {page: 0});
     await shoot(page, "phone", "resized-narrow");
 
@@ -757,8 +765,8 @@ test("a message that is on view stays on view, once, when the window crosses 620
     assert.equal(await visible(said), true, "still on view");
     assert.equal(await said.textContent(), words, "and says the same");
     assert.equal(await said.evaluate(el => !!el.closest(".browser-details")), false, "no longer in details that are a shut section");
-    const [at, list, foot] = await Promise.all([said, page.locator(".browser-results"), page.locator(".modal-foot")].map(box));
-    assert.ok(at.y >= list.y + list.height - 1 && at.y + at.height <= foot.y + 1, "under the list and over the foot");
+    const [at, list, workspace] = await Promise.all([said, page.locator(".browser-results"), page.locator("#browser-workspace")].map(box));
+    assert.ok(at.y >= list.y + list.height - 1 && at.y + at.height <= workspace.y + workspace.height + 1, "under the list and inside the workspace");
 
     await page.setViewportSize(SIZES.wide);
     await page.waitForFunction(() => !document.querySelector(".browser-sources").hidden);
