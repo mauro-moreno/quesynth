@@ -1,4 +1,4 @@
-#+build windows
+#+build windows, linux
 package vst3_tests
 
 import "core:testing"

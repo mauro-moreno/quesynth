@@ -39,6 +39,27 @@ function scripts(file) {
 const index = scripts("index.html");
 const pad = scripts("pad.html");
 
+// The preset strip and the restore banner inside it are markup, not scripts,
+// and drift in the same quiet way: a button added to one shell leaves the
+// other working without it. The strip is the `#bank` element, taken to its
+// closing tag by counting, and compared with layout and comments removed.
+function strip(file) {
+  const html = fs.readFileSync(path.join(__dirname, file), "utf8");
+  const start = html.indexOf('<div id="bank"');
+  if (start < 0) return null;
+  const tag = /<div\b|<\/div>/g;
+  tag.lastIndex = start;
+  let depth = 0;
+  for (let m; (m = tag.exec(html));) {
+    depth += m[0] === "</div>" ? -1 : 1;
+    if (depth === 0) {
+      return html.slice(start, m.index + m[0].length)
+        .replace(/<!--[\s\S]*?-->/g, "").replace(/>\s+</g, "><").replace(/\s+/g, " ").trim();
+    }
+  }
+  return null;
+}
+
 const missingFromPad = index.filter((s) => !pad.includes(s) && !ONLY_INDEX[s]);
 const extraInPad = pad.filter((s) => !index.includes(s) && !ONLY_PAD[s]);
 
@@ -59,6 +80,12 @@ if (extraInPad.length) {
 if (reordered.length) {
   problems.push("the shared files are in a different order on the two pages: " +
     reordered.join(", "));
+}
+
+if (strip("index.html") === null || strip("pad.html") === null) {
+  problems.push("a shell has no #bank strip");
+} else if (strip("index.html") !== strip("pad.html")) {
+  problems.push("the preset strip (#bank) is not the same markup on the two pages");
 }
 
 if (problems.length) {

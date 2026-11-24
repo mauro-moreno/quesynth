@@ -2,12 +2,11 @@
 // The adapter's reading of a quesynth.bank document, which is only ever a
 // cache of the one the daemon owns: kept so a `state` from the page can be
 // recognised as "slot k of the bank this page was shown" (and turned into a
-// patch.load the daemon records), and so the page's echo of a bank it was
-// sent can be told apart from a real request.
+// patch.load the daemon records).
 //
 // It reads a document the way ui/patchfile.js does, not the way
 // src/patch/json.odin does, because what it predicts is what the *page* will
-// send back after loading it.
+// send when a person picks one of its slots.
 
 const fs = require("fs");
 const path = require("path");
@@ -34,7 +33,7 @@ function loadParams(root) {
 }
 
 // Throws where ui/patchfile.js loadText would, so a document this rejects is
-// one the page will not adopt either (and therefore will not echo).
+// one the page will not adopt either (and so will never send a slot of).
 function parseBank(text, params) {
   const doc = JSON.parse(text);
   if (!doc || doc.format !== "quesynth.bank") throw new Error("not a quesynth.bank document");
@@ -78,12 +77,6 @@ function findSlot(model, values, preferred) {
   return model.slots.findIndex(s => s !== null && sameValues(s.values, values));
 }
 
-// What the page sends back after adopting the bank: slot 0, or Init when slot
-// 0 is empty (loadPatch(0) in ui/app.js).
-function adoptionValues(model, params) {
-  return model.slots[0] ? model.slots[0].values : params.defaults;
-}
-
 function sameSlot(a, b) {
   if (!a || !b) return a === b;
   return a.name === b.name && a.raw === b.raw && sameValues(a.values, b.values);
@@ -118,5 +111,5 @@ function storedSlot(before, after, live, hidden) {
 }
 
 module.exports = {
-  loadParams, parseBank, sameValues, findSlot, adoptionValues, storedSlot,
+  loadParams, parseBank, sameValues, findSlot, storedSlot,
 };

@@ -50,7 +50,6 @@ function createBridge(options) {
     log,
     pollMs: options.pollMs,
     echoMs: options.echoMs,
-    adoptMs: options.adoptMs,
   };
   const sessions = new Set();
   let port = null;

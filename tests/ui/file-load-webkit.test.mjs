@@ -35,7 +35,12 @@ test("WebKit file chooser loads a Synth1 patch", async () => {
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${port}/index.html`, {waitUntil: "networkidle"});
     await page.locator(".bank-read").click();
-    await page.getByRole("button", {name: "Add"}).click();
+    // The banks are behind Browse, and opening a file from one is an item in
+    // the menu of the button that adds a bank. What a person does, in order.
+    const filters = page.locator(".browser-filters-toggle");
+    if ((await filters.getAttribute("aria-expanded")) === "false") await filters.click();
+    await page.getByRole("button", {name: "Add bank"}).click();
+    await page.getByRole("menuitem", {name: "Import file..."}).click();
     const input = page.locator('input[type="file"]');
     await input.setInputFiles(fixture);
     await page.waitForFunction(() => /unison four/i.test(document.querySelector("#bank-patch")?.textContent || ""));

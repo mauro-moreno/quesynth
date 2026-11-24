@@ -24,6 +24,7 @@ CF_Dictionary_Ref :: rawptr
 CF_Mutable_Dictionary_Ref :: rawptr
 CF_Number_Ref :: rawptr
 CF_Data_Ref :: rawptr
+CF_Type_ID :: c.ulong
 CF_Allocator_Ref :: rawptr
 CF_URL_Ref :: rawptr
 CF_Run_Loop_Ref :: rawptr
@@ -63,6 +64,7 @@ foreign core_foundation {
 
 	CFRelease :: proc(obj: CF_Type_Ref) ---
 	CFRetain :: proc(obj: CF_Type_Ref) -> CF_Type_Ref ---
+	CFGetTypeID :: proc(obj: CF_Type_Ref) -> CF_Type_ID ---
 
 	CFStringCreateWithCString :: proc(alloc: CF_Allocator_Ref, c_str: cstring, encoding: u32) -> CF_String_Ref ---
 
@@ -74,6 +76,7 @@ foreign core_foundation {
 	CFNumberGetValue :: proc(num: CF_Number_Ref, type: CF_Index, value_ptr: rawptr) -> Boolean ---
 
 	CFDataCreate :: proc(alloc: CF_Allocator_Ref, bytes: [^]u8, length: CF_Index) -> CF_Data_Ref ---
+	CFDataGetTypeID :: proc() -> CF_Type_ID ---
 	CFDataGetBytePtr :: proc(data: CF_Data_Ref) -> [^]u8 ---
 	CFDataGetLength :: proc(data: CF_Data_Ref) -> CF_Index ---
 

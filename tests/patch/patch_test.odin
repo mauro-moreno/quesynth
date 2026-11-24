@@ -1,6 +1,7 @@
 package patch_tests
 
 import "core:testing"
+import "core:unicode/utf8"
 import patch "../../src/patch"
 
 @(test)
@@ -643,6 +644,45 @@ slots_round_trip :: proc(t: ^testing.T) {
 		}
 	}
 }
+// A name that does not fit is cut where a character ends, so what a bank is
+// called is still text. The label is what a saved project finds its bank by,
+// and what the panel is sent: bytes that are not UTF-8 are refused by both.
+@(test)
+slots_cut_a_long_name_between_characters :: proc(t: ^testing.T) {
+	// Forty-seven letters and a three-byte character, which ends at byte 50 and
+	// so does not fit in 48; and then the same with one letter fewer, so that
+	// the character starts at 46 and still does not fit.
+	for letters in ([]int{47, 46}) {
+		name := make([dynamic]u8)
+		defer delete(name)
+		for _ in 0 ..< letters {
+			append(&name, 'x')
+		}
+		append(&name, ..transmute([]u8)string("日本"))
+
+		text := make([dynamic]u8)
+		defer delete(text)
+		append(&text, ..transmute([]u8)string(`{"format":"quesynth.bank","version":1,"name":"`))
+		append(&text, ..name[:])
+		append(&text, ..transmute([]u8)string(`","patches":[{"name":"`))
+		append(&text, ..name[:])
+		append(&text, ..transmute([]u8)string(`","parameters":{}}]}`))
+
+		bank, err := patch.parse_bank_json(text[:])
+		testing.expect_value(t, err, patch.Json_Error.None)
+		if err != .None {return}
+		defer patch.destroy_bank(bank)
+		slots: patch.Slots
+		patch.slots_load(&slots, bank)
+
+		for got in ([]string{patch.slots_label(&slots), patch.slots_name(&slots, 0)}) {
+			testing.expectf(t, utf8.valid_string(got), "%d letters: %q is not text", letters, got)
+			testing.expectf(t, len(got) <= patch.SLOT_NAME_MAX, "%d letters: %d bytes", letters, len(got))
+			testing.expectf(t, len(got) == letters, "%d letters: %q is not the letters that fit", letters, got)
+		}
+	}
+}
+
 // A whole number written as a float is accepted, because a file produced by a
 // language whose numbers are all doubles will say 64.0; a fraction is not,
 // because there is no state between two stored integers.

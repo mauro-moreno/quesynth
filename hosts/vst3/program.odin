@@ -3,6 +3,7 @@ package synth_vst3
 import "base:intrinsics"
 
 import "../../src/patch"
+import "../../src/vst3"
 import "../panel"
 
 // The bank this instance plays out of, and keeping it.
@@ -11,27 +12,15 @@ import "../panel"
 // needs a web view, a web view needs WebView2 beside the binary, and that put
 // the whole of this out of reach of a test. The CLAP side was checkable and
 // this was not, which is a poor reason for two formats to differ.
-plugin_set_bank :: proc(p: ^Plugin, text: string, save: bool) {
+plugin_set_bank :: proc(p: ^Plugin, text: string, save: bool, origin := panel.Origin.None) -> panel.Bank_Result {
 	if p == nil || text == "" {
-		return
+		return .Invalid_Bank
 	}
-
-	parsed, err := patch.parse_bank_json(transmute([]u8)text)
-	if err != .None {
-		// Refused rather than written: a bank that will not parse would come
-		// back as no bank at all on the next start.
-		return
-	}
-	defer patch.destroy_bank(parsed)
-
 	// Always played, only sometimes kept. A plugin selecting programs out
 	// of a bank the panel is not showing means one number is two sounds;
 	// writing to disk is the separate question, and only the panel's own
 	// bank answers yes to it.
-	patch.slots_load(&p.slots, parsed)
-	if save {
-		panel.bank_write(text)
-	}
+	return panel.session_set_bank(&p.session, &p.slots, text, save, origin, panel.bank_write)
 }
 
 plugin_read_bank :: proc(p: ^Plugin) -> string {
@@ -85,6 +74,10 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if !ok {
 		return
 	}
+	// Only a slot that loaded is a selection: the number is remembered for an
+	// empty one, but the sound is still the one before it. Only posted from
+	// here, on the audio thread; the main thread makes it the selection.
+	panel.session_post_program(&p.session, program)
 
 	changed := false
 	for i in 0 ..< PARAM_COUNT {
@@ -106,6 +99,16 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 // controller must not change it under a block that is rendering. The other
 // path -- a program change arriving as a parameter change inside `process` --
 // is the audio thread already and stays a direct write.
+vst3_notify_program :: proc "contextless" (p: ^Plugin) {
+	if p == nil || p.handler == nil {return}
+	handler := (^vst3.IComponentHandler)(p.handler)
+	if handler.vtbl.perform_edit != nil {
+		if handler.vtbl.begin_edit != nil {handler.vtbl.begin_edit(p.handler, PROGRAM_PARAM_ID)}
+		handler.vtbl.perform_edit(p.handler, PROGRAM_PARAM_ID, program_normalized(p.program))
+		if handler.vtbl.end_edit != nil {handler.vtbl.end_edit(p.handler, PROGRAM_PARAM_ID)}
+	}
+}
+
 stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if program < 0 || program >= patch.FACTORY_SLOTS {
 		return
@@ -116,6 +119,7 @@ stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if !ok {
 		return
 	}
+	panel.session_post_program(&p.session, program)
 	// A program is the whole patch, so there is nothing of the current set to
 	// carry over; and a program the instrument already holds changes nothing.
 	for i in 0 ..< PARAM_COUNT {

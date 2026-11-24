@@ -22,10 +22,6 @@ const DEFAULTS = {
   // few milliseconds; the margin covers a loaded machine without letting a
   // lost write stay on screen for long.
   echoMs: 500,
-  // How long after a `bank` the page's echo of it is still expected. Adopting
-  // a bank is synchronous in the page, so the echo follows within one round
-  // trip; this only bounds how long a missing one stays armed.
-  adoptMs: 2000,
 };
 
 // Beyond this many changed parameters one `state` is sent instead of a run of
@@ -142,7 +138,6 @@ class Session {
     this.count = options.params.count;
     this.pollMs = options.pollMs || DEFAULTS.pollMs;
     this.echoMs = options.echoMs || DEFAULTS.echoMs;
-    this.adoptMs = options.adoptMs || DEFAULTS.adoptMs;
     this.log = options.log || (() => {});
     this.onClose = options.onClose || (() => {});
     this.closed = false;
@@ -184,8 +179,6 @@ class Session {
     // index -> {value, until}: this page's writes the daemon may not have
     // applied yet. See sendChanges.
     this.expect = new Map();
-    // Banks sent whose echo (see adoptionEcho) has not come back yet.
-    this.adoptions = [];
 
     ws.on("message", text => this.receive(text));
     ws.on("close", () => {
@@ -204,7 +197,6 @@ class Session {
     this.ws.close(code, reason);
     for (const dir of [...this.tempDirs]) this.removeTemp(dir);
     this.expect.clear();
-    this.adoptions = [];
     this.onClose(this);
   }
 
@@ -321,8 +313,9 @@ class Session {
     this.run("set", () => this.write("set", `parameter.set ${id} ${value}`, [index]));
   }
 
-  // A whole patch at once: stepping the bank, loading a file, or the page's
-  // echo of a bank it was just sent.
+  // A whole patch at once: stepping the bank, loading a file, or choosing a
+  // slot. Always a request: the page sends nothing for a bank it adopts, so
+  // there is no state to tell from one, however soon after a `bank` it comes.
   state(msg) {
     const values = msg.values;
     if (!Array.isArray(values) || !values.length || values.length > this.count ||
@@ -335,7 +328,6 @@ class Session {
         return this.reject("state", "out_of_range", `value for parameter ${i} out of range`);
       }
     }
-    if (this.adoptionEcho(values)) return;
 
     if (this.browser) values.forEach((v, i) => { this.browser[i] = v; });
     const indices = [];
@@ -366,20 +358,6 @@ class Session {
         await this.daemon.request("patch.clear");
       }
     });
-  }
-
-  // The page's reply to a bank it was sent. Adopting a bank makes the panel
-  // select slot 0 (Init when that is empty) and post it as a `state`; the bank
-  // came from the daemon, so that post is not a request to change the
-  // daemon's sound. Dropped once per bank sent, and only when it is exactly
-  // that sound.
-  adoptionEcho(values) {
-    const now = Date.now();
-    this.adoptions = this.adoptions.filter(a => a.until > now);
-    const at = this.adoptions.findIndex(a => bank.sameValues(a.values, values));
-    if (at < 0) return false;
-    this.adoptions.splice(0, at + 1);
-    return true;
   }
 
   note(msg) {
@@ -672,11 +650,12 @@ class Session {
     }, this.pollMs);
   }
 
-  // One patch.current per tick says what moved. Bank first, because adopting
-  // it makes the page load slot 0; the daemon's values go over that; the
-  // identity goes last so it names what is now on screen. The archive and the
-  // MIDI selection are apart from all three and each has its own generation,
-  // archive_rev and midi_rev.
+  // One patch.current per tick says what moved. Bank first, because the slot
+  // the identity names means nothing to the page until it holds the bank that
+  // slot is in (adopting one changes neither the sound nor the name shown);
+  // then the daemon's values; the identity goes last so it names what is now
+  // on screen. The archive and the MIDI selection are apart from all three
+  // and each has its own generation, archive_rev and midi_rev.
   async tick() {
     const current = await this.current();
     const bankMoved = current.bankRev !== this.bankRev;
@@ -761,17 +740,11 @@ class Session {
     try {
       model = bank.parseBank(text, this.params);
     } catch (err) {
-      // A document the page will refuse too: nothing to match, no echo due.
+      // A document the page will refuse too: nothing to match a state to.
     }
     this.model = model;
     this.bankRev = bankRev;
     this.send({ type: "bank", text });
-    if (model) {
-      this.adoptions.push({
-        values: bank.adoptionValues(model, this.params),
-        until: Date.now() + this.adoptMs,
-      });
-    }
   }
 
   async dumpBank() {
@@ -829,9 +802,8 @@ class Session {
   }
 
   // The panel ignores a patch message with an empty name, so a daemon that
-  // has none (fresh, or after patch.clear) would leave it showing whatever
-  // the bank it just adopted selected. "Untitled" is the panel's own name for
-  // a sound nobody named. What is cached stays the daemon's own word, or the
+  // has none (fresh, or after patch.clear) would leave it showing the name it
+  // had before. "Untitled" is the panel's own name for a sound nobody named. What is cached stays the daemon's own word, or the
   // next poll would see a change that is not there.
   //
   // `index` is only ever an ordinary slot. Where an archive patch came from
