@@ -75,8 +75,9 @@ select_program :: proc "contextless" (p: ^Plugin, program: int) {
 		return
 	}
 	// Only a slot that loaded is a selection: the number is remembered for an
-	// empty one, but the sound is still the one before it.
-	panel.session_select_slot(&p.session, program)
+	// empty one, but the sound is still the one before it. Only posted from
+	// here, on the audio thread; the main thread makes it the selection.
+	panel.session_post_program(&p.session, program)
 
 	changed := false
 	for i in 0 ..< PARAM_COUNT {
@@ -118,7 +119,7 @@ stage_program :: proc "contextless" (p: ^Plugin, program: int) {
 	if !ok {
 		return
 	}
-	panel.session_select_slot(&p.session, program)
+	panel.session_post_program(&p.session, program)
 	// A program is the whole patch, so there is nothing of the current set to
 	// carry over; and a program the instrument already holds changes nothing.
 	for i in 0 ..< PARAM_COUNT {

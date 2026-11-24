@@ -80,7 +80,10 @@ a_state_is_restored_or_refused_for_a_stated_reason :: proc(t: ^testing.T) {
 
 	for c in cases {
 		inst := new_instance(t, c.playing, {0, 1, 7}, .Saved)
-		defer free(inst)
+		defer {
+			panel.session_destroy(&inst.session)
+			free(inst)
+		}
 		// Something already selected, so a restore that touches the selection
 		// cannot be mistaken for one that left a blank one blank.
 		panel.session_select_slot(&inst.session, 1)
@@ -395,7 +398,9 @@ a_failed_restore_does_not_put_the_playing_bank_under_the_missing_ones_name :: pr
 	defer delete(saved)
 	trailer, status := panel.trailer_decode(saved)
 	testing.expect_value(t, status, panel.Trailer_Status.Ok)
-	testing.expect_value(t, panel.text_get(&trailer.label), "My Bank")
+	testing.expect_value(t, panel.text_get(&trailer.label), "Imported Meanwhile")
+	testing.expect(t, !trailer.has_slot, "the opened bank was given the missing bank's slot")
+	testing.expect_value(t, panel.text_get(&trailer.name), "")
 	testing.expect(t, trailer.embedded, "the opened bank was not carried with the pending restore")
 	bank, err := patch.parse_bank_json(trailer.bank_json)
 	testing.expect_value(t, err, patch.Json_Error.None)
@@ -803,4 +808,117 @@ write_ok :: proc(text: string) -> bool {
 
 refuse_to_write :: proc(text: string) -> bool {
 	return false
+}
+
+// The bank a failed restore carries is a copy of up to four mebibytes, and it
+// has to go whenever the failure does: when a restore succeeds, when a program
+// change lets it go, and when the instance does.
+@(test)
+a_failed_restores_bank_copy_is_released_with_the_failure :: proc(t: ^testing.T) {
+	without_the_slot := bank_text("Alfmeister Bank", {0, 2})
+	for how in ([]string{"a restore that succeeds", "a program change", "the instance going away"}) {
+		inst := new_instance(t, "Playing", {0, 1, 7}, .Saved)
+		defer free(inst)
+		result := panel.session_restore(&inst.session, &inst.slots, saved_trailer(.Imported, 42, "Alfmeister Bank", "Far", without_the_slot))
+		testing.expect_value(t, result.error, panel.Restore_Error.Invalid_Program)
+		testing.expectf(t, inst.session.pending_bank != "", "%s: no bank copy was kept to release", how)
+
+		switch how {
+		case "a restore that succeeds":
+			panel.session_restore(&inst.session, &inst.slots, saved_trailer(.User, 7, "Playing", "Playing 7"))
+			testing.expect_value(t, inst.session.restore, panel.Restore_State.Restored)
+		case "a program change":
+			panel.session_post_program(&inst.session, 1)
+			panel.session_apply_posted(&inst.session)
+		case "the instance going away":
+		}
+		if how != "the instance going away" {
+			testing.expectf(t, inst.session.pending_bank == "", "after %s the bank copy is still held", how)
+		}
+		panel.session_destroy(&inst.session)
+		testing.expectf(t, inst.session.pending_bank == "", "after %s and a destroy the bank copy is still held", how)
+	}
+}
+
+// The audio thread posts a number and nothing else. The selection, and the
+// failed restore a program change lets go of, change when the main thread acts
+// on it.
+@(test)
+a_posted_program_changes_nothing_until_the_main_thread_applies_it :: proc(t: ^testing.T) {
+	inst := new_instance(t, "Playing", {0, 1, 7}, .Saved)
+	defer {
+		panel.session_destroy(&inst.session)
+		free(inst)
+	}
+	panel.session_restore(&inst.session, &inst.slots, saved_trailer(.User, 7, "Gone", "Lost"))
+	testing.expect_value(t, inst.session.restore, panel.Restore_State.Failed)
+	revision := inst.session.selection_revision
+
+	panel.session_post_program(&inst.session, 7)
+	panel.session_post_program(&inst.session, 1)
+	panel.session_post_program(&inst.session, 4000)
+
+	testing.expect_value(t, inst.session.selection_revision, revision)
+	testing.expect(t, !panel.selection_known(&inst.session.selection), "the audio thread wrote the selection")
+	testing.expect_value(t, inst.session.restore, panel.Restore_State.Failed)
+
+	panel.session_apply_posted(&inst.session)
+	testing.expect_value(t, inst.session.selection.slot, 1)
+	testing.expect(t, inst.session.selection.bound, "the posted program is not bound to the playing bank")
+	testing.expect_value(t, inst.session.restore, panel.Restore_State.Not_Requested)
+	testing.expect(t, inst.session.selection_revision != revision && inst.session.selection_revision & 1 == 0, "the selection was written outside its lock")
+
+	settled := inst.session.selection_revision
+	panel.session_apply_posted(&inst.session)
+	testing.expect_value(t, inst.session.selection_revision, settled)
+}
+
+// Giving the playing bank away rewrites the selection that was bound to it, and
+// that is a write like any other.
+@(test)
+replacing_the_bank_rewrites_the_selection_under_its_lock :: proc(t: ^testing.T) {
+	inst := new_instance(t, "Playing", {0, 1, 7}, .Saved)
+	defer free(inst)
+	panel.session_select_slot(&inst.session, 7)
+	revision := inst.session.selection_revision
+
+	result := panel.session_set_bank(&inst.session, &inst.slots, bank_text("Elsewhere", {0, 1}), false, .Imported, nil)
+	testing.expect_value(t, result, panel.Bank_Result.Adopted)
+
+	testing.expect(t, inst.session.selection_revision != revision, "the selection was rewritten without taking its lock")
+	testing.expect(t, inst.session.selection_revision & 1 == 0, "the selection was left locked")
+	testing.expect_value(t, panel.text_get(&inst.session.selection.label), "Playing")
+	testing.expect(t, !inst.session.selection.bound, "a selection of the old bank is bound to the new one")
+}
+
+// A retry that finds the bank still missing leaves the project as it was: the
+// bank the failed restore carried is still carried, and still the same copy.
+@(test)
+a_retry_that_fails_again_keeps_the_banks_the_state_carried :: proc(t: ^testing.T) {
+	without_the_slot := bank_text("Alfmeister Bank", {0, 2})
+	inst := new_instance(t, "Playing", {0, 1, 7}, .Saved)
+	defer {
+		panel.session_destroy(&inst.session)
+		free(inst)
+	}
+	panel.session_restore(&inst.session, &inst.slots, saved_trailer(.Imported, 42, "Alfmeister Bank", "Far", without_the_slot))
+	held := inst.session.pending_bank
+	testing.expect(t, held != "", "no bank copy was kept")
+
+	result, changed := panel.session_retry(&inst.session, &inst.slots, nil)
+	testing.expect(t, !changed && !result.restored, "the retry succeeded without the bank")
+	testing.expect_value(t, inst.session.restore, panel.Restore_State.Failed)
+	testing.expect_value(t, inst.session.pending_bank, held)
+
+	saved := panel.session_trailer(&inst.session, &inst.slots)
+	defer delete(saved)
+	trailer, status := panel.trailer_decode(saved)
+	testing.expect_value(t, status, panel.Trailer_Status.Ok)
+	testing.expect(t, trailer.embedded, "the bank the state carried was lost by the retry")
+	bank, err := patch.parse_bank_json(trailer.bank_json)
+	testing.expect_value(t, err, patch.Json_Error.None)
+	if err == .None {
+		defer patch.destroy_bank(bank)
+		testing.expect_value(t, bank.name, "Alfmeister Bank")
+	}
 }

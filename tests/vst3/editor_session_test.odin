@@ -187,6 +187,7 @@ a_retry_after_a_program_change_dropped_a_failed_restore_is_answered :: proc(t: ^
 		} else {
 			synth.stage_program(after, 1)
 		}
+		panel.session_apply_posted(&after.session)
 		testing.expect_value(t, after.session.restore, panel.Restore_State.Not_Requested)
 
 		patch_message := `{"type":"patch","name":"Playing Meanwhile 1","index":1,"bank":"Playing Meanwhile","v":1,"origin":"imported"}`

@@ -971,6 +971,7 @@ release :: proc "c" (p: ^Plugin) -> u32 {
 		engine.engine_destroy(&p.eng)
 		p.active = false
 	}
+	panel.session_destroy(&p.session)
 	free(p)
 	return 0
 }

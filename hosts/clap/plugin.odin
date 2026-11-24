@@ -256,7 +256,7 @@ program_change :: proc "contextless" (s: ^Synth, program: int) {
 	s.program = program
 	// The exact slot of the bank this instance is playing, which is the only
 	// bank a Program Change has ever selected from.
-	panel.session_select_slot(&s.session, program)
+	panel.session_post_program(&s.session, program)
 
 	changed := false
 	for i in 0 ..< PARAM_COUNT {
@@ -452,6 +452,7 @@ plugin_destroy :: proc "c" (plugin: ^clap.Plugin) {
 		return
 	}
 	engine.engine_destroy(&s.eng)
+	panel.session_destroy(&s.session)
 	free(s)
 }
 

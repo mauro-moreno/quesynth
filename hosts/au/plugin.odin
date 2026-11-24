@@ -186,6 +186,7 @@ au_close :: proc "c" (self: rawptr) -> au.OSStatus {
 	}
 	delete(s.scratch_left)
 	delete(s.scratch_right)
+	panel.session_destroy(&s.session)
 	free(s)
 	return au.NO_ERR
 }

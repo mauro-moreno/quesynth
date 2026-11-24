@@ -96,6 +96,7 @@ test_a_program_change_after_an_adopted_bank_selects_that_banks_slot :: proc(t: ^
 	testing.expect_value(t, synth.gui_set_bank(rawptr(s), text, false, .Imported), panel.Bank_Result.Adopted)
 
 	send_midi(plugin, midi_event(0, 0xC0, 2, 0))
+	panel.session_apply_posted(&s.session)
 
 	view := panel.selection_view(&s.session.selection, &s.slots)
 	testing.expect_value(t, view.origin, panel.Origin.Imported)
@@ -290,6 +291,7 @@ test_a_retry_after_a_program_change_dropped_a_failed_restore_is_answered :: proc
 
 	send_midi(after, midi_event(0, 0xC0, 1, 0))
 	testing.expect_value(t, b.program, 1)
+	panel.session_apply_posted(&b.session)
 	testing.expect_value(t, b.session.restore, panel.Restore_State.Not_Requested)
 
 	// What the main thread then tells an open editor: the patch, and nothing

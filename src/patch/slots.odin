@@ -51,6 +51,24 @@ put_name :: proc "contextless" (into: ^[SLOT_NAME_MAX]u8, length: ^int, text: st
 	length^ = n
 }
 
+// The writer's half of the seqlock. The release fence keeps the payload writes
+// that follow from becoming visible before the odd revision does; without it
+// a weakly ordered CPU (Apple Silicon) can show a reader half a bank under a
+// revision that still looks settled.
+@(private = "file")
+slots_begin_write :: proc "contextless" (s: ^Slots) -> u64 {
+	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
+	if revision & 1 == 0 {revision += 1}
+	intrinsics.atomic_store_explicit(&s.revision, revision, .Relaxed)
+	intrinsics.atomic_thread_fence(.Release)
+	return revision
+}
+
+@(private = "file")
+slots_end_write :: proc "contextless" (s: ^Slots, revision: u64) {
+	intrinsics.atomic_store_explicit(&s.revision, revision + 1, .Release)
+}
+
 // Fill from a parsed bank.
 //
 // An empty slot stays empty: it is addressable, and there is nothing in it.
@@ -58,9 +76,7 @@ put_name :: proc "contextless" (into: ^[SLOT_NAME_MAX]u8, length: ^int, text: st
 // sixteen-entry file back out to a hundred and twenty-eight.
 slots_load :: proc(s: ^Slots, bank: Bank) {
 	if s == nil {return}
-	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
-	if revision & 1 == 0 {revision += 1}
-	intrinsics.atomic_store_explicit(&s.revision, revision, .Release)
+	revision := slots_begin_write(s)
 	// Clear payload only; copying a zero Slots here would overwrite the
 	// seqlock and briefly publish an even revision over half-written data.
 	s.values = {}
@@ -80,16 +96,14 @@ slots_load :: proc(s: ^Slots, bank: Bank) {
 		s.filled[i] = true
 		put_name(&s.names[i], &s.name_len[i], p.name)
 	}
-	intrinsics.atomic_store_explicit(&s.revision, revision + 1, .Release)
+	slots_end_write(s, revision)
 }
 
 // Fill from the bank compiled into the binary. What a plugin starts with when
 // nothing has been saved yet.
 slots_load_factory :: proc(s: ^Slots) {
 	if s == nil {return}
-	revision := intrinsics.atomic_load_explicit(&s.revision, .Relaxed) + 1
-	if revision & 1 == 0 {revision += 1}
-	intrinsics.atomic_store_explicit(&s.revision, revision, .Release)
+	revision := slots_begin_write(s)
 	// Clear payload only; preserve the odd lock state while filling it.
 	s.values = {}
 	s.filled = {}
@@ -107,19 +121,17 @@ slots_load_factory :: proc(s: ^Slots) {
 		s.filled[i] = true
 		put_name(&s.names[i], &s.name_len[i], factory_name(i))
 	}
-	intrinsics.atomic_store_explicit(&s.revision, revision + 1, .Release)
+	slots_end_write(s, revision)
 }
 
 // Replace a live bank under the same seqlock used by slots_load.
 slots_replace :: proc(dst, src: ^Slots) {
 	if dst == nil || src == nil {return}
-	revision := intrinsics.atomic_load_explicit(&dst.revision, .Relaxed) + 1
-	if revision & 1 == 0 {revision += 1}
-	intrinsics.atomic_store_explicit(&dst.revision, revision, .Release)
+	revision := slots_begin_write(dst)
 	next := src^
 	next.revision = revision
 	dst^ = next
-	intrinsics.atomic_store_explicit(&dst.revision, revision + 1, .Release)
+	slots_end_write(dst, revision)
 }
 
 // Contextless, because a program change arrives on the audio thread.
@@ -130,7 +142,8 @@ slots_patch :: proc "contextless" (s: ^Slots, slot: int) -> (values: [PARAMETER_
 		if before & 1 != 0 {continue}
 		filled := s.filled[slot]
 		if filled {values = s.values[slot]}
-		after := intrinsics.atomic_load_explicit(&s.revision, .Acquire)
+		intrinsics.atomic_thread_fence(.Acquire)
+		after := intrinsics.atomic_load_explicit(&s.revision, .Relaxed)
 		if before == after {return values, filled}
 	}
 }

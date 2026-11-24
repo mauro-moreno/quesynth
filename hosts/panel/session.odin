@@ -224,6 +224,12 @@ Session :: struct {
 	pending:         Selection,
 	pending_saved:   bool,
 	pending_bank:    string,
+	// A Program Change the audio thread has had and the main thread has not
+	// yet acted on: the slot plus one, so that zero is nothing. The audio
+	// thread writes this word and nothing else of the session; the selection
+	// and the restore state are the main thread's alone. See
+	// session_post_program.
+	posted_program:  u32,
 	selection_revision: u32,
 }
 
@@ -318,30 +324,59 @@ session_init :: proc "contextless" (s: ^Session, source: Bank_Source) {
 	s.bank_origin = .User if source == .Saved else .Factory
 }
 
+// An instance going away: what a failed restore was holding on to goes with it.
+session_destroy :: proc(s: ^Session) {
+	session_forget_restore(s)
+}
+
 // -- selecting ---------------------------------------------------------------
 
-// The instance selected a slot of the bank it is playing: a Program Change.
+// The audio thread had a Program Change for a slot of the bank it is playing.
 //
-// The audio thread calls this, so it writes a handful of words and nothing
-// else. A program change is a choice like any other and ends whatever restore
-// was waiting to be retried.
-session_select_slot :: proc "contextless" (s: ^Session, slot: int) {
+// It only says which. Everything that follows from a selection -- the
+// selection itself, and letting go of a failed restore with the bank it was
+// holding -- is the main thread's, because two threads writing the selection
+// is what the revision counter cannot make safe: it can read as settled while
+// one writer is still in the middle of a write.
+//
+// Posted twice before the main thread looks, the later one stands: it is the
+// one the instance is on.
+session_post_program :: proc "contextless" (s: ^Session, slot: int) {
+	if slot < 0 || slot >= patch.FACTORY_SLOTS {return}
+	intrinsics.atomic_store_explicit(&s.posted_program, u32(slot) + 1, .Release)
+}
+
+// Act on a posted Program Change, if there is one. The main thread calls this
+// before it reads or changes anything a selection touches, so that a choice
+// the audio thread made earlier is not overtaken by one made after it.
+session_apply_posted :: proc(s: ^Session) {
+	posted := intrinsics.atomic_exchange_explicit(&s.posted_program, 0, .Acquire)
+	if posted != 0 {
+		session_select_slot(s, int(posted - 1))
+	}
+}
+
+// The instance selected a slot of the bank it is playing: a Program Change,
+// on the main thread. A program change is a choice like any other and ends
+// whatever restore was waiting to be retried.
+session_select_slot :: proc(s: ^Session, slot: int) {
 	selection_begin_write(s)
 	s.selection.origin = s.bank_origin if s.bank_origin != .None else .Factory
 	s.selection.has_slot = true
 	s.selection.slot = slot
 	s.selection.bound = true
 	selection_end_write(s)
-	s.has_pending = false
-	s.restore = .Not_Requested
-	s.restore_error = .None
+	session_forget_restore(s)
 }
 
 @(private)
 selection_begin_write :: proc "contextless" (s: ^Session) -> u32 {
 	revision := intrinsics.atomic_load_explicit(&s.selection_revision, .Relaxed) + 1
 	if revision & 1 == 0 {revision += 1}
-	intrinsics.atomic_store_explicit(&s.selection_revision, revision, .Release)
+	intrinsics.atomic_store_explicit(&s.selection_revision, revision, .Relaxed)
+	// Keeps the selection writes that follow from becoming visible before the
+	// odd revision does.
+	intrinsics.atomic_thread_fence(.Release)
 	return revision
 }
 
@@ -351,15 +386,17 @@ selection_end_write :: proc "contextless" (s: ^Session) {
 	intrinsics.atomic_store_explicit(&s.selection_revision, revision + 1, .Release)
 }
 
-// Copy the complete selection, retrying if an audio-thread program change
-// overlaps the save.  The revision belongs to the handoff, not to an
-// individual field, so a trailer cannot combine two selections.
+// Copy the complete selection, retrying if a write overlaps the copy. The
+// revision belongs to the whole selection, not to an individual field, so a
+// trailer cannot combine two selections. The main thread is the only writer.
 selection_snapshot :: proc "contextless" (s: ^Session) -> Selection {
 	for {
 		before := intrinsics.atomic_load_explicit(&s.selection_revision, .Acquire)
 		if before & 1 != 0 {continue}
 		selection := s.selection
-		after := intrinsics.atomic_load_explicit(&s.selection_revision, .Acquire)
+		// Keeps the copy above from being read after the check below.
+		intrinsics.atomic_thread_fence(.Acquire)
+		after := intrinsics.atomic_load_explicit(&s.selection_revision, .Relaxed)
 		if before == after {return selection}
 	}
 }
@@ -369,6 +406,7 @@ selection_snapshot :: proc "contextless" (s: ^Session) -> Selection {
 // A slot that is not one of the hundred and twenty-eight is refused, not
 // clamped: an identity that names the wrong slot is worse than none.
 session_select :: proc(s: ^Session, slots: ^patch.Slots, request: Selection) -> bool {
+	session_apply_posted(s)
 	sel := request
 	if sel.has_slot && (sel.slot < 0 || sel.slot >= patch.FACTORY_SLOTS) {
 		return false
@@ -434,13 +472,17 @@ session_set_bank :: proc(
 	}
 	defer patch.destroy_bank(parsed)
 
+	session_apply_posted(s)
+
 	// A selection that was bound to the bank about to go keeps what it was
 	// called, so that it can be told it no longer names this one.
 	sel := &s.selection
+	selection_begin_write(s)
 	if sel.bound && sel.has_slot {
 		text_set(&sel.label, patch.slots_label(slots))
 		text_set(&sel.name, patch.slots_name(slots, sel.slot))
 	}
+	selection_end_write(s)
 
 	// Always played, only sometimes kept. A plugin selecting patches out of a
 	// bank the panel is not showing means one program number is two sounds;
@@ -448,7 +490,9 @@ session_set_bank :: proc(
 	// answers yes to it.
 	session_note_kept(s, slots)
 	patch.slots_load(slots, parsed)
+	selection_begin_write(s)
 	selection_bind(sel, slots)
+	selection_end_write(s)
 
 	if save && write != nil && write(text) {
 		// The per-user file is the user's bank, whatever the page called it:
@@ -494,6 +538,7 @@ session_set_bank :: proc(
 // and is playing a bank every instance has anyway. Its state is then exactly
 // the bytes it always was.
 session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.allocator) -> []u8 {
+	session_apply_posted(s)
 	t: Trailer
 	label := patch.slots_label(slots)
 
@@ -517,6 +562,9 @@ session_trailer :: proc(s: ^Session, slots: ^patch.Slots, allocator := context.a
 			if s.bank_source == .Adopted {
 				t.origin = .Session
 				t.has_slot = false
+				t.slot_empty = false
+				t.name = {}
+				text_set(&t.label, label)
 				json := patch.slots_write_json(slots, allocator)
 				defer delete(json, allocator)
 				t.embedded = true
@@ -607,6 +655,7 @@ Restore_Result :: struct {
 //                       is adopted and the program is the slot, the sound
 //                       staying what the host restored
 session_restore :: proc(s: ^Session, slots: ^patch.Slots, bytes: []u8) -> Restore_Result {
+	session_apply_posted(s)
 	t, status := trailer_decode(bytes)
 
 	switch status {
@@ -712,11 +761,16 @@ restore_failed :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error:
 }
 
 restore_failed_with_bank :: proc(s: ^Session, wanted: ^Selection, bank_saved: bool, error: Restore_Error, bank_json: []u8) -> Restore_Result {
-	if s.pending_bank != "" {delete(s.pending_bank)}
-	if len(bank_json) > 0 {
-		s.pending_bank = strings.clone(transmute(string)bank_json, context.allocator)
-	} else {
-		s.pending_bank = ""
+	// A retry that fails again hands back the copy already held; freeing it
+	// first would leave nothing to clone.
+	held_already := len(bank_json) > 0 && raw_data(bank_json) == raw_data(s.pending_bank)
+	if !held_already {
+		if s.pending_bank != "" {delete(s.pending_bank)}
+		if len(bank_json) > 0 {
+			s.pending_bank = strings.clone(transmute(string)bank_json, context.allocator)
+		} else {
+			s.pending_bank = ""
+		}
 	}
 	s.restore = .Failed
 	s.restore_error = error
@@ -743,6 +797,8 @@ restore_succeeded :: proc(s: ^Session, wanted: Selection) -> Restore_Result {
 	selection_begin_write(s)
 	s.selection = sel
 	selection_end_write(s)
+	if s.pending_bank != "" {delete(s.pending_bank)}
+	s.pending_bank = ""
 	s.has_pending = false
 	s.pending = {}
 	s.restore = .Restored
@@ -768,6 +824,7 @@ restore_succeeded :: proc(s: ^Session, wanted: Selection) -> Restore_Result {
 // retry is the user asking for that bank, not for whatever the file holds.
 // Returns whether the bank being played changed.
 session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> (result: Restore_Result, bank_changed: bool) {
+	session_apply_posted(s)
 	if s.restore != .Failed || !s.has_pending || !restore_error_recoverable(s.restore_error) {
 		return Restore_Result{requested = s.restore != .Not_Requested, error = s.restore_error}, false
 	}
@@ -778,13 +835,13 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 	from_file := false
 	if wanted.has_slot && patch.slots_label(slots) != label {
 		if saved == nil || patch.slots_label(saved) != label {
-			return restore_failed(s, &wanted, s.pending_saved, .Missing_Bank), false
+			return restore_failed_with_bank(s, &wanted, s.pending_saved, .Missing_Bank, transmute([]u8)s.pending_bank), false
 		}
 		target = saved
 		from_file = true
 	}
 	if wanted.has_slot && !slot_restorable(target, wanted.slot, wanted.slot_empty) {
-		return restore_failed(s, &wanted, s.pending_saved, .Invalid_Program), false
+		return restore_failed_with_bank(s, &wanted, s.pending_saved, .Invalid_Program, transmute([]u8)s.pending_bank), false
 	}
 
 	if from_file {
@@ -798,5 +855,6 @@ session_retry :: proc(s: ^Session, slots: ^patch.Slots, saved: ^patch.Slots) -> 
 
 // The user dismissed it. Nothing is put back and nothing is remembered.
 session_discard :: proc (s: ^Session) {
+	session_apply_posted(s)
 	session_forget_restore(s)
 }

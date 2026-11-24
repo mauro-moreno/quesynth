@@ -38,6 +38,7 @@ a_program_selects_the_exact_slot_of_the_bank_being_played :: proc(t: ^testing.T)
 			process_block(t, p, &point)
 		}
 
+		panel.session_apply_posted(&p.session)
 		view := panel.selection_view(&p.session.selection, &p.slots)
 		testing.expectf(t, view.has_slot && view.slot == 2, "controller %v: slot %d", on_the_controller, view.slot)
 		testing.expect_value(t, view.origin, panel.Origin.Imported)
@@ -61,6 +62,7 @@ a_program_on_an_empty_slot_leaves_the_selection_where_it_was :: proc(t: ^testing
 	synth.controller_set_param_normalized(controller_of(p), synth.PROGRAM_PARAM_ID, synth.program_normalized(2))
 	synth.controller_set_param_normalized(controller_of(p), synth.PROGRAM_PARAM_ID, synth.program_normalized(1))
 
+	panel.session_apply_posted(&p.session)
 	testing.expect_value(t, p.session.selection.slot, 2)
 	testing.expect_value(t, p.program, i32(1))
 }

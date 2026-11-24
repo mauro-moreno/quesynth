@@ -52,6 +52,7 @@ test_a_program_change_selects_the_exact_slot_of_the_bank_being_played :: proc(t:
 	testing.expect(t, !panel.selection_known(&s.session.selection), "a new instance claims to be on a preset")
 
 	send_midi(plugin, midi_event(0, 0xC0, 6, 0))
+	panel.session_apply_posted(&s.session)
 
 	view := panel.selection_view(&s.session.selection, &s.slots)
 	testing.expect_value(t, view.slot, 6)
@@ -72,11 +73,13 @@ test_bank_select_other_than_zero_selects_nothing :: proc(t: ^testing.T) {
 
 	send_midi(plugin, midi_event(0, 0xB0, 0, 0), midi_event(0, 0xB0, 32, 1), midi_event(0, 0xC0, 6, 0))
 
+	panel.session_apply_posted(&s.session)
 	testing.expect(t, !panel.selection_known(&s.session.selection), "a program change into a bank that does not exist selected something")
 	testing.expect_value(t, s.program, 0)
 
 	// And bank zero again, in the same breath, is the bank that exists.
 	send_midi(plugin, midi_event(0, 0xB0, 32, 0), midi_event(0, 0xC0, 6, 0))
+	panel.session_apply_posted(&s.session)
 	testing.expect_value(t, s.session.selection.slot, 6)
 }
 
@@ -93,6 +96,7 @@ test_a_program_change_on_an_empty_slot_leaves_the_selection_where_it_was :: proc
 	send_midi(plugin, midi_event(0, 0xC0, 120, 0))
 
 	// The sound is still slot 6's, so that is what it is still called.
+	panel.session_apply_posted(&s.session)
 	testing.expect_value(t, s.session.selection.slot, 6)
 	testing.expect_value(t, s.program, 6)
 }

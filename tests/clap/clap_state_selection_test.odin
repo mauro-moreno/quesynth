@@ -506,6 +506,7 @@ test_a_program_change_after_a_restore_selects_the_exact_slot_of_the_restored_ban
 	wanted, filled := patch.slots_patch(&b.slots, 7)
 	testing.expect(t, filled, "slot 7 of the restored bank is empty")
 	send_midi(after, midi_event(0, 0xC0, 7, 0))
+	panel.session_apply_posted(&b.session)
 
 	view := panel.selection_view(&b.session.selection, &b.slots)
 	testing.expect_value(t, view.slot, 7)

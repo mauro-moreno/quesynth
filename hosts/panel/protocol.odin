@@ -318,6 +318,11 @@ session_view :: proc(h: ^Host) -> (view: Instance_View, ok: bool) {
 		return {}, false
 	}
 	view = h.read_session(h.user)
+	if view.session != nil {
+		// A Program Change the audio thread posted becomes the selection here,
+		// before anything below reads one.
+		session_apply_posted(view.session)
+	}
 	return view, view.session != nil && view.slots != nil
 }
 

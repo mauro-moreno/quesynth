@@ -485,6 +485,7 @@ a_program_change_after_a_restore_selects_the_exact_slot_of_the_restored_bank :: 
 			process_block(t, after, &point)
 		}
 
+		panel.session_apply_posted(&after.session)
 		view := panel.selection_view(&after.session.selection, &after.slots)
 		testing.expectf(t, view.slot == 7 && view.label == "Alfmeister Bank" && view.name == "Alfmeister Bank 7", "controller %v: %v", on_the_controller, view)
 		testing.expect_value(t, after.program, i32(7))
